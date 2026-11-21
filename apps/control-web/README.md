@@ -70,6 +70,10 @@ The preview evaluates the supported text detectors, file metadata, and individua
 
 Choose **App inventory → Edit app catalog** for the baseline or **Preview group policy** for a rollout group. Enable **App discovery** and enter custom sites in the form `workspace.example.test, Example Workspace`. Run the preview, review the catalog changes, then publish or request approval. Enrolled Chrome browsers with the discovery permission report visits to the exact configured HTTPS sites. Use **App inventory** to inspect observed browser counts and classify each app. [Browser permission and test guide](../browser-extension/README.md#app-discovery)
 
+## Grant a temporary prompt exception
+
+Open **Policy preview** for the intended scope and add an entry under **Temporary prompt exceptions**. Choose the app, detector, UTC expiry, and reason. Compare outcomes for that destination, then publish or request review. Edit or remove an entry through the same workflow. **Policy history** records the scope's configured entries. Filter **Security events** to **Exception applied** for observed uses. [Browser test guide](../browser-extension/README.md#test-temporary-prompt-exceptions)
+
 ## Investigate and export security events
 
 Open **Events** in the sidebar. Filter by application, decision, time range, or browser installation ID, then select **Apply filters**. Select an installation ID in a result to narrow the current view to that browser. Use **Older events** and **Newest events** to review the matching records.

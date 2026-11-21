@@ -1,5 +1,7 @@
-import { aiPromptApps, decisionLabels, detectorModeLabels, promptAppLabels } from '../lib/control';
+import { aiPromptApps, decisionLabels, detectorModeLabels, promptAppLabels, ruleLabels, utc } from '../lib/control';
 import type { PreviewPolicy } from '../lib/preview';
+import { exceptionKey, samePromptExceptions } from '../../../contracts/policy/prompt-exceptions';
+import { fixtureRule } from '../../../contracts/policy/prompt';
 
 export function PolicyChanges({ reference, candidate }: { reference: PreviewPolicy; candidate: PreviewPolicy }) {
   const toggle = (value: boolean) => value ? 'On' : 'Off';
@@ -25,6 +27,16 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     })}
     {reference.customApps.filter(({ host }) => !candidate.customApps.some((app) => app.host === host))
       .map(({ host, name }) => <li key={host}>Remove {name} · <code>{host}</code></li>)}
+    {candidate.promptExceptions.map((entry) => {
+      const key = exceptionKey(entry);
+      const before = reference.promptExceptions.find((prior) => exceptionKey(prior) === key);
+      if (before && samePromptExceptions([before], [entry])) return null;
+      return <li key={key}>{before ? 'Update' : 'Add'} {promptAppLabels[entry.appId]} exception for
+        {' '}{entry.ruleId === fixtureRule ? 'Test marker' : ruleLabels[entry.ruleId]} · Expires {utc.format(new Date(entry.expiresAt))} UTC · {entry.reason}</li>;
+    })}
+    {reference.promptExceptions.filter((entry) => !candidate.promptExceptions.some((after) => exceptionKey(after) === exceptionKey(entry)))
+      .map((entry) => <li key={exceptionKey(entry)}>Remove {promptAppLabels[entry.appId]} exception for
+        {' '}{entry.ruleId === fixtureRule ? 'Test marker' : ruleLabels[entry.ruleId]}</li>)}
     {(['domainRules', 'pathRules'] as const).flatMap((field) => (['allow', 'block'] as const).flatMap((action) => {
       const before = reference[field][action];
       const after = candidate[field][action];

@@ -4,6 +4,8 @@ import { chatGptApp, fixtureApp, geminiApp, isPromptApp, type AiPromptApp, type 
 import { isUploadMethod, uploadCategory, uploadRule, type TargetedUploads, type UploadMetadata, type UploadModes } from '../../../contracts/policy/uploads';
 import type { InventoryStatus } from '../../../contracts/policy/extension-inventory';
 import { builtInDiscoveryApps, type BuiltInDiscoveryApp, type CustomAppId } from '../../../contracts/policy/discovery';
+import { exceptionDecision } from '../../../contracts/policy/prompt-exceptions';
+import type { BrowserLease } from './prompt-exceptions';
 
 export { fixtureRule, fixtureDetector, githubPatRule, credentialDetector, isMode, isDetectorMode } from '../../../contracts/policy/prompt';
 export type { PolicyMode, DetectorMode, RuleMetadata } from '../../../contracts/policy/prompt';
@@ -30,7 +32,7 @@ export type PolicyEvent = {
   timestamp: string;
   policyVersion: number;
   assignmentVersion?: number;
-  decision: PolicyMode | 'warn_override';
+  decision: PolicyMode | 'warn_override' | typeof exceptionDecision;
 } & (RuleMetadata | UploadMetadata);
 
 export type Summary = {
@@ -45,6 +47,7 @@ export type Summary = {
   domainRulesError?: boolean;
   inventoryStatus?: InventoryStatus;
   customDiscoveryCount?: number;
+  promptExceptionLease?: BrowserLease;
   queued: number;
   discarded: number;
 };
@@ -104,7 +107,7 @@ export function readMetadata(value: unknown): PolicyEvent | undefined {
   if (!isRecord(value) || !isId(value.eventId) || !isVersion(value.policyVersion) ||
       (value.assignmentVersion !== undefined && !isVersion(value.assignmentVersion)) ||
       !isPromptApp(value.appId) ||
-      !(isMode(value.decision) || value.decision === 'warn_override') ||
+      !(isMode(value.decision) || value.decision === 'warn_override' || (value.decision === exceptionDecision && value.appId !== fixtureApp)) ||
       typeof value.timestamp !== 'string' || !Number.isFinite(Date.parse(value.timestamp))) return;
 
   const event = {

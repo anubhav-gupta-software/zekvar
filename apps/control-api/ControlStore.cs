@@ -39,6 +39,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 16, "016_extension_inventory.sql", ct);
         await ApplyMigration(connection, 17, "017_upload_types.sql", ct);
         await ApplyMigration(connection, 18, "018_custom_app_catalog.sql", ct);
+        await ApplyMigration(connection, 19, "019_prompt_exceptions.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -122,7 +123,7 @@ internal sealed partial class ControlStore
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
                 p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
-                p.custom_apps
+                p.custom_apps, p.prompt_exceptions
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.policy_group_id IS NOT DISTINCT FROM $2::uuid ORDER BY p.version DESC LIMIT 100
             """, organizationId, (object?)groupId ?? DBNull.Value);
@@ -140,23 +141,28 @@ internal sealed partial class ControlStore
                 WHERE id = $1 AND revoked_at IS NULL AND (assignment_version = 0 OR $2)
                 RETURNING organization_id, id, policy_group_id, assignment_version
             ), effective AS (
-                SELECT i.organization_id, i.id, i.assignment_version, COALESCE(g.policy_version, o.policy_version) AS version
+                SELECT i.organization_id, i.id, i.assignment_version, i.policy_group_id,
+                    COALESCE(g.policy_version, o.policy_version) AS version
                 FROM active i JOIN organizations o ON o.id = i.organization_id
                 LEFT JOIN policy_groups g ON g.organization_id = o.id AND g.id = i.policy_group_id
             ), delivery AS (
-                INSERT INTO policy_deliveries (organization_id, installation_id, assignment_version, policy_version)
-                SELECT organization_id, id, assignment_version, version FROM effective WHERE assignment_version > 0
+                INSERT INTO policy_deliveries (organization_id, installation_id, assignment_version, policy_version, exception_scope)
+                SELECT e.organization_id, e.id, e.assignment_version, e.version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id
+                FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
+                WHERE e.assignment_version > 0 OR p.prompt_exceptions <> '[]'::jsonb
                 ON CONFLICT DO NOTHING
             )
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
                 p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
-                p.custom_apps, e.assignment_version
+                p.custom_apps, p.prompt_exceptions, e.assignment_version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id
             FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
             LEFT JOIN policy_audit a ON a.organization_id = p.organization_id AND a.version = p.version
             """, installationId, assignmentAware);
         await using var rows = await command.ExecuteReaderAsync(ct);
-        return await rows.ReadAsync(ct) ? ReadPolicy(rows) with { AssignmentVersion = rows.GetInt32(17) } : null;
+        if (!await rows.ReadAsync(ct)) return null;
+        var policy = ReadPolicy(rows);
+        return policy with { AssignmentVersion = rows.GetInt32(18), PromptExceptions = rows.GetBoolean(19) ? policy.PromptExceptions : [] };
     }
 
     public async Task<bool> RecordHeartbeat(Guid installationId, Heartbeat request, CancellationToken ct)
@@ -169,6 +175,9 @@ internal sealed partial class ControlStore
                     AND ($10 OR (p.chatgpt_upload_mode = 'off' OR cardinality(p.chatgpt_upload_types) = 0)
                         AND (p.gemini_upload_mode = 'off' OR cardinality(p.gemini_upload_types) = 0))
                     AND (NOT p.discovery_enabled OR p.custom_apps = '[]'::jsonb OR $11)
+                    AND ($12 OR i.policy_group_id IS DISTINCT FROM p.policy_group_id OR NOT EXISTS (
+                        SELECT 1 FROM jsonb_array_elements(p.prompt_exceptions) AS entries(entry)
+                        WHERE (entry->>'expiresAt')::timestamptz > now()))
                     THEN GREATEST(i.applied_policy_version, $2)
                     WHEN i.applied_policy_version = $2 THEN NULL ELSE i.applied_policy_version END,
                 chatgpt_coverage = COALESCE($3::text, i.chatgpt_coverage),
@@ -184,7 +193,7 @@ internal sealed partial class ControlStore
             """, installationId, request.PolicyVersion, (object?)request.ChatGptCoverage ?? DBNull.Value,
             request.DomainRulesApplied, request.AssignmentVersion, (object?)request.GeminiCoverage ?? DBNull.Value,
             request.PaymentCardModeApplied, request.UploadControlsApplied, request.PathRulesApplied, request.UploadTypesApplied,
-            request.CustomDiscoveryApplied);
+            request.CustomDiscoveryApplied, request.PromptExceptionsApplied);
         return await command.ExecuteNonQueryAsync(ct) == 1;
     }
 
@@ -235,14 +244,19 @@ internal sealed partial class ControlStore
                 SELECT p.organization_id FROM active
                 JOIN policy_versions p ON p.organization_id = active.organization_id AND p.version = $4
                 LEFT JOIN retention_cutoffs r ON r.organization_id = active.organization_id
-                WHERE (CASE $7 WHEN 'github-classic-pat' THEN p.github_pat_mode
+                CROSS JOIN LATERAL (SELECT CASE $7 WHEN 'github-classic-pat' THEN p.github_pat_mode
                     WHEN 'payment-card-number' THEN p.payment_card_mode
                     WHEN 'ai-file-upload' THEN CASE $6 WHEN 'chatgpt' THEN p.chatgpt_upload_mode WHEN 'gemini' THEN p.gemini_upload_mode END
-                    ELSE p.mode END)
-                    = CASE WHEN $5 = 'warn_override' THEN 'warn' ELSE $5 END
+                    ELSE p.mode END AS mode) AS detector
+                WHERE (detector.mode = CASE WHEN $5 = 'warn_override' THEN 'warn' ELSE $5 END
+                    OR ($5 = 'exception_applied' AND detector.mode IN ('warn', 'block') AND $3 >= p.published_at
+                        AND $3 <= now() + interval '2 minutes'
+                        AND EXISTS (SELECT 1 FROM jsonb_array_elements(p.prompt_exceptions) AS entries(entry)
+                            WHERE entry->>'appId' = $6 AND entry->>'ruleId' = $7 AND $3 < (entry->>'expiresAt')::timestamptz)))
                   AND (r.event_cutoff IS NULL OR $3 >= r.event_cutoff)
-                  AND (($8 = 0 AND p.policy_group_id IS NULL) OR EXISTS (SELECT 1 FROM policy_deliveries d
-                    WHERE d.installation_id = $1 AND d.assignment_version = $8 AND d.policy_version = $4))
+                  AND (($8 = 0 AND p.policy_group_id IS NULL AND $5 <> 'exception_applied') OR EXISTS (SELECT 1 FROM policy_deliveries d
+                    WHERE d.installation_id = $1 AND d.assignment_version = $8 AND d.policy_version = $4
+                        AND ($5 <> 'exception_applied' OR d.exception_scope)))
             ), written AS (
                 INSERT INTO security_events (organization_id, installation_id, event_id, occurred_at, policy_version, decision, app_id, rule_id, upload_method)
                 SELECT organization_id, $1, $2, $3, $4, $5, $6, $7, $9 FROM eligible
@@ -434,5 +448,6 @@ internal sealed partial class ControlStore
         new(rows.GetFieldValue<string[]>(6), rows.GetFieldValue<string[]>(7)), rows.GetString(8), new(rows.GetString(9), rows.GetString(10)),
         new(rows.GetFieldValue<string[]>(11), rows.GetFieldValue<string[]>(12)), rows.GetBoolean(13),
         new(rows.GetFieldValue<string[]>(14), rows.GetFieldValue<string[]>(15)),
-        JsonSerializer.Deserialize<CustomApp[]>(rows.GetString(16), JsonSerializerOptions.Web));
+        JsonSerializer.Deserialize<CustomApp[]>(rows.GetString(16), JsonSerializerOptions.Web),
+        JsonSerializer.Deserialize<PromptException[]>(rows.GetString(17), JsonSerializerOptions.Web));
 }

@@ -72,6 +72,14 @@ The upload policy covers the supported top-level ChatGPT home and conversation r
 
 Update enrolled Chrome profiles to v0.15.0 before publishing scoped file types. Older builds skip the scoped portion and Control leaves the policy version unacknowledged. Other enabled controls and any unscoped upload mode continue to apply.
 
+## Test temporary prompt exceptions
+
+1. Start the updated Control services and load Browser v0.17.0. In **Policy preview**, choose the baseline or a rollout group. Set the detector to **Warn** or **Block** and choose **Add prompt exception**. Select the AI app and detector, enter a reason, and set an expiry (UTC) within 24 hours.
+2. Pick a **Prompt sample destination** and run the preview. Check the relevant detection and a mixed sample. Publish or request independent approval. Click **Sync now** on the assigned browser.
+3. Try the test marker on the controlled guest ChatGPT or Gemini composer. The exception applies to its selected app and detector. A different matching Warn or Block rule still applies. Control reports **Exception applied** on the Security events page when the exception allows a send.
+
+Chrome uses the server deadline and a grant that can be used for up to 45 seconds after a policy fetch. It resumes standard enforcement after expiry, clock discontinuity, confirmed disconnection, or a browser restart before the next successful sync. Removing an exception takes effect at the next sync or when the local grant expires. Rollback and promotion preserve the target scope's exception list. A rollout group that inherits the baseline uses its regular rules and has its own exception list. [Chrome extension alarms](https://developer.chrome.com/docs/extensions/reference/api/alarms) · [High Resolution Time](https://www.w3.org/TR/hr-time-3/)
+
 ## App discovery
 
 1. Load Browser v0.16.0, start Control, and enroll the test browser. Set **App discovery** to **On** under **Publish a policy**. Publish, then click **Sync now** in the Zekvar popup.

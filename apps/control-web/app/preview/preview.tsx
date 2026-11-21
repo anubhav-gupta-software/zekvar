@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { readNavigationRules } from '../../lib/navigation';
-import { detectorModes, modes, type DetectorMode, type PolicyMode } from '../../../../contracts/policy/prompt';
+import { detectorModes, fixtureRule, modes, ruleLabels, type DetectorMode, type PolicyMode, type PromptRuleId } from '../../../../contracts/policy/prompt';
 import { parseUploadTypes, uploadModes, uploadTypesError, uploadTypesHint, type UploadMode } from '../../../../contracts/policy/uploads';
 import { aiPromptApps, decisionLabels, detectorModeLabels, promptAppLabels } from '../../lib/control';
 import { changedDecision, parseWebAddress, runComparison, samePolicy,
@@ -11,6 +11,8 @@ import { publishPreview } from '../actions';
 import { MutationForm } from '../forms';
 import { PolicyChanges } from '../policy-changes';
 import { customAppError, parseCustomApps } from '../../../../contracts/policy/discovery';
+import { exceptionWindowMs, promptExceptionError, readPromptExceptions, samePromptExceptions, type PromptException } from '../../../../contracts/policy/prompt-exceptions';
+import { chatGptApp, type AiPromptApp } from '../../../../contracts/policy/apps';
 
 const navigationFields = [
   ['allow', 'Draft allowed domains'], ['block', 'Draft blocked domains'],
@@ -27,6 +29,7 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
     uploadModes: snapshot.uploadModes,
     uploadTypeText: { chatgpt: snapshot.uploadTypes.chatgpt.join(', '), gemini: snapshot.uploadTypes.gemini.join(', ') },
     catalog: snapshot.customApps.map(({ host, name }) => `${host}, ${name}`).join('\n'),
+    promptExceptions: snapshot.promptExceptions.map((entry) => ({ ...entry, expiresAt: new Date(entry.expiresAt).toISOString().slice(0, -1) })),
     allow: snapshot.domainRules.allow.join('\n'), block: snapshot.domainRules.block.join('\n'),
     allowPaths: snapshot.pathRules.allow.join('\n'), blockPaths: snapshot.pathRules.block.join('\n'),
   };
@@ -40,6 +43,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
   const [customPrompt, setCustomPrompt] = useState('');
   const [customUrl, setCustomUrl] = useState('');
   const [customFile, setCustomFile] = useState({ name: '', type: '' });
+  const [promptApp, setPromptApp] = useState<AiPromptApp>(chatGptApp);
   const [result, setResult] = useState<PreviewResult>();
   const [error, setError] = useState('');
 
@@ -59,6 +63,10 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
   function edit<K extends keyof Editor>(field: K, value: Editor[K]) {
     setEditor((previous) => ({ ...previous, [field]: value }));
     invalidate();
+  }
+
+  function editException(index: number, update: Partial<PromptException>) {
+    edit('promptExceptions', editor.promptExceptions.map((entry, position) => position === index ? { ...entry, ...update } : entry));
   }
 
   function run() {
@@ -83,13 +91,24 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
       setError(customAppError);
       return;
     }
+    const promptExceptions = readPromptExceptions(editor.promptExceptions.map((entry) => ({ ...entry, expiresAt: entry.expiresAt + 'Z' })));
+    if (!promptExceptions) {
+      setError(promptExceptionError);
+      return;
+    }
+    const now = Date.now();
+    if (promptExceptions.some((entry) => Date.parse(entry.expiresAt) > now + exceptionWindowMs ||
+        (Date.parse(entry.expiresAt) <= now && !reference.promptExceptions.some((prior) => samePromptExceptions([entry], [prior]))))) {
+      setError('Set each new or changed exception to expire within the next 24 hours.');
+      return;
+    }
     const file = customFile.name || customFile.type.trim() ? customFile : undefined;
     setError('');
     setResult(runComparison(reference, {
       mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode,
       discoveryEnabled: editor.discoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled, domainRules, pathRules,
-      uploadModes: editor.uploadModes, uploadTypes: { chatgpt, gemini }, customApps,
-    }, customPrompt, address, file));
+      uploadModes: editor.uploadModes, uploadTypes: { chatgpt, gemini }, customApps, promptExceptions,
+    }, customPrompt, address, file, promptApp));
   }
 
   return <>
@@ -164,10 +183,51 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
         </div>)}
       </div>
     </section>
+    <section className="panel" aria-labelledby="prompt-exceptions-heading">
+      <h2 id="prompt-exceptions-heading">Temporary prompt exceptions</h2>
+      <p className="muted">An exception can allow a flagged prompt for one detector and app until its UTC expiry. Other matching detectors still apply.</p>
+      {editor.promptExceptions.map((entry, index) => <fieldset key={index} className="policy-fields prompt-exception-fields">
+        <legend>Exception {index + 1}</legend>
+        <div className="grid gap-1">
+          <label htmlFor={`exception-app-${index}`}>App</label>
+          <select id={`exception-app-${index}`} value={entry.appId}
+            onChange={(event) => editException(index, { appId: event.target.value as AiPromptApp })}>
+            {aiPromptApps.map((app) => <option key={app} value={app}>{promptAppLabels[app]}</option>)}
+          </select>
+        </div>
+        <div className="grid gap-1">
+          <label htmlFor={`exception-rule-${index}`}>Detector</label>
+          <select id={`exception-rule-${index}`} value={entry.ruleId}
+            onChange={(event) => editException(index, { ruleId: event.target.value as PromptRuleId })}>
+            {Object.entries(ruleLabels).map(([rule, label]) => <option key={rule} value={rule}>{rule === fixtureRule ? 'Test marker' : label}</option>)}
+          </select>
+        </div>
+        <div className="grid gap-1">
+          <label htmlFor={`exception-expiry-${index}`}>Expires (UTC)</label>
+          <input id={`exception-expiry-${index}`} type="datetime-local" step="any" value={entry.expiresAt}
+            onChange={(event) => editException(index, { expiresAt: event.target.value })} />
+        </div>
+        <div className="grid gap-1">
+          <label htmlFor={`exception-reason-${index}`}>Reason</label>
+          <input id={`exception-reason-${index}`} maxLength={120} value={entry.reason}
+            onChange={(event) => editException(index, { reason: event.target.value })} />
+        </div>
+        <div><button type="button" className="button small" aria-label={`Remove exception ${index + 1}`}
+          onClick={() => edit('promptExceptions', editor.promptExceptions.filter((_entry, position) => position !== index))}>Remove</button></div>
+      </fieldset>)}
+      <button type="button" className="button small" disabled={editor.promptExceptions.length >= 6} onClick={() => edit('promptExceptions',
+        [...editor.promptExceptions, { appId: chatGptApp, ruleId: fixtureRule, expiresAt: '', reason: '' }])}>Add prompt exception</button>
+    </section>
     <section className="panel" aria-labelledby="preview-samples-heading">
       <h2 id="preview-samples-heading">Test samples</h2>
       <p className="muted">Built-in cases cover prompt detectors, navigation, and file upload policies. Custom samples stay in this tab.</p>
       <div className="policy-fields preview-inputs">
+        {editor.promptExceptions.length + reference.promptExceptions.length > 0 && <div className="grid gap-1">
+          <label htmlFor="preview-prompt-app">Prompt sample destination</label>
+          <select id="preview-prompt-app" value={promptApp} onChange={(event) => { setPromptApp(event.target.value as AiPromptApp); invalidate(); }}>
+            {aiPromptApps.map((app) => <option key={app} value={app}>{promptAppLabels[app]}</option>)}
+          </select>
+        </div>}
         <div className="grid gap-1">
           <label htmlFor="preview-prompt">Custom prompt</label>
           <textarea id="preview-prompt" rows={3} maxLength={16000} autoComplete="off" spellCheck={false} value={customPrompt}
@@ -231,6 +291,7 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         <input type="hidden" name="paymentCardMode" value={candidate.paymentCardMode} />
         <input type="hidden" name="discoveryEnabled" value={candidate.discoveryEnabled ? 'on' : 'off'} />
         <input type="hidden" name="customApps" value={candidate.customApps.map(({ host, name }) => `${host}, ${name}`).join('\n')} />
+        <input type="hidden" name="promptExceptions" value={JSON.stringify(candidate.promptExceptions)} />
         <input type="hidden" name="extensionInventoryEnabled" value={candidate.extensionInventoryEnabled ? 'on' : 'off'} />
         {aiPromptApps.map((app) => <input key={app} type="hidden" name={`upload-${app}`} value={candidate.uploadModes[app]} />)}
         {aiPromptApps.map((app) => <input key={app} type="hidden" name={`upload-types-${app}`} value={candidate.uploadTypes[app].join(', ')} />)}

@@ -80,6 +80,12 @@ For each active scoped destination, browser policy delivery sets its legacy `upl
 
 Upload attempt events use `ai-file-upload` and category `file-upload`. They require an `uploadMethod` of `picker`, `drop`, or `paste` and a decision matching the app's setting on the named policy version. The method appears on retained history and exports. Chrome evaluates the match locally and submits the same event metadata for scoped and unscoped matches.
 
+### Temporary prompt exceptions
+
+Publish `promptExceptions` as an array of `{ appId, ruleId, expiresAt, reason }` objects. Supported app IDs are `chatgpt` and `gemini`, with one entry per existing prompt detector. Use an absolute expiry within 24 hours and a 3 to 120 character reason. Omit the array to preserve the scope's entries or send an empty array to remove them. Reviews freeze expiry and reject an approval after a new or changed exception's deadline. Restoring or promoting a policy keeps the target scope's current entries.
+
+Browser policy responses for the exact assigned scope deliver active `promptExceptionLease` grants with `serverTimeMs` and `expiresAtMs` timestamps. The response excludes the reason. A browser reports `promptExceptionsApplied` in its heartbeat when it can use the grant. Older Chrome builds continue normal prompt enforcement. Control verifies `exception_applied` events against the app, detector, already delivered assignment and policy, and event time before expiry. Audit and export retain the policy attribution and decision.
+
 ## Policy reviews
 
 Policy reviews are optional by default. The owner can enable the requirement with `POST /v1/admin/policy-reviews/setting` and `{ "required": true }`. `GET /v1/admin/session` includes `reviewRequired`. When required, a publish, restore, or promotion submitted by a named administrator returns HTTP 202 and `{ "reviewId": "…" }`. A request queues the exact candidate policy and its current reference version. It does not advance the policy version. Owners and auditors cannot submit or approve requests while review is required.

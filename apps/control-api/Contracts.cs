@@ -17,11 +17,13 @@ internal static class FixtureContract
     public const string PaymentCategory = "payment-card";
     public const string UploadRule = "ai-file-upload";
     public const string UploadCategory = "file-upload";
+    public const string ExceptionApplied = "exception_applied";
 
     public static bool IsMode(string? mode) => mode is "monitor" or "warn" or "block";
     public static bool IsOptionalDetectorMode(string? mode) => mode is null or "off" || IsMode(mode);
     public static bool IsApp(string? appId) => appId is AppId or ChatGpt or Gemini;
-    public static bool IsDecision(string? decision) => IsMode(decision) || decision == "warn_override";
+    public static bool IsDecision(string? decision) => IsMode(decision) || decision is "warn_override" or ExceptionApplied;
+    public static bool IsPromptRule(string? rule) => rule is RuleId or GitHubPatRule or PaymentCardRule;
 
     public static bool IsEvent(PolicyEvent request) =>
         request.EventId != Guid.Empty && request.Timestamp != default && request.PolicyVersion > 0 &&
@@ -29,6 +31,7 @@ internal static class FixtureContract
             ? request.AppId != AppId && request.DetectorCategory == UploadCategory &&
               request.Decision is "monitor" or "block" && request.UploadMethod is "picker" or "drop" or "paste"
             : request.UploadMethod is null && IsDecision(request.Decision) &&
+              (request.Decision != ExceptionApplied || request.AppId != AppId) &&
               ((request.RuleId == RuleId && request.DetectorCategory == DetectorCategory) ||
                (request.RuleId == GitHubPatRule && request.DetectorCategory == CredentialCategory) ||
                (request.RuleId == PaymentCardRule && request.DetectorCategory == PaymentCategory)));
@@ -61,7 +64,7 @@ internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId
 internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode = null, bool? DiscoveryEnabled = null,
     DomainRules? DomainRules = null, int? ExpectedVersion = null, string? PaymentCardMode = null, UploadModes? UploadModes = null,
     PathRules? PathRules = null, bool? ExtensionInventoryEnabled = null, UploadTypes? UploadTypes = null,
-    CustomAppSetting?[]? CustomApps = null);
+    CustomAppSetting?[]? CustomApps = null, PromptException?[]? PromptExceptions = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null)
 {
     public bool HasSettings() => Chatgpt is not null || Gemini is not null;
@@ -70,7 +73,8 @@ internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null
 internal sealed record RedeemGrant(string Grant);
 internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = null, bool DomainRulesApplied = false,
     int AssignmentVersion = 0, string? GeminiCoverage = null, bool PaymentCardModeApplied = false, bool UploadControlsApplied = false,
-    bool PathRulesApplied = false, bool UploadTypesApplied = false, bool CustomDiscoveryApplied = false)
+    bool PathRulesApplied = false, bool UploadTypesApplied = false, bool CustomDiscoveryApplied = false,
+    bool PromptExceptionsApplied = false)
 {
     public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported") &&
         (GeminiCoverage is null or "ready" or "unsupported");
@@ -83,7 +87,9 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     bool ExtensionInventoryEnabled = false,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] UploadTypes? UploadTypes = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CustomApp[]? CustomApps = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PromptException[]? PromptExceptions = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] TargetedUploads? TargetedUploads = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PromptExceptionLease? PromptExceptionLease = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int AssignmentVersion = 0)
 {
     public string AppId => FixtureContract.AppId;
@@ -93,11 +99,20 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
 
     public Policy ForBrowser()
     {
+        var now = DateTimeOffset.UtcNow;
+        var nowMs = now.ToUnixTimeMilliseconds();
+        var exceptions = PromptExceptions?.Select(entry => new PromptExceptionGrant(entry.AppId, entry.RuleId, entry.ExpiresAt.ToUnixTimeMilliseconds()))
+            .Where(entry => entry.ExpiresAtMs > nowMs).ToArray();
+        var browser = this with
+        {
+            PromptExceptions = PromptExceptions is { Length: > 0 } ? null : PromptExceptions,
+            PromptExceptionLease = exceptions is { Length: > 0 } ? new(nowMs, exceptions) : null
+        };
         var chatgpt = UploadFilter.From(UploadModes.Chatgpt, UploadTypes?.Chatgpt);
         var gemini = UploadFilter.From(UploadModes.Gemini, UploadTypes?.Gemini);
-        if (chatgpt is null && gemini is null) return this;
+        if (chatgpt is null && gemini is null) return browser;
         // Older clients receive Off for the scoped destinations and keep their other controls.
-        return this with
+        return browser with
         {
             UploadTypes = null,
             UploadModes = new(chatgpt is null ? UploadModes.Chatgpt : "off", gemini is null ? UploadModes.Gemini : "off"),

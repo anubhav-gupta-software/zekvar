@@ -12,5 +12,9 @@ type PolicyDecision = { action: 'allow' } | MatchedDecision;
 
 export function evaluatePrompt(prompt: string, policy: Policy): PolicyDecision {
   const match = evaluateRules(prompt, policy);
-  return match.action === 'allow' ? match : { ...match, policyVersion: policy.version, assignmentVersion: policy.assignmentVersion };
+  return match.action === 'allow' ? match : withPolicyVersion(match, policy);
+}
+
+export function withPolicyVersion(match: PromptMatch, policy: Policy): MatchedDecision {
+  return { ...match, policyVersion: policy.version, assignmentVersion: policy.assignmentVersion };
 }

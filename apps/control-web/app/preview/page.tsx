@@ -52,7 +52,8 @@ async function loadPreview(token: string, selectedId: string | string[] | undefi
   const baselineSnapshots = baseline.map((policy) => previewSnapshot(policy, 'Baseline'));
   if (selectedId && !selected) return { session, groups, snapshots: [] };
   if (!selected) return { session, groups, reference: baselineSnapshots[0], snapshots: baselineSnapshots };
+  const inherited = baselineSnapshots.map((snapshot) => ({ ...snapshot, promptExceptions: [] }));
   const history = await controlApi.policies(token, selected.id);
   const scoped = history.map((policy) => previewSnapshot(policy, selected.name));
-  return { session, groups, selected, reference: scoped[0] ?? baselineSnapshots[0], snapshots: [...scoped, ...baselineSnapshots] };
+  return { session, groups, selected, reference: scoped[0] ?? inherited[0], snapshots: [...scoped, ...inherited] };
 }

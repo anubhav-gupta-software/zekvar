@@ -19,6 +19,7 @@ export const ruleLabels = {
 export type RuleMetadata = { ruleId: typeof fixtureRule; detectorCategory: typeof fixtureDetector } |
   { ruleId: typeof githubPatRule; detectorCategory: typeof credentialDetector } |
   { ruleId: typeof paymentCardRule; detectorCategory: typeof paymentDetector };
+export type PromptRuleId = RuleMetadata['ruleId'];
 export type PromptPolicy = { mode: PolicyMode; githubPatMode?: DetectorMode; paymentCardMode?: DetectorMode };
 export type PromptMatch = { action: PolicyMode; reason: string } & RuleMetadata;
 
@@ -35,19 +36,19 @@ export function isDetectorMode(value: unknown): value is DetectorMode {
   return value === 'off' || isMode(value);
 }
 
-export function evaluatePrompt(prompt: string, policy: PromptPolicy): { action: 'allow' } | PromptMatch {
-  let match: PromptMatch | undefined = prompt.includes(testMarker) ? {
+export function evaluatePrompt(prompt: string, policy: PromptPolicy, except?: ReadonlySet<PromptRuleId>): { action: 'allow' } | PromptMatch {
+  let match: PromptMatch | undefined = !except?.has(fixtureRule) && prompt.includes(testMarker) ? {
     action: policy.mode, ruleId: fixtureRule, detectorCategory: fixtureDetector,
     reason: 'This prompt contains a test secret.',
   } : undefined;
-  if (isMode(policy.githubPatMode) && (!match || severity[policy.githubPatMode] >= severity[match.action]) &&
+  if (!except?.has(githubPatRule) && isMode(policy.githubPatMode) && (!match || severity[policy.githubPatMode] >= severity[match.action]) &&
       classicGithubPat.test(prompt)) {
     match = {
       action: policy.githubPatMode, ruleId: githubPatRule, detectorCategory: credentialDetector,
       reason: 'This prompt contains text that looks like a GitHub classic personal access token.',
     };
   }
-  if (isMode(policy.paymentCardMode) && (!match || severity[policy.paymentCardMode] >= severity[match.action]) &&
+  if (!except?.has(paymentCardRule) && isMode(policy.paymentCardMode) && (!match || severity[policy.paymentCardMode] >= severity[match.action]) &&
       containsPaymentCard(prompt)) {
     return {
       action: policy.paymentCardMode, ruleId: paymentCardRule, detectorCategory: paymentDetector,

@@ -13,7 +13,7 @@ internal sealed partial class ControlStore
 
     public async Task<PolicyChangeResult> ChangePolicy(RequestIdentity identity, PublishPolicy? request, int? restoredFrom,
         bool expectReview, CancellationToken ct, Guid? groupId = null, Guid? sourceGroupId = null, int? expectedSourceVersion = null,
-        CustomApp[]? customApps = null)
+        CustomApp[]? customApps = null, PromptException[]? promptExceptions = null)
     {
         var org = identity.OrganizationId;
         await using var connection = await dataSource.OpenConnectionAsync(ct);
@@ -27,6 +27,7 @@ internal sealed partial class ControlStore
         if (target is null || (request?.ExpectedVersion is { } expected && target.Version != expected)) return new();
         var before = await ReadPolicySnapshot(transaction, org, target.Version, ct);
         if (before is null) return new();
+        if (groupId.HasValue && !target.Published) before = before with { PromptExceptions = [] };
 
         Policy? candidate = before;
         string? sourceGroupName = null;
@@ -43,9 +44,11 @@ internal sealed partial class ControlStore
         }
         else if (request is not null)
         {
-            candidate = ApplyPolicySettings(before, request, customApps);
+            if (PromptException.IntroducesExpired(promptExceptions, before.PromptExceptions)) return new(Error: "exception_expired");
+            candidate = ApplyPolicySettings(before, request, customApps, promptExceptions);
         }
         if (candidate is null) return new();
+        if (request is null) candidate = candidate with { PromptExceptions = before.PromptExceptions };
         if (candidate.DomainRules.Allow.Length + candidate.DomainRules.Block.Length +
             candidate.PathRules.Allow.Length + candidate.PathRules.Block.Length > 50) return new(Error: "navigation_rule_limit");
 
@@ -144,6 +147,7 @@ internal sealed partial class ControlStore
             var source = review.SourceGroupId is { } sourceId ? await ReadPolicyScope(transaction, org, sourceId, ct) : null;
             if (current?.Version != review.Snapshots.Before.Version ||
                 (review.Operation == "promote" && (source is not { Published: true } || source.Version != review.SourceVersion)) ||
+                PromptException.IntroducesExpired(review.Snapshots.Candidate.PromptExceptions, review.Snapshots.Before.PromptExceptions) ||
                 !await ActiveAdministrators(transaction, org, [review.Requester.Id], ct))
             {
                 status = "stale";
@@ -213,7 +217,7 @@ internal sealed partial class ControlStore
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
                 p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
-                p.custom_apps
+                p.custom_apps, p.prompt_exceptions
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.version = $2 AND (NOT $3 OR p.policy_group_id IS NOT DISTINCT FROM $4::uuid)
             """, transaction.Connection, transaction);
@@ -222,12 +226,14 @@ internal sealed partial class ControlStore
         return await rows.ReadAsync(ct) ? ReadPolicy(rows) : null;
     }
 
-    private static Policy ApplyPolicySettings(Policy current, PublishPolicy request, CustomApp[]? customApps) => current with
+    private static Policy ApplyPolicySettings(Policy current, PublishPolicy request, CustomApp[]? customApps,
+        PromptException[]? promptExceptions) => current with
     {
         Mode = request.Mode ?? current.Mode,
         GithubPatMode = request.GithubPatMode ?? current.GithubPatMode,
         DiscoveryEnabled = request.DiscoveryEnabled ?? current.DiscoveryEnabled,
         CustomApps = customApps ?? current.CustomApps,
+        PromptExceptions = promptExceptions ?? current.PromptExceptions,
         DomainRules = request.DomainRules ?? current.DomainRules,
         PaymentCardMode = request.PaymentCardMode ?? current.PaymentCardMode,
         UploadModes = new(request.UploadModes?.Chatgpt ?? current.UploadModes.Chatgpt, request.UploadModes?.Gemini ?? current.UploadModes.Gemini),
@@ -247,8 +253,8 @@ internal sealed partial class ControlStore
             ), published AS (
                 INSERT INTO policy_versions (organization_id, version, policy_group_id, mode, github_pat_mode, discovery_enabled,
                     allowed_domains, blocked_domains, payment_card_mode, chatgpt_upload_mode, gemini_upload_mode, allowed_paths, blocked_paths,
-                    extension_inventory_enabled, chatgpt_upload_types, gemini_upload_types, custom_apps)
-                SELECT id, policy_sequence, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $16, $17, $18, $19::jsonb FROM next_version
+                    extension_inventory_enabled, chatgpt_upload_types, gemini_upload_types, custom_apps, prompt_exceptions)
+                SELECT id, policy_sequence, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $16, $17, $18, $19::jsonb, $20::jsonb FROM next_version
                 RETURNING organization_id, version, published_at
             ), group_pointer AS (
                 UPDATE policy_groups g SET policy_version = p.version FROM published p WHERE g.organization_id = p.organization_id AND g.id = $2
@@ -268,11 +274,13 @@ internal sealed partial class ControlStore
             groupAudit is null ? DBNull.Value : JsonSerializer.Serialize(groupAudit, JsonSerializerOptions.Web),
             (object?)identity.Access?.Id ?? DBNull.Value, policy.ExtensionInventoryEnabled,
             policy.UploadTypes?.Chatgpt ?? Array.Empty<string>(), policy.UploadTypes?.Gemini ?? Array.Empty<string>(),
-            JsonSerializer.Serialize(policy.CustomApps ?? [], JsonSerializerOptions.Web));
+            JsonSerializer.Serialize(policy.CustomApps ?? [], JsonSerializerOptions.Web),
+            JsonSerializer.Serialize(policy.PromptExceptions ?? [], JsonSerializerOptions.Web));
         await using var rows = await command.ExecuteReaderAsync(ct);
         await rows.ReadAsync(ct);
         return policy with { Version = rows.GetInt32(0), PublishedAt = rows.GetDateTime(1), RestoredFrom = restoredFrom,
-            UploadTypes = new(policy.UploadTypes?.Chatgpt ?? [], policy.UploadTypes?.Gemini ?? []), CustomApps = policy.CustomApps ?? [] };
+            UploadTypes = new(policy.UploadTypes?.Chatgpt ?? [], policy.UploadTypes?.Gemini ?? []), CustomApps = policy.CustomApps ?? [],
+            PromptExceptions = policy.PromptExceptions ?? [] };
     }
 
     private static async Task AuditPolicyReview(NpgsqlTransaction transaction, RequestIdentity identity, string action,

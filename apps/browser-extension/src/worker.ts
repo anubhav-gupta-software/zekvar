@@ -10,6 +10,7 @@ import { isUploadModes, readTargetedUpload, sameUploadTypes, uploadsOff, type Ta
 import { collectExtensionInventory } from './extension-inventory';
 import type { InventoryStatus } from '../../../contracts/policy/extension-inventory';
 import { isCustomAppId, readCustomApps, type CustomApp } from '../../../contracts/policy/discovery';
+import { leaseTime, readExceptionLease, sampleClock, type BrowserLease } from './prompt-exceptions';
 
 declare const CONTROL_ORIGIN: string;
 
@@ -40,6 +41,7 @@ const maxQueue = 100;
 const inventoryRefreshMs = 15 * 60_000;
 let work = Promise.resolve();
 let deliveryScheduled = false;
+let promptLease: { installationId: string; version: number; assignment?: number; lease: BrowserLease } | undefined;
 
 const managedGrantKey = 'EnrollmentGrant';
 const setup = Promise.all([
@@ -82,7 +84,15 @@ function summary(state: State): Summary {
     pathRuleCount: state.pathRules && ruleCount(state.pathRules),
     inventoryStatus: state.inventoryStatus,
     customDiscoveryCount: state.policy?.discoveryEnabled ? customApps?.length : undefined,
+    promptExceptionLease: state.status === 'connected' ? currentPromptLease(state) : undefined,
   };
+}
+
+function currentPromptLease(state: State) {
+  if (!promptLease || promptLease.installationId !== state.enrollment?.installationId ||
+      promptLease.version !== state.policy?.version || promptLease.assignment !== state.policy?.assignmentVersion) return;
+  const now = leaseTime(promptLease.lease);
+  if (now !== undefined && promptLease.lease.grants.some((grant) => grant.expiresAtMs > now)) return promptLease.lease;
 }
 
 class HttpError extends Error {
@@ -122,6 +132,7 @@ async function applyDomainRules(state: State, rules: DomainRules, paths = emptyP
 }
 
 async function lostConnection(state: State, error: unknown) {
+  promptLease = undefined;
   if (error instanceof HttpError && error.status === 401) {
     state.status = 'revoked';
     state.enrollment = undefined;
@@ -202,6 +213,7 @@ async function sync(state: State) {
   if (!state.enrollment) return;
   const { token } = state.enrollment;
   try {
+    const requestedAt = sampleClock();
     const policy = await request('browser/policy', token);
     if (!isRecord(policy) || !isVersion(policy.version) || !isMode(policy.mode) ||
         (policy.assignmentVersion !== undefined && !isVersion(policy.assignmentVersion)) ||
@@ -226,6 +238,8 @@ async function sync(state: State) {
     const customApps = readCustomApps(policy.customApps);
     if (!customApps) throw new Error('Invalid custom app catalog');
     const previousCatalog = state.policy?.customApps;
+    const lease = readExceptionLease(policy.promptExceptionLease, requestedAt);
+    if (policy.promptExceptionLease !== undefined && !lease) throw new Error('Invalid prompt exception lease');
     const extensionInventoryEnabled = policy.extensionInventoryEnabled ?? false;
     const domainRules = readDomainRules(policy.domainRules);
     const pathRules = readPathRules(policy.pathRules);
@@ -250,11 +264,15 @@ async function sync(state: State) {
       await applyDomainRules(state, domainRules, pathRules);
       state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, discoveryEnabled, customApps, extensionInventoryEnabled,
         assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini }, targetedUploads };
+      promptLease = lease ? { installationId: state.enrollment.installationId, version: policy.version,
+        assignment: policy.assignmentVersion, lease } : undefined;
       if (!discoveryEnabled || assignment !== previousAssignment) state.observations = undefined;
       if (assignment !== previousAssignment) clearCoverage(state);
       state.chatGptEnabled = Array.isArray(policy.appIds) && policy.appIds.includes(chatGptApp);
       state.geminiEnabled = Array.isArray(policy.appIds) && policy.appIds.includes(geminiApp);
       await save(state);
+    } else {
+      promptLease = undefined;
     }
     await heartbeat(state);
     state.status = 'connected';
@@ -312,6 +330,7 @@ async function heartbeat(state: State) {
       aiPromptApps.some((app) => state.policy?.uploadModes?.[app] !== 'off')) ? true : undefined,
     uploadTypesApplied: scopedUploads ? true : undefined,
     customDiscoveryApplied: state.policy.discoveryEnabled && state.policy.customApps?.length && await canDiscoverCustomApps() ? true : undefined,
+    promptExceptionsApplied: currentPromptLease(state) ? true : undefined,
     domainRulesApplied: state.domainRules && ruleCount(state.domainRules) ? true : undefined,
     pathRulesApplied: state.pathRules && ruleCount(state.pathRules) ? true : undefined,
   });

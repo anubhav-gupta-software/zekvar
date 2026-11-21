@@ -6,13 +6,15 @@ export type { DomainRules, PathRules } from '../../../contracts/policy/domains';
 import type { DomainRules, PathRules } from '../../../contracts/policy/domains';
 import type { UploadMethod, UploadModes, UploadTypes } from '../../../contracts/policy/uploads';
 import type { CustomApp, CustomAppId } from '../../../contracts/policy/discovery';
+import { exceptionDecision, type PromptException } from '../../../contracts/policy/prompt-exceptions';
 
-export const decisions = [...modes, 'warn_override'] as const;
+export const decisions = [...modes, 'warn_override', exceptionDecision] as const;
 export type Mode = PolicyMode;
 export type Decision = typeof decisions[number];
 
 export const decisionLabels: Record<Decision, string> = {
   monitor: 'Monitor', warn: 'Warn', block: 'Block', warn_override: 'Warning overridden',
+  exception_applied: 'Exception applied',
 };
 
 export const detectorModeLabels: Record<DetectorMode, string> = {
@@ -44,6 +46,7 @@ export type Policy = {
   uploadTypes?: UploadTypes;
   discoveryEnabled?: boolean;
   customApps?: CustomApp[];
+  promptExceptions?: PromptException[];
   extensionInventoryEnabled?: boolean;
   domainRules?: DomainRules;
   pathRules?: PathRules;

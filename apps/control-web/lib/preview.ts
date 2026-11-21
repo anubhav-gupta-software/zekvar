@@ -1,20 +1,22 @@
 import { evaluateNavigation, parseWebAddress, sameDomainRules, emptyDomainRules, emptyPathRules,
   type DomainRules, type PathRules } from '../../../contracts/policy/domains';
-import { evaluatePrompt, fixtureRule, ruleLabels, testMarker, type DetectorMode, type PolicyMode } from '../../../contracts/policy/prompt';
-import { aiPromptApps, promptAppLabels } from '../../../contracts/policy/apps';
+import { fixtureRule, ruleLabels, testMarker, type DetectorMode, type PolicyMode } from '../../../contracts/policy/prompt';
+import { aiPromptApps, chatGptApp, promptAppLabels, type AiPromptApp } from '../../../contracts/policy/apps';
 import { allUploadTypes, matchesUploadType, sameUploadTypes, uploadsOff, type UploadFile, type UploadMode,
   type UploadModes, type UploadTypes } from '../../../contracts/policy/uploads';
 import type { Policy } from './control';
 import { sameCustomApps, type CustomAppSetting } from '../../../contracts/policy/discovery';
+import { evaluatePromptWithExceptions, exceptionDecision, samePromptExceptions, type PromptException } from '../../../contracts/policy/prompt-exceptions';
 
 export type PreviewPolicy = {
   mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; discoveryEnabled: boolean;
   extensionInventoryEnabled: boolean;
   domainRules: DomainRules; pathRules: PathRules; uploadModes: UploadModes; uploadTypes: UploadTypes;
   customApps: CustomAppSetting[];
+  promptExceptions: PromptException[];
 };
 export type PreviewSnapshot = PreviewPolicy & { version: number; label: string };
-export type PreviewDecision = { action: 'allow' | PolicyMode; rule?: string };
+export type PreviewDecision = { action: 'allow' | PolicyMode | typeof exceptionDecision; rule?: string };
 export type PreviewRow = { name: string; current: PreviewDecision; draft: PreviewDecision };
 export type PreviewResult = { reference: PreviewSnapshot; candidate: PreviewPolicy; rows: PreviewRow[] };
 
@@ -24,6 +26,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     mode: policy.mode, githubPatMode: policy.githubPatMode ?? 'off', paymentCardMode: policy.paymentCardMode ?? 'off',
     discoveryEnabled: policy.discoveryEnabled ?? false,
     customApps: (policy.customApps ?? []).map(({ host, name }) => ({ host, name })),
+    promptExceptions: policy.promptExceptions ?? [],
     extensionInventoryEnabled: policy.extensionInventoryEnabled ?? false,
     domainRules: policy.domainRules ?? emptyDomainRules,
     pathRules: policy.pathRules ?? emptyPathRules,
@@ -36,7 +39,7 @@ export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
   return a.mode === b.mode && a.githubPatMode === b.githubPatMode && a.paymentCardMode === b.paymentCardMode &&
     a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
     aiPromptApps.every((app) => a.uploadModes[app] === b.uploadModes[app] && sameUploadTypes(a.uploadTypes[app], b.uploadTypes[app])) &&
-    sameCustomApps(a.customApps, b.customApps) &&
+    sameCustomApps(a.customApps, b.customApps) && samePromptExceptions(a.promptExceptions, b.promptExceptions) &&
     sameDomainRules(a.domainRules, b.domainRules) && sameDomainRules(a.pathRules, b.pathRules);
 }
 
@@ -60,10 +63,13 @@ const navigations = [
   { name: 'Similar domain', content: 'https://pilot.example.test.other.test/' },
 ];
 
-function promptOutcome(content: string, policy: PreviewPolicy): PreviewDecision {
-  const outcome = evaluatePrompt(content, policy);
+function promptOutcome(content: string, policy: PreviewPolicy, app: AiPromptApp, now: number): PreviewDecision {
+  const grants = policy.promptExceptions.filter(({ appId, expiresAt }) => appId === app && Date.parse(expiresAt) > now);
+  const { match, exception } = evaluatePromptWithExceptions(content, policy, new Set(grants.map(({ ruleId }) => ruleId)));
+  const outcome = exception ?? match;
   if (outcome.action === 'allow') return outcome;
-  return { action: outcome.action, rule: outcome.ruleId === fixtureRule ? 'Test marker' : ruleLabels[outcome.ruleId] };
+  return { action: exception ? exceptionDecision : outcome.action,
+    rule: outcome.ruleId === fixtureRule ? 'Test marker' : ruleLabels[outcome.ruleId] };
 }
 
 function navigationOutcome(url: URL, policy: PreviewPolicy): PreviewDecision {
@@ -76,11 +82,14 @@ function uploadOutcome(mode: UploadMode, types: string[], file: UploadFile): Pre
   return { action: mode, rule: 'File upload policy' };
 }
 
-export function runComparison(reference: PreviewSnapshot, candidate: PreviewPolicy, prompt: string, address?: URL, file?: UploadFile): PreviewResult {
+export function runComparison(reference: PreviewSnapshot, candidate: PreviewPolicy, prompt: string, address?: URL,
+  file?: UploadFile, app: AiPromptApp = chatGptApp): PreviewResult {
+  const now = Date.now();
   const rows: PreviewRow[] = prompts.map(({ name, content }) => ({
-    name, current: promptOutcome(content, reference), draft: promptOutcome(content, candidate),
+    name, current: promptOutcome(content, reference, app, now), draft: promptOutcome(content, candidate, app, now),
   }));
-  if (prompt.trim()) rows.push({ name: 'Custom prompt', current: promptOutcome(prompt, reference), draft: promptOutcome(prompt, candidate) });
+  if (prompt.trim()) rows.push({ name: 'Custom prompt', current: promptOutcome(prompt, reference, app, now),
+    draft: promptOutcome(prompt, candidate, app, now) });
   for (const { name, content } of navigations) {
     const url = new URL(content);
     rows.push({ name, current: navigationOutcome(url, reference), draft: navigationOutcome(url, candidate) });

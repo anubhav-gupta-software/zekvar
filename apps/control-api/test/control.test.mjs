@@ -1550,4 +1550,116 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await post(`installations/${client.installationId}/revoke`, undefined, 204);
     await observe({ ...groupSample, appId: canary.id }, 401);
   });
+
+  await t.test('versions prompt exceptions without importing them between scopes or restoring removed exceptions', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: first, ...options });
+    const post = (path, body, expect = 200, token = first, expectReview = false) =>
+      admin(path, { token, method: 'POST', body, expect, expectReview });
+    const [before] = await admin('policies');
+    assert.deepEqual(before.promptExceptions, []);
+    if (postgres) {
+      const history = await admin('events');
+      await stop();
+      await retentionFixture(`
+        DELETE FROM schema_migrations WHERE version = 19;
+        ALTER TABLE policy_versions DROP COLUMN prompt_exceptions;
+        ALTER TABLE policy_deliveries DROP COLUMN exception_scope, DROP CONSTRAINT policy_deliveries_assignment_version_check,
+            ADD CONSTRAINT policy_deliveries_assignment_version_check CHECK (assignment_version > 0);
+        ALTER TABLE security_events DROP CONSTRAINT security_events_decision_check,
+            ADD CONSTRAINT security_events_decision_check CHECK (decision IN ('monitor','warn','block','warn_override'));
+      `);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 19'), '1');
+      assert.deepEqual((await admin('policies'))[0], before);
+      assert.deepEqual(await admin('events'), history);
+    }
+    const sample = { appId: 'chatgpt', ruleId: 'fixture-secret', expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      reason: '  Synthetic exception ticket  ' };
+    for (const exceptions of [
+      [null], [{ ...sample, reason: ' ' }], [{ ...sample, appId: 'local-prompt-fixture' }],
+      [{ ...sample, ruleId: 'ai-file-upload' }], [sample, sample],
+      [{ ...sample, expiresAt: new Date(Date.now() - 60_000).toISOString() }],
+      [{ ...sample, expiresAt: new Date(Date.now() + 2 * 86_400_000).toISOString() }],
+    ]) await post('policies', { promptExceptions: exceptions }, 400);
+    const latest = await post('policies', { mode: 'block', promptExceptions: [sample] });
+    assert.deepEqual(latest.promptExceptions, [{ ...sample, expiresAt: latest.promptExceptions[0].expiresAt, reason: sample.reason.trim() }]);
+    assert.equal(Date.parse(latest.promptExceptions[0].expiresAt), Date.parse(sample.expiresAt));
+    await post('policies', { promptExceptions: [], expectedVersion: before.version }, 409);
+
+    const { grant } = await post('enrollment-grants');
+    const client = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const browser = (path, options) => call(`/v1/browser/${path}`, { token: client.token, assignmentAware: true, ...options });
+    const delivered = await browser('policy');
+    assert.equal(delivered.promptExceptions, undefined);
+    assert.deepEqual(delivered.promptExceptionLease.grants, [{
+      appId: 'chatgpt', ruleId: 'fixture-secret', expiresAtMs: Date.parse(sample.expiresAt),
+    }]);
+    const status = async () => (await admin('installations')).find((row) => row.installationId === client.installationId);
+    const acknowledge = (version, assignmentVersion = 0, promptExceptionsApplied = false) => browser('heartbeat', {
+      method: 'POST', expect: 204, body: { policyVersion: version, assignmentVersion, promptExceptionsApplied,
+        domainRulesApplied: true, pathRulesApplied: true, paymentCardModeApplied: true, uploadControlsApplied: true,
+        uploadTypesApplied: true, customDiscoveryApplied: true },
+    });
+    await acknowledge(latest.version);
+    assert.equal((await status()).appliedPolicyVersion, null);
+    await acknowledge(latest.version, 0, true);
+    assert.equal((await status()).appliedPolicyVersion, latest.version);
+    const exceptionEvent = (policyVersion, assignmentVersion = 0) => ({
+      ...event, eventId: randomUUID(), timestamp: new Date().toISOString(), appId: 'chatgpt', decision: 'exception_applied',
+      policyVersion, assignmentVersion,
+    });
+    const send = (body, expect = 204) => browser('events', { method: 'POST', body, expect });
+    const submitted = exceptionEvent(latest.version);
+    for (const invalid of [
+      { ...submitted, appId: 'gemini' }, { ...submitted, appId: 'local-prompt-fixture' },
+      { ...submitted, timestamp: sample.expiresAt }, { ...submitted, timestamp: before.publishedAt },
+      { ...submitted, reason: sample.reason }, { ...submitted, ruleId: 'ai-file-upload', detectorCategory: 'file-upload', uploadMethod: 'picker' },
+    ]) await send(invalid, 400);
+    await send(submitted);
+    await send(submitted);
+    const query = `events/export?installationId=${client.installationId}&decision=exception_applied`;
+    assert.deepEqual((await admin(query)).entries.map((entry) => entry.eventId), [submitted.eventId]);
+    assert.deepEqual((await admin(query, { token: second })).entries, []);
+
+    const group = await post('policy-groups', { name: 'Exception scope' });
+    await post(`installations/${client.installationId}/policy-group`, { groupId: group.id }, 204);
+    const inherited = await browser('policy');
+    assert.equal(inherited.version, latest.version);
+    assert.equal(inherited.promptExceptionLease, undefined);
+    await acknowledge(latest.version, inherited.assignmentVersion);
+    assert.equal((await status()).appliedPolicyVersion, latest.version);
+    await send(exceptionEvent(latest.version, inherited.assignmentVersion), 400);
+    const groupPath = `policy-groups/${group.id}`;
+    const firstGroup = await post(`${groupPath}/policies`, { mode: 'warn' });
+    assert.deepEqual(firstGroup.promptExceptions, []);
+    const scoped = await post(`${groupPath}/policies`, { promptExceptions: [sample] });
+    const scopedDelivery = await browser('policy');
+    assert.equal(scopedDelivery.version, scoped.version);
+    assert.equal(scopedDelivery.promptExceptionLease.grants[0].appId, 'chatgpt');
+    await send(exceptionEvent(scoped.version, scopedDelivery.assignmentVersion));
+
+    const removed = await post('policies', { promptExceptions: [] });
+    const newGrant = (await post('enrollment-grants')).grant;
+    const lateInstall = await call('/v1/enroll', { method: 'POST', body: { grant: newGrant } });
+    assert.equal((await call('/v1/browser/policy', { token: lateInstall.token })).version, removed.version);
+    await call('/v1/browser/events', { token: lateInstall.token, method: 'POST', body: exceptionEvent(latest.version), expect: 400 });
+    const restored = await post(`policies/${latest.version}/restore`);
+    assert.ok(restored.version > removed.version);
+    assert.deepEqual(restored.promptExceptions, []);
+    const promoted = await post(`${groupPath}/promote`, { expectedVersion: scoped.version });
+    assert.deepEqual(promoted.promptExceptions, []);
+    assert.deepEqual((await admin(`${groupPath}/policies`))[0].promptExceptions, scoped.promptExceptions);
+
+    const author = await post('access', { name: 'Exception Author', role: 'administrator', hours: 1 });
+    const approver = await post('access', { name: 'Exception Reviewer', role: 'administrator', hours: 1 });
+    await post('policy-reviews/setting', { required: true }, 204);
+    const expiry = new Date(Date.now() + 1800).toISOString();
+    const pending = await post('policies', { promptExceptions: [{ ...sample, expiresAt: expiry }] }, 202, author.token, true);
+    const decide = (token, expect) => post(`policy-reviews/${pending.reviewId}/decision`, { approve: true }, expect, token);
+    await decide(author.token, 403);
+    await delay(Math.max(0, Date.parse(expiry) - Date.now() + 100));
+    assert.equal((await decide(approver.token, 409)).code, 'review_stale');
+    assert.deepEqual((await admin('policies'))[0].promptExceptions, []);
+    await post('policy-reviews/setting', { required: false }, 204);
+  });
 });

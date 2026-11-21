@@ -3,10 +3,10 @@ import { send, type AiPromptApp, type AppId, type Policy, type PolicyEvent } fro
 import { uploadCategory, uploadRule, type UploadDecision, type UploadMethod } from '../../../contracts/policy/uploads';
 
 export function recordDecision(appId: AppId, match: MatchedDecision, installationId: string | undefined,
-  decision: PolicyEvent['decision'] = match.action) {
+  decision: PolicyEvent['decision'] = match.action, timestamp = new Date().toISOString()) {
   const { action: _action, reason: _reason, policyVersion, ...rule } = match;
   report({
-    eventId: crypto.randomUUID(), appId, timestamp: new Date().toISOString(),
+    eventId: crypto.randomUUID(), appId, timestamp,
     ...rule, policyVersion, decision,
   }, installationId);
 }

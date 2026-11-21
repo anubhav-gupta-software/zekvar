@@ -81,7 +81,7 @@ export const controlApi = {
   aiApps: (token: string) => request<DiscoveredApp[]>('/ai-apps', token),
   classifyApp: (token: string, appId: DiscoveredAppId, status: AppClassification) =>
     request<void>(`/ai-apps/${appId}/classification`, token, 'POST', { status }),
-  publish: (token: string, policy: Omit<PreviewPolicy, 'domainRules' | 'pathRules' | 'customApps'> & { expectedVersion?: number }, review: boolean, groupId?: string) =>
+  publish: (token: string, policy: Omit<PreviewPolicy, 'domainRules' | 'pathRules' | 'customApps' | 'promptExceptions'> & { expectedVersion?: number }, review: boolean, groupId?: string) =>
     request<PolicyChange>(policiesPath(groupId), token, 'POST', policy, review),
   publishNavigation: (token: string, rules: Pick<PreviewPolicy, 'domainRules' | 'pathRules'>, expectedVersion: number, review: boolean, groupId?: string) =>
     request<PolicyChange>(policiesPath(groupId), token, 'POST', { ...rules, expectedVersion }, review),

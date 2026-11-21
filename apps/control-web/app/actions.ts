@@ -11,6 +11,7 @@ import { readNavigationRules } from '../lib/navigation';
 import { isDetectorMode, isMode } from '../../../contracts/policy/prompt';
 import { isUploadMode, parseUploadTypes, uploadTypesError } from '../../../contracts/policy/uploads';
 import { customAppError, isCustomAppId, parseCustomApps } from '../../../contracts/policy/discovery';
+import { promptExceptionError, readPromptExceptions } from '../../../contracts/policy/prompt-exceptions';
 
 export async function signIn(_previous: Feedback, form: FormData): Promise<Feedback> {
   const token = form.get('token');
@@ -199,15 +200,25 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   if (!uploadTypes) return { error: uploadTypesError };
   const customApps = parseCustomApps(String(form.get('customApps') ?? ''));
   if (!customApps) return { error: customAppError };
+  let promptExceptions;
+  try {
+    promptExceptions = readPromptExceptions(JSON.parse(String(form.get('promptExceptions') ?? '[]')));
+  } catch {
+    return { error: promptExceptionError };
+  }
+  if (!promptExceptions) return { error: promptExceptionError };
   return perform(async (token) => {
     try {
       const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, uploadModes, uploadTypes,
-        discoveryEnabled: discovery === 'on', extensionInventoryEnabled: inventory === 'on', domainRules, pathRules, customApps },
+        discoveryEnabled: discovery === 'on', extensionInventoryEnabled: inventory === 'on', domainRules, pathRules, customApps, promptExceptions },
         expectedVersion, form.get('expectReview') === 'on', groupId ?? undefined);
       if ('reviewId' in published) return queued(published.reviewId);
       refreshPolicyViews();
       return { message: `Previewed policy published as version ${published.version}.` };
     } catch (error) {
+      if (error instanceof ApiError && error.code === 'exception_expired') {
+        return { error: 'An exception expired. Choose a future expiry and run the preview again.' };
+      }
       if (error instanceof ApiError && error.status === 409 && !error.code) return { error: 'The policy changed after this preview. Reload and run the comparison again.' };
       throw error;
     }

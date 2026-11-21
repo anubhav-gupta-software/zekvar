@@ -1,10 +1,13 @@
 import { redactPrompt } from '../../../contracts/policy/prompt';
 import { recordDecision, recordUploadDecision } from './decisions';
-import { evaluatePrompt, type MatchedDecision } from './policy';
+import { evaluatePrompt, withPolicyVersion, type MatchedDecision } from './policy';
 import { isMode, send, type AiPromptApp, type Coverage, type Summary } from './protocol';
 import { promptAppLabels } from '../../../contracts/policy/apps';
 import { bindUploadGuard } from './upload-guard';
 import { promptText, replacePromptText, supportsRedaction, type Composer, type ComposerInspection } from './prompt-composer';
+import { leaseTime } from './prompt-exceptions';
+import { evaluatePromptWithExceptions, exceptionDecision } from '../../../contracts/policy/prompt-exceptions';
+import type { Policy } from './protocol';
 
 type PromptAdapter = {
   appId: AiPromptApp;
@@ -163,7 +166,13 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     const installationId = control?.installationId;
     if (!policy || !installationId || !enabled(control)) return;
     const value = promptText(current.input);
-    const match = evaluatePrompt(value, policy);
+    const { match, exception } = evaluate(value, policy);
+    if (exception) {
+      clearInterruption();
+      recordDecision(adapter.appId, exception.match, installationId, exceptionDecision, new Date(exception.time).toISOString());
+      ui.notice.textContent = 'Temporary policy exception applied.';
+      return;
+    }
     if (match.action === 'allow') {
       clearInterruption();
       return;
@@ -189,6 +198,19 @@ export function bindPromptGuard(adapter: PromptAdapter) {
       ui.notice.textContent = match.reason;
       ui.edit.focus();
     }
+  }
+
+  function evaluate(value: string, policy: Policy) {
+    const lease = control?.promptExceptionLease;
+    const now = lease && leaseTime(lease);
+    if (!lease || now === undefined) return { match: evaluatePrompt(value, policy) };
+    const grants = lease.grants.filter((grant) => grant.appId === adapter.appId && grant.expiresAtMs > now);
+    const except = new Set(grants.map(({ ruleId }) => ruleId));
+    const { match, exception } = evaluatePromptWithExceptions(value, policy, except);
+    const time = leaseTime(lease);
+    if (time === undefined || grants.some((grant) => grant.expiresAtMs <= time)) return { match: evaluatePrompt(value, policy) };
+    return { match: match.action === 'allow' ? match : withPolicyVersion(match, policy),
+      exception: exception && { match: withPolicyVersion(exception, policy), time } };
   }
 
   window.addEventListener('click', (event) => {
@@ -232,7 +254,8 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     if (!draft || current?.input !== draft.input || !current.button || current.button.disabled ||
         promptText(current.input) !== draft.value || draft.page !== location.href || !supported() ||
         !enabled(control) || control?.installationId !== draft.installationId || !control.policy) return;
-    const match = evaluatePrompt(draft.value, control.policy);
+    const { match, exception } = evaluate(draft.value, control.policy);
+    if (exception) return;
     if (match.action === 'allow' || match.action !== draft.match.action || match.ruleId !== draft.match.ruleId ||
         match.policyVersion !== draft.match.policyVersion || match.assignmentVersion !== draft.match.assignmentVersion) return;
     return { draft, button: current.button, policy: control.policy };

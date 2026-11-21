@@ -1,5 +1,7 @@
-import { aiPromptApps, decisionLabels, detectorModeLabels, detectorModes, modes, promptAppLabels, utc, type Policy } from '../lib/control';
+import { aiPromptApps, decisionLabels, detectorModeLabels, detectorModes, modes, promptAppLabels, ruleLabels, utc, type Policy } from '../lib/control';
 import { uploadModes, uploadTypesHint } from '../../../contracts/policy/uploads';
+import { exceptionKey } from '../../../contracts/policy/prompt-exceptions';
+import { fixtureRule } from '../../../contracts/policy/prompt';
 import { publishPolicy, restorePolicy } from './actions';
 import { MutationForm } from './forms';
 
@@ -63,7 +65,8 @@ export function PolicyVersionTable({ policies, groupId, writable, review }: {
     <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="history-heading">
       <table aria-labelledby="history-heading">
         <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>Payment card number</th><th>App discovery</th>
-          <th>Extension inventory</th><th>File uploads</th><th>Navigation rules</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
+          <th>Extension inventory</th><th>File uploads</th><th>Navigation rules</th><th>Published (UTC)</th><th>Restore source</th>
+          <th>Prompt exceptions</th><th>Action</th></tr></thead>
         <tbody>{policies.map((policy, index) => <PolicyRow key={policy.version} policy={policy} current={index === 0}
           groupId={groupId} writable={writable} review={review} />)}</tbody>
       </table>
@@ -101,6 +104,12 @@ function PolicyRow({ policy, current, groupId, writable, review }: {
     </td>
     <td><time dateTime={policy.publishedAt}>{utc.format(new Date(policy.publishedAt))}</time></td>
     <td>{policy.restoredFrom ? `v${policy.restoredFrom}` : '—'}</td>
+    <td>{policy.promptExceptions?.length ? <details className="domain-rule-history">
+      <summary>{policy.promptExceptions.length} configured</summary>
+      {policy.promptExceptions.map((entry) => <p key={exceptionKey(entry)}>
+        {promptAppLabels[entry.appId]} · {entry.ruleId === fixtureRule ? 'Test marker' : ruleLabels[entry.ruleId]}<br />
+        Expires <time dateTime={entry.expiresAt}>{utc.format(new Date(entry.expiresAt))}</time> UTC<br />{entry.reason}
+      </p>)}</details> : '—'}</td>
     <td>{current && <span className="badge current">Current</span>}
       {!current && !writable && '—'}
       {!current && writable && <MutationForm action={restorePolicy} label={review ? 'Request restore' : 'Restore'} appearance="small"

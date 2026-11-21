@@ -229,7 +229,8 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
     if (!(FixtureContract.IsMode(request.Mode) ||
           request.Mode is null && (request.DomainRules is not null || request.PaymentCardMode is not null ||
               request.PathRules is not null || request.UploadModes?.HasSettings() == true ||
-              request.UploadTypes?.HasSettings() == true || request.ExtensionInventoryEnabled.HasValue || request.CustomApps is not null)) ||
+              request.UploadTypes?.HasSettings() == true || request.ExtensionInventoryEnabled.HasValue || request.CustomApps is not null ||
+              request.PromptExceptions is not null)) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode))
         return Results.BadRequest(new { error = "Choose a valid rule mode." });
     if (request.UploadModes?.IsValid() == false)
@@ -238,12 +239,15 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
         return Results.BadRequest(new { error = "Enter up to 25 valid file extensions or media types per app, with at most 64 characters per type." });
     if (!CustomApps.TryNormalize(request.CustomApps, out var customApps))
         return Results.BadRequest(new { error = "Enter up to 25 unique app hostnames and names. Built-in domains are reserved." });
+    if (!PromptException.TryNormalize(request.PromptExceptions, DateTimeOffset.UtcNow, out var exceptions))
+        return Results.BadRequest(new { error = "Use one prompt exception per app and detector, with a reason and an expiry within 24 hours." });
     if (!DomainRules.TryNormalize(request.DomainRules, out var domainRules))
         return Results.BadRequest(new { error = "Enter up to 50 domains with no domain in both lists." });
     if (!PathRules.TryNormalize(request.PathRules, out var pathRules))
         return Results.BadRequest(new { error = "Use distinct hostname/path prefixes with paths up to 64 characters long." });
     var normalized = request with { DomainRules = domainRules, PathRules = pathRules, UploadTypes = uploadTypes };
-    var result = await store.ChangePolicy(Identity(http), normalized, null, ExpectsReview(http), ct, groupId, customApps: customApps);
+    var result = await store.ChangePolicy(Identity(http), normalized, null, ExpectsReview(http), ct, groupId,
+        customApps: customApps, promptExceptions: exceptions);
     return PolicyOutcome(result, request.ExpectedVersion.HasValue
         ? Results.Conflict(new { error = "The policy changed after preview or is unavailable." }) : Results.NotFound());
 }
@@ -258,6 +262,7 @@ static IResult PolicyOutcome(PolicyChangeResult result, IResult fallback)
     return code switch
     {
         "navigation_rule_limit" => Results.BadRequest(new { error = "A policy can contain up to 50 domain and path rules combined." }),
+        "exception_expired" => Results.BadRequest(new { error = "Choose a future expiry for each new or changed exception.", code }),
         "review_unavailable" => Results.NotFound(),
         "named_administrator_required" or "self_approval" => Results.Json(new { code }, statusCode: StatusCodes.Status403Forbidden),
         "review_mode_changed" or "review_closed" or "review_stale" => Results.Conflict(new { code }),

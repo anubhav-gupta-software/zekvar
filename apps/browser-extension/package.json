@@ -1,12 +1,12 @@
 {
   "name": "@zekvar/browser-extension",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && node build.mjs",
     "fixture": "node fixture/server.mjs",
-    "test": "npm run build && node --test test/payment-card.test.mjs test/fixture.test.mjs",
+    "test": "npm run build && node --test test/payment-card.test.mjs test/prompt-exception-clock.test.mjs test/fixture.test.mjs",
     "test:control": "node --test test/control.test.mjs",
     "verify:demo": "node ../../scripts/verify-demo.mjs"
   },
