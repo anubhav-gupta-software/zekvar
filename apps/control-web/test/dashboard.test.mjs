@@ -39,10 +39,10 @@ test('Control dashboard signs in and manages a real browser installation and eve
     assert.equal(denied.status(), 401);
     assert.equal(denied.headers()['cache-control'], 'no-store');
     assert.equal((await context.request.get(`${dashboard}/events/export`)).status(), 401);
-    await page.getByLabel('Admin token').fill('0'.repeat(64));
+    await page.getByLabel('Control token').fill('0'.repeat(64));
     await page.getByRole('button', { name: 'Sign in' }).click();
-    await page.getByRole('alert').filter({ hasText: 'This admin token was rejected.' }).waitFor();
-    await page.getByLabel('Admin token').fill(token);
+    await page.getByRole('alert').filter({ hasText: 'This Control token was rejected.' }).waitFor();
+    await page.getByLabel('Control token').fill(token);
     await page.getByRole('button', { name: 'Sign in' }).click();
     await page.getByRole('heading', { name: 'Security overview' }).waitFor();
     await page.reload();
@@ -415,6 +415,113 @@ test('Control dashboard signs in and manages a real browser installation and eve
     assert.equal(new URL(await filterBrowser.getAttribute('href'), dashboard).searchParams.get('since'), filters.get('since'));
     await page.getByRole('link', { name: 'Clear filters', exact: true }).click();
     await page.waitForURL((url) => url.search === '');
+  });
+
+  await t.test('issues named access in Chrome and restricts the auditor and revoked sessions', async () => {
+    await page.getByRole('link', { name: 'Control access', exact: true }).click();
+    await page.getByRole('heading', { name: 'Control access', exact: true }).waitFor();
+    const credentials = page.getByRole('table', { name: 'Delegated credentials' });
+    const issued = page.getByLabel('Issued token', { exact: true });
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: dashboard });
+    const create = async (name, role) => {
+      await page.getByLabel('Name', { exact: true }).fill(name);
+      await page.getByLabel('Role', { exact: true }).selectOption(role);
+      await page.getByLabel('Expires after', { exact: true }).selectOption('1');
+      await page.getByRole('button', { name: 'Issue token', exact: true }).click();
+      await page.getByText(`Copy the token for ${name}. Control only shows it at issuance.`, { exact: true }).waitFor();
+      await credentials.getByRole('row', { name: new RegExp(`^${name} `) }).getByText('Active', { exact: true }).waitFor();
+      const secret = await issued.inputValue();
+      assert.match(secret, /^[a-f0-9]{64}$/);
+      await page.getByRole('button', { name: 'Copy', exact: true }).click();
+      await page.getByText('Copied.', { exact: true }).waitFor();
+      assert.equal(await page.evaluate(() => navigator.clipboard.readText()), secret);
+      await page.getByRole('button', { name: 'Hide token', exact: true }).click();
+      await issued.waitFor({ state: 'detached' });
+      return secret;
+    };
+    const operator = await create('Jordan Demo', 'administrator');
+    const reviewer = await create('Kai Review', 'auditor');
+    await page.reload();
+    await credentials.getByText('Kai Review', { exact: true }).waitFor();
+    const reloaded = await page.content();
+    assert.ok(![operator, reviewer].some((secret) => reloaded.includes(secret)));
+    assert.equal(await issued.count(), 0);
+    const screenshot = process.env.ZEKVAR_TEST_ACCESS_SCREENSHOT;
+    if (screenshot) await page.screenshot({ path: screenshot, fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+
+    const operatorContext = await browser.newContext();
+    const reviewerContext = await browser.newContext();
+    async function signInAs(profile, secret) {
+      const tab = await profile.newPage();
+      tab.setDefaultTimeout(5000);
+      await tab.goto(dashboard);
+      await tab.getByLabel('Control token', { exact: true }).fill(secret);
+      await tab.getByRole('button', { name: 'Sign in', exact: true }).click();
+      await tab.getByRole('heading', { name: 'Security overview', exact: true }).waitFor();
+      assert.equal((await tab.content()).includes(secret), false);
+      return tab;
+    }
+
+    try {
+      const adminPage = await signInAs(operatorContext, operator);
+      const auditPage = await signInAs(reviewerContext, reviewer);
+      await adminPage.getByText('Jordan Demo · Administrator', { exact: true }).waitFor();
+      await auditPage.getByText('Kai Review · Auditor', { exact: true }).waitFor();
+      for (const tab of [adminPage, auditPage]) {
+        assert.equal(await tab.getByRole('link', { name: 'Control access', exact: true }).count(), 0);
+        await tab.goto(`${dashboard}/access`);
+        await tab.getByRole('alert').filter({ hasText: 'Only the organization owner can manage Control access.' }).waitFor();
+        assert.equal(await tab.getByRole('table', { name: 'Delegated credentials' }).count(), 0);
+        await tab.goto(dashboard);
+      }
+      assert.equal(await auditPage.getByRole('button', { name: /^(Publish|Create enrollment grant|Restore|Revoke)/ }).count(), 0);
+      await auditPage.getByRole('link', { name: 'Policy preview', exact: true }).click();
+      await auditPage.getByLabel('Draft test marker').selectOption('warn');
+      await auditPage.getByRole('button', { name: 'Run preview', exact: true }).click();
+      await auditPage.getByRole('table', { name: 'Preview results' }).waitFor();
+      assert.equal(await auditPage.getByRole('button', { name: 'Publish previewed policy', exact: true }).count(), 0);
+      await auditPage.getByRole('link', { name: 'Rollout groups', exact: true }).click();
+      await auditPage.getByRole('heading', { name: 'Rollout groups', exact: true }).waitFor();
+      assert.equal(await auditPage.getByRole('button', { name: /^(Create group|Publish|Promote|Restore|Save assignment)/ }).count(), 0);
+      await auditPage.getByRole('link', { name: 'Data retention', exact: true }).click();
+      await auditPage.getByRole('heading', { name: 'Retention windows', exact: true }).waitFor();
+      assert.equal(await auditPage.getByRole('button', { name: /^(Save retention|Run cleanup)$/ }).count(), 0);
+
+      await adminPage.getByLabel('Test marker', { exact: true }).selectOption('warn');
+      await adminPage.getByRole('button', { name: 'Publish policy', exact: true }).click();
+      await adminPage.getByRole('status').filter({ hasText: /published in warn mode/ }).waitFor();
+      await auditPage.getByRole('link', { name: 'Audit log', exact: true }).click();
+      const named = auditPage.getByRole('table', { name: 'Control activity' }).getByRole('row').filter({ hasText: 'Jordan Demo' });
+      await named.filter({ hasText: 'Policy published' }).waitFor();
+      const response = await reviewerContext.request.get(`${dashboard}/audit/export`);
+      assert.equal(response.status(), 200);
+      const payload = await response.text();
+      assert.ok(![operator, reviewer].some((secret) => payload.includes(secret)));
+      assert.ok(JSON.parse(payload).entries.some(({ action, actorAccess }) => action === 'policy_published' && actorAccess?.name === 'Jordan Demo'));
+
+      const revoke = async (name) => {
+        page.once('dialog', (dialog) => dialog.accept());
+        await credentials.getByRole('button', { name: `Revoke token for ${name}`, exact: true }).click();
+        await credentials.getByRole('row', { name: new RegExp(`^${name} `) }).getByText('Revoked', { exact: true }).waitFor();
+      };
+      await revoke('Jordan Demo');
+      await adminPage.getByRole('button', { name: 'Publish policy', exact: true }).click();
+      await adminPage.getByRole('heading', { name: 'Sign in to Control', exact: true }).waitFor();
+      await adminPage.getByRole('alert').filter({ hasText: 'Your session ended. Sign in again.' }).waitFor();
+      assert.ok(!(await operatorContext.cookies()).some(({ name }) => name === 'zekvar_control_session'));
+      assert.equal((await operatorContext.request.get(`${dashboard}/events/export`)).status(), 401);
+      await revoke('Kai Review');
+      assert.equal((await reviewerContext.request.get(`${dashboard}/audit/export`)).status(), 401);
+      await auditPage.reload();
+      await auditPage.getByRole('heading', { name: 'Sign in to Control', exact: true }).waitFor();
+    } finally {
+      await operatorContext.close();
+      await reviewerContext.close();
+    }
+    await page.goto(dashboard);
   });
 
   await t.test('fits a mobile viewport and clears the session on sign-out', async () => {

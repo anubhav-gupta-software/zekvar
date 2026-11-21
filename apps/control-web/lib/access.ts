@@ -1,0 +1,16 @@
+export type DelegatedRole = 'administrator' | 'auditor';
+export type ControlRole = 'owner' | DelegatedRole;
+
+export const roleLabels: Record<ControlRole, string> = {
+  owner: 'Owner',
+  administrator: 'Administrator',
+  auditor: 'Auditor',
+};
+
+export type AccessIdentity = { id: string; name: string; role: DelegatedRole };
+export type ControlSession = { organization: string; role: ControlRole; access: AccessIdentity | null };
+export type ControlAccess = AccessIdentity & {
+  issuedAt: string; expiresAt: string; status: 'active' | 'expired' | 'revoked';
+};
+export type IssuedControlAccess = { access: ControlAccess; token: string };
+export const canWrite = (session?: ControlSession) => session?.role === 'owner' || session?.role === 'administrator';

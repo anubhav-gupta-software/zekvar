@@ -39,22 +39,23 @@ export function PublishPolicyForm({ policy, groupId }: { policy?: Policy; groupI
   </MutationForm>;
 }
 
-export function PolicyVersionTable({ policies, groupId }: { policies: Policy[]; groupId?: string }) {
-  return <section className="panel table-panel" aria-labelledby="history-heading">
+export function PolicyVersionTable({ policies, groupId, writable }: { policies: Policy[]; groupId?: string; writable: boolean }) {
+  return <section className="panel table-panel" id="policy-history" aria-labelledby="history-heading">
     <div className="panel-heading"><h2 id="history-heading">{groupId ? 'Group policy history' : 'Policy history'}</h2>
       <span className="table-note">Latest 100 versions</span></div>
     <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="history-heading">
       <table aria-labelledby="history-heading">
         <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>Payment card number</th><th>AI app discovery</th>
           <th>File uploads</th><th>Navigation rules</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
-        <tbody>{policies.map((policy, index) => <PolicyRow key={policy.version} policy={policy} current={index === 0} groupId={groupId} />)}</tbody>
+        <tbody>{policies.map((policy, index) => <PolicyRow key={policy.version} policy={policy} current={index === 0}
+          groupId={groupId} writable={writable} />)}</tbody>
       </table>
-      {policies.length === 0 && <p className="empty">Publish a policy to start the version history.</p>}
+      {policies.length === 0 && <p className="empty">No policy versions have been published in this scope.</p>}
     </div>
   </section>;
 }
 
-function PolicyRow({ policy, current, groupId }: { policy: Policy; current: boolean; groupId?: string }) {
+function PolicyRow({ policy, current, groupId, writable }: { policy: Policy; current: boolean; groupId?: string; writable: boolean }) {
   const { allow = [], block = [] } = policy.domainRules ?? {};
   const { allow: allowPaths = [], block: blockPaths = [] } = policy.pathRules ?? {};
   return <tr>
@@ -70,8 +71,9 @@ function PolicyRow({ policy, current, groupId }: { policy: Policy; current: bool
     </td>
     <td><time dateTime={policy.publishedAt}>{utc.format(new Date(policy.publishedAt))}</time></td>
     <td>{policy.restoredFrom ? `v${policy.restoredFrom}` : '—'}</td>
-    <td>{current ? <span className="badge current">Current</span> :
-      <MutationForm action={restorePolicy} label="Restore" appearance="small" accessibleLabel={`Restore version ${policy.version}`}>
+    <td>{current && <span className="badge current">Current</span>}
+      {!current && !writable && '—'}
+      {!current && writable && <MutationForm action={restorePolicy} label="Restore" appearance="small" accessibleLabel={`Restore version ${policy.version}`}>
         <input type="hidden" name="version" value={policy.version} />
         {groupId && <input type="hidden" name="groupId" value={groupId} />}
       </MutationForm>}

@@ -128,7 +128,7 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
   await dashboard.goto(web);
 
   await t.test('enrolls through the dashboard and extension popup', async () => {
-    await dashboard.getByLabel('Admin token').fill(token);
+    await dashboard.getByLabel('Control token').fill(token);
     await dashboard.getByRole('button', { name: 'Sign in' }).click();
     await dashboard.getByRole('heading', { name: 'Security overview' }).waitFor();
     await dashboard.getByRole('button', { name: 'Create enrollment grant' }).click();

@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../../lib/api';
+import { canWrite } from '../../lib/access';
 import { retentionFields, type RetentionField } from '../../lib/retention';
 import { sessionToken } from '../../lib/session';
 import { cleanupRetention, saveRetention } from '../actions';
@@ -15,8 +16,9 @@ export default async function RetentionPage() {
     throw error;
   });
   const [session, policy] = result ?? [];
+  const writable = canWrite(session);
   return <div className="workspace">
-    <Sidebar active="retention" />
+    <Sidebar active="retention" session={session} />
     <main className="dashboard">
       <header className="page-heading">
         <div>{session && <p className="eyebrow">{session.organization}</p>}<h1>Data retention</h1></div>
@@ -25,7 +27,7 @@ export default async function RetentionPage() {
       {policy ? <>
         <section className="panel" aria-labelledby="retention-heading">
           <div className="panel-heading"><h2 id="retention-heading">Retention windows</h2><span className="badge">Organization-wide</span></div>
-          <p className="muted" id="retention-help">Enter 1 to 3,650 days per dataset. Leave a field blank for no expiry. A shorter window expires older records immediately and schedules deletion.</p>
+          {writable ? <><p className="muted" id="retention-help">Enter 1 to 3,650 days per dataset. Leave a field blank for no expiry. A shorter window expires older records immediately and schedules deletion.</p>
           <MutationForm action={saveRetention} label="Save retention" appearance="primary"
             confirmation="Apply these retention windows? Records that expire under this setting will be permanently deleted.">
             <div className="policy-fields" key={JSON.stringify(policy)}>
@@ -35,14 +37,19 @@ export default async function RetentionPage() {
                   placeholder="No expiry" aria-describedby="retention-help" />
               </div>)}
             </div>
-          </MutationForm>
+          </MutationForm></> : <dl className="policy-fields">
+            {(Object.keys(retentionFields) as RetentionField[]).map((field) => <div key={field}>
+              <dt>{retentionFields[field]}</dt>
+              <dd className="muted">{policy[field] === null ? 'No expiry' : `${policy[field]} ${policy[field] === 1 ? 'day' : 'days'}`}</dd>
+            </div>)}
+          </dl>}
         </section>
-        <section className="panel" aria-labelledby="cleanup-heading">
+        {writable && <section className="panel" aria-labelledby="cleanup-heading">
           <h2 id="cleanup-heading">Delete expired records</h2>
           <p className="muted">Control runs cleanup on a schedule. Run it now to delete up to 1,000 expired records per dataset.</p>
           <MutationForm action={cleanupRetention} label="Run cleanup" appearance="danger"
             confirmation="Permanently delete expired records from this organization now?" />
-        </section>
+        </section>}
       </> : <section className="panel" role="alert">Control could not load the retention settings. Try reloading this page.</section>}
     </main>
   </div>;

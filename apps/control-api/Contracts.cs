@@ -53,7 +53,10 @@ internal static class Tokens
 }
 
 internal sealed record DemoOrganization(string Slug, string AdminToken);
-internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId, string? OrganizationSlug);
+internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId, string? OrganizationSlug, AccessIdentity? Access)
+{
+    public string? Role => Access?.Role ?? (OrganizationSlug is null ? null : AccessRoles.Owner);
+}
 internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode = null, bool? DiscoveryEnabled = null,
     DomainRules? DomainRules = null, int? ExpectedVersion = null, string? PaymentCardMode = null, UploadModes? UploadModes = null,
     PathRules? PathRules = null);

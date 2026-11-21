@@ -3,6 +3,7 @@ import type { AuditPage } from './audit';
 import type { EventPage } from './events';
 import type { RetentionCleanup, RetentionPolicy } from './retention';
 import type { PreviewPolicy } from './preview';
+import type { ControlAccess, ControlSession, DelegatedRole, IssuedControlAccess } from './access';
 
 const port = Number(process.env.ZEKVAR_CONTROL_PORT ?? 5187);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid Control loopback port.');
@@ -43,7 +44,11 @@ async function request<T>(path: string, token: string, method = 'GET', body?: un
 const policiesPath = (groupId?: string) => groupId ? `/policy-groups/${groupId}/policies` : '/policies';
 
 export const controlApi = {
-  session: (token: string) => request<{ organization: string }>('/session', token),
+  session: (token: string) => request<ControlSession>('/session', token),
+  access: (token: string) => request<ControlAccess[]>('/access', token),
+  issueAccess: (token: string, name: string, role: DelegatedRole, hours: number) =>
+    request<IssuedControlAccess>('/access', token, 'POST', { name, role, hours }),
+  revokeAccess: (token: string, id: string) => request<void>(`/access/${id}/revoke`, token, 'POST'),
   policies: (token: string, groupId?: string) => request<Policy[]>(policiesPath(groupId), token),
   groups: (token: string) => request<PolicyGroup[]>('/policy-groups', token),
   createGroup: (token: string, name: string) => request<PolicyGroup>('/policy-groups', token, 'POST', { name }),

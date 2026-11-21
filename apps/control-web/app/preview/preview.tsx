@@ -26,8 +26,8 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
   };
 }
 
-export function PolicyPreview({ reference, snapshots, groupId, scopeName }: {
-  reference: PreviewSnapshot; snapshots: PreviewSnapshot[]; groupId?: string; scopeName: string;
+export function PolicyPreview({ reference, snapshots, groupId, scopeName, writable }: {
+  reference: PreviewSnapshot; snapshots: PreviewSnapshot[]; groupId?: string; scopeName: string; writable: boolean;
 }) {
   const [source, setSource] = useState(reference.version);
   const [editor, setEditor] = useState(() => editorFor(reference));
@@ -143,11 +143,13 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName }: {
       <button type="button" className="button primary" onClick={run}>Run preview</button>
       {error && <p className="feedback error" role="alert">{error}</p>}
     </section>
-    {result && <PreviewResults result={result} groupId={groupId} scopeName={scopeName} />}
+    {result && <PreviewResults result={result} groupId={groupId} scopeName={scopeName} writable={writable} />}
   </>;
 }
 
-function PreviewResults({ result, groupId, scopeName }: { result: PreviewResult; groupId?: string; scopeName: string }) {
+function PreviewResults({ result, groupId, scopeName, writable }: {
+  result: PreviewResult; groupId?: string; scopeName: string; writable: boolean;
+}) {
   const { reference, candidate, rows } = result;
   const changes = rows.filter(changedDecision).length;
   return <>
@@ -165,10 +167,10 @@ function PreviewResults({ result, groupId, scopeName }: { result: PreviewResult;
       </div>
     </section>
     {!samePolicy(reference, candidate) && <section className="panel" aria-labelledby="preview-publish-heading">
-      <h2 id="preview-publish-heading">Publish tested draft</h2>
-      <p className="muted">Publish the draft settings to {scopeName} after reviewing these results.</p>
+      <h2 id="preview-publish-heading">{writable ? 'Publish tested draft' : 'Draft setting changes'}</h2>
+      {writable && <p className="muted">Publish the draft settings to {scopeName} after reviewing these results.</p>}
       <PolicyChanges reference={reference} candidate={candidate} />
-      <MutationForm action={publishPreview} label="Publish previewed policy" appearance="primary"
+      {writable && <MutationForm action={publishPreview} label="Publish previewed policy" appearance="primary"
         confirmation={`Publish the previewed settings to ${scopeName}?`}>
         {groupId && <input type="hidden" name="groupId" value={groupId} />}
         <input type="hidden" name="expectedVersion" value={reference.version} />
@@ -181,7 +183,7 @@ function PreviewResults({ result, groupId, scopeName }: { result: PreviewResult;
         <input type="hidden" name="block" value={candidate.domainRules.block.join('\n')} />
         <input type="hidden" name="allowPaths" value={candidate.pathRules.allow.join('\n')} />
         <input type="hidden" name="blockPaths" value={candidate.pathRules.block.join('\n')} />
-      </MutationForm>
+      </MutationForm>}
     </section>}
   </>;
 }

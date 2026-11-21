@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../../lib/api';
+import { roleLabels } from '../../lib/access';
 import { auditActions, auditFilters, type AuditEntry } from '../../lib/audit';
 import { aiApps, classificationLabels, utc } from '../../lib/control';
 import { cleanupCounts, retentionFields, type RetentionField } from '../../lib/retention';
@@ -27,7 +28,7 @@ export default async function Audit({ searchParams }: { searchParams: Promise<Re
   }
 
   return <div className="workspace">
-    <Sidebar active="audit" />
+    <Sidebar active="audit" session={session} />
     <main className="dashboard">
       <header className="page-heading">
         <div>{session && <p className="eyebrow">{session.organization}</p>}<h1>Audit log</h1></div>
@@ -77,9 +78,12 @@ export default async function Audit({ searchParams }: { searchParams: Promise<Re
   </div>;
 }
 
-const actorLabels = { organization_admin: 'Organization admin', browser_enrollment: 'Browser enrollment', system: 'Scheduled cleanup' };
+const actorLabels = { organization_admin: 'Organization admin', named_administrator: 'Named administrator',
+  browser_enrollment: 'Browser enrollment', system: 'Scheduled cleanup' };
 
 function auditDetails(entry: AuditEntry) {
+  const credential = entry.subjectAccess;
+  if (credential) return <span title={credential.id}>{credential.name} · {roleLabels[credential.role]}</span>;
   const group = entry.groupChange;
   if (group?.sourceVersion) return `v${entry.policyVersion} promoted from ${group.groupName} v${group.sourceVersion}`;
   if (group?.installationId) return <><code title={group.installationId}>{group.installationId.slice(0, 13)}</code> · {group.groupName ?? 'Organization baseline'}</>;
@@ -100,7 +104,7 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
   return <tr>
     <td><time dateTime={entry.occurredAt}>{utc.format(new Date(entry.occurredAt))}</time></td>
     <td className="emphasis">{auditActions[entry.action]}</td>
-    <td>{actorLabels[entry.actor]}</td>
+    <td>{entry.actorAccess ? <span title={entry.actorAccess.id}>{entry.actorAccess.name}</span> : actorLabels[entry.actor]}</td>
     <td>{auditDetails(entry)}</td>
   </tr>;
 }

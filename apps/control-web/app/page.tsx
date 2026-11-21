@@ -4,6 +4,7 @@ import {
   type Decision, type DiscoveredApp, type Installation, type SecurityEvent,
 } from '../lib/control';
 import { eventFilters, setEventCursor } from '../lib/events';
+import { canWrite } from '../lib/access';
 import { sessionToken } from '../lib/session';
 import { classifyAiApp, revokeInstallation, signOut } from './actions';
 import { DomainRulesForm, EnrollmentForm, MutationForm, RefreshSection, SignInForm } from './forms';
@@ -15,8 +16,9 @@ type Search = Record<string, string | string[] | undefined>;
 
 export default async function Control({ searchParams }: { searchParams: Promise<Search> }) {
   const token = await sessionToken();
-  if (!token) return <SignIn />;
-  const filters = eventFilters(await searchParams);
+  const search = await searchParams;
+  if (!token) return <SignIn invalid={search.session === 'ended'} />;
+  const filters = eventFilters(search);
   const historyQuery = new URLSearchParams(filters.query);
   if (filters.cursor) setEventCursor(historyQuery, filters.cursor);
 
@@ -31,9 +33,10 @@ export default async function Control({ searchParams }: { searchParams: Promise<
     const older = new URLSearchParams(filters.page);
     if (history?.next) setEventCursor(older, history.next);
     const current = policies[0];
+    const writable = canWrite(session);
     const active = installations.filter(({ revokedAt }) => !revokedAt).length;
     return <div className="workspace" id="overview">
-      <Sidebar />
+      <Sidebar session={session} />
       <main className="dashboard">
         <header className="page-heading">
           <div>
@@ -56,7 +59,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
           </div>
         </div>
 
-        <div className="controls-grid">
+        {writable && <><div className="controls-grid">
           <section className="panel" id="policies" aria-labelledby="policies-heading">
             <div className="panel-heading"><h2 id="policies-heading">Publish a policy</h2><span className="badge">Organization-wide</span></div>
             <p className="muted">Set prompt protection and app discovery for enrolled browsers.</p>
@@ -72,16 +75,16 @@ export default async function Control({ searchParams }: { searchParams: Promise<
         <section className="panel" id="domain-rules" aria-labelledby="domain-rules-heading">
           <div className="panel-heading"><h2 id="domain-rules-heading">Navigation rules</h2><span className="badge">Organization-wide</span></div>
           <DomainRulesForm rules={current?.domainRules} paths={current?.pathRules} version={current?.version} />
-        </section>
+        </section></>}
 
-        <PolicyVersionTable policies={policies} />
+        <PolicyVersionTable policies={policies} writable={writable} />
 
         <section className="panel table-panel" id="ai-apps" aria-labelledby="ai-apps-heading">
           <div className="panel-heading"><h2 id="ai-apps-heading">AI apps</h2><RefreshSection label="Refresh AI apps" /></div>
           <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="ai-apps-heading">
             <table aria-labelledby="ai-apps-heading">
               <thead><tr><th>Application</th><th>Browsers seen (30 days)</th><th>Last observed (UTC)</th><th>Classification</th></tr></thead>
-              <tbody>{discoveredApps.map((app) => <DiscoveredAppRow key={app.appId} app={app} />)}</tbody>
+              <tbody>{discoveredApps.map((app) => <DiscoveredAppRow key={app.appId} app={app} writable={writable} />)}</tbody>
             </table>
           </div>
           <p className="empty">Cataloged pages opened in enrolled Chrome browsers. Classification labels help review usage. Configure enforcement in policies.</p>
@@ -93,7 +96,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
             <table aria-labelledby="browsers-heading">
               <thead><tr><th>Installation</th><th>Rollout group</th><th>Reporting</th><th>Policy status</th><th>Applied version</th><th>ChatGPT composer</th><th>Gemini composer</th><th>Last seen (UTC)</th><th>Action</th></tr></thead>
               <tbody>{installations.map((installation) => <BrowserRow key={installation.installationId}
-                installation={installation} latestVersion={current?.version} />)}</tbody>
+                installation={installation} latestVersion={current?.version} writable={writable} />)}</tbody>
             </table>
             {installations.length === 0 && <p className="empty">No browsers enrolled yet. Create an enrollment grant to add one.</p>}
           </div>
@@ -170,7 +173,7 @@ function SignIn({ invalid }: { invalid?: boolean }) {
     <section className="auth-card" aria-labelledby="sign-in-heading">
       <Brand />
       <div><h1 id="sign-in-heading">Sign in to Control</h1>
-        <p className="muted">Use the admin token configured for your local Control API.</p></div>
+        <p className="muted">Use your delegated token or the owner token configured for the local Control API.</p></div>
       <SignInForm invalid={invalid} />
     </section>
   </main>;
@@ -188,24 +191,24 @@ function InstallationId({ value }: { value: string }) {
   return <code title={value}>{value.slice(0, 13)}</code>;
 }
 
-function DiscoveredAppRow({ app }: { app: DiscoveredApp }) {
+function DiscoveredAppRow({ app, writable }: { app: DiscoveredApp; writable: boolean }) {
   const name = aiApps[app.appId];
   return <tr>
     <th scope="row" className="emphasis">{name}</th>
     <td>{app.browsersSeen}</td>
     <td>{app.lastObservedAt ? <Timestamp value={app.lastObservedAt} /> : '—'}</td>
     <td>
-      <MutationForm action={classifyAiApp} label="Save" appearance="small" accessibleLabel={`Save ${name} classification`}>
+      {writable ? <MutationForm action={classifyAiApp} label="Save" appearance="small" accessibleLabel={`Save ${name} classification`}>
         <input type="hidden" name="appId" value={app.appId} />
         <select key={app.status} name="status" aria-label={`${name} classification`} defaultValue={app.status}>
           {classifications.map((status) => <option key={status} value={status}>{classificationLabels[status]}</option>)}
         </select>
-      </MutationForm>
+      </MutationForm> : classificationLabels[app.status]}
     </td>
   </tr>;
 }
 
-function BrowserRow({ installation, latestVersion }: { installation: Installation; latestVersion?: number }) {
+function BrowserRow({ installation, latestVersion, writable }: { installation: Installation; latestVersion?: number; writable: boolean }) {
   const status = installation.revokedAt ? 'Revoked' : installation.appliedPolicyVersion === null ? 'Awaiting policy' :
     installation.appliedPolicyVersion === (installation.expectedPolicyVersion ?? latestVersion) ? 'Current' : 'Update pending';
   const stale = Date.now() - Date.parse(installation.lastSeenAt) >= 90_000;
@@ -218,7 +221,7 @@ function BrowserRow({ installation, latestVersion }: { installation: Installatio
     <CoverageCell coverage={installation.chatGptCoverage} checkedAt={installation.chatGptCheckedAt} />
     <CoverageCell coverage={installation.geminiCoverage} checkedAt={installation.geminiCheckedAt} />
     <td><Timestamp value={installation.lastSeenAt} /></td>
-    <td>{installation.revokedAt ? '—' :
+    <td>{installation.revokedAt || !writable ? '—' :
       <MutationForm action={revokeInstallation} label="Revoke" appearance="small danger"
         accessibleLabel={`Revoke installation ${installation.installationId}`}
         confirmation="Revoke this browser’s access to Control? It will need a new enrollment grant.">

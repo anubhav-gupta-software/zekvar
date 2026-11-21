@@ -21,7 +21,16 @@ Control is a local dashboard for publishing browser policies, issuing enrollment
 
 In **Browser health**, **Reporting** indicates Control heard from the installation within the last 90 seconds. **Stale** indicates the reporting window elapsed. **Policy status** shows whether the browser’s last applied version matches the current policy. Use **Refresh** to update the table. The [two-profile pilot lab](../browser-extension/README.md#run-the-two-profile-chrome-pilot-lab) demonstrates both states.
 
-The organization baseline applies to unassigned browsers and groups that follow it. The dashboard keeps admin tokens in server memory and gives the browser a short-lived HTTP-only session cookie. Restarting the dashboard clears those sessions. Keep both services on loopback and use synthetic demo data.
+The organization baseline applies to unassigned browsers and groups that follow it. The dashboard keeps Control tokens in server memory and gives the browser a short-lived HTTP-only session cookie. Restarting the dashboard clears those sessions. Keep both services on loopback and use synthetic demo data.
+
+## Delegate Control access
+
+1. Sign in with the configured owner token and open **Control access**.
+2. Enter the recipient’s name, choose a role and a lifetime, and select **Issue token**. Copy the token from the issuance panel before hiding it or leaving. The credential list shows its status and expiration.
+3. Sign in as the recipient with the issued **Control token**. Administrators can manage the organization’s browser policies, enrollment, and retention. Auditors can review settings, run local policy comparisons, and export events and audit records.
+4. To end access early, sign in as the owner and select **Revoke** on that credential. Its next request to Control will be rejected, including requests from a dashboard session already open.
+
+**Audit log** records issuance, revocation, and changes made with a named administrator credential. Use a distinct token per recipient for attribution.
 
 ## Roll out policies to a pilot group
 
@@ -50,7 +59,7 @@ Open **Events** in the sidebar. Filter by application, decision, time range, or 
 
 Open **Audit log** from the Control sidebar. The log shows policy publishes and restores, enrollment grant issuance, browser enrollment and revocation, and changes to AI app classifications. Filter by action and UTC date range, or select **Older entries** to see more history.
 
-**Export JSON** downloads up to 1,000 matching entries in newest-first order with the organization, export timestamp, and API cursor when more entries are available. The export contains timestamps, action and actor categories, and relevant version, installation, or app identifiers. The local admin token identifies an organization rather than an individual administrator. [Audit API](../control-api/README.md#audit-log)
+**Export JSON** downloads up to 1,000 matching entries in newest-first order with the organization, export timestamp, and API cursor when more entries are available. The export includes names and credential IDs for attributed actions and access changes. Actions performed with the configured owner token appear under the organization-admin category. [Audit API](../control-api/README.md#audit-log)
 
 ## Set data retention
 

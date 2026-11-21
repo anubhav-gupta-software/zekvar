@@ -74,7 +74,7 @@ export type SecurityEvent = {
 };
 
 export type Grant = { grant: string; expiresAt: string };
-export type Feedback = { error?: string; message?: string; grant?: Grant };
+export type Feedback = { error?: string; message?: string; grant?: Grant; issuedAccess?: import('./access').IssuedControlAccess };
 
 export const utc = new Intl.DateTimeFormat('en-US', {
   dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC',

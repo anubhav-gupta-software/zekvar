@@ -93,7 +93,7 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
   let second = await openProfile('second');
   const dashboard = await first.browser.newPage();
   await dashboard.goto(web);
-  await dashboard.getByLabel('Admin token').fill(admin);
+  await dashboard.getByLabel('Control token').fill(admin);
   await dashboard.getByRole('button', { name: 'Sign in' }).click();
   await dashboard.getByRole('heading', { name: 'Security overview' }).waitFor();
   const health = dashboard.getByRole('table', { name: 'Browser health' });
@@ -198,6 +198,16 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
   });
 
   await t.test('one managed browser tests a rollout group before its policy is promoted', async () => {
+    const delegation = await fetch(`${api}/v1/admin/access`, {
+      method: 'POST', headers: { Authorization: `Bearer ${admin}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Pilot administrator', role: 'administrator', hours: 1 }), signal: AbortSignal.timeout(4000),
+    });
+    assert.equal(delegation.status, 200);
+    const delegated = await delegation.json();
+    await dashboard.getByRole('button', { name: 'Sign out', exact: true }).click();
+    await dashboard.getByLabel('Control token').fill(delegated.token);
+    await dashboard.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await dashboard.getByText('Pilot administrator · Administrator', { exact: true }).waitFor();
     await dashboard.getByRole('link', { name: 'Rollout groups', exact: true }).click();
     await dashboard.getByRole('heading', { name: 'Rollout groups', exact: true }).waitFor();
     await dashboard.getByLabel('Group name', { exact: true }).fill('Managed browser pilot');
@@ -355,6 +365,14 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     await domains.visit(second.browser, 'work.other.test', true, '/restricted');
     await checkPrompt(second, 'BLOCK · v9 · Payment card block', '4242-4242-4242-4242', true);
     await checkUpload(second, 9, true);
+    const audited = await fetch(`${api}/v1/admin/audit?action=policy_published`, {
+      headers: { Authorization: `Bearer ${admin}` }, signal: AbortSignal.timeout(4000),
+    });
+    assert.equal(audited.status, 200);
+    const { entries } = await audited.json();
+    assert.deepEqual(entries.find(({ policyVersion }) => policyVersion === 9)?.actorAccess, {
+      id: delegated.access.id, name: 'Pilot administrator', role: 'administrator',
+    });
     await Promise.all([popupA.close(), popupB.close()]);
   });
 });

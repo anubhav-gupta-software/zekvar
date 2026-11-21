@@ -29,7 +29,20 @@ Wait for `Now listening on: http://127.0.0.1:5187`. On a first run, .NET may pri
 
 ## Exercise the workflow
 
-Use `Authorization: Bearer …` with the admin token for `/v1/admin` routes and the installation token for `/v1/browser` routes. Send JSON bodies with `Content-Type: application/json`. Credentials are stored as hashes.
+Use `Authorization: Bearer …` with a Control token for `/v1/admin` routes and an installation token for `/v1/browser` routes. Send JSON bodies with `Content-Type: application/json`. Credentials are stored as hashes.
+
+## Named Control access
+
+The configured organization token has the `owner` role. Owners can issue and revoke expiring tokens with an `administrator` or `auditor` role. Administrators can change policy, browser enrollment, app classification, and retention within their organization. Auditors can read and export the same retained records and use policy preview. Only owners can list, issue, or revoke delegated credentials.
+
+| Request | Result |
+| --- | --- |
+| `GET /v1/admin/session` | Returns the organization and role. For delegated access, `access` contains its ID, name, and role. |
+| `POST /v1/admin/access` | Owner supplies `name` (2 to 64 characters), `role`, and `hours` (1 to 720). Returns credential metadata in `access` and the new `token` in the issuance response. |
+| `GET /v1/admin/access` | Returns active credentials and the 100 most recently issued inactive credentials for the owner’s organization. The response contains dates and status. |
+| `POST /v1/admin/access/{id}/revoke` | Returns HTTP 204 for a credential in the owner’s organization, including a repeat revocation. Revocation clears the token hash and is recorded once. |
+
+Control evaluates expiry and revocation on each request. Invalid, expired, or revoked tokens receive HTTP 401. Authenticated requests outside the caller’s role receive HTTP 403. Use a new credential for rotation and revoke the previous credential when replacement is complete. Requests already authorized may finish after revocation. Credential names are assigned by the owner and should correspond to individual recipients.
 
 | Order | Request | Result |
 | --- | --- | --- |
@@ -69,13 +82,13 @@ Upload attempt events use `ai-file-upload` and category `file-upload`. They requ
 - `GET /v1/admin/events/history` returns `{ entries, next }` with up to 100 entries. If `next` is present, pass its `receivedAt`, `eventId`, and `installationId` as `beforeAt`, `beforeEventId`, and `beforeInstallationId` with the same filters. Keep the timestamp as returned to retain sub-millisecond precision.
 - `GET /v1/admin/events/export` streams a single JSON download with the organization, export time, applied filters, and all matching retained entries as of the database query. The result contains policy decision metadata and installation and event IDs.
 
-History and export accept `appId`, `decision`, `installationId`, and occurrence timestamps `since` (inclusive) and `until` (exclusive). Results are sorted by server receipt time, with event ID and installation ID as tie-breakers. Retention applies immediately, and each history page reads the rows still retained when requested. Both endpoints require the organization's admin credential.
+History and export accept `appId`, `decision`, `installationId`, and occurrence timestamps `since` (inclusive) and `until` (exclusive). Results are sorted by server receipt time, with event ID and installation ID as tie-breakers. Retention applies immediately, and each history page reads the rows still retained when requested. Both endpoints require a Control credential for the organization.
 
 ## Audit log
 
-`GET /v1/admin/audit` returns the authenticated organization's activity as `{ entries, next }`. Use `action` to filter by `policy_published`, `policy_restored`, `grant_issued`, `browser_enrolled`, `browser_revoked`, `app_classified`, `retention_changed`, or `retention_cleanup`. `since` is inclusive and `until` is exclusive. `limit` defaults to 100 and accepts up to 1,000. When `next` is present, send its `occurredAt` as `beforeAt` and its `id` as `beforeId` with the same filters to get older entries.
+`GET /v1/admin/audit` returns the authenticated organization's activity as `{ entries, next }`. Use `action` to filter by `policy_published`, `policy_restored`, `grant_issued`, `browser_enrolled`, `browser_revoked`, `app_classified`, `retention_changed`, `retention_cleanup`, `policy_group_created`, `policy_group_assigned`, `access_issued`, or `access_revoked`. `since` is inclusive and `until` is exclusive. `limit` defaults to 100 and accepts up to 1,000. When `next` is present, send its `occurredAt` as `beforeAt` and its `id` as `beforeId` with the same filters to get older entries.
 
-Audited changes and their records are written together. Repeating a revocation or saving the same classification preserves one entry for the change. Migration 006 restores the policy and installation history that already had timestamps. Grant issuance and classification activity are tracked from the migration forward. Records identify the organization-admin or browser-enrollment actor category. Credentials, prompts, grant values, and policy content stay out of the audit payload.
+Audited changes and their records are written together. Repeating a revocation or saving the same classification preserves one entry for the change. Migration 006 backfills policy and installation history. Migration 014 adds `actorAccess` for named administrator activity and `subjectAccess` for issuance and revocation. Both objects contain an ID, name, and role. Earlier records keep their original actor category. Credential values, hashes, prompts, grant values, and policy content stay out of the audit payload.
 
 ## Data retention
 

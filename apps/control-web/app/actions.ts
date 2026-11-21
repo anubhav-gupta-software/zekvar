@@ -14,13 +14,13 @@ import { isUploadMode } from '../../../contracts/policy/uploads';
 export async function signIn(_previous: Feedback, form: FormData): Promise<Feedback> {
   const token = form.get('token');
   if (typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token.trim())) {
-    return { error: 'Enter the 64-character admin token configured for the Control API.' };
+    return { error: 'Enter your 64-character Control token.' };
   }
   try {
     await controlApi.session(token.trim());
   } catch (error) {
     return { error: error instanceof ApiError && error.status === 401
-      ? 'This admin token was rejected.'
+      ? 'This Control token was rejected.'
       : 'Control API is unavailable. Start it and try again.' };
   }
   await startSession(token.trim());
@@ -40,7 +40,10 @@ async function perform(change: (token: string) => Promise<Feedback>): Promise<Fe
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
       await endSession();
-      return { error: 'Your admin token is no longer valid. Reload and sign in again.' };
+      redirect('/?session=ended');
+    }
+    if (error instanceof ApiError && error.status === 403) {
+      return { error: 'Your Control role cannot make this change.' };
     }
     if (error instanceof ApiError && error.status === 404) {
       return { error: 'That record is no longer available. Refresh the dashboard.' };
@@ -53,6 +56,32 @@ function readUploadSettings(form: FormData) {
   const chatgpt = form.get('upload-chatgpt');
   const gemini = form.get('upload-gemini');
   if (isUploadMode(chatgpt) && isUploadMode(gemini)) return { chatgpt, gemini };
+}
+
+export async function issueControlAccess(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const input = form.get('name');
+  const name = typeof input === 'string' ? input.trim() : '';
+  const role = form.get('role');
+  const hours = Number(form.get('hours'));
+  if (name.length < 2 || name.length > 64 || /[\x00-\x1f\x7f-\x9f]/.test(name) ||
+      (role !== 'administrator' && role !== 'auditor') || !Number.isInteger(hours) || hours < 1 || hours > 720) {
+    return { error: 'Enter a name, role, and token lifetime.' };
+  }
+  return perform(async (token) => {
+    const issuedAccess = await controlApi.issueAccess(token, name, role, hours);
+    revalidatePath('/access');
+    return { issuedAccess };
+  });
+}
+
+export async function revokeControlAccess(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const id = form.get('id');
+  if (!isId(id)) return { error: 'Choose a valid credential.' };
+  return perform(async (token) => {
+    await controlApi.revokeAccess(token, id);
+    revalidatePath('/access');
+    return { message: 'Control access revoked.' };
+  });
 }
 
 export async function publishPolicy(_previous: Feedback, form: FormData): Promise<Feedback> {

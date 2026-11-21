@@ -18,23 +18,23 @@ internal sealed partial class ControlStore
         return groups;
     }
 
-    public async Task<PolicyGroup?> CreateGroup(Guid organizationId, string name, CancellationToken ct)
+    public async Task<PolicyGroup?> CreateGroup(RequestIdentity identity, string name, CancellationToken ct)
     {
         await using var command = Command("""
             WITH created AS (
                 INSERT INTO policy_groups (organization_id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING
                 RETURNING organization_id, id, name
             ), audit AS (
-                INSERT INTO control_audit (organization_id, action, group_change)
-                SELECT organization_id, 'policy_group_created', jsonb_build_object('groupId', id, 'groupName', name) FROM created
+                INSERT INTO control_audit (organization_id, action, group_change, actor_access_id)
+                SELECT organization_id, 'policy_group_created', jsonb_build_object('groupId', id, 'groupName', name), $3 FROM created
             )
             SELECT c.id, c.name, o.policy_version FROM created c JOIN organizations o ON o.id = c.organization_id
-            """, organizationId, name);
+            """, identity.OrganizationId, name, (object?)identity.Access?.Id ?? DBNull.Value);
         await using var rows = await command.ExecuteReaderAsync(ct);
         return await rows.ReadAsync(ct) ? new(rows.GetGuid(0), rows.GetString(1), rows.GetInt32(2), null, 0) : null;
     }
 
-    public async Task<string?> AssignGroup(Guid organizationId, Guid installationId, Guid? groupId, CancellationToken ct)
+    public async Task<string?> AssignGroup(RequestIdentity identity, Guid installationId, Guid? groupId, CancellationToken ct)
     {
         await using var command = Command("""
             WITH target AS (
@@ -47,12 +47,12 @@ internal sealed partial class ControlStore
                 FROM target t WHERE i.id = t.id AND t.assignment_aware AND t.policy_group_id IS DISTINCT FROM $3
                 RETURNING i.organization_id, i.id, i.policy_group_id, t.group_name
             ), audit AS (
-                INSERT INTO control_audit (organization_id, action, group_change)
+                INSERT INTO control_audit (organization_id, action, group_change, actor_access_id)
                 SELECT organization_id, 'policy_group_assigned', jsonb_build_object(
-                    'groupId', policy_group_id, 'groupName', group_name, 'installationId', id) FROM changed
+                    'groupId', policy_group_id, 'groupName', group_name, 'installationId', id), $4 FROM changed
             )
             SELECT CASE WHEN assignment_aware OR policy_group_id IS NOT DISTINCT FROM $3 THEN 'assigned' ELSE 'upgrade_required' END FROM target
-            """, organizationId, installationId, (object?)groupId ?? DBNull.Value);
+            """, identity.OrganizationId, installationId, (object?)groupId ?? DBNull.Value, (object?)identity.Access?.Id ?? DBNull.Value);
         return (string?)await command.ExecuteScalarAsync(ct);
     }
 }

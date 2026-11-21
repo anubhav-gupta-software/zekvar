@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../../lib/api';
+import { canWrite } from '../../lib/access';
 import { previewSnapshot } from '../../lib/preview';
 import { sessionToken } from '../../lib/session';
 import { Sidebar } from '../workspace';
@@ -16,7 +17,7 @@ export default async function PreviewPage({ searchParams }: { searchParams: Prom
   });
 
   return <div className="workspace">
-    <Sidebar active="preview" />
+    <Sidebar active="preview" session={data?.session} />
     <main className="dashboard">
       <header className="page-heading">
         <div>{data && <p className="eyebrow">{data.session.organization}</p>}<h1>Policy preview</h1></div>
@@ -37,7 +38,8 @@ export default async function PreviewPage({ searchParams }: { searchParams: Prom
           </form>
         </section>}
         {data.reference ? <PolicyPreview key={data.selected?.id ?? 'baseline'} reference={data.reference}
-          snapshots={data.snapshots} groupId={data.selected?.id} scopeName={data.selected?.name ?? 'Organization baseline'} /> :
+          snapshots={data.snapshots} groupId={data.selected?.id} scopeName={data.selected?.name ?? 'Organization baseline'}
+          writable={canWrite(data.session)} /> :
           <section className="panel" role="alert">This policy scope is unavailable. <a className="underline" href="/preview">Open the organization baseline</a></section>}
       </> : <section className="panel" role="alert">Control could not load policy snapshots. Try reloading this page.</section>}
     </main>

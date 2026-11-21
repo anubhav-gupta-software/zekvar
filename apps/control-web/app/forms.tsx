@@ -47,9 +47,9 @@ function Notice({ state }: { state: Feedback }) {
 }
 
 export function SignInForm({ invalid }: { invalid?: boolean }) {
-  const [state, action, busy] = useActionState(signIn, invalid ? { error: 'Your session has expired. Sign in again.' } : {});
+  const [state, action, busy] = useActionState(signIn, invalid ? { error: 'Your session ended. Sign in again.' } : {});
   return <form action={action} className="grid gap-3">
-    <label htmlFor="token">Admin token</label>
+    <label htmlFor="token">Control token</label>
     <input id="token" name="token" type="password" autoComplete="off" spellCheck={false}
       required placeholder="Enter your Control API token" />
     <button className="button primary mt-2" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
@@ -91,17 +91,21 @@ export function EnrollmentForm() {
 }
 
 function EnrollmentCode({ value, expiresAt }: { value: string; expiresAt: string }) {
+  return <CopyableCode id="enrollment-grant" label="Enrollment grant" value={value} expiresAt={expiresAt} />;
+}
+
+export function CopyableCode({ id, label, value, expiresAt }: { id: string; label: string; value: string; expiresAt: string }) {
   const [status, setStatus] = useState('');
   return <div className="grant-result">
-    <label htmlFor="enrollment-grant">Enrollment grant</label>
+    <label htmlFor={id}>{label}</label>
     <div className="form-row">
-      <input id="enrollment-grant" value={value} readOnly className="font-mono" onFocus={(event) => event.target.select()} />
+      <input id={id} value={value} readOnly autoComplete="off" className="font-mono" onFocus={(event) => event.target.select()} />
       <button type="button" className="button small" onClick={async () => {
         try {
           await navigator.clipboard.writeText(value);
           setStatus('Copied.');
         } catch {
-          setStatus('Select the grant and copy it manually.');
+          setStatus('Select the value and copy it manually.');
         }
       }}>Copy</button>
     </div>

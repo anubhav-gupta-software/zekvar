@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
@@ -94,7 +94,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
 
   await t.test('only an admin can issue a short-lived grant, and only one redemption succeeds', async () => {
     await call('/v1/admin/session', { expect: 401 });
-    assert.deepEqual(await call('/v1/admin/session', { token: first }), { organization: `first-${suffix}` });
+    assert.deepEqual(await call('/v1/admin/session', { token: first }), { organization: `first-${suffix}`, role: 'owner', access: null });
     await call('/v1/admin/enrollment-grants', { method: 'POST', expect: 401 });
     const { grant, expiresAt } = await call('/v1/admin/enrollment-grants', { method: 'POST', token: first });
     assert.ok(Date.parse(expiresAt) > Date.now());
@@ -955,5 +955,137 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual(restored.pathRules, canonical);
     assert.deepEqual(restored.domainRules, active.domainRules);
     assert.equal(restored.restoredFrom, active.version);
+  });
+
+  await t.test('delegates named owner-scoped Control access with expiry, revocation, and metadata-only audit', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: first, ...options });
+    const audit = (options) => admin('audit?limit=1000', options);
+    const auditBefore = await audit();
+    const currentBefore = (await admin('policies'))[0];
+    const secondBefore = await audit({ token: second });
+    if (postgres) {
+      await stop();
+      await retentionFixture(`
+        DELETE FROM schema_migrations WHERE version = 14;
+        ALTER TABLE control_audit DROP COLUMN actor_access_id, DROP COLUMN subject_access_id;
+        DROP TABLE control_access;
+      `);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 14'), '1');
+      assert.deepEqual(await audit(), auditBefore);
+      assert.deepEqual((await admin('policies'))[0], currentBefore);
+    }
+    const issue = (name, role, hours, expect = 200, token = first) =>
+      admin('access', { token, method: 'POST', body: { name, role, hours }, expect });
+    const revoke = (id, token = first, expect = 204) => admin(`access/${id}/revoke`, { token, method: 'POST', expect });
+    const session = (token, expect = 200) => admin('session', { token, expect });
+    assert.deepEqual(await admin('access'), []);
+    await issue('Operator', 'owner', 24, 400);
+    await issue('Operator', 'auditor', 0, 400);
+    await issue('Operator', 'auditor', 721, 400);
+    await issue('bad\nname', 'auditor', 1, 400);
+    await issue(' ', 'auditor', 1, 400);
+    assert.deepEqual(await audit(), auditBefore);
+    const operator = await issue(' Jordan Demo ', 'administrator', 24);
+    const reviewer = await issue('Kai Review', 'auditor', 1);
+    const named = ({ access: { id, name, role } }) => ({ id, name, role });
+    for (const issued of [operator, reviewer]) {
+      assert.match(issued.token, /^[a-f0-9]{64}$/);
+      assert.equal(issued.access.status, 'active');
+      assert.deepEqual(await session(issued.token), {
+        organization: `first-${suffix}`, role: issued.access.role, access: named(issued),
+      });
+      await admin('access', { token: issued.token, expect: 403 });
+      await issue('Escalation attempt', 'administrator', 24, 403, issued.token);
+      await revoke(reviewer.access.id, issued.token, 403);
+      await call('/v1/browser/policy', { token: issued.token, expect: 401 });
+    }
+    assert.equal(operator.access.name, 'Jordan Demo');
+    assert.equal(Date.parse(reviewer.access.expiresAt) - Date.parse(reviewer.access.issuedAt), 3_600_000);
+    assert.deepEqual(await admin('access', { token: second }), []);
+    await revoke(operator.access.id, second, 404);
+    if (postgres) {
+      const hash = createHash('sha256').update(operator.token).digest('hex');
+      assert.equal(await retentionFixture(`SELECT token_hash FROM control_access WHERE id = '${operator.access.id}'`), hash);
+    }
+
+    const fromOperator = (path, options) => admin(path, { token: operator.token, ...options });
+    const change = (path, body, expect = 200) => fromOperator(path, { method: 'POST', body, expect });
+    const granted = await change('enrollment-grants');
+    const enrolled = await call('/v1/enroll', { method: 'POST', body: { grant: granted.grant } });
+    await admin('access', { token: enrolled.token, expect: 401 });
+    await call('/v1/browser/policy', { token: enrolled.token, assignmentAware: true });
+    const group = await change('policy-groups', { name: 'Named access pilot' });
+    const scoped = await change(`policy-groups/${group.id}/policies`, { mode: 'block' });
+    await change(`installations/${enrolled.installationId}/policy-group`, { groupId: group.id }, 204);
+    const promoted = await change(`policy-groups/${group.id}/promote`, { expectedVersion: scoped.version });
+    const restored = await change(`policies/${currentBefore.version}/restore`);
+    assert.equal(restored.version, promoted.version + 1);
+    const classification = (await admin('ai-apps')).find(({ appId }) => appId === 'gemini').status === 'approved' ? 'unapproved' : 'approved';
+    await change('ai-apps/gemini/classification', { status: classification }, 204);
+    await change(`installations/${enrolled.installationId}/revoke`, undefined, 204);
+    const retention = await admin('retention');
+    await change('retention', { ...retention, auditDays: 60 }, 204);
+    const actions = ['app_classified', 'browser_revoked', 'grant_issued', 'policy_group_assigned',
+      'policy_group_created', 'policy_published', 'policy_published', 'policy_restored', 'retention_changed'];
+    if (postgres) {
+      await retentionFixture(`
+        INSERT INTO control_audit (organization_id, occurred_at, action)
+        SELECT id, now() - interval '61 days', 'grant_issued' FROM organizations WHERE slug = 'first-${suffix}'
+      `);
+      assert.ok((await change('retention/cleanup')).auditEntries >= 1);
+      actions.push('retention_cleanup');
+    }
+    const authorized = await audit({ token: reviewer.token });
+    const actorRows = authorized.entries.filter(({ actorAccess }) => actorAccess?.id === operator.access.id);
+    assert.deepEqual(actorRows.map(({ action }) => action).sort(), actions.sort());
+    assert.ok(actorRows.every(({ actor, actorAccess }) =>
+      actor === 'named_administrator' && actorAccess.name === operator.access.name && actorAccess.role === 'administrator'));
+    assert.deepEqual(await audit({ token: second }), secondBefore);
+
+    for (const path of ['policies', 'policy-groups', `policy-groups/${group.id}/policies`, 'installations',
+      'events', 'events/history', 'events/export', 'audit', 'retention', 'ai-apps']) await admin(path, { token: reviewer.token });
+    for (const [path, body] of [
+      ['policies', { mode: 'monitor' }], [`policies/${currentBefore.version}/restore`], ['enrollment-grants'],
+      [`installations/${enrolled.installationId}/revoke`], ['policy-groups', { name: 'Reject group' }],
+      [`policy-groups/${group.id}/policies`, { mode: 'monitor' }], [`policy-groups/${group.id}/policies/${scoped.version}/restore`],
+      [`policy-groups/${group.id}/promote`, { expectedVersion: scoped.version }],
+      [`installations/${enrolled.installationId}/policy-group`, { groupId: null }],
+      ['ai-apps/gemini/classification', { status: 'unreviewed' }], ['retention', { ...retention, auditDays: 30 }], ['retention/cleanup'],
+    ]) await admin(path, { token: reviewer.token, method: 'POST', body, expect: 403 });
+    assert.deepEqual(await audit(), authorized);
+    const credentials = await admin('access');
+    assert.deepEqual(credentials.map(({ id }) => id).sort(), [operator.access.id, reviewer.access.id].sort());
+    const serialized = JSON.stringify([credentials, authorized]);
+    assert.ok(![first, operator.token, reviewer.token, enrolled.token, granted.grant].some((secret) => serialized.includes(secret)));
+    assert.ok(!serialized.includes('tokenHash'));
+
+    const replacement = await issue(operator.access.name, 'administrator', 24);
+    assert.notEqual(replacement.access.id, operator.access.id);
+    assert.notEqual(replacement.token, operator.token);
+    await Promise.all([revoke(operator.access.id), revoke(operator.access.id)]);
+    await session(operator.token, 401);
+    await fromOperator('policies', { method: 'POST', body: { mode: 'warn' }, expect: 401 });
+    const revocations = await admin('audit?action=access_revoked');
+    assert.equal(revocations.entries.length, 1);
+    assert.deepEqual(revocations.entries[0].subjectAccess, named(operator));
+    if (postgres) {
+      assert.equal(await retentionFixture(`SELECT token_hash IS NULL FROM control_access WHERE id = '${operator.access.id}'`), 't');
+      await retentionFixture(`
+        UPDATE control_access SET issued_at = now() - interval '2 hours', expires_at = now() - interval '1 hour'
+        WHERE id = '${reviewer.access.id}'
+      `);
+      await session(reviewer.token, 401);
+      await admin('audit', { token: reviewer.token, expect: 401 });
+      const updated = await admin('access');
+      assert.equal(updated.find(({ id }) => id === reviewer.access.id).status, 'expired');
+      await stop();
+      await start();
+      await session(operator.token, 401);
+      await session(reviewer.token, 401);
+    }
+    assert.equal((await session(first)).role, 'owner');
+    assert.deepEqual((await session(replacement.token)).access, named(replacement));
+    assert.ok((await audit()).entries.some(({ actorAccess }) => actorAccess?.id === operator.access.id));
   });
 });

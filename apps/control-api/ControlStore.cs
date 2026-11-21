@@ -34,6 +34,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 11, "011_payment_card_detection.sql", ct);
         await ApplyMigration(connection, 12, "012_upload_controls.sql", ct);
         await ApplyMigration(connection, 13, "013_path_rules.sql", ct);
+        await ApplyMigration(connection, 14, "014_named_control_access.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -76,19 +77,7 @@ internal sealed partial class ControlStore
         await migration.ExecuteNonQueryAsync(ct);
     }
 
-    public async Task<RequestIdentity?> Authenticate(string token, bool browser, CancellationToken ct)
-    {
-        var sql = browser
-            ? "SELECT organization_id, id, NULL::text FROM installations WHERE token_hash = $1 AND revoked_at IS NULL"
-            : "SELECT o.id, NULL::uuid, o.slug FROM admin_memberships m JOIN organizations o ON o.id = m.organization_id WHERE m.token_hash = $1";
-        await using var command = Command(sql, Tokens.Hash(token));
-        await using var rows = await command.ExecuteReaderAsync(ct);
-        return await rows.ReadAsync(ct)
-            ? new(rows.GetGuid(0), rows.IsDBNull(1) ? null : rows.GetGuid(1), rows.IsDBNull(2) ? null : rows.GetString(2))
-            : null;
-    }
-
-    public async Task<EnrollmentGrant> CreateGrant(Guid organizationId, CancellationToken ct)
+    public async Task<EnrollmentGrant> CreateGrant(RequestIdentity identity, CancellationToken ct)
     {
         var grant = Tokens.Generate();
         await using var command = Command("""
@@ -96,10 +85,11 @@ internal sealed partial class ControlStore
                 INSERT INTO enrollment_grants (token_hash, organization_id, expires_at)
                 VALUES ($1, $2, now() + interval '10 minutes') RETURNING organization_id, expires_at
             ), audit AS (
-                INSERT INTO control_audit (organization_id, action) SELECT organization_id, 'grant_issued' FROM issued
+                INSERT INTO control_audit (organization_id, action, actor_access_id)
+                SELECT organization_id, 'grant_issued', $3 FROM issued
             )
             SELECT expires_at FROM issued
-            """, Tokens.Hash(grant), organizationId);
+            """, Tokens.Hash(grant), identity.OrganizationId, (object?)identity.Access?.Id ?? DBNull.Value);
         return new(grant, (DateTime)(await command.ExecuteScalarAsync(ct))!);
     }
 
@@ -122,9 +112,10 @@ internal sealed partial class ControlStore
         return await command.ExecuteNonQueryAsync(ct) == 1 ? new(installationId, token) : null;
     }
 
-    public async Task<Policy?> Publish(Guid organizationId, PublishPolicy? request, int? restoredFrom, CancellationToken ct,
+    public async Task<Policy?> Publish(RequestIdentity identity, PublishPolicy? request, int? restoredFrom, CancellationToken ct,
         Guid? groupId = null, Guid? sourceGroupId = null, int? expectedSourceVersion = null)
     {
+        var organizationId = identity.OrganizationId;
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
         // Read the source version after locking the organization so concurrent publishes cannot lose a rule.
@@ -172,10 +163,10 @@ internal sealed partial class ControlStore
                 INSERT INTO policy_audit (organization_id, version, restored_from)
                 SELECT organization_id, version, $3 FROM published
             ), audit AS (
-                INSERT INTO control_audit (organization_id, occurred_at, action, policy_version, restored_from, group_change)
+                INSERT INTO control_audit (organization_id, occurred_at, action, policy_version, restored_from, group_change, actor_access_id)
                 SELECT organization_id, published_at, CASE WHEN $3 IS NULL THEN 'policy_published' ELSE 'policy_restored' END,
                     version, $3, CASE WHEN COALESCE($8, $9) IS NOT NULL THEN jsonb_build_object(
-                        'groupId', COALESCE($8, $9), 'groupName', group_name, 'sourceVersion', promoted_version) END
+                        'groupId', COALESCE($8, $9), 'groupName', group_name, 'sourceVersion', promoted_version) END, $17
                 FROM published CROSS JOIN selection
             )
             SELECT version, mode, published_at, $3, github_pat_mode, discovery_enabled, allowed_domains, blocked_domains,
@@ -188,7 +179,8 @@ internal sealed partial class ControlStore
             (object?)groupId ?? DBNull.Value, (object?)sourceGroupId ?? DBNull.Value, (object?)expectedSourceVersion ?? DBNull.Value,
             (object?)request?.ExpectedVersion ?? DBNull.Value, (object?)request?.PaymentCardMode ?? DBNull.Value,
             (object?)request?.UploadModes?.Chatgpt ?? DBNull.Value, (object?)request?.UploadModes?.Gemini ?? DBNull.Value,
-            (object?)request?.PathRules?.Allow ?? DBNull.Value, (object?)request?.PathRules?.Block ?? DBNull.Value);
+            (object?)request?.PathRules?.Allow ?? DBNull.Value, (object?)request?.PathRules?.Block ?? DBNull.Value,
+            (object?)identity.Access?.Id ?? DBNull.Value);
         Policy? policy;
         await using (var rows = await command.ExecuteReaderAsync(ct))
             policy = await rows.ReadAsync(ct) ? ReadPolicy(rows) : null;
@@ -283,18 +275,18 @@ internal sealed partial class ControlStore
         return installations;
     }
 
-    public async Task<bool> Revoke(Guid organizationId, Guid installationId, CancellationToken ct)
+    public async Task<bool> Revoke(RequestIdentity identity, Guid installationId, CancellationToken ct)
     {
         await using var command = Command("""
             WITH revoked AS (
                 UPDATE installations SET revoked_at = now() WHERE organization_id = $1 AND id = $2 AND revoked_at IS NULL
                 RETURNING organization_id, id, revoked_at
             ), audit AS (
-                INSERT INTO control_audit (organization_id, occurred_at, action, installation_id)
-                SELECT organization_id, revoked_at, 'browser_revoked', id FROM revoked
+                INSERT INTO control_audit (organization_id, occurred_at, action, installation_id, actor_access_id)
+                SELECT organization_id, revoked_at, 'browser_revoked', id, $3 FROM revoked
             )
             SELECT EXISTS (SELECT 1 FROM installations WHERE organization_id = $1 AND id = $2)
-            """, organizationId, installationId);
+            """, identity.OrganizationId, installationId, (object?)identity.Access?.Id ?? DBNull.Value);
         return (bool)(await command.ExecuteScalarAsync(ct))!;
     }
 
@@ -413,7 +405,7 @@ internal sealed partial class ControlStore
         return apps;
     }
 
-    public async Task ClassifyApp(Guid organizationId, string appId, string status, CancellationToken ct)
+    public async Task ClassifyApp(RequestIdentity identity, string appId, string status, CancellationToken ct)
     {
         await using var command = Command("""
             WITH changed AS (
@@ -422,24 +414,27 @@ internal sealed partial class ControlStore
                 WHERE ai_app_classifications.status IS DISTINCT FROM EXCLUDED.status
                 RETURNING organization_id, app_id, status
             )
-            INSERT INTO control_audit (organization_id, action, app_id, classification)
-            SELECT organization_id, 'app_classified', app_id, status FROM changed
-            """, organizationId, appId, status);
+            INSERT INTO control_audit (organization_id, action, app_id, classification, actor_access_id)
+            SELECT organization_id, 'app_classified', app_id, status, $4 FROM changed
+            """, identity.OrganizationId, appId, status, (object?)identity.Access?.Id ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(ct);
     }
 
     public async Task<AuditPage> AuditHistory(Guid organizationId, AuditFilters filters, CancellationToken ct)
     {
         await using var command = Command("""
-            SELECT id, occurred_at, action, policy_version, restored_from, installation_id, app_id, classification, retention, cleanup, group_change
+            SELECT a.id, occurred_at, action, policy_version, restored_from, installation_id, app_id, classification, retention, cleanup, group_change,
+                actor.id, actor.display_name, actor.role, subject.id, subject.display_name, subject.role
             FROM control_audit a LEFT JOIN retention_cutoffs r ON a.organization_id = r.organization_id
+            LEFT JOIN control_access actor ON actor.organization_id = a.organization_id AND actor.id = a.actor_access_id
+            LEFT JOIN control_access subject ON subject.organization_id = a.organization_id AND subject.id = a.subject_access_id
             WHERE a.organization_id = $1
                 AND (r.audit_cutoff IS NULL OR occurred_at >= r.audit_cutoff)
                 AND ($2::text IS NULL OR action = $2)
                 AND ($3::timestamptz IS NULL OR occurred_at >= $3)
                 AND ($4::timestamptz IS NULL OR occurred_at < $4)
-                AND ($5::timestamptz IS NULL OR (occurred_at, id) < ($5, $6::uuid))
-            ORDER BY occurred_at DESC, id DESC LIMIT $7
+                AND ($5::timestamptz IS NULL OR (occurred_at, a.id) < ($5, $6::uuid))
+            ORDER BY occurred_at DESC, a.id DESC LIMIT $7
             """, organizationId, (object?)filters.Action ?? DBNull.Value, (object?)filters.Since?.UtcDateTime ?? DBNull.Value,
             (object?)filters.Until?.UtcDateTime ?? DBNull.Value, (object?)filters.BeforeAt?.UtcDateTime ?? DBNull.Value,
             (object?)filters.BeforeId ?? DBNull.Value, filters.Limit + 1);
@@ -451,7 +446,8 @@ internal sealed partial class ControlStore
                 rows.IsDBNull(6) ? null : rows.GetString(6), rows.IsDBNull(7) ? null : rows.GetString(7),
                 rows.IsDBNull(8) ? null : JsonSerializer.Deserialize<RetentionPolicy>(rows.GetString(8), JsonSerializerOptions.Web),
                 rows.IsDBNull(9) ? null : JsonSerializer.Deserialize<RetentionCleanup>(rows.GetString(9), JsonSerializerOptions.Web),
-                rows.IsDBNull(10) ? null : JsonSerializer.Deserialize<PolicyGroupChange>(rows.GetString(10), JsonSerializerOptions.Web)));
+                rows.IsDBNull(10) ? null : JsonSerializer.Deserialize<PolicyGroupChange>(rows.GetString(10), JsonSerializerOptions.Web),
+                ReadAccessIdentity(rows, 11), ReadAccessIdentity(rows, 14)));
         if (entries.Count <= filters.Limit) return new(entries, null);
         entries.RemoveAt(filters.Limit);
         var last = entries[^1];

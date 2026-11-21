@@ -16,7 +16,7 @@ internal sealed partial class ControlStore
             : new(null, null, null);
     }
 
-    public async Task SetRetention(Guid organizationId, RetentionPolicy policy, CancellationToken ct)
+    public async Task SetRetention(RequestIdentity identity, RetentionPolicy policy, CancellationToken ct)
     {
         await using var command = Command("""
             WITH changed AS (
@@ -38,11 +38,12 @@ internal sealed partial class ControlStore
                     IS DISTINCT FROM (EXCLUDED.event_days, EXCLUDED.observation_days, EXCLUDED.audit_days)
                 RETURNING organization_id, event_days, observation_days, audit_days
             )
-            INSERT INTO control_audit (organization_id, action, retention)
+            INSERT INTO control_audit (organization_id, action, retention, actor_access_id)
             SELECT organization_id, 'retention_changed', jsonb_build_object(
-                'securityEventDays', event_days, 'aiObservationDays', observation_days, 'auditDays', audit_days) FROM changed
-            """, organizationId, (object?)policy.SecurityEventDays ?? DBNull.Value,
-            (object?)policy.AiObservationDays ?? DBNull.Value, (object?)policy.AuditDays ?? DBNull.Value);
+                'securityEventDays', event_days, 'aiObservationDays', observation_days, 'auditDays', audit_days), $5 FROM changed
+            """, identity.OrganizationId, (object?)policy.SecurityEventDays ?? DBNull.Value,
+            (object?)policy.AiObservationDays ?? DBNull.Value, (object?)policy.AuditDays ?? DBNull.Value,
+            (object?)identity.Access?.Id ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(ct);
     }
 
@@ -63,7 +64,7 @@ internal sealed partial class ControlStore
         return organizations;
     }
 
-    public async Task<RetentionCleanup> CleanupRetention(Guid organizationId, bool scheduled, CancellationToken ct)
+    public async Task<RetentionCleanup> CleanupRetention(Guid organizationId, bool scheduled, CancellationToken ct, Guid? actorId = null)
     {
         const int batchSize = 1000;
         var source = scheduled ? "scheduled" : "manual";
@@ -98,14 +99,14 @@ internal sealed partial class ControlStore
                     (SELECT count(*) FROM removed_observations)::integer AS observations,
                     (SELECT count(*) FROM removed_audit)::integer AS audit_entries
             ), audit AS (
-                INSERT INTO control_audit (organization_id, action, cleanup)
+                INSERT INTO control_audit (organization_id, action, cleanup, actor_access_id)
                 SELECT $1, 'retention_cleanup', jsonb_build_object('securityEvents', events,
-                    'aiObservations', observations, 'auditEntries', audit_entries, 'source', $3::text)
+                    'aiObservations', observations, 'auditEntries', audit_entries, 'source', $3::text), $4
                 FROM counts WHERE events + observations + audit_entries > 0
             )
             SELECT events, observations, audit_entries FROM counts
             """, connection, transaction);
-        AddParameters(command, organizationId, batchSize, source);
+        AddParameters(command, organizationId, batchSize, source, (object?)actorId ?? DBNull.Value);
         RetentionCleanup result;
         await using (var rows = await command.ExecuteReaderAsync(ct))
         {

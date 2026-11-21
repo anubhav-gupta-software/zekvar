@@ -53,19 +53,37 @@ app.Use(async (context, next) =>
 app.MapGet("/health", () => Results.Ok(new { status = "ready" }));
 
 var admin = app.MapGroup("/v1/admin").AddEndpointFilter(Authenticate(browser: false));
-admin.MapGet("/session", (HttpContext http) => Results.Ok(new { organization = Identity(http).OrganizationSlug }));
+admin.MapGet("/session", (HttpContext http) =>
+{
+    var identity = Identity(http);
+    return Results.Ok(new { organization = identity.OrganizationSlug, role = identity.Role, access = identity.Access });
+});
+var access = admin.MapGroup("/access").AddEndpointFilter((context, next) =>
+    Identity(context.HttpContext).Role == AccessRoles.Owner ? next(context) : ValueTask.FromResult<object?>(Results.StatusCode(403)));
+access.MapGet("", async (HttpContext http, CancellationToken ct) =>
+    Results.Ok(await store.ListAccess(Identity(http).OrganizationId, ct)));
+access.MapPost("", async (IssueControlAccess request, HttpContext http, CancellationToken ct) =>
+{
+    var name = request.Name?.Trim();
+    if (name is not { Length: >= 2 and <= 64 } || name.Any(char.IsControl) ||
+        !AccessRoles.IsDelegated(request.Role) || request.Hours is < 1 or > 720)
+        return Results.BadRequest(new { error = "Enter a name, a delegated role, and a lifetime from 1 to 720 hours." });
+    return Results.Ok(await store.IssueAccess(Identity(http).OrganizationId, name, request.Role!, request.Hours, ct));
+});
+access.MapPost("/{id:guid}/revoke", async (Guid id, HttpContext http, CancellationToken ct) =>
+    await store.RevokeAccess(Identity(http).OrganizationId, id, ct) ? Results.NoContent() : Results.NotFound());
 admin.MapPost("/enrollment-grants", async (HttpContext http, CancellationToken ct) =>
-    Results.Ok(await store.CreateGrant(Identity(http).OrganizationId, ct)));
+    Results.Ok(await store.CreateGrant(Identity(http), ct)));
 admin.MapGet("/installations", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.Installations(Identity(http).OrganizationId, ct)));
 admin.MapPost("/installations/{id:guid}/revoke", async (Guid id, HttpContext http, CancellationToken ct) =>
-    await store.Revoke(Identity(http).OrganizationId, id, ct) ? Results.NoContent() : Results.NotFound());
+    await store.Revoke(Identity(http), id, ct) ? Results.NoContent() : Results.NotFound());
 admin.MapGet("/policies", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.PolicyHistory(Identity(http).OrganizationId, ct)));
 admin.MapPost("/policies", async (PublishPolicy request, HttpContext http, CancellationToken ct) =>
     await PublishSettings(request, http, ct));
 admin.MapPost("/policies/{version:int}/restore", async (int version, HttpContext http, CancellationToken ct) =>
-    await store.Publish(Identity(http).OrganizationId, null, version, ct) is { } published
+    await store.Publish(Identity(http), null, version, ct) is { } published
         ? Results.Ok(published) : Results.NotFound());
 var groups = admin.MapGroup("/policy-groups");
 groups.MapGet("", async (HttpContext http, CancellationToken ct) => Results.Ok(await store.Groups(Identity(http).OrganizationId, ct)));
@@ -74,7 +92,7 @@ groups.MapPost("", async (CreatePolicyGroup request, HttpContext http, Cancellat
     var name = request.Name?.Trim();
     if (name is not { Length: >= 2 and <= 64 } || name.Any(char.IsControl))
         return Results.BadRequest(new { error = "Enter a group name from 2 to 64 characters." });
-    return await store.CreateGroup(Identity(http).OrganizationId, name, ct) is { } group
+    return await store.CreateGroup(Identity(http), name, ct) is { } group
         ? Results.Ok(group) : Results.Conflict(new { error = "A group with this name already exists." });
 });
 groups.MapGet("/{groupId:guid}/policies", async (Guid groupId, HttpContext http, CancellationToken ct) =>
@@ -82,17 +100,17 @@ groups.MapGet("/{groupId:guid}/policies", async (Guid groupId, HttpContext http,
 groups.MapPost("/{groupId:guid}/policies", async (Guid groupId, PublishPolicy request, HttpContext http, CancellationToken ct) =>
     await PublishSettings(request, http, ct, groupId));
 groups.MapPost("/{groupId:guid}/policies/{version:int}/restore", async (Guid groupId, int version, HttpContext http, CancellationToken ct) =>
-    await store.Publish(Identity(http).OrganizationId, null, version, ct, groupId) is { } published
+    await store.Publish(Identity(http), null, version, ct, groupId) is { } published
         ? Results.Ok(published) : Results.NotFound());
 groups.MapPost("/{groupId:guid}/promote", async (Guid groupId, PromotePolicyGroup request, HttpContext http, CancellationToken ct) =>
 {
     if (request.ExpectedVersion <= 0) return Results.BadRequest(new { error = "Choose the group version you reviewed." });
-    return await store.Publish(Identity(http).OrganizationId, null, null, ct, sourceGroupId: groupId,
+    return await store.Publish(Identity(http), null, null, ct, sourceGroupId: groupId,
             expectedSourceVersion: request.ExpectedVersion) is { } published
         ? Results.Ok(published) : Results.Conflict(new { error = "The reviewed group version is no longer current or available." });
 });
 admin.MapPost("/installations/{id:guid}/policy-group", async (Guid id, AssignPolicyGroup request, HttpContext http, CancellationToken ct) =>
-    await store.AssignGroup(Identity(http).OrganizationId, id, request.GroupId, ct) switch
+    await store.AssignGroup(Identity(http), id, request.GroupId, ct) switch
     {
         "assigned" => Results.NoContent(),
         "upgrade_required" => Results.Conflict(new { error = "Update this browser to Zekvar Browser v0.8.0 before moving it." }),
@@ -132,18 +150,18 @@ admin.MapGet("/retention", async (HttpContext http, CancellationToken ct) =>
 admin.MapPost("/retention", async (RetentionPolicy policy, HttpContext http, CancellationToken ct) =>
 {
     if (!policy.IsValid()) return Results.BadRequest(new { error = "Choose retention windows from 1 to 3650 days or no expiry." });
-    await store.SetRetention(Identity(http).OrganizationId, policy, ct);
+    await store.SetRetention(Identity(http), policy, ct);
     return Results.NoContent();
 });
 admin.MapPost("/retention/cleanup", async (HttpContext http, CancellationToken ct) =>
-    Results.Ok(await store.CleanupRetention(Identity(http).OrganizationId, scheduled: false, ct)));
+    Results.Ok(await store.CleanupRetention(Identity(http).OrganizationId, scheduled: false, ct, Identity(http).Access?.Id)));
 admin.MapGet("/ai-apps", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.DiscoveredApps(Identity(http).OrganizationId, ct)));
 admin.MapPost("/ai-apps/{appId}/classification", async (string appId, ClassifyApp request, HttpContext http, CancellationToken ct) =>
 {
     if (!DiscoveryCatalog.IsApp(appId) || !DiscoveryCatalog.IsStatus(request.Status))
         return Results.BadRequest(new { error = "Choose a cataloged app and a valid classification." });
-    await store.ClassifyApp(Identity(http).OrganizationId, appId, request.Status, ct);
+    await store.ClassifyApp(Identity(http), appId, request.Status, ct);
     return Results.NoContent();
 });
 
@@ -189,7 +207,7 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
     try
     {
         var normalized = request with { DomainRules = domainRules, PathRules = pathRules };
-        if (await store.Publish(Identity(http).OrganizationId, normalized, null, ct, groupId) is { } policy)
+        if (await store.Publish(Identity(http), normalized, null, ct, groupId) is { } policy)
             return Results.Ok(policy);
     }
     catch (PostgresException error) when (error.SqlState == PostgresErrorCodes.CheckViolation && error.ConstraintName == "navigation_rule_limit")
@@ -211,6 +229,8 @@ Func<EndpointFilterInvocationContext, EndpointFilterDelegate, ValueTask<object?>
         http.Response.Headers.WWWAuthenticate = "Bearer";
         return Results.Unauthorized();
     }
+    if (identity.Role == AccessRoles.Auditor && !HttpMethods.IsGet(http.Request.Method) && !HttpMethods.IsHead(http.Request.Method))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
     http.Items[typeof(RequestIdentity)] = identity;
     return await next(context);
 };

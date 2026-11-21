@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../../lib/api';
+import { canWrite } from '../../lib/access';
 import type { Installation, PolicyGroup } from '../../lib/control';
 import { sessionToken } from '../../lib/session';
 import { assignPolicyGroup, createPolicyGroup, promotePolicyGroup } from '../actions';
@@ -16,8 +17,9 @@ export default async function Groups({ searchParams }: { searchParams: Promise<{
     if (error instanceof ApiError) return undefined;
     throw error;
   });
+  const writable = canWrite(result?.session);
   return <div className="workspace">
-    <Sidebar active="groups" />
+    <Sidebar active="groups" session={result?.session} />
     <main className="dashboard">
       <header className="page-heading">
         <div>{result && <p className="eyebrow">{result.session.organization}</p>}<h1>Rollout groups</h1></div>
@@ -33,12 +35,12 @@ export default async function Groups({ searchParams }: { searchParams: Promise<{
               {group.name}<span className="group-count">{group.browsers}</span>
             </a>)}
           </nav>}
-          <MutationForm action={createPolicyGroup} label="Create group" appearance="small">
+          {writable && <MutationForm action={createPolicyGroup} label="Create group" appearance="small">
             <div className="grid gap-1">
               <label htmlFor="group-name">Group name</label>
               <input id="group-name" name="name" required minLength={2} maxLength={64} />
             </div>
-          </MutationForm>
+          </MutationForm>}
         </section>
         {!result.selected && selectedId !== undefined && <section className="panel" role="alert">This rollout group is unavailable. Choose a group from the list.</section>}
         {result.selected && <div key={result.selected.id}>
@@ -46,11 +48,11 @@ export default async function Groups({ searchParams }: { searchParams: Promise<{
             <section className="panel" aria-labelledby="group-settings-heading">
               <div className="panel-heading"><h2 id="group-settings-heading">{result.selected.name}</h2>
                 <span className="badge">{result.selected.publishedVersion ? 'Group policy' : 'Follows baseline'} · v{result.selected.effectiveVersion}</span></div>
-              <p className="muted">Publish changes for the browsers assigned to this group.</p>
-              <PublishPolicyForm policy={result.current} groupId={result.selected.id} />
+              {writable && <><p className="muted">Publish changes for the browsers assigned to this group.</p>
+                <PublishPolicyForm policy={result.current} groupId={result.selected.id} /></>}
               <a className="button small mt-3" href={`/preview?group=${result.selected.id}`}>Preview group policy</a>
             </section>
-            <section className="panel" aria-labelledby="promotion-heading">
+            {writable && <section className="panel" aria-labelledby="promotion-heading">
               <h2 id="promotion-heading">Promote to organization baseline</h2>
               <p className="muted">{result.history[0] ? `Publish reviewed group version v${result.history[0].version} as a new baseline version.` :
                 'Publish a group policy before promoting it.'}</p>
@@ -59,14 +61,14 @@ export default async function Groups({ searchParams }: { searchParams: Promise<{
                 <input type="hidden" name="groupId" value={result.selected.id} />
                 <input type="hidden" name="expectedVersion" value={result.history[0].version} />
               </MutationForm>}
-            </section>
+            </section>}
           </div>
-          <section className="panel" aria-labelledby="group-domains-heading">
+          {writable && <section className="panel" aria-labelledby="group-domains-heading">
             <h2 id="group-domains-heading">Group navigation rules</h2>
             <DomainRulesForm rules={result.current?.domainRules} paths={result.current?.pathRules}
               version={result.current?.version} groupId={result.selected.id} />
-          </section>
-          <PolicyVersionTable policies={result.history} groupId={result.selected.id} />
+          </section>}
+          <PolicyVersionTable policies={result.history} groupId={result.selected.id} writable={writable} />
         </div>}
         {result.groups.length > 0 && <section className="panel table-panel" aria-labelledby="assignments-heading">
           <div className="panel-heading"><h2 id="assignments-heading">Browser assignments</h2><span className="table-note">Recent active installations</span></div>
@@ -74,7 +76,7 @@ export default async function Groups({ searchParams }: { searchParams: Promise<{
             <table aria-labelledby="assignments-heading">
               <thead><tr><th>Installation</th><th>Assigned group</th><th>Expected policy</th><th>Assignment</th></tr></thead>
               <tbody>{result.installations.filter((installation) => !installation.revokedAt).map((installation) =>
-                <AssignmentRow key={installation.installationId} installation={installation} groups={result.groups} />)}</tbody>
+                <AssignmentRow key={installation.installationId} installation={installation} groups={result.groups} writable={writable} />)}</tbody>
             </table>
           </div>
         </section>}
@@ -92,13 +94,13 @@ async function loadGroups(token: string, selectedId: string | string[] | undefin
   return { session, groups, selected, installations, history, current: history[0] ?? baseline[0] };
 }
 
-function AssignmentRow({ installation, groups }: { installation: Installation; groups: PolicyGroup[] }) {
+function AssignmentRow({ installation, groups, writable }: { installation: Installation; groups: PolicyGroup[]; writable: boolean }) {
   const shortId = installation.installationId.slice(0, 13);
   return <tr>
     <td><code title={installation.installationId}>{shortId}</code></td>
     <td>{installation.policyGroupName ?? 'Organization baseline'}</td>
     <td>v{installation.expectedPolicyVersion}</td>
-    <td>{installation.assignmentAware ?
+    <td>{writable && (installation.assignmentAware ?
       <MutationForm action={assignPolicyGroup} label="Save" appearance="small" accessibleLabel={`Save assignment for ${shortId}`}>
         <input type="hidden" name="installationId" value={installation.installationId} />
         <select name="groupId" key={installation.policyGroupId ?? 'baseline'} defaultValue={installation.policyGroupId ?? ''}
@@ -106,7 +108,7 @@ function AssignmentRow({ installation, groups }: { installation: Installation; g
           <option value="">Organization baseline</option>
           {groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
         </select>
-      </MutationForm> : <span className="muted">Requires Browser v0.8.0 and a sync</span>}
+      </MutationForm> : <span className="muted">Requires Browser v0.8.0 and a sync</span>)}
     </td>
   </tr>;
 }
