@@ -594,10 +594,19 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
         }
         await editor.fill(safe.replace('[REDACTED]', testCard));
         await page.getByText(/Zekvar · BLOCK v\d+.*Payment card block$/).waitFor();
-        const sendLive = page.getByRole('button', { name: /^(Send prompt|Send message|Send)$/i });
+        const sendLive = page.locator('button[data-testid="send-button"]:visible')
+          .or(page.getByRole('button', { name: /^(Send prompt|Send message|Send)$/i }));
+        await sendLive.waitFor();
+        await waitUntil(() => sendLive.isEnabled(), `Live ${site.name} never enabled Send for the filled draft.`);
         if (site.method === 'click') await sendLive.click();
         else await editor.press('Enter');
-        await page.getByRole('alert').filter({ hasText: 'Submission blocked. This prompt contains a possible payment card number.' }).waitFor();
+        try {
+          await page.getByRole('alert').filter({ hasText: 'Submission blocked. This prompt contains a possible payment card number.' }).waitFor();
+        } catch (error) {
+          await screenshot(page, `20-${site.appId}-payment-block-failure.png`);
+          assert.equal(leaked, false, 'The sandbox card appeared in an outgoing browser request.');
+          throw error;
+        }
         const version = await policyVersion();
         await waitUntil(async () => (await cardEvents()).some(({ appId, policyVersion, decision }) =>
           appId === site.appId && policyVersion === version && decision === 'block'), 'The payment decision did not reach Control.');
@@ -678,8 +687,11 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
 
   const allowedDomains = dashboard.getByLabel('Allowed domains', { exact: true });
   const blockedDomains = dashboard.getByLabel('Blocked domains', { exact: true });
-  const publishDomains = () => dashboard.getByRole('button', { name: 'Publish domain rules', exact: true }).click();
+  const allowedPaths = dashboard.getByLabel('Allowed paths', { exact: true });
+  const blockedPaths = dashboard.getByLabel('Blocked paths', { exact: true });
+  const publishDomains = () => dashboard.getByRole('button', { name: 'Publish navigation rules', exact: true }).click();
   const currentInstallation = async () => (await adminGet('installations'))[0];
+  const longestPath = '/' + 'z.-_~9'.repeat(10) + 'abc';
   let beforeDomains;
   let withDomains;
   await t.test('publishes explicit domain rules and Chrome applies the most specific navigation rule', async () => {
@@ -693,10 +705,17 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
     assert.equal(await policyVersion(), beforeDomains);
     assert.equal(await blockedDomains.inputValue(), 'https://apps.test/');
     await blockedDomains.fill(' APPS.TEST \n restricted.work.apps.test ');
+    await allowedPaths.fill(' APPS.TEST./public/ \nwork.apps.test/admin/guides');
+    await blockedPaths.fill('apps.test/public');
     await publishDomains();
-    await dashboard.getByText(`Domain rules published as version ${withDomains}.`, { exact: true }).waitFor();
+    await dashboard.getByRole('alert').filter({ hasText: 'Enter distinct hostname/path prefixes' }).waitFor();
+    assert.equal(await policyVersion(), beforeDomains);
+    await blockedPaths.fill(`work.apps.test/admin\nwork.apps.test${longestPath}`);
+    await publishDomains();
+    await dashboard.getByText(`Navigation rules published as version ${withDomains}.`, { exact: true }).waitFor();
     assert.equal(await allowedDomains.inputValue(), 'work.apps.test');
     assert.equal(await blockedDomains.inputValue(), 'apps.test\nrestricted.work.apps.test');
+    assert.equal(await allowedPaths.inputValue(), 'apps.test/public\nwork.apps.test/admin/guides');
     await sync();
     await popup.getByText('Active domain rules: 3', { exact: true }).waitFor();
     assert.equal((await currentInstallation()).appliedPolicyVersion, withDomains);
@@ -706,8 +725,32 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
     for (const host of ['work.apps.test', 'work.apps.test.', 'notapps.test', 'apps.test.other.test']) {
       await domains.visit(browser, host, false);
     }
-    assert.ok(!JSON.stringify([...observationAttempts, ...attempts]).includes('private-navigation-'));
-    await dashboard.getByText('1 allow · 2 block', { exact: true }).first().click();
+    await dashboard.getByText('1 allow · 2 block domains', { exact: true }).first().click();
+  });
+
+  await t.test('Chrome applies path prefixes with label, segment, case and redirect boundaries', async () => {
+    await popup.getByText('Active path rules: 4', { exact: true }).waitFor();
+    for (const [host, path, blocked] of [
+      ['apps.test', '/public', false],
+      ['apps.test.', '/public/team/#intro', false],
+      ['apps.test', '/publicity', true],
+      ['apps.test', '/Public', true],
+      ['apps.test', '/public/team%2fnotes', true],
+      ['work.apps.test', '/admin', true],
+      ['work.apps.test', '/admin/users', true],
+      ['work.apps.test', '/admin%2fusers', true],
+      ['work.apps.test', '/admin;section', true],
+      ['work.apps.test', '/Admin', false],
+      ['work.apps.test', '/administrator', false],
+      ['work.apps.test', '/admin/guides', false],
+      ['work.apps.test', '/admin/guides-v2', true],
+      ['restricted.work.apps.test', '/admin/guides', true],
+      ['work.apps.test', longestPath, true],
+      ['redirect.test', '/public', false],
+      ['redirect.test', '/private', true],
+    ]) await domains.visit(browser, host, blocked, path);
+    assert.ok(!JSON.stringify([...observationAttempts, ...attempts]).includes('private-navigation'));
+    await dashboard.getByText('2 allow · 2 block paths', { exact: true }).first().click();
     await screenshot(dashboard, '12-control-domain-rules.png');
   });
 
@@ -717,6 +760,7 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
       await sync();
       await popup.getByText(new RegExp(`Control offline · [A-Z]+ v${withDomains}$`)).waitFor();
       await domains.visit(browser, 'apps.test', true);
+      await domains.visit(browser, 'work.apps.test', true, '/admin');
       await domains.visit(browser, 'work.apps.test', false);
     } finally { offline = false; }
 
@@ -734,6 +778,7 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
       await popup.getByText(new RegExp(`Policy update pending · [A-Z]+ v${withDomains}$`)).waitFor();
       assert.equal((await currentInstallation()).appliedPolicyVersion, withDomains);
       await domains.visit(browser, 'apps.test', true);
+      await domains.visit(browser, 'work.apps.test', true, '/admin');
     } finally {
       await worker.evaluate(() => globalThis.restoreDomainUpdate());
     }
@@ -741,15 +786,18 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
     await popup.getByText(new RegExp(`Connected to Control · [A-Z]+ v${restored}$`)).waitFor();
     assert.equal((await currentInstallation()).appliedPolicyVersion, restored);
     await domains.visit(browser, 'apps.test', false);
+    await domains.visit(browser, 'work.apps.test', false, '/admin');
   });
 
   await t.test('revoking enrollment removes active domain rules', async () => {
     await blockedDomains.fill('apps.test');
+    await blockedPaths.fill('work.other.test/private');
     await publishDomains();
-    await dashboard.getByText(`Domain rules published as version ${withDomains + 2}.`, { exact: true }).waitFor();
+    await dashboard.getByText(`Navigation rules published as version ${withDomains + 2}.`, { exact: true }).waitFor();
     await sync();
     await popup.getByText('Active domain rules: 1', { exact: true }).waitFor();
     await domains.visit(browser, 'apps.test', true);
+    await domains.visit(browser, 'work.other.test', true, '/private');
     const { installationId } = await currentInstallation();
     dashboard.once('dialog', (dialog) => dialog.accept());
     await dashboard.getByRole('button', { name: `Revoke installation ${installationId}`, exact: true }).click();
@@ -757,5 +805,6 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
     await sync();
     await popup.getByText(/Control access revoked/).waitFor();
     await domains.visit(browser, 'apps.test', false);
+    await domains.visit(browser, 'work.other.test', false, '/private');
   });
 });

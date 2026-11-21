@@ -5,6 +5,7 @@ const grant = document.querySelector<HTMLInputElement>('#grant')!;
 const indicator = document.querySelector<HTMLElement>('#status')!;
 const delivery = document.querySelector<HTMLElement>('#delivery')!;
 const domains = document.querySelector<HTMLElement>('#domain-rules')!;
+const paths = document.querySelector<HTMLElement>('#path-rules')!;
 const managed = document.querySelector<HTMLElement>('#managed-enrollment')!;
 const errorMessage = document.querySelector<HTMLElement>('#error')!;
 const sync = document.querySelector<HTMLButtonElement>('#sync')!;
@@ -16,9 +17,11 @@ function render(summary: Summary) {
   const policy = summary.policy ? ` · ${summary.policy.mode.toUpperCase()} v${summary.policy.version}` : '';
   const status = (summary.status === 'offline' && summary.domainRulesError ? 'Policy update pending' : states[summary.status]) + policy;
   if (indicator.textContent !== status) indicator.textContent = status;
-  const domainStatus = summary.domainRulesError ? 'Chrome could not update the domain rules. Zekvar will retry.' :
+  const domainStatus = summary.domainRulesError ? 'Chrome could not update the navigation rules. Zekvar will retry.' :
     summary.domainRuleCount ? `Active domain rules: ${summary.domainRuleCount}` : '';
   if (domains.textContent !== domainStatus) domains.textContent = domainStatus;
+  const pathStatus = summary.pathRuleCount ? `Active path rules: ${summary.pathRuleCount}` : '';
+  if (paths.textContent !== pathStatus) paths.textContent = pathStatus;
   delivery.textContent = summary.queued || summary.discarded
     ? `${summary.queued} queued${summary.discarded ? ` · ${summary.discarded} discarded` : ''}` : '';
   const onboarding = {

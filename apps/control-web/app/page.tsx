@@ -70,9 +70,8 @@ export default async function Control({ searchParams }: { searchParams: Promise<
         </div>
 
         <section className="panel" id="domain-rules" aria-labelledby="domain-rules-heading">
-          <div className="panel-heading"><h2 id="domain-rules-heading">Domain rules</h2><span className="badge">Organization-wide</span></div>
-          <p className="muted" id="domain-policy-scope">Enter one hostname per line, such as example.com. Rules cover top-level navigation and include subdomains. The most specific match wins.</p>
-          <DomainRulesForm rules={current?.domainRules} version={current?.version} />
+          <div className="panel-heading"><h2 id="domain-rules-heading">Navigation rules</h2><span className="badge">Organization-wide</span></div>
+          <DomainRulesForm rules={current?.domainRules} paths={current?.pathRules} version={current?.version} />
         </section>
 
         <PolicyVersionTable policies={policies} />

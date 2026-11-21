@@ -4,7 +4,8 @@ import {
   type AiPromptApp, type AppId, type AppObservation, type Coverage, type DiscoveryApp, type Policy, type PolicyEvent,
   type Reply, type Summary,
 } from './protocol';
-import { emptyDomainRules, installDomainRules, readDomainRules, sameDomainRules, type DomainRules } from './domain-rules';
+import { domainRuleLimit, emptyDomainRules, emptyPathRules, installDomainRules, readDomainRules, readPathRules,
+  ruleCount, sameDomainRules, type DomainRules, type PathRules } from './domain-rules';
 import { isUploadModes, uploadsOff } from '../../../contracts/policy/uploads';
 
 declare const CONTROL_ORIGIN: string;
@@ -15,6 +16,7 @@ type State = {
   enrollment?: Enrollment;
   policy?: Policy;
   domainRules?: DomainRules;
+  pathRules?: PathRules;
   domainRulesError?: boolean;
   chatGptEnabled?: boolean;
   coveragePending?: Coverage;
@@ -69,7 +71,8 @@ function summary(state: State): Summary {
     policy: state.policy, promptApps: aiPromptApps.filter((app) => appEnabled(state, app)),
     queued: state.queue.length, discarded: state.discarded,
     managedEnrollment: state.managedEnrollment, domainRulesError: state.domainRulesError,
-    domainRuleCount: state.domainRules ? state.domainRules.allow.length + state.domainRules.block.length : undefined,
+    domainRuleCount: state.domainRules && ruleCount(state.domainRules),
+    pathRuleCount: state.pathRules && ruleCount(state.pathRules),
   };
 }
 
@@ -97,10 +100,11 @@ async function request(path: string, token?: string, body?: object): Promise<unk
   return response.status === 204 ? undefined : response.json();
 }
 
-async function applyDomainRules(state: State, rules: DomainRules) {
+async function applyDomainRules(state: State, rules: DomainRules, paths = emptyPathRules) {
   try {
-    await installDomainRules(rules);
+    await installDomainRules(rules, paths);
     state.domainRules = rules;
+    state.pathRules = paths;
     state.domainRulesError = undefined;
   } catch (error) {
     state.domainRulesError = true;
@@ -178,18 +182,22 @@ async function sync(state: State) {
     const previousUploads = state.policy?.uploadModes;
     const discoveryEnabled = policy.discoveryEnabled ?? false;
     const domainRules = readDomainRules(policy.domainRules);
-    if (!domainRules) throw new Error('Unknown domain rule format');
+    const pathRules = readPathRules(policy.pathRules);
+    if (!domainRules || !pathRules || ruleCount(domainRules) + ruleCount(pathRules) > domainRuleLimit) {
+      throw new Error('Invalid navigation rules');
+    }
     const assignment = policy.assignmentVersion ?? 0;
     const previousAssignment = state.policy?.assignmentVersion ?? 0;
-    // Earlier Browser builds may already have this version cached without the payment detector setting.
+    // Earlier Browser builds may have this version cached without settings they did not support.
     if (!state.policy || assignment > previousAssignment || (assignment === previousAssignment &&
       (policy.version > state.policy.version || (policy.version === state.policy.version &&
         policy.mode === state.policy.mode && githubPatMode === (state.policy.githubPatMode ?? 'off') &&
         (state.policy.paymentCardMode === undefined || paymentCardMode === state.policy.paymentCardMode) &&
         (!previousUploads || uploads.chatgpt === previousUploads.chatgpt && uploads.gemini === previousUploads.gemini) &&
         discoveryEnabled === (state.policy.discoveryEnabled ?? false) &&
-        sameDomainRules(domainRules, state.domainRules ?? emptyDomainRules))))) {
-      await applyDomainRules(state, domainRules);
+        sameDomainRules(domainRules, state.domainRules ?? emptyDomainRules) &&
+        (!state.pathRules || sameDomainRules(pathRules, state.pathRules)))))) {
+      await applyDomainRules(state, domainRules, pathRules);
       state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, discoveryEnabled,
         assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini } };
       if (!discoveryEnabled || assignment !== previousAssignment) state.observations = undefined;
@@ -218,7 +226,8 @@ async function heartbeat(state: State) {
     paymentCardModeApplied: isMode(state.policy.paymentCardMode) ? true : undefined,
     uploadControlsApplied: state.policy.uploadModes &&
       (state.policy.uploadModes.chatgpt !== 'off' || state.policy.uploadModes.gemini !== 'off') ? true : undefined,
-    domainRulesApplied: state.domainRules && (state.domainRules.allow.length || state.domainRules.block.length) ? true : undefined,
+    domainRulesApplied: state.domainRules && ruleCount(state.domainRules) ? true : undefined,
+    pathRulesApplied: state.pathRules && ruleCount(state.pathRules) ? true : undefined,
   });
   clearCoverage(state);
 }

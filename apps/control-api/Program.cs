@@ -177,15 +177,25 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
     if (request.ExpectedVersion is <= 0) return Results.BadRequest(new { error = "Choose a valid expected policy version." });
     if (!(FixtureContract.IsMode(request.Mode) ||
           request.Mode is null && (request.DomainRules is not null || request.PaymentCardMode is not null ||
-              request.UploadModes?.HasSettings() == true)) ||
+              request.PathRules is not null || request.UploadModes?.HasSettings() == true)) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode))
         return Results.BadRequest(new { error = "Choose a valid rule mode." });
     if (request.UploadModes?.IsValid() == false)
         return Results.BadRequest(new { error = "Choose Off, Monitor, or Block for each upload destination." });
     if (!DomainRules.TryNormalize(request.DomainRules, out var domainRules))
         return Results.BadRequest(new { error = "Enter up to 50 domains with no domain in both lists." });
-    if (await store.Publish(Identity(http).OrganizationId, request with { DomainRules = domainRules }, null, ct, groupId) is { } policy)
-        return Results.Ok(policy);
+    if (!PathRules.TryNormalize(request.PathRules, out var pathRules))
+        return Results.BadRequest(new { error = "Use distinct hostname/path prefixes with paths up to 64 characters long." });
+    try
+    {
+        var normalized = request with { DomainRules = domainRules, PathRules = pathRules };
+        if (await store.Publish(Identity(http).OrganizationId, normalized, null, ct, groupId) is { } policy)
+            return Results.Ok(policy);
+    }
+    catch (PostgresException error) when (error.SqlState == PostgresErrorCodes.CheckViolation && error.ConstraintName == "navigation_rule_limit")
+    {
+        return Results.BadRequest(new { error = "A policy can contain up to 50 domain and path rules combined." });
+    }
     return request.ExpectedVersion.HasValue
         ? Results.Conflict(new { error = "The policy changed after preview or is unavailable." }) : Results.NotFound();
 }

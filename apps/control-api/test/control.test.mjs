@@ -886,4 +886,74 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(entries.some((row) => 'fileName' in row || 'content' in row), false);
     assert.deepEqual((await admin(`events/export?${query}`, { token: second })).entries, []);
   });
+
+  await t.test('validates and versions path policies without falsely acknowledging legacy browsers', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: first, ...options });
+    const publish = (body, expect = 200) => admin('policies', { method: 'POST', body, expect });
+    const history = async () => (await admin('policies'))[0];
+    const original = await history();
+    const empty = { allow: [], block: [] };
+    assert.deepEqual(original.pathRules, empty);
+    if (postgres) {
+      await stop();
+      await retentionFixture(`
+        DELETE FROM schema_migrations WHERE version = 13;
+        ALTER TABLE policy_versions DROP COLUMN allowed_paths, DROP COLUMN blocked_paths;
+      `);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 13'), '1');
+      assert.deepEqual(await history(), original);
+    }
+
+    const { grant } = await admin('enrollment-grants', { method: 'POST' });
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const policy = () => call('/v1/browser/policy', { token: browser.token });
+    const heartbeat = (policyVersion, flags) => call('/v1/browser/heartbeat', {
+      token: browser.token, method: 'POST', expect: 204,
+      body: { policyVersion, domainRulesApplied: true, paymentCardModeApplied: true, uploadControlsApplied: true, ...flags },
+    });
+    const installed = async () => (await admin('installations')).find(({ installationId }) => installationId === browser.installationId);
+    await heartbeat((await policy()).version);
+    assert.equal((await installed()).appliedPolicyVersion, original.version);
+
+    const paths = { allow: [' APPS.TEST./Work/ ', 'apps.test/Work'], block: ['apps.test/Work/private'] };
+    for (const entry of ['apps.test', 'apps.test/', 'https://apps.test/x', 'apps.test:443/x', 'apps.test/a//b', 'apps.test/a/../b',
+      'apps.test/a?x', 'apps.test/a#x', 'apps.test/%61', 'apps.test/é', 'apps.test/' + 'a'.repeat(64), 'apps.test/Work', null]) {
+      await publish({ pathRules: { allow: paths.allow, block: [entry] } }, 400);
+    }
+    await publish({ pathRules: { allow: [] } }, 400);
+    await admin('policies', { token: browser.token, method: 'POST', body: { pathRules: paths }, expect: 401 });
+    assert.deepEqual(await history(), original);
+
+    const active = await publish({ pathRules: paths, expectedVersion: original.version });
+    const canonical = { allow: ['apps.test/Work'], block: ['apps.test/Work/private'] };
+    assert.deepEqual(active.pathRules, canonical);
+    assert.deepEqual(active.domainRules, original.domainRules);
+    assert.deepEqual((await policy()).pathRules, canonical);
+    assert.deepEqual((await admin('policies', { token: second }))[0].pathRules, empty);
+    await heartbeat(active.version);
+    assert.equal((await installed()).expectedPolicyVersion, active.version);
+    assert.equal((await installed()).appliedPolicyVersion, original.version);
+    await heartbeat(active.version, { pathRulesApplied: true });
+    assert.equal((await installed()).appliedPolicyVersion, active.version);
+
+    const hosts = Array.from({ length: 49 }, (_, index) => `host${index}.test`);
+    const audit = await admin('audit');
+    await publish({ domainRules: { allow: hosts, block: [] } }, 400);
+    assert.deepEqual(await history(), active);
+    assert.deepEqual(await admin('audit'), audit);
+    const full = await publish({ domainRules: { allow: hosts.slice(1), block: [] } });
+    assert.equal(full.version, active.version + 1);
+    assert.deepEqual(full.pathRules, canonical);
+    await publish({ pathRules: { ...canonical, block: [...canonical.block, 'apps.test/other'] } }, 400);
+    await publish({ pathRules: empty, expectedVersion: active.version }, 409);
+    assert.deepEqual(await history(), full);
+    const clear = await publish({ pathRules: empty });
+    assert.deepEqual(clear.pathRules, empty);
+    assert.deepEqual(clear.domainRules, full.domainRules);
+    const restored = await admin(`policies/${active.version}/restore`, { method: 'POST' });
+    assert.deepEqual(restored.pathRules, canonical);
+    assert.deepEqual(restored.domainRules, active.domainRules);
+    assert.equal(restored.restoredFrom, active.version);
+  });
 });

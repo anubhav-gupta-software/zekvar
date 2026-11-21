@@ -7,7 +7,7 @@ import { aiApps, classifications, decisionLabels, detectorModes, isId, modes,
   type AiAppId, type AppClassification, type DetectorMode, type Feedback, type Mode } from '../lib/control';
 import { endSession, sessionToken, startSession } from '../lib/session';
 import { cleanupCounts, retentionFields, type RetentionField, type RetentionPolicy } from '../lib/retention';
-import { canonicalizeDomainRules, domainLines } from '../../../contracts/policy/domains';
+import { readNavigationRules } from '../lib/navigation';
 import { isDetectorMode, isMode } from '../../../contracts/policy/prompt';
 import { isUploadMode } from '../../../contracts/policy/uploads';
 
@@ -88,21 +88,33 @@ export async function classifyAiApp(_previous: Feedback, form: FormData): Promis
   });
 }
 
-export async function publishDomainRules(_previous: Feedback, form: FormData): Promise<Feedback> {
+function navigationDraft(form: FormData) {
   const allow = form.get('allow');
   const block = form.get('block');
+  const allowPaths = form.get('allowPaths');
+  const blockPaths = form.get('blockPaths');
+  if (typeof allow !== 'string' || typeof block !== 'string' || typeof allowPaths !== 'string' || typeof blockPaths !== 'string') {
+    return { error: 'Enter the domain and path lists.' };
+  }
+  return readNavigationRules(allow, block, allowPaths, blockPaths);
+}
+
+export async function publishDomainRules(_previous: Feedback, form: FormData): Promise<Feedback> {
   const groupId = form.get('groupId');
+  const expectedVersion = Number(form.get('expectedVersion'));
   if (groupId !== null && !isId(groupId)) return { error: 'Choose a valid rollout group.' };
-  if (typeof allow !== 'string' || typeof block !== 'string') return { error: 'Enter both domain lists.' };
+  if (!Number.isInteger(expectedVersion) || expectedVersion < 1 || expectedVersion > 2147483647) {
+    return { error: 'Reload the policy before editing navigation rules.' };
+  }
+  const rules = navigationDraft(form);
+  if (!rules.domainRules || !rules.pathRules) return { error: rules.error };
   return perform(async (token) => {
     try {
-      const policy = await controlApi.publishDomains(token, { allow: domainLines(allow), block: domainLines(block) }, groupId ?? undefined);
+      const policy = await controlApi.publishNavigation(token, rules, expectedVersion, groupId ?? undefined);
       refreshPolicyViews();
-      return { message: `Domain rules published as version ${policy.version}.` };
+      return { message: `Navigation rules published as version ${policy.version}.` };
     } catch (error) {
-      if (error instanceof ApiError && (error.status === 400 || error.status === 413)) {
-        return { error: 'Enter up to 50 hostnames, one per line. A hostname can appear in only one list.' };
-      }
+      if (error instanceof ApiError && error.status === 409) return { error: 'The policy changed. Reload and review the navigation rules again.' };
       throw error;
     }
   });
@@ -116,20 +128,18 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   const discovery = form.get('discoveryEnabled');
   const groupId = form.get('groupId');
   const expectedVersion = Number(form.get('expectedVersion'));
-  const allow = form.get('allow');
-  const block = form.get('block');
   if (!isMode(mode) || !isDetectorMode(githubPatMode) || !isDetectorMode(paymentCardMode) || !uploadModes ||
       (discovery !== 'on' && discovery !== 'off') ||
       (groupId !== null && !isId(groupId)) || !Number.isInteger(expectedVersion) || expectedVersion < 1 ||
-      expectedVersion > 2147483647 || typeof allow !== 'string' || typeof block !== 'string') {
+      expectedVersion > 2147483647) {
     return { error: 'Run the preview again before publishing.' };
   }
-  const domainRules = canonicalizeDomainRules({ allow: domainLines(allow), block: domainLines(block) });
-  if (!domainRules) return { error: 'Enter valid, non-conflicting hostnames before publishing.' };
+  const { domainRules, pathRules, error } = navigationDraft(form);
+  if (!domainRules || !pathRules) return { error };
   return perform(async (token) => {
     try {
       const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, uploadModes,
-        discoveryEnabled: discovery === 'on', domainRules },
+        discoveryEnabled: discovery === 'on', domainRules, pathRules },
         expectedVersion, groupId ?? undefined);
       refreshPolicyViews();
       return { message: `Previewed policy published as version ${published.version}.` };

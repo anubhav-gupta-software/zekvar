@@ -15,7 +15,7 @@ export function Sidebar({ active }: { active?: 'audit' | 'retention' | 'groups' 
       <a href={`${root}#policies`}>Policies</a>
       <a href="/preview" aria-current={active === 'preview' ? 'page' : undefined}>Policy preview</a>
       <a href="/groups" aria-current={active === 'groups' ? 'page' : undefined}>Rollout groups</a>
-      <a href={`${root}#domain-rules`}>Domain rules</a>
+      <a href={`${root}#domain-rules`}>Navigation rules</a>
       <a href={`${root}#ai-apps`}>AI apps</a>
       <a href={`${root}#browsers`}>Browsers</a>
       <a href={`${root}#events`}>Events</a>

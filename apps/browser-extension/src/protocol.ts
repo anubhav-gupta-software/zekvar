@@ -40,6 +40,7 @@ export type Summary = {
   enrollmentSource?: 'managed' | 'manual';
   managedEnrollment?: 'invalid' | 'rejected' | 'retrying';
   domainRuleCount?: number;
+  pathRuleCount?: number;
   domainRulesError?: boolean;
   queued: number;
   discarded: number;

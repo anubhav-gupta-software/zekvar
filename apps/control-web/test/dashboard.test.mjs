@@ -234,6 +234,8 @@ test('Control dashboard signs in and manages a real browser installation and eve
     const marker = page.getByLabel('Draft test marker');
     const allowed = page.getByLabel('Draft allowed domains');
     const blocked = page.getByLabel('Draft blocked domains');
+    const allowedPaths = page.getByLabel('Draft allowed paths');
+    const blockedPaths = page.getByLabel('Draft blocked paths');
     const prompt = page.getByLabel('Custom prompt', { exact: true });
     const url = page.getByLabel('Custom navigation URL');
     const run = page.getByRole('button', { name: 'Run preview', exact: true });
@@ -259,6 +261,8 @@ test('Control dashboard signs in and manages a real browser installation and eve
       await page.getByLabel('Draft AI app discovery').selectOption('on');
       await allowed.fill('work.pilot.example.test');
       await blocked.fill('Pilot.Example.Test.');
+      await allowedPaths.fill('PILOT.EXAMPLE.TEST./start/');
+      await blockedPaths.fill('work.pilot.example.test/settings');
     }
     await prepareDraft();
     await url.fill('file:///synthetic-preview');
@@ -285,7 +289,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
         ['ChatGPT file upload', 'Allow', 'Block'],
         ['Gemini file upload', 'Allow', 'Monitor'],
         ['Custom prompt', 'Monitor', 'Block'],
-        ['Sample domain', 'Allow', 'Block'],
+        ['Sample domain', 'Allow', 'Allow'],
         ['Sample subdomain', 'Allow', 'Allow'],
         ['Similar domain', 'Allow', 'Allow'],
         ['Custom navigation', 'Allow', 'Block'],
@@ -296,6 +300,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
         await cells.nth(1).getByText(after, { exact: true }).waitFor();
       }
       await results.getByRole('row', { name: /^Sample subdomain / }).getByText('work.pilot.example.test', { exact: true }).waitFor();
+      await results.getByRole('row', { name: /^Sample domain / }).getByText('pilot.example.test/start', { exact: true }).waitFor();
       await results.getByRole('row', { name: /^Both detectors match / }).getByRole('cell').nth(1)
         .getByText('Test marker', { exact: true }).waitFor();
       const screenshot = process.env.ZEKVAR_TEST_PREVIEW_SCREENSHOT;
@@ -331,6 +336,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       assert.deepEqual(published.uploadModes, { chatgpt: 'block', gemini: 'monitor' });
       assert.equal(published.discoveryEnabled, true);
       assert.deepEqual(published.domainRules, { allow: ['work.pilot.example.test'], block: ['pilot.example.test'] });
+      assert.deepEqual(published.pathRules, { allow: ['pilot.example.test/start'], block: ['work.pilot.example.test/settings'] });
       assert.equal(requests.some((request) => /preview-private-(prompt|path)/.test(request)), false);
     } finally {
       page.off('request', captureRequest);

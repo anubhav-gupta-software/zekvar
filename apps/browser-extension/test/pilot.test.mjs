@@ -139,8 +139,8 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
 
   await t.test('both profiles receive a centrally published policy on their background cadence', async () => {
     await dashboard.getByLabel('Blocked domains', { exact: true }).fill('apps.test');
-    await dashboard.getByRole('button', { name: 'Publish domain rules', exact: true }).click();
-    await dashboard.getByText('Domain rules published as version 2.', { exact: true }).waitFor();
+    await dashboard.getByRole('button', { name: 'Publish navigation rules', exact: true }).click();
+    await dashboard.getByText('Navigation rules published as version 2.', { exact: true }).waitFor();
     await dashboard.getByLabel('Test marker', { exact: true }).selectOption('block');
     await dashboard.getByRole('button', { name: 'Publish policy' }).click();
     await dashboard.getByText('Version 3 published in block mode.', { exact: true }).waitFor();
@@ -229,12 +229,17 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     await dashboard.getByRole('button', { name: 'Publish group policy', exact: true }).click();
     await dashboard.getByText('Version 5 published in block mode.', { exact: true }).waitFor();
     await dashboard.getByLabel('Blocked domains', { exact: true }).fill('apps.test');
-    await dashboard.getByRole('button', { name: 'Publish domain rules', exact: true }).click();
-    await dashboard.getByText('Domain rules published as version 6.', { exact: true }).waitFor();
+    await dashboard.getByLabel('Allowed paths', { exact: true }).fill('apps.test/approved');
+    await dashboard.getByLabel('Blocked paths', { exact: true }).fill('work.other.test/restricted');
+    await dashboard.getByRole('button', { name: 'Publish navigation rules', exact: true }).click();
+    await dashboard.getByText('Navigation rules published as version 6.', { exact: true }).waitFor();
     await sync(popupA, 'Connected to Control · BLOCK v6');
     await sync(popupB, 'Connected to Control · MONITOR v4');
     await domains.visit(first.browser, 'apps.test', true);
     await domains.visit(second.browser, 'apps.test', false);
+    await domains.visit(first.browser, 'apps.test', false, '/approved');
+    await domains.visit(first.browser, 'work.other.test', true, '/restricted');
+    await domains.visit(second.browser, 'work.other.test', false, '/restricted');
 
     const checkPrompt = async (profile, label, draft, blocked) => {
       const page = await profile.browser.newPage();
@@ -286,6 +291,12 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
         await cells.nth(0).getByText('Block', { exact: true }).waitFor();
         await cells.nth(1).getByText(draft, { exact: true }).waitFor();
       }
+      await preview.getByLabel('Custom navigation URL').fill('http://work.other.test/restricted');
+      await preview.getByRole('button', { name: 'Run preview', exact: true }).click();
+      const pathSample = table.getByRole('row', { name: /^Custom navigation / }).getByRole('cell');
+      await pathSample.nth(0).getByText('Block', { exact: true }).waitFor();
+      await pathSample.nth(0).getByText('work.other.test/restricted', { exact: true }).waitFor();
+      await pathSample.nth(1).getByText('Allow', { exact: true }).waitFor();
       await preview.goto(`${web}/preview?group=00000000-0000-0000-0000-000000000000`);
       await preview.getByRole('alert').filter({ hasText: 'This policy scope is unavailable.' }).waitFor();
       assert.equal(await preview.getByRole('button', { name: 'Run preview', exact: true }).count(), 0);
@@ -295,6 +306,7 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     await dashboard.getByText('Version 5 restored as version 7.', { exact: true }).waitFor();
     await sync(popupA, 'Connected to Control · BLOCK v7');
     await domains.visit(first.browser, 'apps.test', false);
+    await domains.visit(first.browser, 'work.other.test', false, '/restricted');
     const stalePolicy = await first.worker.evaluate(async (origin) => {
       const { controlState } = await chrome.storage.local.get('controlState');
       const response = await fetch(`${origin}/v1/browser/policy`, {
@@ -326,7 +338,7 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
 
     const concurrentPublish = await fetch(`${api}/v1/admin/policy-groups/${groupId}/policies`, {
       method: 'POST', headers: { Authorization: `Bearer ${admin}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'block' }), signal: AbortSignal.timeout(4000),
+      body: JSON.stringify({ pathRules: { allow: [], block: ['work.other.test/restricted'] } }), signal: AbortSignal.timeout(4000),
     });
     assert.equal(concurrentPublish.status, 200);
     assert.equal((await concurrentPublish.json()).version, 8);
@@ -340,6 +352,7 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     await promote.click();
     await dashboard.getByText('Group policy promoted as organization version 9.', { exact: true }).waitFor();
     await sync(popupB, 'Connected to Control · BLOCK v9');
+    await domains.visit(second.browser, 'work.other.test', true, '/restricted');
     await checkPrompt(second, 'BLOCK · v9 · Payment card block', '4242-4242-4242-4242', true);
     await checkUpload(second, 9, true);
     await Promise.all([popupA.close(), popupB.close()]);

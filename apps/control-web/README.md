@@ -17,7 +17,7 @@ Control is a local dashboard for publishing browser policies, issuing enrollment
 5. Create an enrollment grant and paste it into the Zekvar Browser popup. After testing a prompt, refresh the dashboard to see the installation and its decision metadata. **Security events** names the rule responsible for each decision. [Run the browser demo](../browser-extension/README.md#run-the-demo)
 6. For the [experimental ChatGPT adapter](../browser-extension/README.md#try-the-experimental-chatgpt-adapter), filter **Application** to **ChatGPT**, and check the **ChatGPT composer** column under **Browser health**. The timestamp shows when Control last received a coverage observation.
 7. Publish **AI app discovery** as **On** to populate **AI apps** from enrolled browsers. The inventory shows the latest observation and distinct browser count over 30 days. Classify each app from its row and click **Save**. [Try app discovery](../browser-extension/README.md#ai-app-discovery)
-8. Open **Domain rules** to publish allowed and blocked hostnames. Policy history shows both lists for each version. Browser health shows whether Chrome has applied the latest policy. [Try domain rules](../browser-extension/README.md#domain-rules)
+8. Open **Navigation rules** to publish allowed and blocked hostnames or paths. Policy history shows the lists for each version. Browser health shows whether Chrome has applied the latest policy. [Try navigation rules](../browser-extension/README.md#domain-rules)
 
 In **Browser health**, **Reporting** indicates Control heard from the installation within the last 90 seconds. **Stale** indicates the reporting window elapsed. **Policy status** shows whether the browser’s last applied version matches the current policy. Use **Refresh** to update the table. The [two-profile pilot lab](../browser-extension/README.md#run-the-two-profile-chrome-pilot-lab) demonstrates both states.
 
@@ -27,7 +27,7 @@ The organization baseline applies to unassigned browsers and groups that follow 
 
 1. Update enrolled browsers to Zekvar Browser v0.8.0 or later and let them sync. Open **Rollout groups** and create a group.
 2. In **Browser assignments**, select the group for a recent active installation and save. Each browser belongs to at most one rollout group. A new group follows the organization baseline.
-3. Publish the group's prompt, discovery, or domain settings. Its first publish copies the current baseline and applies the changes to that copy. Subsequent publishes update the group's own policy. Use **Browser health** to check the policy status against the browser's assigned version.
+3. Publish the group's prompt, discovery, or navigation settings. Its first publish copies the current baseline and applies the changes to that copy. Subsequent publishes update the group's own policy. Use **Browser health** to check the policy status against the browser's assigned version.
 4. Restore a version from **Group policy history** to roll back that group. Assign the browser to **Organization baseline** to return it to the current baseline. After validating the group, **Promote group policy** copies the reviewed version into a new baseline version. If the group policy changes before confirmation, reload and review the new version. Other groups with their own policies continue to use their group settings.
 
 Control records group creation, assignment, publication, rollback, and promotion in the audit log. [Policy groups API](../control-api/README.md#policy-groups)
@@ -35,7 +35,7 @@ Control records group creation, assignment, publication, rollback, and promotion
 ## Preview a policy
 
 1. Open **Policy preview** for the organization baseline, or select **Preview group policy** from a rollout group. Use **Load draft from** to start with a version from the available history.
-2. Edit the detector settings and domain rules. Choose **Run preview** to see how the current policy and the draft handle the same built-in and optional custom samples. Custom prompts and navigation URLs stay in the browser tab.
+2. Edit the detector settings, domain rules, or path rules. Choose **Run preview** to see how the current policy and the draft handle the same built-in and optional custom samples. Custom prompts and navigation URLs stay in the browser tab.
 3. Review the outcomes and setting changes. Choose **Publish previewed policy** and confirm to publish the draft to the selected scope. If the current version changed while you were editing, reload the page and run the comparison again.
 
 The preview evaluates the supported text detectors and individual top-level HTTP and HTTPS URLs. Test live app coverage, redirect chains, and the installed Chrome rules in a pilot group before promoting a policy.

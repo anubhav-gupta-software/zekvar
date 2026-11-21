@@ -2,8 +2,8 @@ import { modes, type DetectorMode, type PolicyMode } from '../../../contracts/po
 export { modes, detectorModes } from '../../../contracts/policy/prompt';
 export { ruleLabels } from '../../../contracts/policy/prompt';
 export type { DetectorMode } from '../../../contracts/policy/prompt';
-export type { DomainRules } from '../../../contracts/policy/domains';
-import type { DomainRules } from '../../../contracts/policy/domains';
+export type { DomainRules, PathRules } from '../../../contracts/policy/domains';
+import type { DomainRules, PathRules } from '../../../contracts/policy/domains';
 import type { UploadMethod, UploadModes } from '../../../contracts/policy/uploads';
 
 export const decisions = [...modes, 'warn_override'] as const;
@@ -39,6 +39,7 @@ export type Policy = {
   uploadModes?: UploadModes;
   discoveryEnabled?: boolean;
   domainRules?: DomainRules;
+  pathRules?: PathRules;
   publishedAt: string;
   restoredFrom: number | null;
 };

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { canonicalizeDomainRules, domainLines } from '../../../../contracts/policy/domains';
+import { readNavigationRules } from '../../lib/navigation';
 import { detectorModes, modes, type DetectorMode, type PolicyMode } from '../../../../contracts/policy/prompt';
 import { uploadModes, type UploadMode } from '../../../../contracts/policy/uploads';
 import { aiPromptApps, decisionLabels, detectorModeLabels, promptAppLabels } from '../../lib/control';
@@ -10,7 +10,11 @@ import { changedDecision, parseWebAddress, runComparison, samePolicy,
 import { publishPreview } from '../actions';
 import { MutationForm } from '../forms';
 
-type Editor = Omit<PreviewPolicy, 'domainRules'> & { allow: string; block: string };
+const navigationFields = [
+  ['allow', 'Draft allowed domains'], ['block', 'Draft blocked domains'],
+  ['allowPaths', 'Draft allowed paths'], ['blockPaths', 'Draft blocked paths'],
+] as const;
+type Editor = Omit<PreviewPolicy, 'domainRules' | 'pathRules'> & Record<typeof navigationFields[number][0], string>;
 
 function editorFor(snapshot: PreviewSnapshot): Editor {
   return {
@@ -18,6 +22,7 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
     discoveryEnabled: snapshot.discoveryEnabled,
     uploadModes: snapshot.uploadModes,
     allow: snapshot.domainRules.allow.join('\n'), block: snapshot.domainRules.block.join('\n'),
+    allowPaths: snapshot.pathRules.allow.join('\n'), blockPaths: snapshot.pathRules.block.join('\n'),
   };
 }
 
@@ -50,9 +55,9 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName }: {
   }
 
   function run() {
-    const domainRules = canonicalizeDomainRules({ allow: domainLines(editor.allow), block: domainLines(editor.block) });
-    if (!domainRules) {
-      setError('Enter up to 50 hostnames, one per line. A hostname can appear in only one list.');
+    const { domainRules, pathRules, error: invalid } = readNavigationRules(editor.allow, editor.block, editor.allowPaths, editor.blockPaths);
+    if (!domainRules || !pathRules) {
+      setError(invalid);
       return;
     }
     const address = customUrl.trim() ? parseWebAddress(customUrl) : undefined;
@@ -63,7 +68,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName }: {
     setError('');
     setResult(runComparison(reference, {
       mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode,
-      discoveryEnabled: editor.discoveryEnabled, domainRules, uploadModes: editor.uploadModes,
+      discoveryEnabled: editor.discoveryEnabled, domainRules, pathRules, uploadModes: editor.uploadModes,
     }, customPrompt, address));
   }
 
@@ -112,10 +117,10 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName }: {
         </div>)}
       </div>
       <div className="policy-fields">
-        {(['allow', 'block'] as const).map((action) => <div key={action} className="grid gap-1">
-          <label htmlFor={`draft-${action}`}>{action === 'allow' ? 'Draft allowed domains' : 'Draft blocked domains'}</label>
-          <textarea id={`draft-${action}`} rows={3} maxLength={13000} spellCheck={false} autoCapitalize="none"
-            value={editor[action]} onChange={(event) => edit(action, event.target.value)} />
+        {navigationFields.map(([field, label]) => <div key={field} className="grid gap-1">
+          <label htmlFor={`draft-${field}`}>{label}</label>
+          <textarea id={`draft-${field}`} rows={3} maxLength={16000} spellCheck={false} autoCapitalize="none"
+            value={editor[field]} onChange={(event) => edit(field, event.target.value)} />
         </div>)}
       </div>
     </section>
@@ -174,6 +179,8 @@ function PreviewResults({ result, groupId, scopeName }: { result: PreviewResult;
         {aiPromptApps.map((app) => <input key={app} type="hidden" name={`upload-${app}`} value={candidate.uploadModes[app]} />)}
         <input type="hidden" name="allow" value={candidate.domainRules.allow.join('\n')} />
         <input type="hidden" name="block" value={candidate.domainRules.block.join('\n')} />
+        <input type="hidden" name="allowPaths" value={candidate.pathRules.allow.join('\n')} />
+        <input type="hidden" name="blockPaths" value={candidate.pathRules.block.join('\n')} />
       </MutationForm>
     </section>}
   </>;
@@ -192,15 +199,15 @@ function PolicyChanges({ reference, candidate }: { reference: PreviewPolicy; can
   return <ul className="preview-changes" aria-label="Policy setting changes">
     {fields.filter(([, before, after]) => before !== after).map(([field, before, after]) =>
       <li key={field}>{field} · {before} → {after}</li>)}
-    {(['allow', 'block'] as const).flatMap((action) => {
-      const before = reference.domainRules[action];
-      const after = candidate.domainRules[action];
-      const added = after.filter((domain) => !before.includes(domain));
-      const removed = before.filter((domain) => !after.includes(domain));
-      const label = action === 'allow' ? 'allow list' : 'block list';
-      return [added.length > 0 && <li key={`${action}-add`}>Add to {label} <code>{added.join(', ')}</code></li>,
-        removed.length > 0 && <li key={`${action}-remove`}>Remove from {label} <code>{removed.join(', ')}</code></li>];
-    })}
+    {(['domainRules', 'pathRules'] as const).flatMap((field) => (['allow', 'block'] as const).flatMap((action) => {
+      const before = reference[field][action];
+      const after = candidate[field][action];
+      const added = after.filter((entry) => !before.includes(entry));
+      const removed = before.filter((entry) => !after.includes(entry));
+      const label = `${field === 'domainRules' ? 'domain' : 'path'} ${action} list`;
+      return [added.length > 0 && <li key={`${field}-${action}-add`}>Add to {label} <code>{added.join(', ')}</code></li>,
+        removed.length > 0 && <li key={`${field}-${action}-remove`}>Remove from {label} <code>{removed.join(', ')}</code></li>];
+    }))}
   </ul>;
 }
 

@@ -46,7 +46,7 @@ export function PolicyVersionTable({ policies, groupId }: { policies: Policy[]; 
     <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="history-heading">
       <table aria-labelledby="history-heading">
         <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>Payment card number</th><th>AI app discovery</th>
-          <th>File uploads</th><th>Domain rules</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
+          <th>File uploads</th><th>Navigation rules</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
         <tbody>{policies.map((policy, index) => <PolicyRow key={policy.version} policy={policy} current={index === 0} groupId={groupId} />)}</tbody>
       </table>
       {policies.length === 0 && <p className="empty">Publish a policy to start the version history.</p>}
@@ -56,17 +56,18 @@ export function PolicyVersionTable({ policies, groupId }: { policies: Policy[]; 
 
 function PolicyRow({ policy, current, groupId }: { policy: Policy; current: boolean; groupId?: string }) {
   const { allow = [], block = [] } = policy.domainRules ?? {};
+  const { allow: allowPaths = [], block: blockPaths = [] } = policy.pathRules ?? {};
   return <tr>
     <td className="emphasis">v{policy.version}</td><td><span className={`badge decision ${policy.mode}`}>{decisionLabels[policy.mode]}</span></td>
     <td>{detectorModeLabels[policy.githubPatMode ?? 'off']}</td>
     <td>{detectorModeLabels[policy.paymentCardMode ?? 'off']}</td>
     <td>{policy.discoveryEnabled ? 'On' : 'Off'}</td>
     <td>{aiPromptApps.map((app) => <div key={app}>{promptAppLabels[app]} · {detectorModeLabels[policy.uploadModes?.[app] ?? 'off']}</div>)}</td>
-    <td>{allow.length || block.length ? <details className="domain-rule-history">
-      <summary>{allow.length} allow · {block.length} block</summary>
-      {allow.length > 0 && <p>Allow <code>{allow.join(', ')}</code></p>}
-      {block.length > 0 && <p>Block <code>{block.join(', ')}</code></p>}
-    </details> : '—'}</td>
+    <td>
+      {allow.length + block.length + allowPaths.length + blockPaths.length === 0 && '—'}
+      <NavigationHistory allow={allow} block={block} label="domains" />
+      <NavigationHistory allow={allowPaths} block={blockPaths} label="paths" />
+    </td>
     <td><time dateTime={policy.publishedAt}>{utc.format(new Date(policy.publishedAt))}</time></td>
     <td>{policy.restoredFrom ? `v${policy.restoredFrom}` : '—'}</td>
     <td>{current ? <span className="badge current">Current</span> :
@@ -76,4 +77,13 @@ function PolicyRow({ policy, current, groupId }: { policy: Policy; current: bool
       </MutationForm>}
     </td>
   </tr>;
+}
+
+function NavigationHistory({ allow, block, label }: { allow: string[]; block: string[]; label: string }) {
+  if (!allow.length && !block.length) return null;
+  return <details className="domain-rule-history">
+    <summary>{allow.length} allow · {block.length} block {label}</summary>
+    {allow.length > 0 && <p>Allow <code>{allow.join(', ')}</code></p>}
+    {block.length > 0 && <p>Block <code>{block.join(', ')}</code></p>}
+  </details>;
 }

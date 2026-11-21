@@ -55,7 +55,8 @@ internal static class Tokens
 internal sealed record DemoOrganization(string Slug, string AdminToken);
 internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId, string? OrganizationSlug);
 internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode = null, bool? DiscoveryEnabled = null,
-    DomainRules? DomainRules = null, int? ExpectedVersion = null, string? PaymentCardMode = null, UploadModes? UploadModes = null);
+    DomainRules? DomainRules = null, int? ExpectedVersion = null, string? PaymentCardMode = null, UploadModes? UploadModes = null,
+    PathRules? PathRules = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null)
 {
     public bool HasSettings() => Chatgpt is not null || Gemini is not null;
@@ -63,7 +64,8 @@ internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null
 }
 internal sealed record RedeemGrant(string Grant);
 internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = null, bool DomainRulesApplied = false,
-    int AssignmentVersion = 0, string? GeminiCoverage = null, bool PaymentCardModeApplied = false, bool UploadControlsApplied = false)
+    int AssignmentVersion = 0, string? GeminiCoverage = null, bool PaymentCardModeApplied = false, bool UploadControlsApplied = false,
+    bool PathRulesApplied = false)
 {
     public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported") &&
         (GeminiCoverage is null or "ready" or "unsupported");
@@ -72,7 +74,7 @@ internal sealed record PolicyEvent(Guid EventId, string AppId, DateTimeOffset Ti
     string DetectorCategory, int PolicyVersion, string Decision, int AssignmentVersion = 0, string? UploadMethod = null);
 
 internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, int? RestoredFrom, string GithubPatMode,
-    bool DiscoveryEnabled, DomainRules DomainRules, string PaymentCardMode, UploadModes UploadModes,
+    bool DiscoveryEnabled, DomainRules DomainRules, string PaymentCardMode, UploadModes UploadModes, PathRules PathRules,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int AssignmentVersion = 0)
 {
     public string AppId => FixtureContract.AppId;

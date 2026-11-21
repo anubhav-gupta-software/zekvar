@@ -25,20 +25,25 @@ export async function startDomainFixture() {
   await once(server, 'listening');
   let sequence = 0;
 
-  async function visit(context, host, blocked) {
-    const url = `http://${host}:${server.address().port}/private-navigation-${++sequence}`;
+  async function visit(context, host, blocked, path = '/') {
+    const address = new URL(`http://${host}:${server.address().port}${path}`);
+    address.searchParams.set('private-navigation', String(++sequence));
+    const candidate = new URL(address);
+    candidate.hash = '';
+    if (host === 'redirect.test') candidate.hostname = 'apps.test';
     const page = await context.newPage();
     try {
       if (blocked) {
-        await assert.rejects(page.goto(url), /ERR_BLOCKED_BY_CLIENT/);
-        const candidate = new URL(url);
-        if (host === 'redirect.test') candidate.hostname = 'apps.test';
+        await assert.rejects(page.goto(address.href), /ERR_BLOCKED_BY_CLIENT/);
         assert.ok(!requests.includes(candidate.href), 'The blocked navigation reached the HTTP server.');
-        if (host === 'redirect.test') assert.ok(requests.includes(url), 'The original request must reach the redirector.');
       } else {
-        assert.equal((await page.goto(url)).status(), 200);
+        assert.equal((await page.goto(address.href)).status(), 200);
         assert.equal(await page.locator('body').textContent(), 'Zekvar domain fixture');
-        assert.ok(requests.includes(url));
+        assert.ok(requests.includes(candidate.href));
+      }
+      if (host === 'redirect.test') {
+        address.hash = '';
+        assert.ok(requests.includes(address.href), 'The original request must reach the redirector.');
       }
     } finally {
       await page.close();

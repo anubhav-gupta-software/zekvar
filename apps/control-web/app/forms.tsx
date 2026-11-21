@@ -3,7 +3,7 @@
 import { useActionState, useState, useTransition, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { issueGrant, publishDomainRules, signIn } from './actions';
-import { utc, type DomainRules, type Feedback } from '../lib/control';
+import { utc, type DomainRules, type Feedback, type PathRules } from '../lib/control';
 
 export function RefreshSection({ label }: { label: string }) {
   const router = useRouter();
@@ -12,21 +12,30 @@ export function RefreshSection({ label }: { label: string }) {
     onClick={() => startTransition(() => router.refresh())}>{pending ? 'Refreshing…' : 'Refresh'}</button>;
 }
 
-export function DomainRulesForm({ rules, version, groupId }: { rules?: DomainRules; version?: number; groupId?: string }) {
-  return <MutationForm action={publishDomainRules} label="Publish domain rules" appearance="primary">
+export function DomainRulesForm({ rules, paths, version, groupId }: {
+  rules?: DomainRules; paths?: PathRules; version?: number; groupId?: string;
+}) {
+  return <MutationForm action={publishDomainRules} label="Publish navigation rules" appearance="primary">
     {groupId && <input type="hidden" name="groupId" value={groupId} />}
+    <input type="hidden" name="expectedVersion" value={version ?? ''} />
+    <p className="muted" id="domain-policy-scope">
+      Enter one hostname or hostname/path per line, such as <code>example.com/work</code>. Rules cover top-level
+      navigation and include subdomains. Chrome checks the most specific hostname first, then the longest matching path.
+    </p>
     <div className="policy-fields" key={version}>
       <DomainList name="allow" label="Allowed domains" initial={rules?.allow} />
       <DomainList name="block" label="Blocked domains" initial={rules?.block} />
+      <DomainList name="allowPaths" label="Allowed paths" initial={paths?.allow} />
+      <DomainList name="blockPaths" label="Blocked paths" initial={paths?.block} />
     </div>
   </MutationForm>;
 }
 
-function DomainList({ name, label, initial }: { name: 'allow' | 'block'; label: string; initial?: string[] }) {
+function DomainList({ name, label, initial }: { name: string; label: string; initial?: string[] }) {
   const [value, setValue] = useState(initial?.join('\n') ?? '');
   return <div className="grid gap-1">
     <label htmlFor={`${name}-domains`}>{label}</label>
-    <textarea id={`${name}-domains`} name={name} rows={3} maxLength={13000} spellCheck={false} autoCapitalize="none"
+    <textarea id={`${name}-domains`} name={name} rows={3} maxLength={16000} spellCheck={false} autoCapitalize="none"
       value={value} onChange={(event) => setValue(event.target.value)} aria-describedby="domain-policy-scope" />
   </div>;
 }

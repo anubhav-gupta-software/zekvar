@@ -27,12 +27,16 @@ internal sealed record DomainRules(string[] Allow, string[] Block)
         foreach (var entry in entries)
         {
             if (entry is null) return false;
-            var domain = entry.Trim();
-            if (domain.EndsWith('.')) domain = domain[..^1];
-            if (domain.Length > 253 || !Hostname.IsMatch(domain)) return false;
-            normalized.Add(domain.ToLowerInvariant());
+            if (NormalizeHostname(entry.Trim()) is not { } domain) return false;
+            normalized.Add(domain);
         }
         domains = [.. normalized];
         return true;
+    }
+
+    public static string? NormalizeHostname(string domain)
+    {
+        if (domain.EndsWith('.')) domain = domain[..^1];
+        return domain.Length <= 253 && Hostname.IsMatch(domain) ? domain.ToLowerInvariant() : null;
     }
 }

@@ -62,9 +62,9 @@ export default async function Groups({ searchParams }: { searchParams: Promise<{
             </section>
           </div>
           <section className="panel" aria-labelledby="group-domains-heading">
-            <h2 id="group-domains-heading">Group domain rules</h2>
-            <p className="muted" id="domain-policy-scope">Enter one hostname per line. Rules include subdomains, and the most specific rule wins.</p>
-            <DomainRulesForm rules={result.current?.domainRules} version={result.current?.version} groupId={result.selected.id} />
+            <h2 id="group-domains-heading">Group navigation rules</h2>
+            <DomainRulesForm rules={result.current?.domainRules} paths={result.current?.pathRules}
+              version={result.current?.version} groupId={result.selected.id} />
           </section>
           <PolicyVersionTable policies={result.history} groupId={result.selected.id} />
         </div>}

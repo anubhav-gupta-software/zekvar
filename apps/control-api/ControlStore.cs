@@ -33,6 +33,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 10, "010_gemini_prompt_protection.sql", ct);
         await ApplyMigration(connection, 11, "011_payment_card_detection.sql", ct);
         await ApplyMigration(connection, 12, "012_upload_controls.sql", ct);
+        await ApplyMigration(connection, 13, "013_path_rules.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -140,6 +141,8 @@ internal sealed partial class ControlStore
                     COALESCE($12::text, p.payment_card_mode) AS payment_card_mode,
                     COALESCE($13::text, p.chatgpt_upload_mode) AS chatgpt_upload_mode,
                     COALESCE($14::text, p.gemini_upload_mode) AS gemini_upload_mode,
+                    COALESCE($15::text[], p.allowed_paths) AS allowed_paths,
+                    COALESCE($16::text[], p.blocked_paths) AS blocked_paths,
                     COALESCE(source.name, g.name) AS group_name, source.policy_version AS promoted_version
                 FROM organizations o
                 LEFT JOIN policy_groups g ON g.organization_id = o.id AND g.id = $8::uuid
@@ -157,12 +160,12 @@ internal sealed partial class ControlStore
                 RETURNING id, policy_sequence
             ), published AS (
                 INSERT INTO policy_versions (organization_id, version, mode, github_pat_mode, discovery_enabled, allowed_domains,
-                    blocked_domains, policy_group_id, payment_card_mode, chatgpt_upload_mode, gemini_upload_mode)
+                    blocked_domains, policy_group_id, payment_card_mode, chatgpt_upload_mode, gemini_upload_mode, allowed_paths, blocked_paths)
                 SELECT id, policy_sequence, mode, github_pat_mode, discovery_enabled, allowed_domains, blocked_domains, $8,
-                    payment_card_mode, chatgpt_upload_mode, gemini_upload_mode
+                    payment_card_mode, chatgpt_upload_mode, gemini_upload_mode, allowed_paths, blocked_paths
                 FROM next_version CROSS JOIN selection
                 RETURNING organization_id, version, mode, published_at, github_pat_mode, discovery_enabled, allowed_domains,
-                    blocked_domains, payment_card_mode, chatgpt_upload_mode, gemini_upload_mode
+                    blocked_domains, payment_card_mode, chatgpt_upload_mode, gemini_upload_mode, allowed_paths, blocked_paths
             ), group_pointer AS (
                 UPDATE policy_groups g SET policy_version = p.version FROM published p WHERE g.organization_id = p.organization_id AND g.id = $8
             ), history AS (
@@ -176,7 +179,7 @@ internal sealed partial class ControlStore
                 FROM published CROSS JOIN selection
             )
             SELECT version, mode, published_at, $3, github_pat_mode, discovery_enabled, allowed_domains, blocked_domains,
-                payment_card_mode, chatgpt_upload_mode, gemini_upload_mode
+                payment_card_mode, chatgpt_upload_mode, gemini_upload_mode, allowed_paths, blocked_paths
             FROM published
             """, connection, transaction);
         AddParameters(command, organizationId, (object?)request?.Mode ?? DBNull.Value, (object?)restoredFrom ?? DBNull.Value,
@@ -184,7 +187,8 @@ internal sealed partial class ControlStore
             (object?)request?.DomainRules?.Allow ?? DBNull.Value, (object?)request?.DomainRules?.Block ?? DBNull.Value,
             (object?)groupId ?? DBNull.Value, (object?)sourceGroupId ?? DBNull.Value, (object?)expectedSourceVersion ?? DBNull.Value,
             (object?)request?.ExpectedVersion ?? DBNull.Value, (object?)request?.PaymentCardMode ?? DBNull.Value,
-            (object?)request?.UploadModes?.Chatgpt ?? DBNull.Value, (object?)request?.UploadModes?.Gemini ?? DBNull.Value);
+            (object?)request?.UploadModes?.Chatgpt ?? DBNull.Value, (object?)request?.UploadModes?.Gemini ?? DBNull.Value,
+            (object?)request?.PathRules?.Allow ?? DBNull.Value, (object?)request?.PathRules?.Block ?? DBNull.Value);
         Policy? policy;
         await using (var rows = await command.ExecuteReaderAsync(ct))
             policy = await rows.ReadAsync(ct) ? ReadPolicy(rows) : null;
@@ -196,7 +200,8 @@ internal sealed partial class ControlStore
     {
         await using var command = Command("""
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
-                p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode
+                p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
+                p.allowed_paths, p.blocked_paths
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.policy_group_id IS NOT DISTINCT FROM $2::uuid ORDER BY p.version DESC LIMIT 100
             """, organizationId, (object?)groupId ?? DBNull.Value);
@@ -223,12 +228,13 @@ internal sealed partial class ControlStore
                 ON CONFLICT DO NOTHING
             )
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
-                p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode, e.assignment_version
+                p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
+                p.allowed_paths, p.blocked_paths, e.assignment_version
             FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
             LEFT JOIN policy_audit a ON a.organization_id = p.organization_id AND a.version = p.version
             """, installationId, assignmentAware);
         await using var rows = await command.ExecuteReaderAsync(ct);
-        return await rows.ReadAsync(ct) ? ReadPolicy(rows) with { AssignmentVersion = rows.GetInt32(11) } : null;
+        return await rows.ReadAsync(ct) ? ReadPolicy(rows) with { AssignmentVersion = rows.GetInt32(13) } : null;
     }
 
     public async Task<bool> RecordHeartbeat(Guid installationId, Heartbeat request, CancellationToken ct)
@@ -236,7 +242,9 @@ internal sealed partial class ControlStore
         await using var command = Command("""
             UPDATE installations i SET last_seen_at = GREATEST(i.last_seen_at, now()),
                 applied_policy_version = CASE WHEN (p.payment_card_mode = 'off' OR $7)
-                    AND (p.chatgpt_upload_mode = 'off' AND p.gemini_upload_mode = 'off' OR $8) THEN GREATEST(i.applied_policy_version, $2)
+                    AND (p.chatgpt_upload_mode = 'off' AND p.gemini_upload_mode = 'off' OR $8)
+                    AND (cardinality(p.allowed_paths) + cardinality(p.blocked_paths) = 0 OR $9)
+                    THEN GREATEST(i.applied_policy_version, $2)
                     WHEN i.applied_policy_version = $2 THEN NULL ELSE i.applied_policy_version END,
                 chatgpt_coverage = COALESCE($3::text, i.chatgpt_coverage),
                 chatgpt_checked_at = CASE WHEN $3::text IS NULL THEN i.chatgpt_checked_at ELSE now() END,
@@ -250,7 +258,7 @@ internal sealed partial class ControlStore
                     WHERE d.installation_id = i.id AND d.assignment_version = $5 AND d.policy_version = $2))
             """, installationId, request.PolicyVersion, (object?)request.ChatGptCoverage ?? DBNull.Value,
             request.DomainRulesApplied, request.AssignmentVersion, (object?)request.GeminiCoverage ?? DBNull.Value,
-            request.PaymentCardModeApplied, request.UploadControlsApplied);
+            request.PaymentCardModeApplied, request.UploadControlsApplied, request.PathRulesApplied);
         return await command.ExecuteNonQueryAsync(ct) == 1;
     }
 
@@ -464,5 +472,6 @@ internal sealed partial class ControlStore
 
     private static Policy ReadPolicy(NpgsqlDataReader rows) => new(rows.GetInt32(0), rows.GetString(1),
         rows.GetDateTime(2), rows.IsDBNull(3) ? null : rows.GetInt32(3), rows.GetString(4), rows.GetBoolean(5),
-        new(rows.GetFieldValue<string[]>(6), rows.GetFieldValue<string[]>(7)), rows.GetString(8), new(rows.GetString(9), rows.GetString(10)));
+        new(rows.GetFieldValue<string[]>(6), rows.GetFieldValue<string[]>(7)), rows.GetString(8), new(rows.GetString(9), rows.GetString(10)),
+        new(rows.GetFieldValue<string[]>(11), rows.GetFieldValue<string[]>(12)));
 }

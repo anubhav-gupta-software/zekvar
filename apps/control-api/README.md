@@ -51,9 +51,11 @@ Publish requests also accept an optional `discoveryEnabled` boolean. Discovery i
 
 Publish requests can also supply `domainRules` with `allow` and `block` hostname arrays. A domain-only publish can omit `mode` and preserve the current prompt and discovery settings. Omitting `domainRules` preserves the lists. Sending two empty lists clears them. Control normalizes accepted names and rejects paths, ports, IPs, wildcards, and entries that appear in both lists. Restore applies the earlier lists as part of a new policy version.
 
+`pathRules` follows the same publish and clear semantics, with `allow` and `block` arrays of hostname/path prefixes such as `example.com/work`. Paths are case-sensitive, use literal segments of up to 64 characters total including the leading slash, and may have one trailing slash that Control removes. Baseline and group snapshots can include up to 50 domain and path rules combined. This limit is enforced even when only one set of lists is replaced. Existing versions start with empty path lists. Restore and promotion copy the saved lists.
+
 Baseline and group publishes accept an optional positive integer `expectedVersion`. Control compares it with the effective current version for that scope in the same transaction as the publish. A group following the baseline uses the current baseline version. A mismatch returns HTTP 409.
 
-For a version with domain rules, the heartbeat must include `domainRulesApplied: true`. Browser v0.7.0 acknowledges this after Chrome applies the list. Earlier browsers stay at their last acknowledged version in Browser health.
+For a version with domain rules, the heartbeat must include `domainRulesApplied: true`. Versions containing path rules also require `pathRulesApplied: true` to count as applied. Browser v0.13.0 sends the path acknowledgment after updating Chrome. Older browsers still report liveness and remain at their last acknowledged version in Browser health.
 
 The independent `paymentCardMode` setting accepts `off`, `monitor`, `warn`, or `block` on baseline and group policies. Existing versions start with the detector Off. Omitting the setting preserves the current value. Restoring or promoting a policy copies the saved setting. A browser heartbeat without `paymentCardModeApplied: true` still reports liveness but cannot acknowledge a version that enables this detector. Event ingestion accepts the `payment-card-number` rule with category `payment-card` and validates the decision against that version's setting.
 
