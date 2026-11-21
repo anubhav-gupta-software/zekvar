@@ -16,6 +16,7 @@ assert.match(origin ?? '', /^http:\/\/127\.0\.0\.1:\d+$/, 'Set ZEKVAR_EXTENSION_
 assert.match(admin ?? '', /^[a-f0-9]{64}$/, 'Set ZEKVAR_EXTENSION_TEST_ADMIN_TOKEN for a disposable organization.');
 const fixture = await readFile(new URL('../fixture/index.html', import.meta.url), 'utf8');
 const chatGptFixture = await readFile(new URL('./chatgpt-composer.html', import.meta.url), 'utf8');
+const guestComposerFixture = await readFile(new URL('./guest-chatgpt-composer.html', import.meta.url), 'utf8');
 const marker = 'ZEKVAR_TEST_SECRET';
 
 async function adminCall(path, body) {
@@ -326,9 +327,9 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
     const diagnostics = await chatGpt.evaluate(() => navigator.clipboard.readText());
     assert.doesNotMatch(diagnostics, /ZEKVAR_TEST_SECRET|fixture-alt|private-option/);
     assert.deepEqual(JSON.parse(diagnostics), {
-      version: '0.3.2', route: 'conversation', markedEditors: 1, visibleMarkedEditors: 1,
+      version: '0.3.3', route: 'conversation', markedEditors: 1, visibleMarkedEditors: 1,
       hasEditorForm: false, visibleTextareas: 0, visibleEditableRoots: 1,
-      hasComposerSubmitId: true, hasSendTestId: false, hasPairedSend: true,
+      hasComposerSubmitId: true, hasSendTestId: false, hasLabeledSend: true, hasPairedSend: true,
     });
   });
 
@@ -364,5 +365,31 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
     const diagnostics = await chatGpt.evaluate(() => navigator.clipboard.readText());
     assert.equal(JSON.parse(diagnostics).route, 'guest-conversation');
     assert.ok(!diagnostics.includes(guest));
+  });
+
+  await t.test('pairs a labeled guest textarea without IDs and ignores an unrelated form', async () => {
+    const [policy] = await adminCall('policies');
+    const baseline = (await adminCall('events?appId=chatgpt')).length;
+    const url = 'https://chatgpt.com/?layout=guest-textarea';
+    await browser.route(url, (route) => route.fulfill({ contentType: 'text/html', body: guestComposerFixture }));
+    await chatGpt.goto(url);
+    await chatGpt.getByText(/Waiting for Send control/).waitFor();
+    const input = chatGpt.getByPlaceholder('Ask ChatGPT', { exact: true });
+    const send = chatGpt.getByRole('button', { name: 'Send message', exact: true });
+    await input.fill(marker);
+    await chatGpt.getByText(`Zekvar · BLOCK v${policy.version}`, { exact: true }).waitFor();
+    await send.click();
+    await chatGpt.getByRole('alert').filter({ hasText: 'Submission blocked' }).waitFor();
+    await input.press('Enter');
+    assert.equal(await chatGpt.locator('#fixture-sends').textContent(), '0');
+
+    await chatGpt.getByRole('textbox', { name: 'Account field' }).fill(marker);
+    await chatGpt.getByRole('button', { name: 'Submit form' }).click();
+    assert.equal(await chatGpt.locator('#unrelated-sends').textContent(), '1');
+    await input.fill('Clean draft');
+    await input.press('Enter');
+    assert.equal(await chatGpt.locator('#fixture-sends').textContent(), '1');
+    await until(async () => (await adminCall('events?appId=chatgpt')).length === baseline + 2,
+      'Only the two matching prompt attempts should reach Control.');
   });
 });

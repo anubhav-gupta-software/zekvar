@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Guest composer contract fixture</title></head>
+<body>
+  <form aria-label="Guest composer">
+    <textarea placeholder="Ask ChatGPT"></textarea>
+    <button type="submit" aria-label="Send message" hidden>Send</button>
+  </form>
+  <form aria-label="Unrelated form">
+    <input type="text" aria-label="Account field">
+    <button type="submit">Submit form</button>
+  </form>
+  <output id="fixture-sends">0</output>
+  <output id="unrelated-sends">0</output>
+  <script>
+    const prompt = document.querySelector('textarea');
+    const send = prompt.form.querySelector('button');
+    const sends = document.querySelector('#fixture-sends');
+    prompt.addEventListener('input', () => { send.hidden = !prompt.value.trim(); });
+    window.addEventListener('keydown', (event) => {
+      if (event.target !== prompt || event.key !== 'Enter' || event.shiftKey || send.hidden) return;
+      event.preventDefault();
+      prompt.form.requestSubmit(send);
+    }, true);
+    prompt.form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      sends.value = String(Number(sends.value) + 1);
+      prompt.value = '';
+      send.hidden = true;
+    });
+    document.querySelector('[aria-label="Unrelated form"]').addEventListener('submit', (event) => {
+      event.preventDefault();
+      document.querySelector('#unrelated-sends').value = '1';
+    });
+  </script>
+</body>
+</html>

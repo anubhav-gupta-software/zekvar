@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Zekvar Browser",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "minimum_chrome_version": "120",
   "description": "Applies Zekvar Control policies on the local prompt fixture and supported ChatGPT compose flows.",
   "permissions": ["storage", "alarms"],
