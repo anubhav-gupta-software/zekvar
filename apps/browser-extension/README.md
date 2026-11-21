@@ -1,6 +1,6 @@
 # Zekvar Browser and Control demo
 
-Zekvar Browser applies the policy published in Control to the loopback fixture and the experimental ChatGPT composer adapter. The fixture simulates a submission by incrementing a counter. Zekvar evaluates draft text locally and reports decision metadata to Control.
+Zekvar Browser applies the policy published in Control to the loopback fixture and the experimental ChatGPT composer adapter. The fixture simulates a submission by incrementing a counter. Zekvar evaluates draft text locally and reports decision metadata to Control. Managed browsers can also report visits to cataloged AI apps when discovery is enabled.
 
 ## Run the demo
 
@@ -36,6 +36,14 @@ Set **GitHub classic PAT** under **Publish a policy** in Control, publish, and u
 
 Use `ghp_000000000000000000000000000000000000` in the local prompt fixture to test each setting. Refresh **Security events** in Control and look for **GitHub classic PAT** under **Detector**. The extension matches the classic token format locally. Control receives the decision and its metadata. Automated credential checks use a controlled composer and a synthetic token-shaped string. [Open the local fixture](http://127.0.0.1:4173/zekvar-fixture/)
 
+## AI app discovery
+
+1. Load Browser v0.6.0, start Control, and enroll the test browser. Set **AI app discovery** to **On** under **Publish a policy**. Publish, then click **Sync now** in the Zekvar popup.
+2. Open `chatgpt.com`, `claude.ai`, or `gemini.google.com` in a top-level tab. Go to **AI apps** in Control and click **Refresh**. The app row shows the number of distinct browsers seen in the past 30 days and the latest observation time.
+3. Use the row’s classification selector and **Save** to mark the app **Approved**, **Unapproved**, or **Unreviewed**. This label is for admin review. Use the prompt-protection settings to control supported sends.
+
+Discovery records new document loads on the three cataloged origins. The browser sends the catalog ID, observation time, and policy version. It can retry the latest unsent observation per app after a connection interruption. Restoring an Off policy stops reporting and preserves existing inventory observations. The automated suite uses controlled pages at all three app origins. A separate headed smoke test recorded an observation on each of the live signed-out landing pages.
+
 ## Verify the scenarios
 
 The full demo uses Node.js 22+, the .NET 10 SDK, and a running Docker daemon. From `apps/browser-extension`, run:
@@ -50,7 +58,7 @@ From the repository root, run:
 node scripts/verify-demo.mjs --headed --live --artifacts /tmp/zekvar-demo
 ```
 
-The command builds in a temporary directory and starts its own PostgreSQL, Control API, dashboard, and Chrome profile. It generates a temporary admin token, signs in, creates an enrollment grant, and redeems it in the extension. It publishes and restores policy, verifies the displayed events, and checks that an event retry after a lost acknowledgment stores a single record. It exercises all four GitHub rule settings and checks that the candidate value stays out of event transport and storage. API, dashboard, and extension regression suites run against isolated organizations. The command tears down its services at the end. On the first run, it downloads Chrome for Testing before opening the browser.
+The command builds in a temporary directory and starts its own PostgreSQL, Control API, dashboard, and Chrome profile. It generates a temporary admin token, signs in, creates an enrollment grant, and redeems it in the extension. It publishes and restores policy, verifies the displayed events, and checks that an event retry after a lost acknowledgment stores a single record. It exercises all four GitHub rule settings and checks that the candidate value stays out of event transport and storage. It enables app discovery, visits the controlled catalog origins, saves app classifications, and verifies privacy and recovery. API, dashboard, and extension regression suites run against isolated organizations. The command tears down its services at the end. On the first run, it downloads Chrome for Testing before opening the browser.
 
 `--headed` opens Chrome during the demo. `--artifacts` saves screenshots of the controlled workflow. `--live` separately attempts the public ChatGPT composer using the isolated profile and synthetic text. The runner reports a skip if the site blocks access or the supported composer is unavailable. The controlled workflow uses a local response for the ChatGPT page and the real loopback API for its events.
 

@@ -2,6 +2,18 @@ export const fixtureUrl = 'http://127.0.0.1:4173/zekvar-fixture/';
 export const fixtureApp = 'local-prompt-fixture';
 export const chatGptApp = 'chatgpt';
 export type AppId = typeof fixtureApp | typeof chatGptApp;
+const discoveryCatalog = {
+  'https://chatgpt.com': chatGptApp,
+  'https://claude.ai': 'claude',
+  'https://gemini.google.com': 'gemini',
+} as const;
+export type DiscoveryApp = typeof discoveryCatalog[keyof typeof discoveryCatalog];
+export type AppObservation = { appId: DiscoveryApp; observedAt: string; policyVersion: number };
+
+export function discoveredApp(url: string | undefined): DiscoveryApp | undefined {
+  const origin = url && new URL(url).origin;
+  if (origin && Object.hasOwn(discoveryCatalog, origin)) return discoveryCatalog[origin as keyof typeof discoveryCatalog];
+}
 export type Coverage = 'ready' | 'unsupported';
 export const fixtureRule = 'fixture-secret';
 export const fixtureDetector = 'synthetic-secret';
@@ -9,7 +21,7 @@ export const githubPatRule = 'github-classic-pat';
 export const credentialDetector = 'credential';
 export type PolicyMode = 'monitor' | 'warn' | 'block';
 export type DetectorMode = PolicyMode | 'off';
-export type Policy = { version: number; mode: PolicyMode; githubPatMode?: DetectorMode };
+export type Policy = { version: number; mode: PolicyMode; githubPatMode?: DetectorMode; discoveryEnabled?: boolean };
 export type RuleMetadata = { ruleId: typeof fixtureRule; detectorCategory: typeof fixtureDetector } |
   { ruleId: typeof githubPatRule; detectorCategory: typeof credentialDetector };
 export type PolicyEvent = {
@@ -31,7 +43,7 @@ export type Summary = {
   discarded: number;
 };
 
-type Message = { type: 'status' | 'sync' } | { type: 'enroll'; grant: string } |
+type Message = { type: 'status' | 'sync' | 'observe-app' } | { type: 'enroll'; grant: string } |
   { type: 'decision'; installationId: string; event: PolicyEvent } |
   { type: 'coverage'; installationId: string; coverage: Coverage };
 

@@ -19,12 +19,23 @@ assert.match(token ?? '', /^[a-f0-9]{64}$/);
 const marker = 'ZEKVAR_TEST_SECRET';
 const fixture = await readFile(new URL('./guest-chatgpt-composer.html', import.meta.url), 'utf8');
 
-async function events() {
-  const response = await fetch(`${api}/v1/admin/events?appId=chatgpt`, {
+async function adminGet(path) {
+  const response = await fetch(`${api}/v1/admin/${path}`, {
     headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000),
   });
   assert.equal(response.status, 200);
   return response.json();
+}
+
+const events = () => adminGet('events?appId=chatgpt');
+const inventory = () => adminGet('ai-apps');
+
+async function waitUntil(check, message) {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if (await check()) return;
+    await delay(100);
+  }
+  assert.fail(message);
 }
 
 async function waitForEvents(count) {
@@ -45,8 +56,10 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
   const dir = await mkdtemp(join(tmpdir(), 'zekvar-demo-profile-'));
   const dist = join(dir, 'extension');
   const attempts = [];
+  const observationAttempts = [];
   let offline = false;
   let loseAcknowledgment = false;
+  let loseObservationAcknowledgment = false;
   let browser;
   const proxy = createServer(async (request, reply) => {
     try {
@@ -56,7 +69,9 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
       for await (const chunk of request) chunks.push(chunk);
       const body = Buffer.concat(chunks);
       const isEvent = request.url === '/v1/browser/events';
+      const isObservation = request.url === '/v1/browser/ai-app-observations';
       if (isEvent) attempts.push(JSON.parse(body.toString()));
+      if (isObservation) observationAttempts.push(JSON.parse(body.toString()));
       const response = await fetch(`${api}${request.url}`, {
         method: request.method, signal: AbortSignal.timeout(5000),
         headers: {
@@ -67,6 +82,10 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
       });
       if (isEvent && response.ok && loseAcknowledgment) {
         loseAcknowledgment = false;
+        return reply.writeHead(503).end();
+      }
+      if (isObservation && response.ok && loseObservationAcknowledgment) {
+        loseObservationAcknowledgment = false;
         return reply.writeHead(503).end();
       }
       reply.writeHead(response.status, { 'Content-Type': 'application/json' }).end(await response.text());
@@ -317,5 +336,83 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
     assert.deepEqual(restored.filter(({ policyVersion }) => policyVersion === version + 1).map(({ ruleId, decision }) => [ruleId, decision]),
       [['github-classic-pat', 'monitor']]);
     assert.ok(!JSON.stringify(attempts).includes(fakePat) && !JSON.stringify(restored).includes(fakePat));
+  });
+
+  let discoveryOffVersion;
+  let discoveryOnVersion;
+  const discoveryMode = dashboard.getByLabel('AI app discovery', { exact: true });
+  const apps = dashboard.getByRole('table', { name: 'AI apps' });
+  const appPage = await browser.newPage();
+  const privateDetail = 'SYNTHETIC_PRIVATE_PAGE_DETAIL';
+  const appFixture = `<html><title>${privateDetail}</title><p>${privateDetail}</p></html>`;
+  await appPage.route('https://**/*', (route) => route.fulfill({
+    contentType: 'text/html',
+    body: new URL(route.request().url()).hostname === 'claude.ai.example.test'
+      ? '<iframe src="https://gemini.google.com/embed"></iframe>' : appFixture,
+  }));
+  const openApp = (host) => appPage.goto(`https://${host}/fixture/${privateDetail}?conversation=${privateDetail}#${privateDetail}`);
+  const sync = () => popup.getByRole('button', { name: 'Sync now' }).click();
+  const policyVersion = async () => Number((await policyHistory.locator('tbody tr').first().locator('td').first().innerText()).slice(1));
+
+  await t.test('enabling discovery records only top-level visits on the three catalog origins', async () => {
+    assert.equal(await discoveryMode.inputValue(), 'off');
+    discoveryOffVersion = await policyVersion();
+    await openApp('claude.ai');
+    discoveryOnVersion = discoveryOffVersion + 1;
+    const markerMode = await dashboard.getByLabel('Test marker', { exact: true }).inputValue();
+    await discoveryMode.selectOption('on');
+    await dashboard.getByRole('button', { name: 'Publish policy' }).click();
+    await dashboard.getByText(`Version ${discoveryOnVersion} published in ${markerMode} mode.`, { exact: true }).waitFor();
+    await sync();
+    await popup.getByText(`Connected to Control · ${markerMode.toUpperCase()} v${discoveryOnVersion}`, { exact: true }).waitFor();
+    assert.ok((await inventory()).every(({ browsersSeen }) => browsersSeen === 0));
+
+    await openApp('claude.ai.example.test');
+    await appPage.frameLocator('iframe').getByText(privateDetail).waitFor();
+    await openApp('claude.ai');
+    await waitUntil(async () => (await inventory())[1].browsersSeen === 1, 'Claude was not recorded.');
+    assert.deepEqual(observationAttempts.map(({ appId }) => appId), ['claude']);
+    await openApp('chatgpt.com');
+    await openApp('gemini.google.com');
+    await waitUntil(async () => (await inventory()).every(({ browsersSeen }) => browsersSeen === 1),
+      'Expected a browser for each catalog app.');
+    assert.equal(observationAttempts.length, 3);
+    for (const observation of observationAttempts) {
+      assert.deepEqual(Object.keys(observation).sort(), ['appId', 'observedAt', 'policyVersion']);
+      assert.equal(observation.policyVersion, discoveryOnVersion);
+    }
+    assert.ok(!JSON.stringify(observationAttempts).includes(privateDetail));
+    await dashboard.getByRole('button', { name: 'Refresh AI apps' }).click();
+    await apps.getByRole('row', { name: /Gemini/ }).getByText('1', { exact: true }).waitFor();
+    await dashboard.getByLabel('Claude classification', { exact: true }).selectOption('unapproved');
+    await dashboard.getByRole('button', { name: 'Save Claude classification' }).click();
+    await dashboard.getByText('Claude classification saved.', { exact: true }).waitFor();
+    await dashboard.getByLabel('ChatGPT classification', { exact: true }).selectOption('approved');
+    await dashboard.getByRole('button', { name: 'Save ChatGPT classification' }).click();
+    await dashboard.getByText('ChatGPT classification saved.', { exact: true }).waitFor();
+    assert.deepEqual((await inventory()).map(({ status }) => status), ['approved', 'unapproved', 'unreviewed']);
+    await screenshot(dashboard, '11-ai-app-inventory.png');
+  });
+
+  await t.test('discovery retries a lost acknowledgment and rollback stops subsequent reporting', async () => {
+    loseObservationAcknowledgment = true;
+    const initialAttempts = observationAttempts.length;
+    await openApp('claude.ai');
+    await waitUntil(async () => !loseObservationAcknowledgment, 'The proxy did not drop the observation acknowledgment.');
+    const committed = (await inventory())[1];
+    await sync();
+    await waitUntil(async () => observationAttempts.length === initialAttempts + 2, 'The observation was not retried.');
+    assert.deepEqual(observationAttempts.slice(-2), Array(2).fill(observationAttempts.at(-1)));
+    assert.deepEqual((await inventory())[1], committed);
+
+    await dashboard.getByRole('button', { name: `Restore version ${discoveryOffVersion}`, exact: true }).click();
+    await dashboard.getByText(`Version ${discoveryOffVersion} restored as version ${discoveryOnVersion + 1}.`, { exact: true }).waitFor();
+    assert.equal(await discoveryMode.inputValue(), 'off');
+    await sync();
+    await popup.getByText(new RegExp(`Connected to Control · [A-Z]+ v${discoveryOnVersion + 1}$`)).waitFor();
+    await openApp('claude.ai');
+    await sync();
+    assert.equal(observationAttempts.length, initialAttempts + 2);
+    assert.deepEqual((await inventory())[1], committed);
   });
 });

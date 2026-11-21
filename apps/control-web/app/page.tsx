@@ -1,11 +1,12 @@
 import { ApiError, controlApi } from '../lib/api';
 import {
-  chatGptApp, decisionLabels, decisions, detectorModeLabels, detectorModes, fixtureApp, modes, utc,
-  type Decision, type Installation, type Policy, type SecurityEvent,
+  aiApps, chatGptApp, classifications, classificationLabels, decisionLabels, decisions, detectorModeLabels,
+  detectorModes, fixtureApp, modes, utc,
+  type Decision, type DiscoveredApp, type Installation, type Policy, type SecurityEvent,
 } from '../lib/control';
 import { sessionToken } from '../lib/session';
-import { publishPolicy, restorePolicy, revokeInstallation, signOut } from './actions';
-import { EnrollmentForm, MutationForm, RefreshBrowserHealth, SignInForm } from './forms';
+import { classifyAiApp, publishPolicy, restorePolicy, revokeInstallation, signOut } from './actions';
+import { EnrollmentForm, MutationForm, RefreshSection, SignInForm } from './forms';
 
 type Search = Record<string, string | string[] | undefined>;
 
@@ -26,9 +27,9 @@ export default async function Control({ searchParams }: { searchParams: Promise<
   const filters = eventFilters(await searchParams);
 
   try {
-    const [session, policies, installations, events] = await Promise.all([
+    const [session, policies, installations, events, discoveredApps] = await Promise.all([
       controlApi.session(token), controlApi.policies(token),
-      controlApi.installations(token), controlApi.events(token, filters.query),
+      controlApi.installations(token), controlApi.events(token, filters.query), controlApi.aiApps(token),
     ]);
     const current = policies[0];
     const active = installations.filter(({ revokedAt }) => !revokedAt).length;
@@ -38,6 +39,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
         <nav aria-label="Dashboard sections">
           <a href="#overview">Overview</a>
           <a href="#policies">Policies</a>
+          <a href="#ai-apps">AI apps</a>
           <a href="#browsers">Browsers</a>
           <a href="#events">Events</a>
         </nav>
@@ -70,7 +72,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
         <div className="controls-grid">
           <section className="panel" id="policies" aria-labelledby="policies-heading">
             <div className="panel-heading"><h2 id="policies-heading">Publish a policy</h2><span className="badge">Organization-wide</span></div>
-            <p className="muted">Choose how Zekvar responds to each rule.</p>
+            <p className="muted">Set prompt protection and app discovery for enrolled browsers.</p>
             <MutationForm action={publishPolicy} label="Publish policy" appearance="primary">
               <div className="grid gap-1">
                 <label htmlFor="publish-mode">Test marker</label>
@@ -82,6 +84,12 @@ export default async function Control({ searchParams }: { searchParams: Promise<
                 <label htmlFor="github-pat-mode">GitHub classic PAT</label>
                 <select key={current?.version} id="github-pat-mode" name="githubPatMode" defaultValue={current?.githubPatMode ?? 'off'}>
                   {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+                </select>
+              </div>
+              <div className="grid gap-1">
+                <label htmlFor="discovery-mode">AI app discovery</label>
+                <select key={current?.version} id="discovery-mode" name="discoveryEnabled" defaultValue={current?.discoveryEnabled ? 'on' : 'off'}>
+                  <option value="off">Off</option><option value="on">On</option>
                 </select>
               </div>
             </MutationForm>
@@ -97,15 +105,26 @@ export default async function Control({ searchParams }: { searchParams: Promise<
           <div className="panel-heading"><h2 id="history-heading">Policy history</h2><span className="table-note">Latest 100 versions</span></div>
           <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="history-heading">
             <table aria-labelledby="history-heading">
-              <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
+              <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>AI app discovery</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
               <tbody>{policies.map((policy) => <PolicyRow key={policy.version} policy={policy} current={policy.version === current?.version} />)}</tbody>
             </table>
             {policies.length === 0 && <p className="empty">Publish a policy to start the version history.</p>}
           </div>
         </section>
 
+        <section className="panel table-panel" id="ai-apps" aria-labelledby="ai-apps-heading">
+          <div className="panel-heading"><h2 id="ai-apps-heading">AI apps</h2><RefreshSection label="Refresh AI apps" /></div>
+          <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="ai-apps-heading">
+            <table aria-labelledby="ai-apps-heading">
+              <thead><tr><th>Application</th><th>Browsers seen (30 days)</th><th>Last observed (UTC)</th><th>Classification</th></tr></thead>
+              <tbody>{discoveredApps.map((app) => <DiscoveredAppRow key={app.appId} app={app} />)}</tbody>
+            </table>
+          </div>
+          <p className="empty">Cataloged pages opened in enrolled Chrome browsers. Classification labels help review usage. Configure enforcement in policies.</p>
+        </section>
+
         <section className="panel table-panel" id="browsers" aria-labelledby="browsers-heading">
-          <div className="panel-heading"><h2 id="browsers-heading">Browser health</h2><RefreshBrowserHealth /></div>
+          <div className="panel-heading"><h2 id="browsers-heading">Browser health</h2><RefreshSection label="Refresh browser health" /></div>
           <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="browsers-heading">
             <table aria-labelledby="browsers-heading">
               <thead><tr><th>Installation</th><th>Reporting</th><th>Policy status</th><th>Applied version</th><th>ChatGPT composer</th><th>Last seen (UTC)</th><th>Action</th></tr></thead>
@@ -197,12 +216,30 @@ function PolicyRow({ policy, current }: { policy: Policy; current: boolean }) {
   return <tr>
     <td className="emphasis">v{policy.version}</td><td><DecisionBadge decision={policy.mode} /></td>
     <td>{detectorModeLabels[policy.githubPatMode ?? 'off']}</td>
+    <td>{policy.discoveryEnabled ? 'On' : 'Off'}</td>
     <td><Timestamp value={policy.publishedAt} /></td>
     <td>{policy.restoredFrom ? `v${policy.restoredFrom}` : '—'}</td>
     <td>{current ? <span className="badge current">Current</span> :
       <MutationForm action={restorePolicy} label="Restore" appearance="small" accessibleLabel={`Restore version ${policy.version}`}>
         <input type="hidden" name="version" value={policy.version} />
       </MutationForm>}
+    </td>
+  </tr>;
+}
+
+function DiscoveredAppRow({ app }: { app: DiscoveredApp }) {
+  const name = aiApps[app.appId];
+  return <tr>
+    <th scope="row" className="emphasis">{name}</th>
+    <td>{app.browsersSeen}</td>
+    <td>{app.lastObservedAt ? <Timestamp value={app.lastObservedAt} /> : '—'}</td>
+    <td>
+      <MutationForm action={classifyAiApp} label="Save" appearance="small" accessibleLabel={`Save ${name} classification`}>
+        <input type="hidden" name="appId" value={app.appId} />
+        <select key={app.status} name="status" aria-label={`${name} classification`} defaultValue={app.status}>
+          {classifications.map((status) => <option key={status} value={status}>{classificationLabels[status]}</option>)}
+        </select>
+      </MutationForm>
     </td>
   </tr>;
 }

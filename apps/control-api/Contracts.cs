@@ -22,6 +22,14 @@ internal static class FixtureContract
         (IsMode(request.Decision) || request.Decision == "warn_override");
 }
 
+internal static class DiscoveryCatalog
+{
+    public static readonly string[] AppIds = [FixtureContract.ChatGpt, "claude", "gemini"];
+
+    public static bool IsApp(string? appId) => appId is not null && AppIds.Contains(appId);
+    public static bool IsStatus(string? status) => status is "unreviewed" or "approved" or "unapproved";
+}
+
 internal static class Tokens
 {
     public static string Generate() => Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
@@ -34,19 +42,24 @@ internal static class Tokens
 
 internal sealed record DemoOrganization(string Slug, string AdminToken);
 internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId, string? OrganizationSlug);
-internal sealed record PublishPolicy(string Mode, string? GithubPatMode = null);
+internal sealed record PublishPolicy(string Mode, string? GithubPatMode = null, bool? DiscoveryEnabled = null);
 internal sealed record RedeemGrant(string Grant);
 internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = null);
 internal sealed record PolicyEvent(Guid EventId, string AppId, DateTimeOffset Timestamp, string RuleId,
     string DetectorCategory, int PolicyVersion, string Decision);
 
-internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, int? RestoredFrom, string GithubPatMode)
+internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, int? RestoredFrom, string GithubPatMode,
+    bool DiscoveryEnabled)
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => [FixtureContract.AppId, FixtureContract.ChatGpt];
     public string RuleId => FixtureContract.RuleId;
     public string DetectorCategory => FixtureContract.DetectorCategory;
 }
+
+internal sealed record AppObservation(string AppId, DateTimeOffset ObservedAt, int PolicyVersion);
+internal sealed record ClassifyApp(string Status);
+internal sealed record DiscoveredApp(string AppId, string Status, long BrowsersSeen, DateTime? LastObservedAt);
 
 internal sealed record EnrollmentGrant(string Grant, DateTime ExpiresAt);
 internal sealed record Enrollment(Guid InstallationId, string Token);

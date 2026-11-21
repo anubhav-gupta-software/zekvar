@@ -200,4 +200,63 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual(duplicates, []);
     assert.deepEqual(metadata, historical);
   });
+
+  await t.test('AI discovery is opt-in, tenant scoped, monotonic, and revocable', async () => {
+    const enroll = async () => {
+      const { grant } = await call('/v1/admin/enrollment-grants', { method: 'POST', token: second });
+      return call('/v1/enroll', { method: 'POST', body: { grant } });
+    };
+    const browser = await enroll();
+    const another = await enroll();
+    const inventory = (token = second) => call('/v1/admin/ai-apps', { token });
+    const classify = (appId, status, token = second, expect = 204) =>
+      call(`/v1/admin/ai-apps/${appId}/classification`, { method: 'POST', token, body: { status }, expect });
+    const publish = (body) => call('/v1/admin/policies', { method: 'POST', token: second, body });
+    const observe = (body, expect = 204, token = browser.token) =>
+      call('/v1/browser/ai-app-observations', { method: 'POST', token, body, expect });
+    const initial = await call('/v1/browser/policy', { token: browser.token });
+    const observedAt = new Date();
+    const observation = { appId: 'claude', observedAt: observedAt.toISOString(), policyVersion: initial.version };
+
+    assert.equal(initial.discoveryEnabled, false);
+    assert.deepEqual((await inventory()).map((app) => app.appId), ['chatgpt', 'claude', 'gemini']);
+    await call('/v1/admin/ai-apps', { token: browser.token, expect: 401 });
+    await classify('claude', 'approved', browser.token, 401);
+    await classify('claude', 'unknown', second, 400);
+    await classify('unknown', 'approved', second, 400);
+    await observe(observation, 401, second);
+    await observe(observation, 400);
+    const enabled = await publish({ mode: 'monitor', discoveryEnabled: true });
+    assert.equal((await publish({ mode: 'block' })).discoveryEnabled, true);
+    const permitted = { ...observation, policyVersion: enabled.version };
+    await observe({ ...permitted, url: 'https://claude.ai/private?value=synthetic' }, 400);
+    await observe({ ...permitted, appId: 'other' }, 400);
+    await observe({ ...permitted, policyVersion: 999 }, 400);
+    await observe({ ...permitted, observedAt: new Date(observedAt.getTime() + 600_000).toISOString() }, 400);
+    await observe({ ...permitted, observedAt: new Date(observedAt.getTime() - 32 * 86_400_000).toISOString() }, 400);
+    await Promise.all([observe(permitted), observe(permitted),
+      observe({ ...permitted, observedAt: new Date(observedAt.getTime() - 2000).toISOString() })]);
+    const { lastObservedAt, ...app } = (await inventory())[1];
+    assert.deepEqual(app, { appId: 'claude', status: 'unreviewed', browsersSeen: 1 });
+    assert.equal(Date.parse(lastObservedAt), observedAt.getTime());
+    await observe(permitted, 204, another.token);
+    await classify('claude', 'approved');
+    const [ours, theirs] = await Promise.all([inventory(), inventory(first)]);
+    assert.equal(ours[1].browsersSeen, 2);
+    assert.equal(ours[1].status, 'approved');
+    assert.deepEqual(theirs[1], { appId: 'claude', status: 'unreviewed', browsersSeen: 0, lastObservedAt: null });
+
+    const restored = await call('/v1/admin/policies/1/restore', { method: 'POST', token: second });
+    assert.equal(restored.discoveryEnabled, false);
+    await observe(permitted, 400);
+    const reenabled = await call(`/v1/admin/policies/${enabled.version}/restore`, { method: 'POST', token: second });
+    assert.equal(reenabled.discoveryEnabled, true);
+    await observe(permitted, 400);
+    await observe({ ...permitted, policyVersion: reenabled.version });
+    await call(`/v1/admin/installations/${browser.installationId}/revoke`, { method: 'POST', token: second, expect: 204 });
+    await observe({ ...permitted, policyVersion: reenabled.version }, 401);
+    await stop();
+    await start();
+    assert.deepEqual(await inventory(), ours);
+  });
 });

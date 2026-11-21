@@ -45,6 +45,10 @@ Use `Authorization: Bearer …` with the admin token for `/v1/admin` routes and 
 
 Policies advertise the available app IDs in `appIds`. Publish requests accept `mode` for the test marker and an optional `githubPatMode` for the GitHub classic PAT rule. The GitHub rule starts `off`. Omitting `githubPatMode` preserves its current setting, and restoring a version restores both modes. Event ingestion accepts the fixed app IDs `local-prompt-fixture` and `chatgpt` and the rule and category pairs `fixture-secret` with `synthetic-secret` and `github-classic-pat` with `credential`. Each decision must match the named policy version and rule. Heartbeats can include `chatGptCoverage` set to `ready` or `unsupported`. The event list supports `appId`, `decision`, and `since` query filters. [Shared example payloads](../../contracts/control/demo-v1.json)
 
+Publish requests also accept an optional `discoveryEnabled` boolean. Discovery is Off on existing and new policies. Omitting the setting keeps its latest value. Policy restore brings back the stored setting. `POST /v1/browser/ai-app-observations` accepts `appId`, `observedAt`, and `policyVersion` from enrolled browsers. Control stores the latest timestamp for each browser and catalog app and rejects observations from before the most recent Off policy.
+
+`GET /v1/admin/ai-apps` returns ChatGPT, Claude, and Gemini with their classifications, distinct browser counts over 30 days, and latest observation times. `POST /v1/admin/ai-apps/{appId}/classification` accepts a `status` of `unreviewed`, `approved`, or `unapproved`. Classifications apply to the signed-in organization and remain in place when a policy is restored.
+
 For isolated API or browser tests, `Control__Port` selects a different loopback port. The default dashboard and extension use `5187`.
 
 ## Verify the workflow

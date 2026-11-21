@@ -18,6 +18,7 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
         await ApplyMigration(connection, 1, "001_initial.sql", ct);
         await ApplyMigration(connection, 2, "002_chatgpt_coverage.sql", ct);
         await ApplyMigration(connection, 3, "003_github_pat.sql", ct);
+        await ApplyMigration(connection, 4, "004_ai_discovery.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -98,7 +99,7 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
         return await command.ExecuteNonQueryAsync(ct) == 1 ? new(installationId, token) : null;
     }
 
-    public async Task<Policy?> Publish(Guid organizationId, string? mode, string? githubPatMode, int? restoredFrom, CancellationToken ct)
+    public async Task<Policy?> Publish(Guid organizationId, PublishPolicy? request, int? restoredFrom, CancellationToken ct)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
@@ -109,7 +110,8 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
 
         await using var command = new NpgsqlCommand("""
             WITH selection AS (
-                SELECT COALESCE($2::text, p.mode) AS mode, COALESCE($4::text, p.github_pat_mode) AS github_pat_mode
+                SELECT COALESCE($2::text, p.mode) AS mode, COALESCE($4::text, p.github_pat_mode) AS github_pat_mode,
+                    COALESCE($5::boolean, p.discovery_enabled) AS discovery_enabled
                 FROM organizations o JOIN policy_versions p ON p.organization_id = o.id
                   AND p.version = COALESCE($3::integer, o.policy_version)
                 WHERE o.id = $1
@@ -118,17 +120,17 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
                 WHERE id = $1 AND EXISTS (SELECT 1 FROM selection)
                 RETURNING id, policy_version
             ), published AS (
-                INSERT INTO policy_versions (organization_id, version, mode, github_pat_mode)
-                SELECT id, policy_version, mode, github_pat_mode FROM next_version CROSS JOIN selection
-                RETURNING organization_id, version, mode, published_at, github_pat_mode
+                INSERT INTO policy_versions (organization_id, version, mode, github_pat_mode, discovery_enabled)
+                SELECT id, policy_version, mode, github_pat_mode, discovery_enabled FROM next_version CROSS JOIN selection
+                RETURNING organization_id, version, mode, published_at, github_pat_mode, discovery_enabled
             ), audit AS (
                 INSERT INTO policy_audit (organization_id, version, restored_from)
                 SELECT organization_id, version, $3 FROM published
             )
-            SELECT version, mode, published_at, $3, github_pat_mode FROM published
+            SELECT version, mode, published_at, $3, github_pat_mode, discovery_enabled FROM published
             """, connection, transaction);
-        AddParameters(command, organizationId, (object?)mode ?? DBNull.Value, (object?)restoredFrom ?? DBNull.Value,
-            (object?)githubPatMode ?? DBNull.Value);
+        AddParameters(command, organizationId, (object?)request?.Mode ?? DBNull.Value, (object?)restoredFrom ?? DBNull.Value,
+            (object?)request?.GithubPatMode ?? DBNull.Value, (object?)request?.DiscoveryEnabled ?? DBNull.Value);
         Policy? policy;
         await using (var rows = await command.ExecuteReaderAsync(ct))
             policy = await rows.ReadAsync(ct) ? ReadPolicy(rows) : null;
@@ -139,7 +141,7 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
     public async Task<IReadOnlyList<Policy>> PolicyHistory(Guid organizationId, CancellationToken ct)
     {
         await using var command = Command("""
-            SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode
+            SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 ORDER BY p.version DESC LIMIT 100
             """, organizationId);
@@ -156,7 +158,7 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
                 UPDATE installations SET last_seen_at = GREATEST(last_seen_at, now())
                 WHERE id = $1 AND revoked_at IS NULL RETURNING organization_id
             )
-            SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode
+            SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled
             FROM active JOIN organizations o ON o.id = active.organization_id
             JOIN policy_versions p ON p.organization_id = o.id AND p.version = o.policy_version
             LEFT JOIN policy_audit a ON a.organization_id = p.organization_id AND a.version = p.version
@@ -243,6 +245,55 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
         return events;
     }
 
+    public async Task<bool> ObserveApp(Guid installationId, AppObservation observation, CancellationToken ct)
+    {
+        await using var command = Command("""
+            WITH active AS (
+                SELECT organization_id, enrolled_at FROM installations WHERE id = $1 AND revoked_at IS NULL FOR SHARE
+            ), eligible AS (
+                SELECT p.organization_id FROM active
+                JOIN policy_versions p ON p.organization_id = active.organization_id AND p.version = $4
+                WHERE p.discovery_enabled AND $3 BETWEEN GREATEST(enrolled_at - interval '5 minutes', now() - interval '30 days')
+                    AND now() + interval '5 minutes'
+                  AND NOT EXISTS (SELECT 1 FROM policy_versions later
+                    WHERE later.organization_id = p.organization_id AND later.version > p.version AND NOT later.discovery_enabled)
+            ), recorded AS (
+                INSERT INTO ai_app_observations (organization_id, installation_id, app_id, observed_at)
+                SELECT organization_id, $1, $2, $3 FROM eligible
+                ON CONFLICT (organization_id, app_id, installation_id) DO UPDATE SET observed_at = EXCLUDED.observed_at
+                WHERE ai_app_observations.observed_at < EXCLUDED.observed_at
+            )
+            SELECT EXISTS (SELECT 1 FROM eligible)
+            """, installationId, observation.AppId, observation.ObservedAt.UtcDateTime, observation.PolicyVersion);
+        return (bool)(await command.ExecuteScalarAsync(ct))!;
+    }
+
+    public async Task<IReadOnlyList<DiscoveredApp>> DiscoveredApps(Guid organizationId, CancellationToken ct)
+    {
+        await using var command = Command("""
+            SELECT catalog.app_id, COALESCE(c.status, 'unreviewed'), count(o.installation_id), max(o.observed_at)
+            FROM unnest($2::text[]) WITH ORDINALITY AS catalog(app_id, position)
+            LEFT JOIN ai_app_classifications c ON c.organization_id = $1 AND c.app_id = catalog.app_id
+            LEFT JOIN ai_app_observations o ON o.organization_id = $1 AND o.app_id = catalog.app_id
+                AND o.observed_at >= now() - interval '30 days'
+            GROUP BY catalog.app_id, catalog.position, c.status ORDER BY catalog.position
+            """, organizationId, DiscoveryCatalog.AppIds);
+        var apps = new List<DiscoveredApp>();
+        await using var rows = await command.ExecuteReaderAsync(ct);
+        while (await rows.ReadAsync(ct))
+            apps.Add(new(rows.GetString(0), rows.GetString(1), rows.GetInt64(2), rows.IsDBNull(3) ? null : rows.GetDateTime(3)));
+        return apps;
+    }
+
+    public async Task ClassifyApp(Guid organizationId, string appId, string status, CancellationToken ct)
+    {
+        await using var command = Command("""
+            INSERT INTO ai_app_classifications (organization_id, app_id, status) VALUES ($1, $2, $3)
+            ON CONFLICT (organization_id, app_id) DO UPDATE SET status = EXCLUDED.status
+            """, organizationId, appId, status);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
     private NpgsqlCommand Command(string sql, params object[] values)
     {
         var command = dataSource.CreateCommand(sql);
@@ -256,5 +307,5 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
     }
 
     private static Policy ReadPolicy(NpgsqlDataReader rows) => new(rows.GetInt32(0), rows.GetString(1),
-        rows.GetDateTime(2), rows.IsDBNull(3) ? null : rows.GetInt32(3), rows.GetString(4));
+        rows.GetDateTime(2), rows.IsDBNull(3) ? null : rows.GetInt32(3), rows.GetString(4), rows.GetBoolean(5));
 }

@@ -59,13 +59,22 @@ admin.MapGet("/policies", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.PolicyHistory(Identity(http).OrganizationId, ct)));
 admin.MapPost("/policies", async (PublishPolicy request, HttpContext http, CancellationToken ct) =>
     FixtureContract.IsMode(request.Mode) && (request.GithubPatMode is null or "off" || FixtureContract.IsMode(request.GithubPatMode))
-        ? Results.Ok(await store.Publish(Identity(http).OrganizationId, request.Mode, request.GithubPatMode, null, ct))
+        ? Results.Ok(await store.Publish(Identity(http).OrganizationId, request, null, ct))
         : Results.BadRequest(new { error = "Choose a valid rule mode." }));
 admin.MapPost("/policies/{version:int}/restore", async (int version, HttpContext http, CancellationToken ct) =>
-    await store.Publish(Identity(http).OrganizationId, null, null, version, ct) is { } published
+    await store.Publish(Identity(http).OrganizationId, null, version, ct) is { } published
         ? Results.Ok(published) : Results.NotFound());
 admin.MapGet("/events", async (string? appId, string? decision, DateTimeOffset? since, HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.Events(Identity(http).OrganizationId, appId, decision, since, ct)));
+admin.MapGet("/ai-apps", async (HttpContext http, CancellationToken ct) =>
+    Results.Ok(await store.DiscoveredApps(Identity(http).OrganizationId, ct)));
+admin.MapPost("/ai-apps/{appId}/classification", async (string appId, ClassifyApp request, HttpContext http, CancellationToken ct) =>
+{
+    if (!DiscoveryCatalog.IsApp(appId) || !DiscoveryCatalog.IsStatus(request.Status))
+        return Results.BadRequest(new { error = "Choose a cataloged app and a valid classification." });
+    await store.ClassifyApp(Identity(http).OrganizationId, appId, request.Status, ct);
+    return Results.NoContent();
+});
 
 app.MapPost("/v1/enroll", async (RedeemGrant request, CancellationToken ct) =>
     Tokens.IsValid(request.Grant) && await store.Enroll(request.Grant, ct) is { } enrollment
@@ -82,6 +91,10 @@ browser.MapPost("/heartbeat", async (Heartbeat request, HttpContext http, Cancel
 browser.MapPost("/events", async (PolicyEvent request, HttpContext http, CancellationToken ct) =>
     FixtureContract.IsEvent(request) && await store.Ingest(Identity(http).InstallationId!.Value, request, ct)
         ? Results.NoContent() : Results.BadRequest(new { error = "Invalid policy event." }));
+browser.MapPost("/ai-app-observations", async (AppObservation request, HttpContext http, CancellationToken ct) =>
+    DiscoveryCatalog.IsApp(request.AppId) && request.PolicyVersion > 0 &&
+    await store.ObserveApp(Identity(http).InstallationId!.Value, request, ct)
+        ? Results.NoContent() : Results.BadRequest(new { error = "Invalid app observation or discovery disabled." }));
 
 await app.RunAsync();
 

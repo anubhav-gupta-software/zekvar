@@ -327,7 +327,7 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
     const diagnostics = await chatGpt.evaluate(() => navigator.clipboard.readText());
     assert.doesNotMatch(diagnostics, /ZEKVAR_TEST_SECRET|fixture-alt|private-option/);
     assert.deepEqual(JSON.parse(diagnostics), {
-      version: '0.5.0', route: 'conversation', markedEditors: 1, visibleMarkedEditors: 1,
+      version: '0.6.0', route: 'conversation', markedEditors: 1, visibleMarkedEditors: 1,
       hasEditorForm: false, visibleTextareas: 0, visibleEditableRoots: 1,
       hasComposerSubmitId: true, hasSendTestId: false, hasLabeledSend: true, hasPairedSend: true,
     });

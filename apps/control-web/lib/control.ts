@@ -16,10 +16,20 @@ export const detectorModeLabels: Record<DetectorMode, string> = {
 export const fixtureApp = 'local-prompt-fixture';
 export const chatGptApp = 'chatgpt';
 
+export const aiApps = { chatgpt: 'ChatGPT', claude: 'Claude', gemini: 'Gemini' } as const;
+export type AiAppId = keyof typeof aiApps;
+export const classifications = ['unreviewed', 'approved', 'unapproved'] as const;
+export type AppClassification = typeof classifications[number];
+export const classificationLabels: Record<AppClassification, string> = {
+  unreviewed: 'Unreviewed', approved: 'Approved', unapproved: 'Unapproved',
+};
+export type DiscoveredApp = { appId: AiAppId; status: AppClassification; browsersSeen: number; lastObservedAt: string | null };
+
 export type Policy = {
   version: number;
   mode: Mode;
   githubPatMode?: DetectorMode;
+  discoveryEnabled?: boolean;
   publishedAt: string;
   restoredFrom: number | null;
 };

@@ -5,10 +5,10 @@ import { useRouter } from 'next/navigation';
 import { issueGrant, signIn } from './actions';
 import { utc, type Feedback } from '../lib/control';
 
-export function RefreshBrowserHealth() {
+export function RefreshSection({ label }: { label: string }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  return <button type="button" className="button small" aria-label="Refresh browser health" disabled={pending}
+  return <button type="button" className="button small" aria-label={label} disabled={pending}
     onClick={() => startTransition(() => router.refresh())}>{pending ? 'Refreshing…' : 'Refresh'}</button>;
 }
 

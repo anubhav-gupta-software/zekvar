@@ -3,7 +3,8 @@
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../lib/api';
-import { decisionLabels, detectorModes, modes, type DetectorMode, type Feedback, type Mode } from '../lib/control';
+import { aiApps, classifications, decisionLabels, detectorModes, modes,
+  type AiAppId, type AppClassification, type DetectorMode, type Feedback, type Mode } from '../lib/control';
 import { endSession, sessionToken, startSession } from '../lib/session';
 
 export async function signIn(_previous: Feedback, form: FormData): Promise<Feedback> {
@@ -47,11 +48,27 @@ async function perform(change: (token: string) => Promise<Feedback>): Promise<Fe
 export async function publishPolicy(_previous: Feedback, form: FormData): Promise<Feedback> {
   const mode = form.get('mode') as Mode;
   const githubPatMode = form.get('githubPatMode') as DetectorMode;
-  if (!modes.includes(mode) || !detectorModes.includes(githubPatMode)) return { error: 'Choose a mode for each rule.' };
+  const discovery = form.get('discoveryEnabled');
+  if (!modes.includes(mode) || !detectorModes.includes(githubPatMode) || (discovery !== 'on' && discovery !== 'off')) {
+    return { error: 'Choose a setting for each policy control.' };
+  }
   return perform(async (token) => {
-    const policy = await controlApi.publish(token, mode, githubPatMode);
+    const policy = await controlApi.publish(token, mode, githubPatMode, discovery === 'on');
     revalidatePath('/');
     return { message: `Version ${policy.version} published in ${decisionLabels[mode].toLowerCase()} mode.` };
+  });
+}
+
+export async function classifyAiApp(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const app = form.get('appId') as AiAppId;
+  const status = form.get('status') as AppClassification;
+  if (typeof app !== 'string' || !Object.hasOwn(aiApps, app) || !classifications.includes(status)) {
+    return { error: 'Choose a cataloged app and a valid classification.' };
+  }
+  return perform(async (token) => {
+    await controlApi.classifyApp(token, app, status);
+    revalidatePath('/');
+    return { message: `${aiApps[app]} classification saved.` };
   });
 }
 

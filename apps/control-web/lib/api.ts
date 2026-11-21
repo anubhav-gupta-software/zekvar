@@ -1,4 +1,4 @@
-import type { DetectorMode, Grant, Installation, Mode, Policy, SecurityEvent } from './control';
+import type { AiAppId, AppClassification, DetectorMode, DiscoveredApp, Grant, Installation, Mode, Policy, SecurityEvent } from './control';
 
 const port = Number(process.env.ZEKVAR_CONTROL_PORT ?? 5187);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid Control loopback port.');
@@ -36,7 +36,11 @@ export const controlApi = {
   policies: (token: string) => request<Policy[]>('/policies', token),
   installations: (token: string) => request<Installation[]>('/installations', token),
   events: (token: string, filters: URLSearchParams) => request<SecurityEvent[]>(`/events?${filters}`, token),
-  publish: (token: string, mode: Mode, githubPatMode: DetectorMode) => request<Policy>('/policies', token, 'POST', { mode, githubPatMode }),
+  aiApps: (token: string) => request<DiscoveredApp[]>('/ai-apps', token),
+  classifyApp: (token: string, appId: AiAppId, status: AppClassification) =>
+    request<void>(`/ai-apps/${appId}/classification`, token, 'POST', { status }),
+  publish: (token: string, mode: Mode, githubPatMode: DetectorMode, discoveryEnabled: boolean) =>
+    request<Policy>('/policies', token, 'POST', { mode, githubPatMode, discoveryEnabled }),
   restore: (token: string, version: number) => request<Policy>(`/policies/${version}/restore`, token, 'POST'),
   issueGrant: (token: string) => request<Grant>('/enrollment-grants', token, 'POST'),
   revoke: (token: string, installationId: string) => request<void>(`/installations/${installationId}/revoke`, token, 'POST'),
