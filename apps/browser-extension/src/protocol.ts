@@ -5,17 +5,20 @@ export type AppId = typeof fixtureApp | typeof chatGptApp;
 export type Coverage = 'ready' | 'unsupported';
 export const fixtureRule = 'fixture-secret';
 export const fixtureDetector = 'synthetic-secret';
+export const githubPatRule = 'github-classic-pat';
+export const credentialDetector = 'credential';
 export type PolicyMode = 'monitor' | 'warn' | 'block';
-export type Policy = { version: number; mode: PolicyMode };
+export type DetectorMode = PolicyMode | 'off';
+export type Policy = { version: number; mode: PolicyMode; githubPatMode?: DetectorMode };
+export type RuleMetadata = { ruleId: typeof fixtureRule; detectorCategory: typeof fixtureDetector } |
+  { ruleId: typeof githubPatRule; detectorCategory: typeof credentialDetector };
 export type PolicyEvent = {
   eventId: string;
   appId: AppId;
   timestamp: string;
-  ruleId: typeof fixtureRule;
-  detectorCategory: typeof fixtureDetector;
   policyVersion: number;
   decision: PolicyMode | 'warn_override';
-};
+} & RuleMetadata;
 
 export type Summary = {
   status: 'standalone' | 'connected' | 'offline' | 'revoked';
@@ -68,18 +71,28 @@ export function isMode(value: unknown): value is PolicyMode {
   return value === 'monitor' || value === 'warn' || value === 'block';
 }
 
+export function isDetectorMode(value: unknown): value is DetectorMode {
+  return value === 'off' || isMode(value);
+}
+
 export function isId(value: unknown): value is string {
   return typeof value === 'string' && /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(value);
 }
 
 export function readMetadata(value: unknown): PolicyEvent | undefined {
   if (!isRecord(value) || !isId(value.eventId) || !isVersion(value.policyVersion) ||
-      (value.appId !== fixtureApp && value.appId !== chatGptApp) || value.ruleId !== fixtureRule || value.detectorCategory !== fixtureDetector ||
+      (value.appId !== fixtureApp && value.appId !== chatGptApp) ||
       !(isMode(value.decision) || value.decision === 'warn_override') ||
       typeof value.timestamp !== 'string' || !Number.isFinite(Date.parse(value.timestamp))) return;
 
-  return {
+  const event = {
     eventId: value.eventId, appId: value.appId, timestamp: new Date(value.timestamp).toISOString(),
-    ruleId: fixtureRule, detectorCategory: fixtureDetector, policyVersion: value.policyVersion, decision: value.decision,
-  };
+    policyVersion: value.policyVersion, decision: value.decision,
+  } as const;
+  if (value.ruleId === fixtureRule && value.detectorCategory === fixtureDetector) {
+    return { ...event, ruleId: fixtureRule, detectorCategory: fixtureDetector };
+  }
+  if (value.ruleId === githubPatRule && value.detectorCategory === credentialDetector) {
+    return { ...event, ruleId: githubPatRule, detectorCategory: credentialDetector };
+  }
 }

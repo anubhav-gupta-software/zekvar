@@ -9,12 +9,16 @@ internal static class FixtureContract
     public const string ChatGpt = "chatgpt";
     public const string RuleId = "fixture-secret";
     public const string DetectorCategory = "synthetic-secret";
+    public const string GitHubPatRule = "github-classic-pat";
+    public const string CredentialCategory = "credential";
 
     public static bool IsMode(string? mode) => mode is "monitor" or "warn" or "block";
 
     public static bool IsEvent(PolicyEvent request) =>
         request.EventId != Guid.Empty && request.Timestamp != default && request.PolicyVersion > 0 &&
-        (request.AppId is AppId or ChatGpt) && request.RuleId == RuleId && request.DetectorCategory == DetectorCategory &&
+        (request.AppId is AppId or ChatGpt) &&
+        ((request.RuleId == RuleId && request.DetectorCategory == DetectorCategory) ||
+         (request.RuleId == GitHubPatRule && request.DetectorCategory == CredentialCategory)) &&
         (IsMode(request.Decision) || request.Decision == "warn_override");
 }
 
@@ -30,13 +34,13 @@ internal static class Tokens
 
 internal sealed record DemoOrganization(string Slug, string AdminToken);
 internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId, string? OrganizationSlug);
-internal sealed record PublishPolicy(string Mode);
+internal sealed record PublishPolicy(string Mode, string? GithubPatMode = null);
 internal sealed record RedeemGrant(string Grant);
 internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = null);
 internal sealed record PolicyEvent(Guid EventId, string AppId, DateTimeOffset Timestamp, string RuleId,
     string DetectorCategory, int PolicyVersion, string Decision);
 
-internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, int? RestoredFrom)
+internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, int? RestoredFrom, string GithubPatMode)
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => [FixtureContract.AppId, FixtureContract.ChatGpt];
@@ -50,8 +54,8 @@ internal sealed record Installation(Guid InstallationId, DateTime EnrolledAt, Da
     int? AppliedPolicyVersion, DateTime? RevokedAt, string? ChatGptCoverage, DateTime? ChatGptCheckedAt);
 
 internal sealed record StoredEvent(Guid EventId, Guid InstallationId, DateTime Timestamp, DateTime ReceivedAt,
-    int PolicyVersion, string Decision, string AppId)
+    int PolicyVersion, string Decision, string AppId, string RuleId)
 {
-    public string RuleId => FixtureContract.RuleId;
-    public string DetectorCategory => FixtureContract.DetectorCategory;
+    public string DetectorCategory => RuleId == FixtureContract.GitHubPatRule
+        ? FixtureContract.CredentialCategory : FixtureContract.DetectorCategory;
 }

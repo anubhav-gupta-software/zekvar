@@ -56,7 +56,8 @@ function attachFixture() {
       mode.disabled = control.status !== 'standalone';
       sync.hidden = control.status === 'standalone';
       if (mode.disabled && control.policy) mode.value = control.policy.mode;
-      const label = control.policy ? `${control.policy.mode.toUpperCase()} · v${control.policy.version}` : 'waiting for a policy';
+      const github = control.policy?.githubPatMode;
+      const label = control.policy ? `${control.policy.mode.toUpperCase()} · v${control.policy.version}${isMode(github) ? ` · GitHub PAT ${github}` : ''}` : 'waiting for a policy';
       const status = control.status === 'standalone' ? 'Standalone fixture. Open Zekvar Browser to enroll.' :
         control.status === 'connected' ? `Control policy: ${label}` :
         control.status === 'revoked' ? `Control access revoked. Last policy: ${label}.` :
@@ -91,7 +92,9 @@ function attachFixture() {
     }
     clearFeedback();
     const policy = currentPolicy();
-    if (warning.value === prompt.value && policy?.mode === 'warn' && policy.version === warning.match.policyVersion) {
+    const match = policy && evaluatePrompt(prompt.value, policy);
+    if (warning.value === prompt.value && match?.action === 'warn' && match.ruleId === warning.match.ruleId &&
+        match.policyVersion === warning.match.policyVersion) {
       approved = warning.match;
     }
     try {

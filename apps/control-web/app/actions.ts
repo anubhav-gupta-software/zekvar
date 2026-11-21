@@ -3,7 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../lib/api';
-import { decisionLabels, modes, type Feedback, type Mode } from '../lib/control';
+import { decisionLabels, detectorModes, modes, type DetectorMode, type Feedback, type Mode } from '../lib/control';
 import { endSession, sessionToken, startSession } from '../lib/session';
 
 export async function signIn(_previous: Feedback, form: FormData): Promise<Feedback> {
@@ -46,9 +46,10 @@ async function perform(change: (token: string) => Promise<Feedback>): Promise<Fe
 
 export async function publishPolicy(_previous: Feedback, form: FormData): Promise<Feedback> {
   const mode = form.get('mode') as Mode;
-  if (!modes.includes(mode)) return { error: 'Choose a policy mode.' };
+  const githubPatMode = form.get('githubPatMode') as DetectorMode;
+  if (!modes.includes(mode) || !detectorModes.includes(githubPatMode)) return { error: 'Choose a mode for each rule.' };
   return perform(async (token) => {
-    const policy = await controlApi.publish(token, mode);
+    const policy = await controlApi.publish(token, mode, githubPatMode);
     revalidatePath('/');
     return { message: `Version ${policy.version} published in ${decisionLabels[mode].toLowerCase()} mode.` };
   });

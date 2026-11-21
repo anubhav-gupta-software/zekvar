@@ -1,5 +1,5 @@
 import {
-  chatGptApp, fixtureApp, fixtureDetector, fixtureRule, fixtureUrl, isChatGptPage, isId, isMode, isRecord, isToken, isVersion, readMetadata,
+  chatGptApp, fixtureApp, fixtureDetector, fixtureRule, fixtureUrl, isChatGptPage, isDetectorMode, isId, isMode, isRecord, isToken, isVersion, readMetadata,
   type AppId, type Coverage, type Policy, type PolicyEvent, type Reply, type Summary,
 } from './protocol';
 
@@ -111,12 +111,14 @@ async function sync(state: State) {
   try {
     const policy = await request('browser/policy', token);
     if (!isRecord(policy) || !isVersion(policy.version) || !isMode(policy.mode) ||
+        (policy.githubPatMode !== undefined && !isDetectorMode(policy.githubPatMode)) ||
         policy.appId !== fixtureApp || policy.ruleId !== fixtureRule || policy.detectorCategory !== fixtureDetector) {
       throw new Error('Unknown policy format');
     }
-    if (!state.policy || policy.version > state.policy.version ||
-        (policy.version === state.policy.version && policy.mode === state.policy.mode)) {
-      state.policy = { version: policy.version, mode: policy.mode };
+    const githubPatMode = policy.githubPatMode ?? 'off';
+    if (!state.policy || policy.version > state.policy.version || (policy.version === state.policy.version &&
+        policy.mode === state.policy.mode && githubPatMode === (state.policy.githubPatMode ?? 'off'))) {
+      state.policy = { version: policy.version, mode: policy.mode, githubPatMode };
       state.chatGptEnabled = Array.isArray(policy.appIds) && policy.appIds.includes(chatGptApp);
       await save(state);
     }

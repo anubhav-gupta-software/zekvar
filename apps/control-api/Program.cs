@@ -58,11 +58,11 @@ admin.MapPost("/installations/{id:guid}/revoke", async (Guid id, HttpContext htt
 admin.MapGet("/policies", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.PolicyHistory(Identity(http).OrganizationId, ct)));
 admin.MapPost("/policies", async (PublishPolicy request, HttpContext http, CancellationToken ct) =>
-    FixtureContract.IsMode(request.Mode)
-        ? Results.Ok(await store.Publish(Identity(http).OrganizationId, request.Mode, null, ct))
-        : Results.BadRequest(new { error = "Choose monitor, warn, or block." }));
+    FixtureContract.IsMode(request.Mode) && (request.GithubPatMode is null or "off" || FixtureContract.IsMode(request.GithubPatMode))
+        ? Results.Ok(await store.Publish(Identity(http).OrganizationId, request.Mode, request.GithubPatMode, null, ct))
+        : Results.BadRequest(new { error = "Choose a valid rule mode." }));
 admin.MapPost("/policies/{version:int}/restore", async (int version, HttpContext http, CancellationToken ct) =>
-    await store.Publish(Identity(http).OrganizationId, null, version, ct) is { } published
+    await store.Publish(Identity(http).OrganizationId, null, null, version, ct) is { } published
         ? Results.Ok(published) : Results.NotFound());
 admin.MapGet("/events", async (string? appId, string? decision, DateTimeOffset? since, HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.Events(Identity(http).OrganizationId, appId, decision, since, ct)));

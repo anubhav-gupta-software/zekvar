@@ -1,6 +1,6 @@
 import { recordDecision } from './decisions';
 import { evaluatePrompt, type MatchedDecision } from './policy';
-import { chatGptApp, chatGptRoute, isChatGptPage, send, type Coverage, type Summary } from './protocol';
+import { chatGptApp, chatGptRoute, isChatGptPage, isMode, send, type Coverage, type Summary } from './protocol';
 import { composerDiagnostics, inspectComposer, type Composer } from './chatgpt-composer';
 
 type Warning = { input: HTMLElement; value: string; installationId: string; match: MatchedDecision };
@@ -93,9 +93,10 @@ function observe() {
   const installationId = control?.installationId;
   const policy = control?.policy;
   const managedPolicy = installationId && control?.chatGptEnabled ? policy : undefined;
+  const github = managedPolicy?.githubPatMode;
   const label = !managedPolicy ? 'Zekvar · ChatGPT policy unavailable' : coverage === 'unsupported' ?
     `Zekvar · Unsupported composer (${inspection.gap ?? 'Send control missing'})` : !coverage ? 'Zekvar · Checking composer…' :
-      `Zekvar · ${managedPolicy.mode.toUpperCase()} v${managedPolicy.version}${control?.status === 'offline' ? ' · Offline policy' : ''}${current?.button ? '' : ' · Waiting for Send control'}`;
+      `Zekvar · ${managedPolicy.mode.toUpperCase()} v${managedPolicy.version}${isMode(github) ? ` · GitHub PAT ${github}` : ''}${control?.status === 'offline' ? ' · Offline policy' : ''}${current?.button ? '' : ' · Waiting for Send control'}`;
   if (ui.status.textContent !== label) ui.status.textContent = label;
   if (!managedPolicy || !installationId || !coverage) return;
   if (lastCoverage?.installationId === installationId && lastCoverage.coverage === coverage && now - lastCoverage.at < 60_000) return;
@@ -145,11 +146,11 @@ function check(event: Event, current: Composer) {
   clearWarning();
   recordDecision(chatGptApp, match, installationId);
   if (match.action === 'block') {
-    ui.notice.textContent = 'Submission blocked. Remove the test secret and try again.';
+    ui.notice.textContent = `Submission blocked. ${match.reason} Edit the prompt and try again.`;
     current.input.focus();
   } else if (match.action === 'warn') {
     warning = { input: current.input, value, installationId, match };
-    ui.notice.textContent = 'This prompt contains a test secret.';
+    ui.notice.textContent = match.reason;
     ui.actions.hidden = false;
     ui.edit.focus();
   }
@@ -191,8 +192,9 @@ ui.proceed.addEventListener('click', () => {
   clearWarning();
   if (!pending || current?.input !== pending.input || !current.button || current.button.disabled ||
       promptText(current.input) !== pending.value || !isChatGptPage(location.href) || !control?.chatGptEnabled ||
-      control.installationId !== pending.installationId || control.policy?.version !== pending.match.policyVersion ||
-      control.policy?.mode !== 'warn') return;
+      control.installationId !== pending.installationId || !control.policy) return;
+  const match = evaluatePrompt(pending.value, control.policy);
+  if (match.action !== 'warn' || match.ruleId !== pending.match.ruleId || match.policyVersion !== pending.match.policyVersion) return;
   recordDecision(chatGptApp, pending.match, pending.installationId, 'warn_override');
   current.button.click();
 });

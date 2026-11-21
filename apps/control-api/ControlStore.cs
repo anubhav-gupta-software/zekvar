@@ -17,6 +17,7 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
 
         await ApplyMigration(connection, 1, "001_initial.sql", ct);
         await ApplyMigration(connection, 2, "002_chatgpt_coverage.sql", ct);
+        await ApplyMigration(connection, 3, "003_github_pat.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -97,34 +98,48 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
         return await command.ExecuteNonQueryAsync(ct) == 1 ? new(installationId, token) : null;
     }
 
-    public async Task<Policy?> Publish(Guid organizationId, string? mode, int? restoredFrom, CancellationToken ct)
+    public async Task<Policy?> Publish(Guid organizationId, string? mode, string? githubPatMode, int? restoredFrom, CancellationToken ct)
     {
-        await using var command = Command("""
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+        // Read the source version after locking the organization so concurrent publishes cannot lose a rule.
+        await using var gate = new NpgsqlCommand("SELECT id FROM organizations WHERE id = $1 FOR UPDATE", connection, transaction);
+        gate.Parameters.AddWithValue(organizationId);
+        if (await gate.ExecuteScalarAsync(ct) is null) return null;
+
+        await using var command = new NpgsqlCommand("""
             WITH selection AS (
-                SELECT COALESCE($2::text, (SELECT mode FROM policy_versions
-                    WHERE organization_id = $1 AND version = $3::integer)) AS mode
+                SELECT COALESCE($2::text, p.mode) AS mode, COALESCE($4::text, p.github_pat_mode) AS github_pat_mode
+                FROM organizations o JOIN policy_versions p ON p.organization_id = o.id
+                  AND p.version = COALESCE($3::integer, o.policy_version)
+                WHERE o.id = $1
             ), next_version AS (
                 UPDATE organizations SET policy_version = policy_version + 1
-                WHERE id = $1 AND EXISTS (SELECT 1 FROM selection WHERE mode IS NOT NULL)
+                WHERE id = $1 AND EXISTS (SELECT 1 FROM selection)
                 RETURNING id, policy_version
             ), published AS (
-                INSERT INTO policy_versions (organization_id, version, mode)
-                SELECT id, policy_version, mode FROM next_version CROSS JOIN selection
-                RETURNING organization_id, version, mode, published_at
+                INSERT INTO policy_versions (organization_id, version, mode, github_pat_mode)
+                SELECT id, policy_version, mode, github_pat_mode FROM next_version CROSS JOIN selection
+                RETURNING organization_id, version, mode, published_at, github_pat_mode
             ), audit AS (
                 INSERT INTO policy_audit (organization_id, version, restored_from)
                 SELECT organization_id, version, $3 FROM published
             )
-            SELECT version, mode, published_at, $3 FROM published
-            """, organizationId, (object?)mode ?? DBNull.Value, (object?)restoredFrom ?? DBNull.Value);
-        await using var rows = await command.ExecuteReaderAsync(ct);
-        return await rows.ReadAsync(ct) ? ReadPolicy(rows) : null;
+            SELECT version, mode, published_at, $3, github_pat_mode FROM published
+            """, connection, transaction);
+        AddParameters(command, organizationId, (object?)mode ?? DBNull.Value, (object?)restoredFrom ?? DBNull.Value,
+            (object?)githubPatMode ?? DBNull.Value);
+        Policy? policy;
+        await using (var rows = await command.ExecuteReaderAsync(ct))
+            policy = await rows.ReadAsync(ct) ? ReadPolicy(rows) : null;
+        await transaction.CommitAsync(ct);
+        return policy;
     }
 
     public async Task<IReadOnlyList<Policy>> PolicyHistory(Guid organizationId, CancellationToken ct)
     {
         await using var command = Command("""
-            SELECT p.version, p.mode, p.published_at, a.restored_from
+            SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 ORDER BY p.version DESC LIMIT 100
             """, organizationId);
@@ -141,7 +156,7 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
                 UPDATE installations SET last_seen_at = GREATEST(last_seen_at, now())
                 WHERE id = $1 AND revoked_at IS NULL RETURNING organization_id
             )
-            SELECT p.version, p.mode, p.published_at, a.restored_from
+            SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode
             FROM active JOIN organizations o ON o.id = active.organization_id
             JOIN policy_versions p ON p.organization_id = o.id AND p.version = o.policy_version
             LEFT JOIN policy_audit a ON a.organization_id = p.organization_id AND a.version = p.version
@@ -196,14 +211,15 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
             ), eligible AS (
                 SELECT p.organization_id FROM active
                 JOIN policy_versions p ON p.organization_id = active.organization_id AND p.version = $4
-                WHERE p.mode = CASE WHEN $5 = 'warn_override' THEN 'warn' ELSE $5 END
+                WHERE (CASE WHEN $7 = 'github-classic-pat' THEN p.github_pat_mode ELSE p.mode END)
+                    = CASE WHEN $5 = 'warn_override' THEN 'warn' ELSE $5 END
             ), written AS (
-                INSERT INTO security_events (organization_id, installation_id, event_id, occurred_at, policy_version, decision, app_id)
-                SELECT organization_id, $1, $2, $3, $4, $5, $6 FROM eligible
+                INSERT INTO security_events (organization_id, installation_id, event_id, occurred_at, policy_version, decision, app_id, rule_id)
+                SELECT organization_id, $1, $2, $3, $4, $5, $6, $7 FROM eligible
                 ON CONFLICT (installation_id, event_id) DO NOTHING
             )
             SELECT EXISTS (SELECT 1 FROM eligible)
-            """, installationId, request.EventId, request.Timestamp.UtcDateTime, request.PolicyVersion, request.Decision, request.AppId);
+            """, installationId, request.EventId, request.Timestamp.UtcDateTime, request.PolicyVersion, request.Decision, request.AppId, request.RuleId);
         return (bool)(await command.ExecuteScalarAsync(ct))!;
     }
 
@@ -211,7 +227,7 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
         DateTimeOffset? since, CancellationToken ct)
     {
         await using var command = Command("""
-            SELECT event_id, installation_id, occurred_at, received_at, policy_version, decision, app_id
+            SELECT event_id, installation_id, occurred_at, received_at, policy_version, decision, app_id, rule_id
             FROM security_events WHERE organization_id = $1
                 AND ($2::text IS NULL OR decision = $2)
                 AND ($3::timestamptz IS NULL OR occurred_at >= $3)
@@ -223,17 +239,22 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
         await using var rows = await command.ExecuteReaderAsync(ct);
         while (await rows.ReadAsync(ct))
             events.Add(new(rows.GetGuid(0), rows.GetGuid(1), rows.GetDateTime(2), rows.GetDateTime(3),
-                rows.GetInt32(4), rows.GetString(5), rows.GetString(6)));
+                rows.GetInt32(4), rows.GetString(5), rows.GetString(6), rows.GetString(7)));
         return events;
     }
 
     private NpgsqlCommand Command(string sql, params object[] values)
     {
         var command = dataSource.CreateCommand(sql);
-        foreach (var value in values) command.Parameters.Add(new NpgsqlParameter { Value = value });
+        AddParameters(command, values);
         return command;
     }
 
+    private static void AddParameters(NpgsqlCommand command, params object[] values)
+    {
+        foreach (var value in values) command.Parameters.Add(new NpgsqlParameter { Value = value });
+    }
+
     private static Policy ReadPolicy(NpgsqlDataReader rows) => new(rows.GetInt32(0), rows.GetString(1),
-        rows.GetDateTime(2), rows.IsDBNull(3) ? null : rows.GetInt32(3));
+        rows.GetDateTime(2), rows.IsDBNull(3) ? null : rows.GetInt32(3), rows.GetString(4));
 }

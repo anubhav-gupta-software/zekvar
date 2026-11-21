@@ -70,6 +70,7 @@ select { appearance: none; padding-right: 2rem; background-image: linear-gradien
   background-size: 5px 5px; background-repeat: no-repeat; }
 label { font-size: .9rem; font-weight: 600; }
 .form-row { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+.form-row:has(#publish-mode) { align-items: end; }
 .feedback { margin-top: .5rem; color: #a3edcf; font-size: .875rem; }
 .feedback.error { color: #ffc6cc; }
 .grant-result { display: grid; gap: .45rem; margin-top: .8rem; }

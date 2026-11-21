@@ -3,10 +3,11 @@ import { send, type AppId, type PolicyEvent } from './protocol';
 
 export function recordDecision(appId: AppId, match: MatchedDecision, installationId: string | undefined,
   decision: PolicyEvent['decision'] = match.action) {
-  const event: PolicyEvent = {
+  const { action: _action, reason: _reason, policyVersion, ...rule } = match;
+  const event = {
     eventId: crypto.randomUUID(), appId, timestamp: new Date().toISOString(),
-    ruleId: match.ruleId, detectorCategory: match.detectorCategory, policyVersion: match.policyVersion, decision,
-  };
+    ...rule, policyVersion, decision,
+  } satisfies PolicyEvent;
   console.info(`Zekvar decision ${JSON.stringify(event)}`);
   if (installationId) {
     void send({ type: 'decision', installationId, event }).then(({ error }) => {

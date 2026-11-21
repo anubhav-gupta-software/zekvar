@@ -13,8 +13,8 @@ Control is a local dashboard for publishing browser policies, issuing enrollment
    ```
 
 3. Open [Control on localhost](http://localhost:3000) and sign in with the API's `Control__Organizations__0__AdminToken` value.
-4. Choose **Monitor**, **Warn**, or **Block** under **Publish a policy**. To revert, choose **Restore** next to an earlier version. Control publishes the restored configuration as a new version.
-5. Create an enrollment grant and paste it into the [Zekvar Browser popup](../browser-extension/README.md#run-the-demo). After testing a prompt, refresh the dashboard to see the installation and its decision metadata.
+4. Set **Test marker** and **GitHub classic PAT** independently under **Publish a policy**. The GitHub rule defaults to **Off** with **Monitor**, **Warn**, and **Block** available. To revert both settings, restore an earlier version. Control publishes the restored configuration as a new version.
+5. Create an enrollment grant and paste it into the Zekvar Browser popup. After testing a prompt, refresh the dashboard to see the installation and its decision metadata. **Security events** names the rule responsible for each decision. [Run the browser demo](../browser-extension/README.md#run-the-demo)
 6. For the [experimental ChatGPT adapter](../browser-extension/README.md#try-the-experimental-chatgpt-adapter), filter **Application** to **ChatGPT**, and check the **ChatGPT composer** column under **Browser health**. The timestamp shows when Control last received a coverage observation.
 
 In **Browser health**, **Reporting** indicates Control heard from the installation within the last 90 seconds. **Stale** indicates the reporting window elapsed. **Policy status** shows whether the browser’s last applied version matches the current policy. Use **Refresh** to update the table. The [two-profile pilot lab](../browser-extension/README.md#run-the-two-profile-chrome-pilot-lab) demonstrates both states.

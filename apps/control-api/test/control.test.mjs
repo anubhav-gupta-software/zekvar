@@ -145,7 +145,8 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual(await call('/v1/admin/events?appId=local-prompt-fixture&decision=monitor', { token: first }), stored);
     assert.deepEqual(await call('/v1/admin/events?appId=other-app', { token: first }), []);
     assert.deepEqual(await call('/v1/admin/events?decision=block', { token: first }), []);
-    assert.deepEqual(await call('/v1/admin/events?since=2026-11-21T00:00:00Z', { token: first }), []);
+    const afterEvent = new Date(Date.parse(event.timestamp) + 1000).toISOString();
+    assert.deepEqual(await call(`/v1/admin/events?since=${encodeURIComponent(afterEvent)}`, { token: first }), []);
   });
 
   await t.test('another tenant cannot read or revoke this installation', async () => {
@@ -163,5 +164,40 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await call('/v1/browser/events', { method: 'POST', token: client.token, body: event, expect: 401 });
     assert.equal((await call('/v1/admin/events', { token: first })).length, 1);
     assert.equal((await call('/v1/admin/policies', { token: first }))[0].version, current.version);
+  });
+
+  await t.test('credential mode is independently versioned and events must match the historical rule', async () => {
+    const { grant } = await call('/v1/admin/enrollment-grants', { method: 'POST', token: second });
+    const { token } = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const publish = (body, expect = 200) => call('/v1/admin/policies', { method: 'POST', token: second, body, expect });
+    const post = (body, expect = 204) => call('/v1/browser/events', { method: 'POST', token, body, expect });
+    const credential = {
+      ...event, eventId: randomUUID(), ruleId: 'github-classic-pat', detectorCategory: 'credential',
+      decision: 'monitor', policyVersion: 1,
+    };
+    assert.equal((await call('/v1/browser/policy', { token })).githubPatMode, 'off');
+    await post(credential, 400);
+    await publish({ mode: 'block', githubPatMode: 'allow' }, 400);
+    const enabled = await publish({ mode: 'block', githubPatMode: 'monitor' });
+    const published = await Promise.all(['warn', 'block'].map((mode) => publish({ mode })));
+    for (const policy of [enabled, ...published]) assert.equal(policy.githubPatMode, 'monitor');
+    const restored = await call('/v1/admin/policies/1/restore', { method: 'POST', token: second });
+    assert.equal(restored.githubPatMode, 'off');
+    assert.equal(restored.mode, 'monitor');
+    const history = await call('/v1/admin/policies', { token: second });
+    assert.deepEqual(history.map(({ githubPatMode }) => githubPatMode), ['off', 'monitor', 'monitor', 'monitor', 'off']);
+
+    const historical = { ...credential, policyVersion: enabled.version };
+    for (const invalid of [
+      { ...historical, detectorCategory: 'synthetic-secret' },
+      { ...historical, decision: 'block' },
+      { ...historical, prompt: 'sensitive synthetic text' },
+      { ...historical, policyVersion: restored.version },
+    ]) await post(invalid, 400);
+    await Promise.all([post(historical), post(historical)]);
+    const [stored, ...duplicates] = await call('/v1/admin/events', { token: second });
+    const { installationId, receivedAt, ...metadata } = stored;
+    assert.deepEqual(duplicates, []);
+    assert.deepEqual(metadata, historical);
   });
 });

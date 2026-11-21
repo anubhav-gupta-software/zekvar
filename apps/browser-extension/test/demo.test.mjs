@@ -119,7 +119,7 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
   });
 
   async function publishBlock(version) {
-    await dashboard.getByLabel('Policy mode').selectOption('block');
+    await dashboard.getByLabel('Test marker', { exact: true }).selectOption('block');
     await dashboard.getByRole('button', { name: 'Publish policy' }).click();
     await dashboard.getByText(`Version ${version} published in block mode.`, { exact: true }).waitFor();
     await popup.getByRole('button', { name: 'Sync now' }).click();
@@ -231,5 +231,91 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
     await rows.filter({ hasText: 'Block' }).nth(3).waitFor();
     assert.equal(await rows.count(), 5);
     await screenshot(dashboard, '06-control-with-live-events.png');
+  });
+
+  const fakePat = 'ghp_' + '0'.repeat(36);
+  let monitorVersion;
+  const previousEvents = await events();
+  let expectedCount = previousEvents.length;
+  const policyHistory = dashboard.getByRole('table', { name: 'Policy history' });
+  async function configureGitHub(mode, markerMode) {
+    const current = policyHistory.locator('tbody tr').first().locator('td').first();
+    const version = Number((await current.innerText()).slice(1)) + 1;
+    await dashboard.getByLabel('Test marker', { exact: true }).selectOption(markerMode);
+    await dashboard.getByLabel('GitHub classic PAT', { exact: true }).selectOption(mode);
+    await dashboard.getByRole('button', { name: 'Publish policy' }).click();
+    await dashboard.getByText(`Version ${version} published in ${markerMode} mode.`, { exact: true }).waitFor();
+    await popup.getByRole('button', { name: 'Sync now' }).click();
+    await popup.getByText(`Connected to Control · ${markerMode.toUpperCase()} v${version}`, { exact: true }).waitFor();
+    await prompt.fill('Draft for policy synchronization');
+    await chat.getByText(`Zekvar · ${markerMode.toUpperCase()} v${version} · GitHub PAT ${mode}`, { exact: true }).waitFor();
+    return version;
+  }
+
+  await t.test('GitHub classic PAT starts off and Monitor logs only complete, delimited candidates', async () => {
+    const sentBefore = Number(await submissions.textContent());
+    assert.equal(await dashboard.getByLabel('GitHub classic PAT', { exact: true }).inputValue(), 'off');
+    await prompt.fill(fakePat);
+    await prompt.press('Enter');
+    assert.equal(await submissions.textContent(), String(sentBefore + 1));
+    assert.equal((await events()).length, expectedCount);
+
+    monitorVersion = await configureGitHub('monitor', 'block');
+    for (const negative of [fakePat.slice(0, -1), fakePat + '0', `prefix_${fakePat}`, fakePat + '_suffix', 'gho_' + '0'.repeat(36)]) {
+      await prompt.fill(negative);
+      await prompt.press('Enter');
+    }
+    await prompt.fill(`export EXAMPLE_TOKEN="${fakePat}"`);
+    await prompt.press('Enter');
+    assert.equal(await submissions.textContent(), String(sentBefore + 7));
+    const stored = await waitForEvents(++expectedCount);
+    const [match] = stored.filter(({ ruleId }) => ruleId === 'github-classic-pat');
+    assert.equal(match.policyVersion, monitorVersion);
+    assert.equal(match.decision, 'monitor');
+    assert.equal(match.detectorCategory, 'credential');
+    assert.ok(!JSON.stringify(stored).includes(fakePat));
+  });
+
+  await t.test('GitHub warning can be overridden once even when the test marker mode is Block', async () => {
+    const version = await configureGitHub('warn', 'block');
+    const count = Number(await submissions.textContent());
+    await prompt.fill(fakePat);
+    await send.click();
+    await chat.getByRole('alert').filter({ hasText: 'GitHub classic personal access token' }).waitFor();
+    assert.equal(await submissions.textContent(), String(count));
+    await chat.getByRole('button', { name: 'Continue anyway' }).click();
+    assert.equal(await submissions.textContent(), String(count + 1));
+    expectedCount += 2;
+    const stored = await waitForEvents(expectedCount);
+    assert.deepEqual(stored.filter(({ policyVersion }) => policyVersion === version).map(({ decision }) => decision).sort(),
+      ['warn', 'warn_override']);
+  });
+
+  await t.test('Block wins for mixed matches and rollback restores the detector mode', async () => {
+    const version = await configureGitHub('block', 'monitor');
+    const count = Number(await submissions.textContent());
+    await prompt.fill(`${marker} ${fakePat}`);
+    await send.click();
+    await blocked.waitFor();
+    assert.equal(await submissions.textContent(), String(count));
+    const stored = await waitForEvents(++expectedCount);
+    assert.deepEqual(stored.filter(({ policyVersion }) => policyVersion === version).map(({ ruleId, decision }) => [ruleId, decision]),
+      [['github-classic-pat', 'block']]);
+    await dashboard.reload();
+    await rows.filter({ hasText: 'GitHub classic PAT' }).first().waitFor();
+    await screenshot(dashboard, '10-control-credential-events.png');
+    await dashboard.getByRole('button', { name: `Restore version ${monitorVersion}`, exact: true }).click();
+    await dashboard.getByText(`Version ${monitorVersion} restored as version ${version + 1}.`, { exact: true }).waitFor();
+    assert.equal(await dashboard.getByLabel('GitHub classic PAT', { exact: true }).inputValue(), 'monitor');
+    assert.match(await policyHistory.locator('tbody tr').first().innerText(), /Monitor/);
+    await popup.getByRole('button', { name: 'Sync now' }).click();
+    await prompt.fill(fakePat);
+    await chat.getByText(`Zekvar · BLOCK v${version + 1} · GitHub PAT monitor`, { exact: true }).waitFor();
+    await prompt.press('Enter');
+    assert.equal(await submissions.textContent(), String(count + 1));
+    const restored = await waitForEvents(++expectedCount);
+    assert.deepEqual(restored.filter(({ policyVersion }) => policyVersion === version + 1).map(({ ruleId, decision }) => [ruleId, decision]),
+      [['github-classic-pat', 'monitor']]);
+    assert.ok(!JSON.stringify(attempts).includes(fakePat) && !JSON.stringify(restored).includes(fakePat));
   });
 });

@@ -68,7 +68,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
   });
 
   await t.test('publishes a policy and shows the version applied by the browser', async () => {
-    await page.getByLabel('Policy mode', { exact: true }).selectOption('warn');
+    await page.getByLabel('Test marker', { exact: true }).selectOption('warn');
     await page.getByRole('button', { name: 'Publish policy' }).click();
     await page.getByRole('status').filter({ hasText: /published in warn mode/ }).waitFor();
     policyVersion = Number((await policyHistory.locator('tbody tr').first().locator('td').first().textContent()).slice(1));
@@ -109,7 +109,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await page.getByRole('button', { name: 'Restore version 1', exact: true }).click();
     await page.getByRole('status').filter({ hasText: `Version 1 restored as version ${policyVersion + 1}.` }).waitFor();
     await browsers.getByText('Update pending', { exact: true }).waitFor();
-    assert.equal(await page.getByLabel('Policy mode', { exact: true }).inputValue(), 'monitor');
+    assert.equal(await page.getByLabel('Test marker', { exact: true }).inputValue(), 'monitor');
     page.once('dialog', (dialog) => dialog.accept());
     await page.getByRole('button', { name: `Revoke installation ${installation.installationId}` }).click();
     await browsers.getByText('Revoked', { exact: true }).first().waitFor();

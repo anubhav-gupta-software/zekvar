@@ -134,7 +134,7 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
   });
 
   await t.test('both profiles receive a centrally published policy on their background cadence', async () => {
-    await dashboard.getByLabel('Policy mode').selectOption('block');
+    await dashboard.getByLabel('Test marker', { exact: true }).selectOption('block');
     await dashboard.getByRole('button', { name: 'Publish policy' }).click();
     await dashboard.getByText('Version 2 published in block mode.', { exact: true }).waitFor();
     await until(async () => {

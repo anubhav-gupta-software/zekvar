@@ -1,6 +1,6 @@
 import { ApiError, controlApi } from '../lib/api';
 import {
-  chatGptApp, decisionLabels, decisions, fixtureApp, modes, utc,
+  chatGptApp, decisionLabels, decisions, detectorModeLabels, detectorModes, fixtureApp, modes, utc,
   type Decision, type Installation, type Policy, type SecurityEvent,
 } from '../lib/control';
 import { sessionToken } from '../lib/session';
@@ -55,7 +55,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
         </header>
 
         <div className="metrics" aria-label="Control summary">
-          <div className="metric"><p>Current policy</p>
+          <div className="metric"><p>Test marker policy</p>
             <strong>{current ? decisionLabels[current.mode] : 'None'}</strong>
             <span>{current ? `Version ${current.version}` : 'Publish a policy to get started'}</span>
           </div>
@@ -70,12 +70,20 @@ export default async function Control({ searchParams }: { searchParams: Promise<
         <div className="controls-grid">
           <section className="panel" id="policies" aria-labelledby="policies-heading">
             <div className="panel-heading"><h2 id="policies-heading">Publish a policy</h2><span className="badge">Organization-wide</span></div>
-            <p className="muted">Set how Zekvar responds when the synthetic prompt rule matches.</p>
+            <p className="muted">Choose how Zekvar responds to each rule.</p>
             <MutationForm action={publishPolicy} label="Publish policy" appearance="primary">
-              <label htmlFor="publish-mode" className="sr-only">Policy mode</label>
-              <select key={current?.version} id="publish-mode" name="mode" defaultValue={current?.mode ?? 'monitor'}>
-                {modes.map((mode) => <option key={mode} value={mode}>{decisionLabels[mode]}</option>)}
-              </select>
+              <div className="grid gap-1">
+                <label htmlFor="publish-mode">Test marker</label>
+                <select key={current?.version} id="publish-mode" name="mode" defaultValue={current?.mode ?? 'monitor'}>
+                  {modes.map((mode) => <option key={mode} value={mode}>{decisionLabels[mode]}</option>)}
+                </select>
+              </div>
+              <div className="grid gap-1">
+                <label htmlFor="github-pat-mode">GitHub classic PAT</label>
+                <select key={current?.version} id="github-pat-mode" name="githubPatMode" defaultValue={current?.githubPatMode ?? 'off'}>
+                  {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+                </select>
+              </div>
             </MutationForm>
           </section>
           <section className="panel" aria-labelledby="enrollment-heading">
@@ -89,7 +97,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
           <div className="panel-heading"><h2 id="history-heading">Policy history</h2><span className="table-note">Latest 100 versions</span></div>
           <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="history-heading">
             <table aria-labelledby="history-heading">
-              <thead><tr><th>Version</th><th>Mode</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
+              <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
               <tbody>{policies.map((policy) => <PolicyRow key={policy.version} policy={policy} current={policy.version === current?.version} />)}</tbody>
             </table>
             {policies.length === 0 && <p className="empty">Publish a policy to start the version history.</p>}
@@ -188,6 +196,7 @@ function InstallationId({ value }: { value: string }) {
 function PolicyRow({ policy, current }: { policy: Policy; current: boolean }) {
   return <tr>
     <td className="emphasis">v{policy.version}</td><td><DecisionBadge decision={policy.mode} /></td>
+    <td>{detectorModeLabels[policy.githubPatMode ?? 'off']}</td>
     <td><Timestamp value={policy.publishedAt} /></td>
     <td>{policy.restoredFrom ? `v${policy.restoredFrom}` : '—'}</td>
     <td>{current ? <span className="badge current">Current</span> :
@@ -226,7 +235,8 @@ function EventRow({ event }: { event: SecurityEvent }) {
     <td><Timestamp value={event.timestamp} /></td>
     <td className="emphasis">{event.appId === fixtureApp ? 'Local prompt fixture' : event.appId === chatGptApp ? 'ChatGPT' : event.appId}</td>
     <td><DecisionBadge decision={event.decision} /></td>
-    <td>{event.detectorCategory === 'synthetic-secret' ? 'Synthetic secret' : event.detectorCategory}</td>
+    <td>{event.ruleId === 'github-classic-pat' ? 'GitHub classic PAT' :
+      event.detectorCategory === 'synthetic-secret' ? 'Synthetic secret' : event.detectorCategory}</td>
     <td>v{event.policyVersion}</td>
     <td><InstallationId value={event.installationId} /></td>
   </tr>;
