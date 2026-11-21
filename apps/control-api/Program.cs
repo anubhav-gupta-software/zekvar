@@ -45,6 +45,7 @@ app.Use(async (context, next) =>
 app.MapGet("/health", () => Results.Ok(new { status = "ready" }));
 
 var admin = app.MapGroup("/v1/admin").AddEndpointFilter(Authenticate(browser: false));
+admin.MapGet("/session", (HttpContext http) => Results.Ok(new { organization = Identity(http).OrganizationSlug }));
 admin.MapPost("/enrollment-grants", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.CreateGrant(Identity(http).OrganizationId, ct)));
 admin.MapGet("/installations", async (HttpContext http, CancellationToken ct) =>
@@ -60,8 +61,10 @@ admin.MapPost("/policies", async (PublishPolicy request, HttpContext http, Cance
 admin.MapPost("/policies/{version:int}/restore", async (int version, HttpContext http, CancellationToken ct) =>
     await store.Publish(Identity(http).OrganizationId, null, version, ct) is { } published
         ? Results.Ok(published) : Results.NotFound());
-admin.MapGet("/events", async (string? decision, DateTimeOffset? since, HttpContext http, CancellationToken ct) =>
-    Results.Ok(await store.Events(Identity(http).OrganizationId, decision, since, ct)));
+admin.MapGet("/events", async (string? appId, string? decision, DateTimeOffset? since, HttpContext http, CancellationToken ct) =>
+    Results.Ok(appId is null or FixtureContract.AppId
+        ? await store.Events(Identity(http).OrganizationId, decision, since, ct)
+        : Array.Empty<StoredEvent>()));
 
 app.MapPost("/v1/enroll", async (RedeemGrant request, CancellationToken ct) =>
     Tokens.IsValid(request.Grant) && await store.Enroll(request.Grant, ct) is { } enrollment

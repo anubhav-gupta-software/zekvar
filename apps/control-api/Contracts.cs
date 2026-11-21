@@ -28,7 +28,7 @@ internal static class Tokens
 }
 
 internal sealed record DemoOrganization(string Slug, string AdminToken);
-internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId = null);
+internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId, string? OrganizationSlug);
 internal sealed record PublishPolicy(string Mode);
 internal sealed record RedeemGrant(string Grant);
 internal sealed record Heartbeat(int PolicyVersion);

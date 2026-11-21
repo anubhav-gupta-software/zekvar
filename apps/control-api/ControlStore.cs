@@ -55,11 +55,13 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
     public async Task<RequestIdentity?> Authenticate(string token, bool browser, CancellationToken ct)
     {
         var sql = browser
-            ? "SELECT organization_id, id FROM installations WHERE token_hash = $1 AND revoked_at IS NULL"
-            : "SELECT organization_id, NULL::uuid FROM admin_memberships WHERE token_hash = $1";
+            ? "SELECT organization_id, id, NULL::text FROM installations WHERE token_hash = $1 AND revoked_at IS NULL"
+            : "SELECT o.id, NULL::uuid, o.slug FROM admin_memberships m JOIN organizations o ON o.id = m.organization_id WHERE m.token_hash = $1";
         await using var command = Command(sql, Tokens.Hash(token));
         await using var rows = await command.ExecuteReaderAsync(ct);
-        return await rows.ReadAsync(ct) ? new(rows.GetGuid(0), rows.IsDBNull(1) ? null : rows.GetGuid(1)) : null;
+        return await rows.ReadAsync(ct)
+            ? new(rows.GetGuid(0), rows.IsDBNull(1) ? null : rows.GetGuid(1), rows.IsDBNull(2) ? null : rows.GetString(2))
+            : null;
     }
 
     public async Task<EnrollmentGrant> CreateGrant(Guid organizationId, CancellationToken ct)

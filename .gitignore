@@ -2,3 +2,7 @@ node_modules/
 dist/
 bin/
 obj/
+.next/
+*.tsbuildinfo
+next-env.d.ts
+.env.local

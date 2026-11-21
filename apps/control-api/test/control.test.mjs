@@ -77,6 +77,8 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
   const event = { ...contract.event, eventId: randomUUID() };
 
   await t.test('only an admin can issue a short-lived grant, and only one redemption succeeds', async () => {
+    await call('/v1/admin/session', { expect: 401 });
+    assert.deepEqual(await call('/v1/admin/session', { token: first }), { organization: `first-${suffix}` });
     await call('/v1/admin/enrollment-grants', { method: 'POST', expect: 401 });
     const { grant, expiresAt } = await call('/v1/admin/enrollment-grants', { method: 'POST', token: first });
     assert.ok(Date.parse(expiresAt) > Date.now());
@@ -138,6 +140,8 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(installationId, client.installationId);
     assert.ok(Number.isFinite(Date.parse(receivedAt)));
     assert.deepEqual(metadata, event);
+    assert.deepEqual(await call('/v1/admin/events?appId=local-prompt-fixture&decision=monitor', { token: first }), stored);
+    assert.deepEqual(await call('/v1/admin/events?appId=other-app', { token: first }), []);
     assert.deepEqual(await call('/v1/admin/events?decision=block', { token: first }), []);
     assert.deepEqual(await call('/v1/admin/events?since=2026-11-21T00:00:00Z', { token: first }), []);
   });
