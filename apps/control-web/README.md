@@ -14,7 +14,7 @@ Control is a local dashboard for publishing browser policies, issuing enrollment
 
 3. Open [Control on localhost](http://localhost:3000) and sign in with the API's `Control__Organizations__0__AdminToken` value.
 4. Choose **Monitor**, **Warn**, or **Block** under **Publish a policy**. To revert, choose **Restore** next to an earlier version. Control publishes the restored configuration as a new version.
-5. Create an enrollment grant. The [manual API workflow](../control-api/README.md#exercise-the-workflow) can redeem it, report an applied policy version, and post a synthetic decision. Refresh the dashboard to see the installation and event. Extension enrollment and automatic reporting are the next roadmap task.
+5. Create an enrollment grant and paste it into the [Zekvar Browser popup](../browser-extension/README.md#run-the-demo). After testing a prompt, refresh the dashboard to see the installation and its decision metadata.
 
 The demo applies one policy per organization. The dashboard keeps admin tokens in server memory and gives the browser a short-lived HTTP-only session cookie. Restarting the dashboard clears those sessions. Keep both services on loopback and use synthetic demo data.
 

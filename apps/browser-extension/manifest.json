@@ -1,8 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "Zekvar Browser (Local Proof)",
-  "version": "0.1.0",
-  "description": "Tests Zekvar policy decisions on the local prompt fixture.",
+  "name": "Zekvar Browser",
+  "version": "0.2.0",
+  "minimum_chrome_version": "120",
+  "description": "Applies Zekvar Control policies on the local prompt fixture.",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": ["http://127.0.0.1:5187/*"],
+  "background": { "service_worker": "worker.js" },
+  "action": { "default_popup": "popup.html", "default_title": "Zekvar Browser" },
   "content_scripts": [
     {
       "matches": ["http://127.0.0.1:4173/zekvar-fixture/"],

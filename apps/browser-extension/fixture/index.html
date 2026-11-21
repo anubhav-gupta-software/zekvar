@@ -14,6 +14,7 @@
     button { cursor: pointer; margin: 0.75rem 0.5rem 0 0; }
     button[type="submit"] { background: #59e6b5; color: #101927; border-color: #59e6b5; font-weight: 700; }
     :focus-visible { outline: 2px solid #59e6b5; outline-offset: 3px; }
+    #control-status { color: #b7eee0; }
     #policy-feedback p:empty { margin: 0; }
     #policy-feedback p { color: #ffdca1; }
   </style>
@@ -22,6 +23,8 @@
   <main>
     <h1>Zekvar prompt fixture</h1>
     <p>Use <code>ZEKVAR_TEST_SECRET</code> to trigger the selected policy. Submissions only increment the local counter.</p>
+    <p id="control-status" role="status"></p>
+    <button id="sync-policy" type="button" hidden>Sync policy</button>
     <form id="prompt-form">
       <label for="policy-mode">Policy mode</label>
       <select id="policy-mode">

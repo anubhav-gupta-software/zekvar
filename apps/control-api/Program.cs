@@ -10,6 +10,9 @@ if (!builder.Environment.IsDevelopment())
 
 var connectionString = builder.Configuration.GetConnectionString("Control")
     ?? throw new InvalidOperationException("Set ConnectionStrings__Control for the demo PostgreSQL database.");
+var port = builder.Configuration.GetValue("Control:Port", 5187);
+if (port is < 1024 or > 65535)
+    throw new InvalidOperationException("Configure a Control loopback port between 1024 and 65535.");
 var organizations = builder.Configuration.GetSection("Control:Organizations").Get<DemoOrganization[]>();
 if (organizations is not { Length: > 0 } || organizations.Any(org => !ValidOrganization(org)) ||
     organizations.Select(org => org.Slug).Distinct().Count() != organizations.Length ||
@@ -18,7 +21,7 @@ if (organizations is not { Length: > 0 } || organizations.Any(org => !ValidOrgan
 
 builder.WebHost.ConfigureKestrel(options =>
 {
-    options.Listen(IPAddress.Loopback, 5187);
+    options.Listen(IPAddress.Loopback, port);
     options.Limits.MaxRequestBodySize = 16 * 1024;
 });
 builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = false);

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Zekvar Browser</title>
+  <style>
+    :root { color-scheme: dark; font: .875rem/1.5 system-ui, sans-serif; }
+    body { margin: 0; padding: 1rem; width: 20rem; box-sizing: border-box; background: #101927; color: #f1f7ff; }
+    h1 { margin: 0 0 .7rem; font-size: 1.2rem; }
+    p { margin: .35rem 0; }
+    #status { color: #9beed3; }
+    #delivery { color: #c6d4e5; }
+    #error { color: #ffc5ca; }
+    [hidden] { display: none; }
+    form { margin-top: 1rem; }
+    label { display: block; margin-bottom: .25rem; }
+    input, button { box-sizing: border-box; border: 1px solid #5b6c84; border-radius: .35rem; font: inherit; padding: .45rem .65rem; }
+    input { width: 100%; background: #162334; }
+    button { margin-top: .55rem; cursor: pointer; }
+    button[type="submit"] { background: #59e6b5; color: #101927; font-weight: 700; }
+    :focus-visible { outline: 2px solid #59e6b5; outline-offset: 2px; }
+  </style>
+  <script src="popup.js" defer></script>
+</head>
+<body>
+  <h1>Zekvar Browser</h1>
+  <p id="status" role="status">Checking Control connection…</p>
+  <p id="delivery"></p>
+  <form id="enroll" hidden>
+    <label for="grant">Enrollment grant</label>
+    <input id="grant" type="password" required autocomplete="off" spellcheck="false">
+    <button type="submit">Enroll this browser</button>
+  </form>
+  <button id="sync" type="button" hidden>Sync now</button>
+  <p id="error" role="alert"></p>
+</body>
+</html>

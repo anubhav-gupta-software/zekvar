@@ -1,9 +1,10 @@
-import { evaluatePrompt, type MatchedDecision, type PolicyMode } from './policy';
+import { evaluatePrompt, standalonePolicy, type MatchedDecision } from './policy';
+import { fixtureApp, fixtureUrl, isMode, send, type PolicyEvent, type PolicyMode, type Summary } from './protocol';
 
-function recordDecision(match: MatchedDecision, decision: PolicyMode | 'warn_override' = match.action) {
-  const event = {
+function recordDecision(match: MatchedDecision, installationId: string | undefined, decision: PolicyEvent['decision'] = match.action) {
+  const event: PolicyEvent = {
     eventId: crypto.randomUUID(),
-    appId: 'local-prompt-fixture',
+    appId: fixtureApp,
     timestamp: new Date().toISOString(),
     ruleId: match.ruleId,
     detectorCategory: match.detectorCategory,
@@ -11,6 +12,11 @@ function recordDecision(match: MatchedDecision, decision: PolicyMode | 'warn_ove
     decision,
   };
   console.info(`Zekvar decision ${JSON.stringify(event)}`);
+  if (installationId) {
+    void send({ type: 'decision', installationId, event }).then(({ error }) => {
+      if (error) console.warn('Zekvar could not queue this event.');
+    }, () => console.warn('Zekvar could not queue this event.'));
+  }
 }
 
 function attachFixture() {
@@ -19,9 +25,11 @@ function attachFixture() {
   const mode = document.querySelector('#policy-mode');
   const submit = document.querySelector('#send-prompt');
   const feedback = document.querySelector('#policy-feedback');
+  const controlStatus = document.querySelector('#control-status');
+  const sync = document.querySelector('#sync-policy');
   if (!(form instanceof HTMLFormElement) || !(prompt instanceof HTMLInputElement) ||
       !(mode instanceof HTMLSelectElement) || !(submit instanceof HTMLButtonElement) ||
-      !(feedback instanceof HTMLElement)) {
+      !(feedback instanceof HTMLElement) || !(controlStatus instanceof HTMLElement) || !(sync instanceof HTMLButtonElement)) {
     return;
   }
 
@@ -40,6 +48,45 @@ function attachFixture() {
 
   let pending: { value: string; match: MatchedDecision } | undefined;
   let approved: MatchedDecision | undefined;
+  let control: Summary | undefined;
+  let refreshing = false;
+
+  const currentPolicy = () => {
+    if (control?.status === 'standalone') return isMode(mode.value) ? standalonePolicy(mode.value) : undefined;
+    return control?.policy ?? standalonePolicy('block');
+  };
+
+  const refresh = async (type: 'sync' | 'status') => {
+    if (refreshing) return;
+    refreshing = true;
+    if (type === 'sync') sync.disabled = true;
+    try {
+      const { summary, error } = await send({ type });
+      if (!summary) throw new Error(error);
+      const previous = currentPolicy();
+      const previousId = control?.installationId;
+      control = summary;
+      const policy = currentPolicy();
+      if (previous?.version !== policy?.version || previous?.mode !== policy?.mode || previousId !== control.installationId) {
+        clearFeedback();
+      }
+      mode.disabled = control.status !== 'standalone';
+      sync.hidden = control.status === 'standalone';
+      if (mode.disabled && control.policy) mode.value = control.policy.mode;
+      const label = control.policy ? `${control.policy.mode.toUpperCase()} · v${control.policy.version}` : 'waiting for a policy';
+      const status = control.status === 'standalone' ? 'Standalone fixture. Open Zekvar Browser to enroll.' :
+        control.status === 'connected' ? `Control policy: ${label}` :
+        control.status === 'revoked' ? `Control access revoked. Last policy: ${label}.` :
+        `Control offline. Last policy: ${label}.`;
+      if (controlStatus.textContent !== status) controlStatus.textContent = status;
+      form.dataset.zekvarReady = 'true';
+    } catch {
+      controlStatus.textContent = 'Control status unavailable. Reload this page to reconnect to Zekvar.';
+    } finally {
+      refreshing = false;
+      sync.disabled = false;
+    }
+  };
 
   function clearFeedback() {
     pending = undefined;
@@ -49,6 +96,7 @@ function attachFixture() {
 
   prompt.addEventListener('input', clearFeedback);
   mode.addEventListener('change', clearFeedback);
+  sync.addEventListener('click', () => void refresh('sync'));
   edit.addEventListener('click', () => {
     clearFeedback();
     prompt.focus();
@@ -59,7 +107,8 @@ function attachFixture() {
       return;
     }
     clearFeedback();
-    if (warning.value === prompt.value && mode.value === 'warn') {
+    const policy = currentPolicy();
+    if (warning.value === prompt.value && policy?.mode === 'warn' && policy.version === warning.match.policyVersion) {
       approved = warning.match;
     }
     try {
@@ -71,13 +120,13 @@ function attachFixture() {
 
   form.addEventListener('submit', (event) => {
     if (approved) {
-      recordDecision(approved, 'warn_override');
+      recordDecision(approved, control?.installationId, 'warn_override');
       approved = undefined;
       return;
     }
 
-    const currentMode = mode.value;
-    if (currentMode !== 'monitor' && currentMode !== 'warn' && currentMode !== 'block') {
+    const policy = currentPolicy();
+    if (!policy) {
       event.stopImmediatePropagation();
       event.preventDefault();
       clearFeedback();
@@ -85,7 +134,7 @@ function attachFixture() {
       return;
     }
 
-    const match = evaluatePrompt(prompt.value, currentMode);
+    const match = evaluatePrompt(prompt.value, policy);
     if (match.action === 'allow') {
       clearFeedback();
       return;
@@ -93,7 +142,7 @@ function attachFixture() {
 
     if (match.action === 'monitor') {
       clearFeedback();
-      recordDecision(match);
+      recordDecision(match, control?.installationId);
       return;
     }
 
@@ -104,7 +153,7 @@ function attachFixture() {
     }
 
     clearFeedback();
-    recordDecision(match);
+    recordDecision(match, control?.policy ? control.installationId : undefined);
     if (match.action === 'warn') {
       pending = { value: prompt.value, match };
       message.textContent = `${match.reason} Edit the prompt or confirm that you want to send it.`;
@@ -116,9 +165,11 @@ function attachFixture() {
     prompt.focus();
   }, { capture: true });
 
-  form.dataset.zekvarReady = 'true';
+  mode.disabled = true;
+  void refresh('sync');
+  window.setInterval(() => void refresh('status'), 1000);
 }
 
-if (location.origin === 'http://127.0.0.1:4173' && location.pathname === '/zekvar-fixture/') {
+if (location.href === fixtureUrl) {
   attachFixture();
 }

@@ -1,8 +1,8 @@
 # Zekvar Control API local demo
 
-This ASP.NET Core API issues enrollment grants, publishes policy versions, tracks browser health, and stores metadata-only fixture events in PostgreSQL. It runs in the Development environment at `http://127.0.0.1:5187`. Use a disposable database and synthetic data. The browser extension still applies its local fixture policy. Browser-side enrollment and policy updates are the next roadmap task.
+This ASP.NET Core API issues enrollment grants, publishes policy versions, tracks browser health, and stores metadata-only fixture events in PostgreSQL. It runs in the Development environment at `http://127.0.0.1:5187`. Use a disposable database and synthetic data.
 
-Use the [Control dashboard](../control-web/README.md) to sign in, publish policy, and review the API’s data in a browser.
+Use the [Control dashboard](../control-web/README.md) to sign in and publish a policy. The [Zekvar Browser extension](../browser-extension/README.md#run-the-demo) can redeem a grant, apply the policy, and report fixture events automatically.
 
 ## Start the API
 
@@ -44,6 +44,8 @@ Use `Authorization: Bearer …` with the admin token for `/v1/admin` routes and 
 | 9 | `POST /v1/admin/installations/{id}/revoke` | The installation credential is revoked. |
 
 The [shared fixture](../../contracts/control/demo-v1.json) defines example policy and event payloads. Event ingestion accepts only the fixture app, rule, and detector identifiers and verifies the decision against the named policy version. The event list supports `decision` and `since` query filters.
+
+For isolated API or browser tests, `Control__Port` selects a different loopback port. The default dashboard and extension use `5187`.
 
 ## Verify the workflow
 
