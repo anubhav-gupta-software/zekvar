@@ -24,11 +24,19 @@ When Control is temporarily unreachable, the extension keeps enforcing the last 
 
 1. Run the current [Control API and dashboard](../control-web/README.md#run-the-dashboard), reload Zekvar Browser in `chrome://extensions`, and enroll if needed. Set **Test marker** to **Block**, publish, then click **Sync now** in the extension popup.
 2. Open or refresh [ChatGPT](https://chatgpt.com/) in the same Chrome profile. Look for **Zekvar · BLOCK v…**. If it also says **Waiting for Send control**, type only the test marker and wait for the Send control to appear before trying to submit. If Zekvar shows **Unsupported composer**, **Unsupported ChatGPT page**, or **ChatGPT policy unavailable**, use **Copy composer diagnostics** and use the loopback fixture for the demo.
-3. With the status on **Block**, try `ZEKVAR_TEST_SECRET` once using **Send** and once using **Enter**. The adapter should hold both attempts. Replace the text with `Reply with OK.` and send it. In Control, refresh **Security events** and filter **Application** to **ChatGPT**.
+3. With the status on **Block**, try `Reply with OK. Example: ZEKVAR_TEST_SECRET` once using **Send** and once using **Enter**. The adapter should hold both attempts. Choose **Redact detected values**, check that the draft now contains `[REDACTED]`, and send it when ready. In Control, refresh **Security events** and filter **Application** to **ChatGPT**.
 
 The experimental scope is a recognized visible text editor on the homepage, a standard `/c/…` conversation, or a signed-out `/uc/…` conversation. The adapter pairs the editor with an explicitly identified **Send** control in its form or in a nearby container. The English **Ask ChatGPT** textarea can be recognized by its placeholder or accessible label when the editor IDs are absent. The adapter handles native click and plain Enter for that pair. Uploads, voice, other compose surfaces, and programmatic submissions are outside its coverage. In Control, **Detected** or **Unsupported** reflects the last observed composer signature. **Copy composer diagnostics** includes only the extension version, the route category, and structural counts and flags. The copy stays local until you share it.
 
 Chrome for Testing `159.0.8154.6` passed the click, Enter, edit-and-retry, warning override, and coverage-loss checks against controlled composer fixtures. The guest-route case verified in-tab navigation from the homepage, direct load, and event delivery. The labeled-textarea case verified Send appearing after the first input and confirmed that an unrelated form remained outside coverage. A separate headed Chrome run verified Send and Enter blocks and a clean retry on the live signed-out ChatGPT homepage. The user also confirmed v0.3.3 works on their live layout. Other live layouts remain unverified. [ChatGPT guest access](https://help.openai.com/en/articles/9125172-the-chatgpt-home-page)
+
+### Review a redacted draft
+
+Browser v0.9.0 offers **Redact detected values** after a warning or block in a supported ChatGPT text composer. It replaces the test marker and any matches from the enabled GitHub classic PAT detector with `[REDACTED]`. The change happens in the composer so you can review the draft, undo the edit, or change the text before choosing **Send**.
+
+The action is available for supported textareas and plain-text contenteditable layouts. Use **Edit prompt** if the draft includes rich content that needs to be preserved. Control records the original warning or block as decision metadata. The original and redacted drafts stay out of Control.
+
+The verification runner exercises redaction in the controlled marked editor and guest textarea. With `--live`, it shows the redacted draft in the public signed-out composer, then sends that draft in a separate step.
 
 ## Try the GitHub classic PAT rule
 

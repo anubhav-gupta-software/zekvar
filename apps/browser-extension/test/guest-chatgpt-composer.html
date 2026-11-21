@@ -24,6 +24,7 @@
     }, true);
     prompt.form.addEventListener('submit', (event) => {
       event.preventDefault();
+      sends.dataset.lastDraft = prompt.value;
       sends.value = String(Number(sends.value) + 1);
       prompt.value = '';
       send.hidden = true;

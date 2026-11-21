@@ -231,7 +231,9 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
     const input = page.locator('textarea[placeholder="Ask ChatGPT"]:visible, #prompt-textarea:visible, [data-testid="prompt-textarea"]:visible').first();
     const found = await input.waitFor({ timeout: 5000 }).then(() => true, () => false);
     if (!found) return live.skip('The live page did not expose a tested text editor.');
-    await input.fill(marker);
+    const clean = 'Reply with OK. This is an automated synthetic compatibility check.';
+    const sanitized = `${clean} Example: [REDACTED]`;
+    await input.fill(`${clean} Example: ${marker}`);
     const active = await page.getByText('Zekvar · BLOCK v4', { exact: true }).waitFor({ timeout: 5000 }).then(() => true, () => false);
     if (!active) return live.skip('The extension did not detect a supported live Send control.');
     const sendButton = page.locator('button[data-testid="send-button"]:visible').or(
@@ -245,9 +247,12 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
     assert.equal(stored.filter(({ policyVersion, decision }) => policyVersion === 4 && decision === 'block').length, 2);
     assert.equal(markerSent, false, 'The test marker appeared in an outgoing browser request.');
     await screenshot(page, '05-live-chatgpt-block.png');
-    await input.fill('Reply with OK. This is an automated synthetic compatibility check.');
+    await page.getByRole('button', { name: 'Redact detected values', exact: true }).click();
+    await page.getByRole('alert').filter({ hasText: 'Detected values redacted.' }).waitFor();
+    assert.equal(await input.evaluate((editor) => editor instanceof HTMLTextAreaElement ? editor.value : editor.innerText), sanitized);
+    await screenshot(page, '18-live-chatgpt-redacted-draft.png');
     await input.press('Enter');
-    await page.getByText('Reply with OK. This is an automated synthetic compatibility check.', { exact: true }).last().waitFor();
+    await page.getByText(sanitized, { exact: true }).last().waitFor();
     assert.equal(markerSent, false, 'The test marker appeared in an outgoing browser request.');
     await dashboard.reload();
     await rows.filter({ hasText: 'Block' }).nth(3).waitFor();

@@ -16,6 +16,8 @@ export type PromptMatch = { action: PolicyMode; reason: string } & RuleMetadata;
 
 const severity: Record<PolicyMode, number> = { monitor: 1, warn: 2, block: 3 };
 const classicGithubPat = /(?<![A-Za-z0-9_])ghp_[A-Za-z0-9]{36}(?![A-Za-z0-9_])/;
+const allClassicGithubPats = new RegExp(classicGithubPat.source, 'g');
+const redacted = '[REDACTED]';
 
 export function isMode(value: unknown): value is PolicyMode {
   return value === 'monitor' || value === 'warn' || value === 'block';
@@ -38,4 +40,9 @@ export function evaluatePrompt(prompt: string, policy: PromptPolicy): { action: 
     action: policy.mode, ruleId: fixtureRule, detectorCategory: fixtureDetector,
     reason: 'This prompt contains a test secret.',
   } : { action: 'allow' };
+}
+
+export function redactPrompt(prompt: string, policy: PromptPolicy): string {
+  const withoutMarkers = prompt.replaceAll(testMarker, redacted);
+  return isMode(policy.githubPatMode) ? withoutMarkers.replaceAll(allClassicGithubPats, redacted) : withoutMarkers;
 }

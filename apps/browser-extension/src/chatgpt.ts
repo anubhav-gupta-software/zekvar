@@ -1,13 +1,10 @@
+import { redactPrompt } from '../../../contracts/policy/prompt';
 import { recordDecision } from './decisions';
 import { evaluatePrompt, type MatchedDecision } from './policy';
 import { chatGptApp, chatGptRoute, isChatGptPage, isMode, send, type Coverage, type Summary } from './protocol';
-import { composerDiagnostics, inspectComposer, type Composer } from './chatgpt-composer';
+import { composerDiagnostics, inspectComposer, promptText, replacePromptText, supportsRedaction, type Composer } from './chatgpt-composer';
 
-type Warning = { input: HTMLElement; value: string; installationId: string; match: MatchedDecision };
-
-function promptText(input: HTMLElement): string {
-  return input instanceof HTMLTextAreaElement ? input.value : input.innerText;
-}
+type InterruptedDraft = { input: HTMLElement; page: string; value: string; installationId: string; match: MatchedDecision };
 
 function controls() {
   const host = document.createElement('div');
@@ -26,6 +23,7 @@ function controls() {
     button { margin: .55rem .35rem 0 0; padding: .3rem .55rem; border: 1px solid #627b8b;
       border-radius: .35rem; color: #fff; background: #203045; cursor: pointer; font: inherit; }
     button:focus-visible { outline: 2px solid #59e6b5; outline-offset: 2px; }
+    #redact { color: #101927; background: #59e6b5; border-color: #59e6b5; font-weight: 650; }
     textarea { display: block; box-sizing: border-box; margin-top: .4rem; width: 100%; min-height: 4rem;
       background: #f4faf8; color: #101927; font: inherit; }
   `;
@@ -38,12 +36,16 @@ function controls() {
   notice.id = 'notice';
   notice.setAttribute('role', 'alert');
   const actions = document.createElement('div');
+  const redact = document.createElement('button');
+  redact.type = 'button';
+  redact.id = 'redact';
+  redact.textContent = 'Redact detected values';
   const edit = document.createElement('button');
   edit.textContent = 'Edit prompt';
   const proceed = document.createElement('button');
   proceed.textContent = 'Continue anyway';
   actions.hidden = true;
-  actions.append(edit, proceed);
+  actions.append(redact, edit, proceed);
   const copy = document.createElement('button');
   copy.textContent = 'Copy composer diagnostics';
   const diagnostics = document.createElement('textarea');
@@ -52,7 +54,7 @@ function controls() {
   diagnostics.setAttribute('aria-label', 'Composer diagnostics');
   panel.append(status, notice, actions, copy, diagnostics);
   root.append(style, panel);
-  return { host, status, notice, actions, edit, proceed, copy, diagnostics };
+  return { host, status, notice, actions, redact, edit, proceed, copy, diagnostics };
 }
 
 const ui = controls();
@@ -60,11 +62,11 @@ let control: Summary | undefined;
 let refreshing = false;
 let unsupportedSince = 0;
 let lastCoverage: { installationId: string; coverage: Coverage; at: number } | undefined;
-let warning: Warning | undefined;
+let pending: InterruptedDraft | undefined;
 let unsupportedInput: HTMLElement | undefined;
 
-function clearWarning() {
-  warning = undefined;
+function clearInterruption() {
+  pending = undefined;
   ui.notice.textContent = '';
   ui.actions.hidden = true;
 }
@@ -73,7 +75,7 @@ function observe() {
   if (!document.body) return;
   if (!ui.host.isConnected) document.body.append(ui.host);
   if (!isChatGptPage(location.href)) {
-    clearWarning();
+    clearInterruption();
     ui.status.textContent = 'Zekvar · Unsupported ChatGPT page';
     lastCoverage = undefined;
     unsupportedSince = 0;
@@ -83,7 +85,7 @@ function observe() {
   const inspection = inspectComposer();
   const current = inspection.composer;
   if (current?.button || (unsupportedInput && unsupportedInput !== current?.input)) unsupportedInput = undefined;
-  if (warning && current?.input !== warning.input) clearWarning();
+  if (pending && (current?.input !== pending.input || pending.page !== location.href)) clearInterruption();
   const now = Date.now();
   const ready = Boolean(current && (current.button || inspection.hasEditorForm) && !unsupportedInput);
   if (ready) unsupportedSince = 0;
@@ -117,7 +119,7 @@ async function refresh(type: 'sync' | 'status') {
     if (!reply.summary) return;
     if (control?.installationId !== reply.summary.installationId || control?.policy?.version !== reply.summary.policy?.version ||
         control?.policy?.assignmentVersion !== reply.summary.policy?.assignmentVersion ||
-        control?.policy?.mode !== reply.summary.policy?.mode || control?.chatGptEnabled !== reply.summary.chatGptEnabled) clearWarning();
+        control?.policy?.mode !== reply.summary.policy?.mode || control?.chatGptEnabled !== reply.summary.chatGptEnabled) clearInterruption();
     control = reply.summary;
   } catch {
     // Preserve any policy already received in this tab while storage is temporarily unavailable.
@@ -134,25 +136,28 @@ function check(event: Event, current: Composer) {
   const value = promptText(current.input);
   const match = evaluatePrompt(value, policy);
   if (match.action === 'allow') {
-    clearWarning();
+    clearInterruption();
     return;
   }
   if (match.action !== 'monitor') {
     event.preventDefault();
     event.stopImmediatePropagation();
   }
-  if (match.action === 'warn' && warning?.input === current.input && warning.value === value &&
-      warning.match.policyVersion === match.policyVersion && warning.match.assignmentVersion === match.assignmentVersion) return;
+  if (match.action === 'warn' && pending?.input === current.input && pending.page === location.href && pending.value === value &&
+      pending.match.policyVersion === match.policyVersion && pending.match.assignmentVersion === match.assignmentVersion) return;
 
-  clearWarning();
+  clearInterruption();
   recordDecision(chatGptApp, match, installationId);
+  if (match.action === 'monitor') return;
+  pending = { input: current.input, page: location.href, value, installationId, match };
+  ui.redact.hidden = !supportsRedaction(current.input);
+  ui.proceed.hidden = match.action !== 'warn';
+  ui.actions.hidden = false;
   if (match.action === 'block') {
     ui.notice.textContent = `Submission blocked. ${match.reason} Edit the prompt and try again.`;
     current.input.focus();
-  } else if (match.action === 'warn') {
-    warning = { input: current.input, value, installationId, match };
+  } else {
     ui.notice.textContent = match.reason;
-    ui.actions.hidden = false;
     ui.edit.focus();
   }
 }
@@ -178,27 +183,47 @@ window.addEventListener('keydown', (event) => {
 }, { capture: true });
 
 window.addEventListener('input', (event) => {
-  if (warning && event.target instanceof Node && warning.input.contains(event.target)) clearWarning();
+  if (pending && event.target instanceof Node && pending.input.contains(event.target)) clearInterruption();
 }, { capture: true });
 
-ui.edit.addEventListener('click', () => {
+ui.edit.addEventListener('click', (event) => {
+  if (!event.isTrusted) return;
   const current = inspectComposer().composer;
-  clearWarning();
+  clearInterruption();
   current?.input.focus();
 });
 
-ui.proceed.addEventListener('click', () => {
-  const pending = warning;
+function reviewedDraft() {
+  const draft = pending;
   const current = inspectComposer().composer;
-  clearWarning();
-  if (!pending || current?.input !== pending.input || !current.button || current.button.disabled ||
-      promptText(current.input) !== pending.value || !isChatGptPage(location.href) || !control?.chatGptEnabled ||
-      control.installationId !== pending.installationId || !control.policy) return;
-  const match = evaluatePrompt(pending.value, control.policy);
-  if (match.action !== 'warn' || match.ruleId !== pending.match.ruleId || match.policyVersion !== pending.match.policyVersion ||
-      match.assignmentVersion !== pending.match.assignmentVersion) return;
-  recordDecision(chatGptApp, pending.match, pending.installationId, 'warn_override');
-  current.button.click();
+  clearInterruption();
+  if (!draft || current?.input !== draft.input || !current.button || current.button.disabled ||
+      promptText(current.input) !== draft.value || draft.page !== location.href || !isChatGptPage(location.href) ||
+      !control?.chatGptEnabled || control.installationId !== draft.installationId || !control.policy) return;
+  const match = evaluatePrompt(draft.value, control.policy);
+  if (match.action === 'allow' || match.action !== draft.match.action || match.ruleId !== draft.match.ruleId ||
+      match.policyVersion !== draft.match.policyVersion || match.assignmentVersion !== draft.match.assignmentVersion) return;
+  return { draft, button: current.button, policy: control.policy };
+}
+
+ui.redact.addEventListener('click', (event) => {
+  if (!event.isTrusted) return;
+  const review = reviewedDraft();
+  if (!review) return;
+  const { draft, policy } = review;
+  const replacement = redactPrompt(draft.value, policy);
+  const edited = replacePromptText(draft.input, draft.value, replacement);
+  const clean = edited && promptText(draft.input) === replacement && evaluatePrompt(replacement, policy).action === 'allow';
+  ui.notice.textContent = clean ? 'Detected values redacted. Review the updated draft before sending.' :
+    'Zekvar could not verify the redaction. Review and edit the draft before trying again.';
+});
+
+ui.proceed.addEventListener('click', (event) => {
+  if (!event.isTrusted) return;
+  const review = reviewedDraft();
+  if (review?.draft.match.action !== 'warn') return;
+  recordDecision(chatGptApp, review.draft.match, review.draft.installationId, 'warn_override');
+  review.button.click();
 });
 
 ui.copy.addEventListener('click', async (event) => {

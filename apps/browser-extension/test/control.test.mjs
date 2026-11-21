@@ -17,6 +17,7 @@ assert.match(admin ?? '', /^[a-f0-9]{64}$/, 'Set ZEKVAR_EXTENSION_TEST_ADMIN_TOK
 const fixture = await readFile(new URL('../fixture/index.html', import.meta.url), 'utf8');
 const chatGptFixture = await readFile(new URL('./chatgpt-composer.html', import.meta.url), 'utf8');
 const guestComposerFixture = await readFile(new URL('./guest-chatgpt-composer.html', import.meta.url), 'utf8');
+const { version: extensionVersion } = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
 const marker = 'ZEKVAR_TEST_SECRET';
 
 async function adminCall(path, body) {
@@ -328,7 +329,7 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
     const diagnostics = await chatGpt.evaluate(() => navigator.clipboard.readText());
     assert.doesNotMatch(diagnostics, /ZEKVAR_TEST_SECRET|fixture-alt|private-option/);
     assert.deepEqual(JSON.parse(diagnostics), {
-      version: '0.8.0', route: 'conversation', markedEditors: 1, visibleMarkedEditors: 1,
+      version: extensionVersion, route: 'conversation', markedEditors: 1, visibleMarkedEditors: 1,
       hasEditorForm: false, visibleTextareas: 0, visibleEditableRoots: 1,
       hasComposerSubmitId: true, hasSendTestId: false, hasLabeledSend: true, hasPairedSend: true,
     });
@@ -392,5 +393,113 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
     assert.equal(await chatGpt.locator('#fixture-sends').textContent(), '1');
     await until(async () => (await adminCall('events?appId=chatgpt')).length === baseline + 2,
       'Only the two matching prompt attempts should reach Control.');
+  });
+
+  await t.test('redacts a blocked multiline editor draft as one recoverable edit and requires a separate send', async () => {
+    const policy = await adminCall('policies', { mode: 'block', githubPatMode: 'monitor' });
+    await popup.getByRole('button', { name: 'Sync now' }).click();
+    await chatGpt.goto('https://chatgpt.com/c/redaction-fixture');
+    await chatGpt.getByText(`Zekvar · BLOCK v${policy.version} · GitHub PAT monitor`, { exact: true }).waitFor();
+    const input = chatGpt.getByRole('textbox', { name: 'Message' });
+    const send = chatGpt.getByRole('button', { name: 'Fixture send' });
+    const redaction = chatGpt.getByRole('button', { name: 'Redact detected values', exact: true });
+    const review = chatGpt.getByRole('alert').filter({ hasText: 'Detected values redacted.' });
+    const submissions = chatGpt.locator('#fixture-sends');
+    const pat = 'ghp_' + 'r'.repeat(36);
+    const secondPat = 'ghp_' + 'k'.repeat(36);
+    const embeddedPat = 'prefix_' + pat + '_suffix';
+    const original = `Review this synthetic draft: ${marker}\nCredentials: "${pat}" and ${secondPat}. Preserve ${embeddedPat}.`;
+    const expected = `Review this synthetic draft: [REDACTED]\nCredentials: "[REDACTED]" and [REDACTED]. Preserve ${embeddedPat}.`;
+    await input.fill(original);
+    await send.click();
+    await redaction.waitFor();
+    assert.equal(await chatGpt.getByRole('button', { name: 'Continue anyway' }).count(), 0);
+    await redaction.evaluate((button) => button.click());
+    assert.equal(await input.innerText(), original);
+    await redaction.click();
+    await review.waitFor();
+    assert.equal(await input.innerText(), expected);
+    assert.equal(await submissions.textContent(), '0');
+    await input.press('ControlOrMeta+z');
+    assert.equal(await input.innerText(), original);
+    await input.press('Enter');
+    await redaction.click();
+    await review.waitFor();
+    await input.press('Enter');
+    assert.equal(await submissions.textContent(), '1');
+    assert.equal(await submissions.getAttribute('data-last-draft'), expected);
+
+    await input.evaluate((editor, value) => {
+      const emphasis = document.createElement('strong');
+      emphasis.textContent = value;
+      editor.replaceChildren(emphasis);
+    }, marker);
+    await send.click();
+    await chatGpt.getByRole('alert').filter({ hasText: 'Submission blocked' }).waitFor();
+    assert.equal(await redaction.count(), 0);
+    assert.equal(await input.locator('strong').textContent(), marker);
+    assert.equal(await submissions.textContent(), '1');
+    await until(async () => (await adminCall('events?appId=chatgpt')).filter((entry) => entry.policyVersion === policy.version).length === 3,
+      'Control should record the blocked attempts only.');
+    assert.doesNotMatch(JSON.stringify(posts), new RegExp(`${marker}|${pat}|${secondPat}|REDACTED`));
+  });
+
+  await t.test('redacts a warned guest textarea draft and invalidates stale draft and policy actions', async () => {
+    const policy = await adminCall('policies', { mode: 'warn', githubPatMode: 'off' });
+    await popup.getByRole('button', { name: 'Sync now' }).click();
+    await chatGpt.goto('https://chatgpt.com/?layout=guest-textarea');
+    const input = chatGpt.getByPlaceholder('Ask ChatGPT', { exact: true });
+    const submit = chatGpt.getByRole('button', { name: 'Send message', exact: true });
+    const redact = chatGpt.getByRole('button', { name: 'Redact detected values', exact: true });
+    const proceed = chatGpt.getByRole('button', { name: 'Continue anyway', exact: true });
+    const submissions = chatGpt.locator('#fixture-sends');
+    const disabledPat = 'ghp_' + 'x'.repeat(36);
+    const edited = `Keep this draft.\n${marker} and ${disabledPat}`;
+    await input.fill(marker);
+    await chatGpt.getByText(`Zekvar · WARN v${policy.version}`, { exact: true }).waitFor();
+    await submit.click();
+    await proceed.waitFor();
+    await input.evaluate((field, value) => { field.value = value; }, edited);
+    await redact.click();
+    assert.equal(await input.inputValue(), edited);
+    assert.equal(await submissions.textContent(), '0');
+
+    await submit.click();
+    await redact.waitFor();
+    const tightened = await adminCall('policies', { mode: 'warn', githubPatMode: 'block' });
+    await popup.getByRole('button', { name: 'Sync now' }).click();
+    await chatGpt.getByText(`Zekvar · WARN v${tightened.version} · GitHub PAT block`, { exact: true }).waitFor();
+    assert.equal(await redact.count(), 0);
+    assert.equal(await input.inputValue(), edited);
+    await submit.click();
+    await redact.waitFor();
+    assert.equal(await proceed.count(), 0);
+    await redact.click();
+    await chatGpt.getByRole('alert').filter({ hasText: 'Detected values redacted.' }).waitFor();
+    const expected = 'Keep this draft.\n[REDACTED] and [REDACTED]';
+    assert.equal(await input.inputValue(), expected);
+    assert.equal(await submissions.textContent(), '0');
+    await submit.click();
+    assert.equal(await submissions.textContent(), '1');
+    assert.equal(await submissions.getAttribute('data-last-draft'), expected);
+
+    const markerOnly = await adminCall('policies', { mode: 'warn', githubPatMode: 'off' });
+    await popup.getByRole('button', { name: 'Sync now' }).click();
+    await input.fill(edited);
+    await chatGpt.getByText(`Zekvar · WARN v${markerOnly.version}`, { exact: true }).waitFor();
+    await input.press('Enter');
+    await proceed.waitFor();
+    await redact.click();
+    await chatGpt.getByRole('alert').filter({ hasText: 'Detected values redacted.' }).waitFor();
+    assert.equal(await input.inputValue(), `Keep this draft.\n[REDACTED] and ${disabledPat}`);
+    assert.equal(await submissions.textContent(), '1');
+    await input.press('Enter');
+    assert.equal(await submissions.textContent(), '2');
+    await until(async () => {
+      const rows = (await adminCall('events?appId=chatgpt')).filter((entry) => entry.policyVersion >= policy.version);
+      return rows.length === 4 && rows.filter((entry) => entry.decision === 'warn').length === 3 &&
+        rows.some((entry) => entry.policyVersion === tightened.version && entry.decision === 'block');
+    }, 'Control should record the warnings and block without warning overrides.');
+    assert.doesNotMatch(JSON.stringify(posts), new RegExp(`${marker}|${disabledPat}|REDACTED`));
   });
 });

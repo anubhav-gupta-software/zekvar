@@ -22,6 +22,7 @@
     const dispatch = (event) => {
       event.preventDefault();
       if (!input.textContent.trim()) return;
+      sends.dataset.lastDraft = input.innerText;
       sends.value = String(Number(sends.value) + 1);
       input.textContent = '';
     };
