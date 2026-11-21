@@ -1,13 +1,16 @@
 # Zekvar Product Plan
 
-**Security at every interaction.**  
+**Security at every interaction.**
+
 The unified security platform for browsers, endpoints, and AI.
+
+Start with the [first build](#first-build). The [delivery roadmap](#delivery-roadmap) shows the order of work through launch and expansion. The [decision log](#decision-log) records what has been selected and what still needs validation.
 
 ## Product strategy
 
 Zekvar helps security teams see where employees use AI, apply company policy to sensitive actions, and investigate policy decisions. Start with managed browsers, where the team can ship both visibility and enforcement in one deployment. Use Zekvar Control as the shared administration layer as the platform expands to endpoints and autonomous agents.
 
-The first buyer is an IT or security lead at a company that manages Chrome and wants employees to use approved AI tools safely. The daily users are security administrators who configure policy and review events, and employees who need a clear explanation when an action is interrupted. Design partners should already have a managed Chrome fleet and an active AI usage policy. MSPs become a distribution channel once delegated administration and tenant isolation are ready.
+The first buyer is an IT or security lead responsible for managed Chrome and an active AI usage policy. Recruit direct IT teams and at least one MSP design partner to validate the same protection workflow and learn how it scales across clients. Offer the initial commercial release to direct teams. Open MSP beta once delegated administration and tenant isolation have been verified.
 
 | Product | Role | Direction |
 | --- | --- | --- |
@@ -17,21 +20,35 @@ The first buyer is an IT or security lead at a company that manages Chrome and w
 | Zekvar Endpoint | Expansion product | Device security, endpoint monitoring, and policy enforcement outside the browser |
 | Zekvar Agent | Expansion product | AI-agent permissions, tool-call monitoring, runtime policies, and autonomous action controls |
 
+## Competitive strategy
+
+Atakama already markets a broad managed-browser platform. Its public material describes AI app discovery, sensitive-prompt detection without storing prompts, clipboard and upload controls, desktop AI restrictions, DNS and phishing protection, extension governance, password-risk monitoring, and multi-tenant management with policy inheritance and PSA integrations. Atakama also advertises flexible consumption-based MSP pricing. The reviewed materials did not disclose a comparable dollar rate. [Atakama platform](https://www.atakama.com/products/browser-security-platform) · [Atakama AI controls](https://atakama.com/resources/blog/ai-data-leakage-block-warn-redact) · [Atakama MSP overview](https://www.atakama.com/wp-content/uploads/2024/03/Atakama-Browser-Security-Platform-MSP-Overview.pdf)
+
+The original plan defined a useful engineering demo. A single-site prompt detector and event dashboard leave a buyer with limited transferable protection and no measurable reason to switch. The first commercial release should give buyers a complete workflow for enforcing an AI policy on managed Chrome, with broader browser replacement evaluated as a separate milestone.
+
+| Where Zekvar aims to win | What to build | What would prove it |
+| --- | --- | --- |
+| Keep approved AI usable | Detect sensitive content before supported submissions. Offer employee-reviewed redaction, safer retry, and time-limited exceptions. Provide coverage for text, paste, and selected uploads across the launch apps. | On shared test workflows, catch at least as many seeded sensitive sends with fewer interruptions to clean sends, or improve the completion rate for approved work. |
+| Make policy behavior easy to verify | Add policy preview on synthetic or previously collected metadata, scoped rollout, version history, rollback, and a coverage view that flags stale policy and broken site adapters. Show which rule made each decision. | An admin can deploy, diagnose an interruption, and roll back a change faster in a timed side-by-side trial. Test preview only where the available signals support it and show when it cannot predict a decision. |
+| Reduce the cost to deploy and run | Bundle Browser, AI, and Control per managed user. Use managed Chrome deployment and local inspection for the initial scope. Add inherited policies, tenant overrides, and reusable reports for MSPs. | Compare an equivalent order and measured onboarding and admin effort. Validate margin at realistic support and telemetry loads. |
+
+Keep a benchmark with the same browsers, supported AI apps, policy intents, data fixtures, endpoint counts, and admin tasks across products. Record measured results, vendor-documented behavior, and unknowns with source, plan tier, version, and date. Use a customer-authorized evaluation or an official trial when available. Publish comparative claims only when the evidence covers the workflow and package named in the claim.
+
 ## First commercial release
 
-Ship Browser and AI through a single Chrome extension with Control included. Lead with a workflow that a security team can deploy and verify during a pilot.
+Ship Browser and AI through a single managed Chrome extension with Control included. Prove the workflow on ChatGPT during the pilot. Target ChatGPT, Claude, and Gemini for launch, with design partners confirming priority and tests covering the actions advertised for each site.
 
 1. An administrator enrolls a managed Chrome browser in Control and publishes a policy to a pilot group.
 2. An employee attempts to submit a prompt on a supported AI site. The extension evaluates the text locally at submission time.
-3. If a detector matches, the extension monitors, warns, or blocks according to policy. A warning lets the employee edit the prompt or explicitly continue. A block lets the employee edit and try again.
+3. If a detector matches, the extension monitors, warns, or blocks according to policy. A warning lets the employee edit the prompt or explicitly continue. For supported structured matches, offer a reviewable redacted version the employee can choose to submit. A block lets the employee edit and try again.
 4. Control records the app, time, detector category, policy version, and action taken. The administrator can inspect the decision and adjust the policy.
 
-| Area | Pilot scope | After the pilot |
+| Area | Pilot scope | Commercial launch target |
 | --- | --- | --- |
-| Browser | Managed Chrome enrollment, health status, and administrator-defined URL rules for selected domains | Edge, credential protection across websites, extension inventory and risk detection |
-| AI | Observed use of cataloged AI domains in managed Chrome, approved or unapproved app labels, and text-submit protection on one supported ChatGPT web flow | More AI sites and submission paths, selected file uploads, and richer data classification |
-| Control | Tenant-scoped admin login, policy creation and publishing, monitor/warn/block modes, event review, enrollment status, and publish audit history | Enterprise SSO and provisioning, policy exceptions, SIEM export, and MSP administration |
-| Detection | Locally evaluated structured secrets and administrator-defined exact phrases, tested with synthetic data | Evaluate customer record detectors and document classification against labeled samples |
+| Browser | Managed Chrome enrollment, health, and domain allow/block rules | Add SaaS app inventory and managed extension inventory with permission details. Validate allow/block deployment through managed browser policy before advertising enforcement. |
+| AI | Discover cataloged AI domains, classify approved and unapproved apps, and protect text submission in one supported ChatGPT flow | Cover text submission and paste on the tested launch apps, employee-reviewed redaction, and block selected upload paths by destination or file type. Add content-based file inspection only after detection and performance tests pass. |
+| Control | Tenant-scoped admin login, policy publishing, monitor/warn/block, event review, enrollment health, and publish audit history | Add group rollout, policy preview and rollback, expiring exceptions, coverage reporting, enterprise SSO, and event export. |
+| Detection | Local structured-secret and exact-phrase checks using synthetic data | Add validated structured identifiers and customer-specific rules. Measure performance and false blocks on labeled fixtures before enabling enforcement. |
 
 Start every pilot in monitor mode. Move high-confidence detections to warn or block once the customer has reviewed the results. Document the tested site flows, Chrome versions, and app coverage for each release. Treat discovery of cataloged domains and pre-submit protection as distinct capabilities in the product UI.
 
@@ -40,37 +57,130 @@ Start every pilot in monitor mode. Move high-confidence detections to warn or bl
 Use a TypeScript Chrome Manifest V3 extension, a Next.js and Tailwind CSS dashboard, an ASP.NET Core API, and PostgreSQL. Start with one backend deployment and one database. Keep cloud and identity provider selection open until pilot requirements are known. Use a managed OpenID Connect provider for Control admin authentication and separate credentials for browser enrollment.
 
 - **Extension** — Use domain rules for URL filtering and a site-specific adapter for supported prompt submissions. Evaluate local detectors and show the decision in the page. Track adapter health so a site change can be surfaced in Control. Chrome's declarative rules handle request conditions such as destination URLs. Prompt inspection depends on the supported page flow. Chrome reserves blocking `webRequest` listeners for policy-installed extensions in Manifest V3. [Chrome declarativeNetRequest API](https://developer.chrome.com/docs/extensions/reference/api/declarativeNetRequest) · [Chrome webRequest API](https://developer.chrome.com/docs/extensions/reference/api/webRequest)
-- **Policy** — Begin with an immutable version per publish. Each rule identifies its target group, app or domain, detector if applicable, and action. Resolve matches deterministically using the most restrictive action and record the rule that determined it. Roll back by publishing an earlier configuration as a new version. Keep the last applied policy across restarts and outages, and expose stale policy status in Control.
+- **Policy** — Begin with an immutable version per publish. Each rule identifies its target group, app or domain, detector if applicable, and action. Apply explicitly approved, scoped, unexpired exceptions to their named rules before resolving the most restrictive remaining match. Record the deciding rule and any applied exception. Roll back by publishing an earlier configuration as a new version. Keep the last applied policy across restarts and outages, and expose stale policy status in Control.
 - **Enrollment and tenancy** — Use short-lived enrollment grants and revocable per-installation credentials. Scope policies, installations, audit entries, and events to an organization. Derive the organization from authenticated credentials and exercise cross-tenant access checks before external pilot use. Chrome managed storage is available for administrator-provided bootstrap configuration. [Chrome managed storage manifest](https://developer.chrome.com/docs/extensions/reference/manifest/storage)
 - **Events** — Use a stable event ID across retries and deduplicate it server-side. Store the app or domain, event and receipt timestamps, detector category, policy version, decision, and pseudonymous installation ID. Keep a bounded offline queue for event metadata. Report degraded status when delivery or enforcement coverage drops.
 - **Privacy** — Keep prompt text, matched secret values, and file contents on the device. Keep raw content out of logs and analytics. Collect sanctioned app usage and policy events with hostname or app identifiers, excluding URL query strings and general browsing history. Start with a proposed 30-day event retention period and confirm it with design partners.
 
 The initial data model covers organizations, admin memberships, enrollment grants, browser installations, policy versions, security events, and audit entries. Browser and AI share enrollment, policy delivery, and event ingestion. Endpoint and Agent can reuse those services while defining their own runtime enforcement and event fields.
 
-## Delivery milestones
+## Delivery roadmap
 
-| Milestone | Deliverable | Exit criteria |
-| --- | --- | --- |
-| 1. Local proof | Chrome extension and a controlled test page with a synthetic secret rule | A clean prompt submits normally. A matching prompt is held, a clear message appears, and an edited prompt can be submitted. The result contains metadata only. |
-| 2. End-to-end demo | Connected Control, API, and browser with one supported ChatGPT flow | An admin publishes a policy, the enrolled browser applies it, and Control displays one deduplicated event per policy action. Verify button and keyboard submission, warning override, and offline recovery. |
-| 3. Design-partner pilot | Managed Chrome deployment, monitor-first rollout, and weekly event review | A customer admin can enroll a pilot group, review real usage, publish and roll back policies, and identify browsers with stale policy or degraded coverage. Verify cross-tenant access controls, retention, and metadata-only telemetry before rollout. |
-| 4. Commercial launch | A supported Browser and AI offering with Control, onboarding, support, and incident response | Pilot evidence supports the claims made at launch. Installation, updates, backups, recovery, and escalation have been exercised. Domain and trademark checks are complete. |
-| 5. Platform expansion | Broader browser coverage, MSP administration, Endpoint, and Agent | Sequence work by buyer demand and integration readiness. Validate delegated administration before MSP deployment. Pilot Endpoint and Agent separately before expanding their enforcement coverage. |
+Assume one builder working sequentially, with customer discovery running alongside engineering. The ranges below are rough estimates in focused engineering days. Re-estimate after each milestone using actual delivery time. Partner recruitment, pilot observation, distribution review, and brand clearance have separate calendar lead times. Advance on the exit criteria.
+
+| Milestone | Depends on | Engineering estimate | Exit criteria |
+| --- | --- | --- | --- |
+| 1. Local proof | Workspace and dev browser | 3–6 days | Real Chrome passes the [first build](#first-build) scenarios on a controlled page. |
+| 2. End-to-end demo | Local submit handling and event contract | 8–15 days | Control publishes policy, an enrolled browser applies it to one tested ChatGPT flow, and Control shows one event per decision across retries. |
+| 3. Design-partner pilot | Demo, managed deployment, tenant isolation, and partner onboarding | 12–25 days of preparation and fixes, plus a proposed 2–4 weeks of observation | A partner admin can deploy, review, roll back, and diagnose coverage. Pilot results support the chosen rules and the buyer confirms a concrete use case. |
+| 4. Direct commercial release | Pilot evidence and verified launch gates | 25–50 days after pilot, subject to app coverage and distribution | Each advertised capability passes release testing. Support, recovery, billing, and brand readiness have been exercised. |
+| 5. MSP beta and browser expansion | Stable direct release and an MSP design partner | Estimate after pilot | An MSP can run two isolated client tenants with inherited policies, scoped overrides, and tenant-specific reporting. |
+| 6. Endpoint and Agent pilots | Shared Control contracts and customer demand for each runtime | Estimate after scoping each pilot | Each product independently demonstrates reliable enforcement, auditability, and recovery in its supported environment. |
+
+### 1. Local proof
+
+Build the extension, fixture page, local policy evaluator, and scenario tests described in the [first build](#first-build). Start customer discovery in parallel. Ask IT leads and one MSP about managed browser deployment, which AI apps they allow, the sensitive actions they need to prevent, and how they handle false blocks today. Capture the use case, decision maker, deployment constraints, and commercial next step for each prospect.
+
+### 2. End-to-end demo
+
+1. Add the ASP.NET Core API and PostgreSQL migrations. Implement organizations, admin memberships, enrollment, immutable policy versions, installation health, and event ingestion. Pin shared test fixtures for the policy and event contracts across the extension and API.
+2. Build the minimum Control views in Next.js. Verify sign-in, enroll a browser, publish a policy for a pilot group, inspect installation health, and filter the event table by app, decision, or time. Demo rollback by publishing an earlier configuration as a new version.
+3. Connect the browser to enrollment, policy fetch, and event submission. Test duplicate events, old policy arriving after new policy, a browser restart, expired enrollment, revoked credentials, and disconnect and reconnect with an offline metadata queue.
+4. Adapt the evaluator to one real ChatGPT submit flow using test accounts and synthetic content. Record the Chrome version and tested input paths. If the site adapter loses coverage, surface degraded health and document the behavior for that flow.
+5. Run a demo in which an admin goes from enrollment to a visible decision. Show a clean submit, a held submit, policy rollback, and event delivery after reconnect. Capture where the admin needed engineering help.
+
+### 3. Design-partner pilot
+
+1. Agree on the pilot group, expected data collection, supported app flows, allowed actions, escalation contact, and one buying decision with each partner. Begin with an internal deployment, then stage a small managed group per partner.
+2. Before inviting external users, exercise cross-tenant access for policies, events, audit logs, and exports that exist at this milestone. Verify revocation, retention and deletion, payload and log redaction, managed installation and removal, and a policy rollback drill. Document where extension or adapter health becomes visible and who responds.
+3. Run monitor mode for a baseline period. Review coverage and flagged events with the customer, validate detector precision on labeled fixtures, and promote rules to warn or block only after sign-off. Collect employee and admin feedback, including the time needed to resolve false blocks.
+4. Wrap up with measured outcomes, coverage gaps, support burden, what the partner would pay for, and an explicit decision to expand, adjust, or stop the pilot. Use the results to confirm launch app order and the cases included in the benchmark.
+
+### 4. Direct commercial release
+
+1. Work through the highest-priority app adapters and publish a tested app-by-action matrix. Ship employee-reviewed redaction, scoped and expiring exceptions, policy preview where supported by data, and selected upload controls by destination or file type. Complete app and extension inventory, group rollout, enterprise SSO, and event export.
+2. Stage upgrades through a test tenant and pilot ring before broad rollout. Exercise rollback for policy and release regressions, restore a backup in staging, test revocation and role boundaries, and run a support and incident-response drill. Confirm how to change or disable a broken adapter and notify affected customers.
+3. Prepare the installation and removal guide, coverage documentation, security and privacy questionnaire answers, customer onboarding and support process, and billing workflow for the proposed bundle. Test a quote-to-invoice path. Resolve the domain and trademark launch gate before public use of the brand.
+4. Run the matched product benchmark and pricing comparison in parallel. Capture equivalent scope, quote date, raw measurements, and gaps in evidence. Ship coverage statements backed by release tests and use comparative statements only where the benchmark supports them.
+
+### 5. MSP beta and broader browser security
+
+Start with delegated roles, inherited policy templates, per-client overrides, reporting, and a usage reconciliation workflow. Verify that two client tenants can use the same template independently and that client admins can see only their own data. Have the design partner deploy and roll back policy in both tenants and reconcile managed-user counts before designing PSA integrations.
+
+Order the wider Browser backlog using pilot demand and the cost of maintaining each capability. Validate Edge and managed extension controls first if they unblock deployments. Evaluate phishing and URL reputation coverage, credential risk indicators, broader data transfer controls, and DNS as distinct releases. For each, define supported browsers and environments, user impact, rule behavior on loss of connectivity, and how administrators recover from incorrect enforcement.
+
+### 6. Endpoint and Agent pilots
+
+- **Endpoint** — Choose one operating system based on pilot demand. Start with device enrollment, agent health, and posture signals that improve a Control decision. Validate update signing, staged deployment and rollback, resource usage, device removal, and audit events before adding more enforcement.
+- **Agent** — Choose one runtime or tool gateway. Start with a scoped tool permission policy, a policy decision before a sensitive tool call, time-limited human approvals, and metadata-only auditing. Test allowed, denied, expired, repeated, and approval-required calls with inert tools before granting access to customer workflows.
+
+### How to run the work
+
+- Keep one engineering task in progress at a time until the first demo works. For each task, record the user outcome, prerequisites, expected behavior, test evidence, and open items. Append the decision log after completing the task.
+- Review the roadmap weekly. Demo what works, review product risks and partner feedback, record actual effort, and choose the next unblocked task. Pull work forward only when it improves the current exit criteria or removes a waiting dependency.
+- Use three release blockers throughout customer-facing work: a cross-tenant data exposure, sensitive content in telemetry or logs, or evidence that supported enforcement is falling short of advertised coverage. Assign an owner and verify recovery before expanding a rollout.
 
 ## Pilot success and commercial assumptions
 
 - Recruit two or three design partners with managed Chrome and an existing AI policy. Test whether they can identify AI usage and investigate a policy event without engineering support.
 - Measure enrolled and reporting browsers as a share of eligible browsers, policy freshness, and adapter health. Proposed targets are 95% reporting coverage and policy delivery within five minutes for 95% of online installations.
 - Measure detector accuracy against labeled synthetic examples and review misclassified pilot decisions with administrators. Proposed target is at least 95% precision for rules promoted to block mode. Track recall and unsupported submission paths separately.
+- Record end-to-end latency and task completion for clean, warned, redacted, and blocked submissions. Maintain an app-by-action coverage matrix and run it whenever the extension or an app adapter changes. Include keyboard, click, paste, and attachment paths wherever advertised.
 - Compare monitor, warn, and block activity, warning overrides, false blocks, and support requests. Use those results to decide which rules can ship with enforcement enabled.
-- Test per-managed-user pricing for a Browser and AI bundle with Control included. Use pilot interviews to test demand for separate SKUs, annual commitments, and MSP pricing before setting public prices.
+
+## Pricing and cost targets
+
+- Test a single per-managed-user Browser and AI bundle with Control included and a monthly option. Test volume tiers with MSPs. Measure the cost of supporting a second device per user before setting device allowances.
+- Use a **proposed target of at least 20% lower year-one customer cost** for comparable coverage. Compare written quotes at the same seat count, region, contract term, package scope, and support level. Include mandatory fees and any companion products needed to deliver the same workflow. Show internal onboarding and admin labor separately using measured hours and a stated labor rate. Atakama’s comparable rate remains unverified.
+- Estimate cost per managed user at pilot scale and at 1,000 and 10,000 seats. Include infrastructure, event storage and delivery, identity, threat and classification feeds, site maintenance, onboarding, and support. Use a proposed steady-state gross-margin floor of 70%, measured against attributable delivery costs, to test whether discounting is sustainable.
+- If pricing and margin targets conflict, adjust scope, packaging, or delivery cost and test again. Keep SSO, tenancy controls, privacy boundaries, and auditability in the launch scope.
 
 ## Brand and launch readiness
 
 - **Working brand** — Zekvar. Use the five product names in this plan across product interfaces and documentation.
 - **Identity** — Midnight navy `#101927`, electric mint `#59E6B5`, and clean, bold, technical typography. Use confident, precise copy and state what each deployment actually covers.
-- **Public launch gate** — Verify `zekvar.com` and `zekvar.ai`, and complete trademark clearance in the intended markets. These checks are pending.
+- **Domain check, November 20, 2026** — `zekvar.com` is registered through Namecheap. The `.ai` registry returned no registration for `zekvar.ai`. Verisign also returned no registrations for `getzekvar.com`, `zekvarhq.com`, or `zekvarsecurity.com`. Confirm pricing and availability at registrar checkout before choosing a launch domain. [Verisign .com record](https://rdap.verisign.com/com/v1/domain/zekvar.com) · [IANA .ai registry directory](https://www.iana.org/domains/root/db/ai.html)
+- **Preliminary trademark screen, November 20, 2026** — Exact-name searches for Zekvar and the five product names returned zero matches in the USPTO index and in TMview records from the EUIPO, UK, Canada, Australia, and WIPO Madrid system. A U.S. similarity search found **ZEKVOR**, a live application for digital cameras in Class 9, serial `99944550`. Review that filing alongside Zekvar's planned downloadable software and SaaS offerings. [USPTO search](https://tmsearch.uspto.gov/) · [ZEKVOR filing](https://tsdr.uspto.gov/#caseNumber=99944550&caseSearchType=US_APPLICATION&caseType=DEFAULT&searchType=statusSearch) · [TMview](https://www.tmdn.org/tmview/)
+- **Tagline** — Registry searches returned no exact match for “Security at every interaction” in the same sources. FVC uses the phrase in an AI security headline, and Google Cloud uses it in an API security publication. Keep it under review for public branding. [FVC](https://www.fvc.ai/technology) · [Google Cloud](https://cloud.google.com/files/apigee/secure-api-ebook.pdf)
+- **Public launch gate** — Secure a launch domain and complete a clearance review in the intended markets, including similar marks, state records, and unregistered commercial use. [USPTO clearance guidance](https://www.uspto.gov/trademarks/search/comprehensive-clearance-search-similar-trademarks)
 
-## First build slice
+## First build
 
-Start with the local proof. Build a minimal MV3 extension and a controlled prompt composer. Use an inert synthetic marker and exercise ordinary submit, keyboard submit, warning override, blocking, and edit-and-retry. Emit the same metadata fields planned for Control so the demo can connect to the API in the next milestone. Once the flow passes, adapt it to the first supported ChatGPT submission path and record the exact coverage in the release checklist.
+Build the local proof in this order. Start with a managed-browser security workflow that can be reproduced on a fixture served from localhost. Use the fixture to prove the policy engine and browser behavior before introducing a live AI site, dashboard, or database.
+
+| Order | Work | Done when |
+| --- | --- | --- |
+| 1 | Scaffold `apps/browser-extension` for TypeScript and the Manifest V3 build. Add a fixture form served locally with a visible submit counter. Document how to build and load the unpacked extension into a test Chrome profile. | The extension loads, attaches only to the fixture origin, and the form submits by click and keyboard. |
+| 2 | Add a test policy and an evaluator for allow, monitor, warn, and block. Use a deterministic inert marker such as `ZEKVAR_TEST_SECRET` for fixtures. | Clean and matched fixture cases return the expected action, rule ID, and reason. Expect the same result on repeated evaluation. |
+| 3 | Connect the evaluator to submit. Display a warning with Edit and Continue actions, or a block that lets the user edit and retry. Apply the warning override to the current attempt and evaluate again when the input changes. | Clean and monitored prompts reach the fixture handler once. Warned prompts wait for a decision. Blocked prompts never reach the fixture handler. |
+| 4 | Emit a local metadata event containing an event ID, app ID, timestamp, rule ID, detector category, policy version, and decision. Preserve an event ID across a retry of the same event. | Captured output contains the structured fields. Searching logs and event output for the synthetic marker yields zero matches. |
+| 5 | Repeat the scenario matrix in Chrome, fix failures, and record the results and any unsupported paths in the decision log. | The proof can be rerun from a fresh local checkout, and the demo shows a clean submit, a block, and a successful edited retry. |
+
+| Scenario | Expected result |
+| --- | --- |
+| Clean prompt via button and Enter | Exactly one fixture submission for each deliberate attempt |
+| Marker in monitor mode | One submission and one monitor decision event |
+| Marker in warn mode, then Edit | Zero submissions until the edited prompt is submitted |
+| Marker in warn mode, then Continue | Exactly one submission and a warning override recorded |
+| Marker in block mode, then clean retry | Zero submissions while blocked, then one after editing |
+| Repeated click during warning, or input changes before Continue | No duplicate submissions. Changed input is evaluated again. |
+| Logs and captured event output | No prompt, match value, or synthetic marker |
+
+The first work session is task 1 and the initial clean-submit check. The local demo ends at task 5. Add the API and Control in milestone 2 after those browser scenarios pass.
+
+## Decision log
+
+Update this log after each completed task. Record the work and verification performed, every material product, engineering, pricing, scope, or launch decision, why it was made, and what remains open. Mark ideas as proposed until accepted or validated. When a decision changes, append a dated entry identifying what it supersedes.
+
+| Date | Status | Decision and rationale | Verification or open items |
+| --- | --- | --- | --- |
+| 2026-11-20 | Selected | Use Zekvar as the working brand, the navy and mint identity, and the five-product portfolio. Make Control the shared platform, lead commercially with Browser and AI, and expand into Endpoint and Agent. | Retain the public launch gate for domain and trademark clearance. |
+| 2026-11-20 | Proposed | Start with a TypeScript MV3 extension, Next.js and Tailwind, ASP.NET Core, and PostgreSQL. Use local inspection, metadata-only telemetry, versioned policies, and a monitor-first pilot to keep deployment manageable and sensitive content on-device. | Test browser coverage, tenant isolation, policy delivery, and retention. Cloud and identity vendors are open. |
+| 2026-11-20 | Research complete, clearance pending | Checked the brand, product names, tagline, and domains. Keep Zekvar as the working brand while reviewing ZEKVOR and prior tagline use. | `zekvar.com` is registered. `zekvar.ai` and three `.com` fallbacks had no registry records at the time of lookup. See Brand and launch readiness. |
+| 2026-11-20 | Selected direction | Compete on better outcomes at lower cost. Treat the one-site prototype as milestone 1. Define the commercial release around safe completion of approved AI work, explainable policy, and customer-verifiable coverage. | Reviewed Atakama’s public documentation. Comparative product and price outcomes still need a matched benchmark and comparable quote. |
+| 2026-11-20 | Proposed | Target ChatGPT, Claude, and Gemini for launch. Add text and paste coverage, reviewed redaction, selected upload controls, policy preview, and timed exceptions. Include an MSP in pilot discovery and stage MSP beta after tenant controls are verified. | Confirm app priority with design partners and verify supported actions per app. Benchmark task completion, enforcement accuracy, and admin time. |
+| 2026-11-20 | Proposed | Test per-managed-user bundle pricing, a 20% year-one cost advantage, and a 70% steady-state gross-margin floor. Use attributable cost and equivalent coverage to test whether a lower price is sustainable. | Collect comparable quotes and pilot cost data. Pricing is open. |
+| 2026-11-20 | Process adopted | Rename the canonical plan to `product_plan.md`, add this decision log, and add a repository instruction to keep it current after each completed task. | Competitive research and plan revision completed. The first implementation milestone is the local proof. |
+| 2026-11-20 | Planning complete | Replaced the milestone summary and first-build paragraph with a dependency-ordered roadmap, a first-build task list, and a Chrome acceptance matrix. Added customer discovery, pilot operations, release verification, commercial preparation, and expansion gates so technical work leads to a deployable product. | Checked Markdown table structure, internal section links, and whitespace. The first engineering task is the local extension scaffold and fixture. |
+| 2026-11-20 | Proposed | Estimate the early milestones for one builder and re-estimate after each milestone. Keep customer discovery parallel, choose rollout scope based on measured results, and defer exact Endpoint and Agent estimates until each pilot has a defined runtime and buyer. | Staffing, launch timing, design partners, deployment and identity providers, and comparative pricing remain open. |
+| 2026-11-20 | Process adopted | Commit each verified product change together with its plan entry so the rationale and implementation remain traceable in Git. | Recorded the workflow in `AGENTS.md`. |
