@@ -59,6 +59,7 @@ export type SecurityEvent = {
   installationId: string;
   appId: string;
   timestamp: string;
+  receivedAt: string;
   detectorCategory: string;
   ruleId: string;
   policyVersion: number;

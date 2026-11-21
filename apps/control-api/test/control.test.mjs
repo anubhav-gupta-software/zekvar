@@ -432,6 +432,8 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await Promise.all([save(window), save(window)]);
     assert.deepEqual(await admin('retention'), window);
     assert.deepEqual((await admin('events')).map(({ eventId }) => eventId), [recent.eventId]);
+    assert.deepEqual((await admin('events/history')).entries.map(({ eventId }) => eventId), [recent.eventId]);
+    assert.deepEqual((await admin('events/export')).entries.map(({ eventId }) => eventId), [recent.eventId]);
     assert.deepEqual((await admin('ai-apps')).map(({ browsersSeen }) => browsersSeen), [1, 0, 0]);
     assert.deepEqual((await admin('audit?action=grant_issued')).entries, []);
     const retentionChanges = (await admin('audit?action=retention_changed')).entries;
@@ -442,6 +444,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await save(indefinite);
     assert.deepEqual(await admin('retention'), indefinite);
     assert.deepEqual((await admin('events')).map(({ eventId }) => eventId), [recent.eventId]);
+    assert.deepEqual((await admin('events/export')).entries.map(({ eventId }) => eventId), [recent.eventId]);
     assert.equal(await physicalCounts(), '3|2|1');
     const runs = await Promise.all([cleanup(), cleanup()]);
     assert.deepEqual(runs.sort((a, b) => a.securityEvents - b.securityEvents), [
@@ -595,5 +598,104 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const nextScoped = await publish(scopedPath, { mode: 'monitor', expectedVersion: scoped.version });
     assert.deepEqual(nextScoped.domainRules, scoped.domainRules);
     assert.deepEqual(await baseline(), newerBaseline);
+  });
+
+  await t.test('pages and exports all matching retained metadata with tenant isolation and stable ties', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: first, ...options });
+    const [policy] = await admin('policies');
+    async function enroll() {
+      const { grant } = await admin('enrollment-grants', { method: 'POST' });
+      return call('/v1/enroll', { method: 'POST', body: { grant } });
+    }
+    const [one, two] = await Promise.all([enroll(), enroll()]);
+    const timestamp = new Date().toISOString();
+    const until = new Date(Date.parse(timestamp) + 60_000).toISOString();
+    const core = { ...event, timestamp, appId: 'chatgpt', policyVersion: policy.version, decision: policy.mode };
+    const submit = (browser, body, expect = 204) => call('/v1/browser/events', { method: 'POST', token: browser.token, body, expect });
+    const rows = Array.from({ length: 100 }, () => ({ ...core, eventId: randomUUID() }));
+    for (let index = 0; index < rows.length; index += 10)
+      await Promise.all(rows.slice(index, index + 10).map((row) => submit(one, row)));
+    const duplicate = { ...core, eventId: randomUUID() };
+    await Promise.all([submit(one, duplicate), submit(two, duplicate), submit(two, duplicate)]);
+    await submit(one, { ...core, eventId: randomUUID(), timestamp: until });
+    await submit(one, { ...core, eventId: randomUUID(), appId: 'local-prompt-fixture' });
+    await submit(one, { ...core, eventId: randomUUID(), prompt: 'private-synthetic-export-sample' }, 400);
+
+    if (postgres) {
+      await retentionFixture(`UPDATE security_events SET received_at = CASE WHEN event_id = '${duplicate.eventId}'
+        THEN '2026-01-03T01:02:03.123456Z'::timestamptz ELSE '2026-01-03T01:02:04.123456Z'::timestamptz END
+        WHERE (installation_id = '${one.installationId}' OR installation_id = '${two.installationId}') AND occurred_at = '${timestamp}'
+          AND app_id = 'chatgpt';`);
+      await retentionFixture(`UPDATE security_events SET received_at = '2026-01-03T01:02:01.123456Z'::timestamptz
+        WHERE installation_id = '${one.installationId}' AND event_id = '${rows.at(-1).eventId}';`);
+    }
+    const params = new URLSearchParams({ since: timestamp, until, appId: 'chatgpt', decision: policy.mode });
+    const history = (filters = params) => admin(`events/history?${filters}`);
+    const firstPage = await history();
+    assert.equal(firstPage.entries.length, 100);
+    const last = firstPage.entries.at(-1);
+    assert.equal(Date.parse(firstPage.next.receivedAt), Date.parse(last.receivedAt));
+    assert.equal(firstPage.next.eventId, last.eventId);
+    assert.equal(firstPage.next.installationId, last.installationId);
+    if (postgres) assert.equal(last.eventId, duplicate.eventId);
+
+    const next = new URLSearchParams(params);
+    next.set('beforeAt', firstPage.next.receivedAt);
+    next.set('beforeEventId', firstPage.next.eventId);
+    next.set('beforeInstallationId', firstPage.next.installationId);
+    const inserted = { ...core, eventId: randomUUID() };
+    await submit(one, inserted);
+    const older = await history(next);
+    assert.equal(older.next, null);
+    assert.equal(older.entries.length, 2);
+    const paged = [...firstPage.entries, ...older.entries];
+    assert.equal(new Set(paged.map(({ installationId, eventId }) => `${installationId}:${eventId}`)).size, 102);
+    assert.equal(paged.filter(({ eventId }) => eventId === duplicate.eventId).length, 2);
+    assert.equal(paged.some(({ eventId }) => eventId === inserted.eventId), false);
+
+    const exported = await fetch(`${baseUrl}/v1/admin/events/export?${params}`, {
+      headers: { Authorization: `Bearer ${first}` }, signal: AbortSignal.timeout(5000),
+    });
+    assert.equal(exported.status, 200);
+    assert.match(exported.headers.get('content-disposition'), /attachment; filename="zekvar-security-events\.json"/);
+    assert.equal(exported.headers.get('cache-control'), 'no-store');
+    const json = await exported.text();
+    const { organization, exportedAt, filters, entries } = JSON.parse(json);
+    assert.equal(organization, `first-${suffix}`);
+    assert.ok(Number.isFinite(Date.parse(exportedAt)));
+    assert.equal(Date.parse(filters.since), Date.parse(timestamp));
+    assert.equal(Date.parse(filters.until), Date.parse(until));
+    assert.deepEqual(entries.slice(1), paged);
+    assert.equal(entries[0].eventId, inserted.eventId);
+    assert.deepEqual(Object.keys(entries[0]).sort(), [
+      'appId', 'decision', 'detectorCategory', 'eventId', 'installationId', 'policyVersion', 'receivedAt', 'ruleId', 'timestamp',
+    ]);
+    assert.equal([first, one.token, two.token, 'private-synthetic-export-sample'].some((value) => json.includes(value)), false);
+
+    const single = new URLSearchParams(params);
+    single.set('installationId', two.installationId);
+    assert.deepEqual((await admin(`events/export?${single}`)).entries, entries.filter(({ installationId }) => installationId === two.installationId));
+    assert.deepEqual((await admin(`events/export?${single}`, { token: second })).entries, []);
+    assert.deepEqual((await admin(`events/history?${next}`, { token: second })).entries, []);
+    await call('/v1/admin/events/history', { expect: 401 });
+    await call('/v1/admin/events/export', { expect: 401 });
+    await admin('events/export', { token: one.token, expect: 401 });
+    await admin('events/history?beforeAt=2026-01-03T01:02:03Z', { expect: 400 });
+    await admin('events/history?installationId=invalid', { expect: 400 });
+    await admin('events/export?decision=invalid', { expect: 400 });
+    await admin('events/export?since=2026-02-01T00:00:00Z&until=2026-01-01T00:00:00Z', { expect: 400 });
+
+    if (postgres) {
+      // Recreate schema 8's original index around existing records and let the application upgrade it.
+      await stop();
+      await retentionFixture(`
+        DELETE FROM schema_migrations WHERE version = 9;
+        DROP INDEX events_by_organization_recency;
+        CREATE INDEX events_by_organization_recency ON security_events (organization_id, received_at DESC, event_id);
+      `);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 9'), '1');
+      assert.deepEqual((await admin(`events/export?${params}`)).entries, entries);
+    }
   });
 });

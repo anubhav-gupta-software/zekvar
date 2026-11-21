@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Npgsql;
 
@@ -28,6 +29,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 6, "006_control_audit.sql", ct);
         await ApplyMigration(connection, 7, "007_retention.sql", ct);
         await ApplyMigration(connection, 8, "008_policy_groups.sql", ct);
+        await ApplyMigration(connection, 9, "009_event_history.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -293,8 +295,20 @@ internal sealed partial class ControlStore
         return (bool)(await command.ExecuteScalarAsync(ct))!;
     }
 
-    public async Task<IReadOnlyList<StoredEvent>> Events(Guid organizationId, string? appId, string? decision,
-        DateTimeOffset? since, CancellationToken ct)
+    public async Task<EventPage> EventHistory(Guid organizationId, EventFilters filters, EventCursor? cursor, CancellationToken ct)
+    {
+        const int pageSize = 100;
+        var entries = new List<StoredEvent>();
+        await foreach (var entry in ReadEvents(organizationId, filters, cursor, pageSize + 1, ct))
+            entries.Add(entry);
+        if (entries.Count <= pageSize) return new(entries, null);
+        entries.RemoveAt(pageSize);
+        var last = entries[^1];
+        return new(entries, new(last.ReceivedAt, last.EventId, last.InstallationId));
+    }
+
+    public async IAsyncEnumerable<StoredEvent> ReadEvents(Guid organizationId, EventFilters filters, EventCursor? cursor,
+        int? limit, [EnumeratorCancellation] CancellationToken ct)
     {
         await using var command = Command("""
             SELECT event_id, installation_id, occurred_at, received_at, policy_version, decision, app_id, rule_id
@@ -304,15 +318,18 @@ internal sealed partial class ControlStore
                 AND ($2::text IS NULL OR decision = $2)
                 AND ($3::timestamptz IS NULL OR occurred_at >= $3)
                 AND ($4::text IS NULL OR app_id = $4)
-            ORDER BY received_at DESC, event_id LIMIT 100
-            """, organizationId, (object?)decision ?? DBNull.Value, (object?)since?.UtcDateTime ?? DBNull.Value,
-            (object?)appId ?? DBNull.Value);
-        var events = new List<StoredEvent>();
+                AND ($5::timestamptz IS NULL OR occurred_at < $5)
+                AND ($6::uuid IS NULL OR installation_id = $6)
+                AND ($7::timestamptz IS NULL OR (received_at, event_id, installation_id) < ($7, $8::uuid, $9::uuid))
+            ORDER BY received_at DESC, event_id DESC, installation_id DESC LIMIT $10::integer
+            """, organizationId, (object?)filters.Decision ?? DBNull.Value, (object?)filters.Since?.UtcDateTime ?? DBNull.Value,
+            (object?)filters.AppId ?? DBNull.Value, (object?)filters.Until?.UtcDateTime ?? DBNull.Value,
+            (object?)filters.InstallationId ?? DBNull.Value, (object?)cursor?.ReceivedAt.UtcDateTime ?? DBNull.Value,
+            (object?)cursor?.EventId ?? DBNull.Value, (object?)cursor?.InstallationId ?? DBNull.Value, (object?)limit ?? DBNull.Value);
         await using var rows = await command.ExecuteReaderAsync(ct);
         while (await rows.ReadAsync(ct))
-            events.Add(new(rows.GetGuid(0), rows.GetGuid(1), rows.GetDateTime(2), rows.GetDateTime(3),
-                rows.GetInt32(4), rows.GetString(5), rows.GetString(6), rows.GetString(7)));
-        return events;
+            yield return new(rows.GetGuid(0), rows.GetGuid(1), rows.GetDateTime(2), rows.GetDateTime(3),
+                rows.GetInt32(4), rows.GetString(5), rows.GetString(6), rows.GetString(7));
     }
 
     public async Task<bool> ObserveApp(Guid installationId, AppObservation observation, CancellationToken ct)

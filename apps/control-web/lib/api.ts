@@ -1,5 +1,6 @@
-import type { AiAppId, AppClassification, DetectorMode, DiscoveredApp, DomainRules, Grant, Installation, Mode, Policy, PolicyGroup, SecurityEvent } from './control';
+import type { AiAppId, AppClassification, DetectorMode, DiscoveredApp, DomainRules, Grant, Installation, Mode, Policy, PolicyGroup } from './control';
 import type { AuditPage } from './audit';
+import type { EventPage } from './events';
 import type { RetentionCleanup, RetentionPolicy } from './retention';
 import type { PreviewPolicy } from './preview';
 
@@ -13,24 +14,29 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, token: string, method = 'GET', body?: unknown): Promise<T> {
+async function apiResponse(path: string, token: string, options: RequestInit = {}): Promise<Response> {
   let response: Response;
   try {
     response = await fetch(`${api}${path}`, {
-      method,
+      ...options,
       cache: 'no-store',
       redirect: 'error',
-      signal: AbortSignal.timeout(5000),
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: options.signal ?? AbortSignal.timeout(5000),
+      headers: { ...options.headers, Authorization: `Bearer ${token}` },
     });
   } catch {
     throw new ApiError(503);
   }
   if (!response.ok) throw new ApiError(response.status);
+  return response;
+}
+
+async function request<T>(path: string, token: string, method = 'GET', body?: unknown): Promise<T> {
+  const response = await apiResponse(path, token, {
+    method,
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
   return response.status === 204 ? undefined as T : await response.json() as T;
 }
 
@@ -46,7 +52,9 @@ export const controlApi = {
   promoteGroup: (token: string, groupId: string, expectedVersion: number) =>
     request<Policy>(`/policy-groups/${groupId}/promote`, token, 'POST', { expectedVersion }),
   installations: (token: string) => request<Installation[]>('/installations', token),
-  events: (token: string, filters: URLSearchParams) => request<SecurityEvent[]>(`/events?${filters}`, token),
+  events: (token: string, filters: URLSearchParams) => request<EventPage>(`/events/history?${filters}`, token),
+  exportEvents: (token: string, filters: URLSearchParams, signal: AbortSignal) =>
+    apiResponse(`/events/export?${filters}`, token, { signal }),
   audit: (token: string, filters: URLSearchParams) => request<AuditPage>(`/audit?${filters}`, token),
   retention: (token: string) => request<RetentionPolicy>('/retention', token),
   saveRetention: (token: string, policy: RetentionPolicy) => request<void>('/retention', token, 'POST', policy),

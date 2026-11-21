@@ -3,6 +3,7 @@ import {
   aiApps, chatGptApp, classifications, classificationLabels, decisionLabels, decisions, fixtureApp, utc,
   type Decision, type DiscoveredApp, type Installation, type SecurityEvent,
 } from '../lib/control';
+import { eventFilters, setEventCursor } from '../lib/events';
 import { sessionToken } from '../lib/session';
 import { classifyAiApp, revokeInstallation, signOut } from './actions';
 import { DomainRulesForm, EnrollmentForm, MutationForm, RefreshSection, SignInForm } from './forms';
@@ -11,27 +12,23 @@ import { Brand, Sidebar } from './workspace';
 
 type Search = Record<string, string | string[] | undefined>;
 
-function eventFilters(search: Search) {
-  const query = new URLSearchParams();
-  const app = search.app === fixtureApp || search.app === chatGptApp ? search.app : '';
-  const decision = decisions.find((value) => value === search.decision) ?? '';
-  const period = search.period === 'day' || search.period === 'week' ? search.period : '';
-  if (app) query.set('appId', app);
-  if (decision) query.set('decision', decision);
-  if (period) query.set('since', new Date(Date.now() - (period === 'day' ? 1 : 7) * 86_400_000).toISOString());
-  return { app, decision, period, query };
-}
-
 export default async function Control({ searchParams }: { searchParams: Promise<Search> }) {
   const token = await sessionToken();
   if (!token) return <SignIn />;
   const filters = eventFilters(await searchParams);
+  const historyQuery = new URLSearchParams(filters.query);
+  if (filters.cursor) setEventCursor(historyQuery, filters.cursor);
 
   try {
-    const [session, policies, installations, events, discoveredApps] = await Promise.all([
+    const [session, policies, installations, history, discoveredApps] = await Promise.all([
       controlApi.session(token), controlApi.policies(token),
-      controlApi.installations(token), controlApi.events(token, filters.query), controlApi.aiApps(token),
+      controlApi.installations(token),
+      filters.invalidInstallation || filters.invalidCursor ? undefined : controlApi.events(token, historyQuery),
+      controlApi.aiApps(token),
     ]);
+    const events = history?.entries ?? [];
+    const older = new URLSearchParams(filters.page);
+    if (history?.next) setEventCursor(older, history.next);
     const current = policies[0];
     const active = installations.filter(({ revokedAt }) => !revokedAt).length;
     return <div className="workspace" id="overview">
@@ -54,7 +51,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
             <span>{installations.length === 100 ? 'Among the latest 100' : 'With valid credentials'}</span>
           </div>
           <div className="metric"><p>Events shown</p><strong>{events.length}</strong>
-            <span>{filters.query.size ? 'Filtered view' : 'Latest 100 events'}</span>
+            <span>{filters.cursor ? 'Older events' : filters.query.size ? 'Filtered view' : 'Latest 100 events'}</span>
           </div>
         </div>
 
@@ -103,7 +100,10 @@ export default async function Control({ searchParams }: { searchParams: Promise<
         </section>
 
         <section className="panel table-panel" id="events" aria-labelledby="events-heading">
-          <div className="panel-heading"><h2 id="events-heading">Security events</h2><span className="table-note">Latest 100 matching events</span></div>
+          <div className="panel-heading">
+            <h2 id="events-heading">Security events</h2>
+            {history && <a className="button small" href={`/events/export?${filters.query}`} download>Export security events (JSON)</a>}
+          </div>
           <form action="/#events" method="get" className="filters">
             <div><label htmlFor="event-application">Application</label>
               <select id="event-application" name="app" defaultValue={filters.app}>
@@ -122,16 +122,31 @@ export default async function Control({ searchParams }: { searchParams: Promise<
                 <option value="">All time</option><option value="day">Past 24 hours</option><option value="week">Past 7 days</option>
               </select>
             </div>
+            <div><label htmlFor="event-installation">Browser installation ID</label>
+              <input id="event-installation" name="installation" defaultValue={filters.installation} maxLength={36}
+                autoCapitalize="none" autoComplete="off" spellCheck={false} placeholder="All browsers" />
+            </div>
             <button className="button">Apply filters</button>
-            {filters.query.size > 0 && <a className="clear-link" href="/#events">Clear filters</a>}
+            {(filters.query.size > 0 || filters.cursor || !history) && <a className="clear-link" href="/#events">Clear filters</a>}
           </form>
-          <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="events-heading">
-            <table aria-labelledby="events-heading">
-              <thead><tr><th>Occurred (UTC)</th><th>Application</th><th>Decision</th><th>Detector</th><th>Policy</th><th>Installation</th></tr></thead>
-              <tbody>{events.map((event) => <EventRow key={`${event.installationId}:${event.eventId}`} event={event} />)}</tbody>
-            </table>
-            {events.length === 0 && <p className="empty">{filters.query.size ? 'No events match these filters.' : 'No security events recorded yet.'}</p>}
-          </div>
+          {!history ? <p className="empty" role="alert">{filters.invalidInstallation
+            ? 'Enter a complete browser installation ID.' : 'This event history link is invalid. Clear the filters to open the newest events.'}</p>
+            : <>
+              <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="events-heading">
+                <table aria-labelledby="events-heading">
+                  <thead><tr><th>Occurred (UTC)</th><th>Application</th><th>Decision</th><th>Detector</th><th>Policy</th><th>Installation</th></tr></thead>
+                  <tbody>{events.map((event) => <EventRow key={`${event.installationId}:${event.eventId}`} event={event} filters={filters.page} />)}</tbody>
+                </table>
+                {events.length === 0 && <p className="empty">{filters.query.size ? 'No events match these filters.' : 'No security events recorded yet.'}</p>}
+              </div>
+              <div className="table-footer">
+                <p className="table-note">Up to 100 per page, newest first by time received. Export includes all matching retained events.</p>
+                <div className="form-row">
+                  {filters.cursor && <a className="button small" href={`/?${filters.page}#events`}>Newest events</a>}
+                  {history.next && <a className="button small" href={`/?${older}#events`}>Older events</a>}
+                </div>
+              </div>
+            </>}
         </section>
       </main>
     </div>;
@@ -214,7 +229,9 @@ function BrowserRow({ installation, latestVersion }: { installation: Installatio
   </tr>;
 }
 
-function EventRow({ event }: { event: SecurityEvent }) {
+function EventRow({ event, filters }: { event: SecurityEvent; filters: URLSearchParams }) {
+  const browser = new URLSearchParams(filters);
+  browser.set('installation', event.installationId);
   return <tr>
     <td><Timestamp value={event.timestamp} /></td>
     <td className="emphasis">{event.appId === fixtureApp ? 'Local prompt fixture' : event.appId === chatGptApp ? 'ChatGPT' : event.appId}</td>
@@ -222,6 +239,7 @@ function EventRow({ event }: { event: SecurityEvent }) {
     <td>{event.ruleId === 'github-classic-pat' ? 'GitHub classic PAT' :
       event.detectorCategory === 'synthetic-secret' ? 'Synthetic secret' : event.detectorCategory}</td>
     <td>v{event.policyVersion}</td>
-    <td><InstallationId value={event.installationId} /></td>
+    <td><a className="underline" href={`/?${browser}#events`}
+      aria-label={`Filter events for installation ${event.installationId}`}><InstallationId value={event.installationId} /></a></td>
   </tr>;
 }

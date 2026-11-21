@@ -14,13 +14,15 @@ internal static class FixtureContract
     public const string CredentialCategory = "credential";
 
     public static bool IsMode(string? mode) => mode is "monitor" or "warn" or "block";
+    public static bool IsApp(string? appId) => appId is AppId or ChatGpt;
+    public static bool IsDecision(string? decision) => IsMode(decision) || decision == "warn_override";
 
     public static bool IsEvent(PolicyEvent request) =>
         request.EventId != Guid.Empty && request.Timestamp != default && request.PolicyVersion > 0 &&
-        (request.AppId is AppId or ChatGpt) &&
+        IsApp(request.AppId) &&
         ((request.RuleId == RuleId && request.DetectorCategory == DetectorCategory) ||
          (request.RuleId == GitHubPatRule && request.DetectorCategory == CredentialCategory)) &&
-        (IsMode(request.Decision) || request.Decision == "warn_override");
+        IsDecision(request.Decision);
 }
 
 internal static class DiscoveryCatalog
@@ -77,3 +79,15 @@ internal sealed record StoredEvent(Guid EventId, Guid InstallationId, DateTime T
     public string DetectorCategory => RuleId == FixtureContract.GitHubPatRule
         ? FixtureContract.CredentialCategory : FixtureContract.DetectorCategory;
 }
+
+internal sealed record EventFilters(string? AppId, string? Decision, DateTimeOffset? Since, DateTimeOffset? Until, Guid? InstallationId)
+{
+    public bool Valid() =>
+        (AppId is null || FixtureContract.IsApp(AppId)) &&
+        (Decision is null || FixtureContract.IsDecision(Decision)) &&
+        (Since is null || Until is null || Since < Until) && InstallationId != Guid.Empty;
+}
+
+internal sealed record EventCursor(DateTimeOffset ReceivedAt, Guid EventId, Guid InstallationId);
+internal sealed record EventPage(IReadOnlyList<StoredEvent> Entries, EventCursor? Next);
+internal sealed record EventExport(string Organization, DateTime ExportedAt, EventFilters Filters, IAsyncEnumerable<StoredEvent> Entries);

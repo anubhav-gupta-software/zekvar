@@ -99,7 +99,26 @@ admin.MapPost("/installations/{id:guid}/policy-group", async (Guid id, AssignPol
         _ => Results.NotFound()
     });
 admin.MapGet("/events", async (string? appId, string? decision, DateTimeOffset? since, HttpContext http, CancellationToken ct) =>
-    Results.Ok(await store.Events(Identity(http).OrganizationId, appId, decision, since, ct)));
+    Results.Ok((await store.EventHistory(Identity(http).OrganizationId, new(appId, decision, since, null, null), null, ct)).Entries));
+admin.MapGet("/events/history", async ([AsParameters] EventFilters filters, DateTimeOffset? beforeAt,
+    Guid? beforeEventId, Guid? beforeInstallationId, HttpContext http, CancellationToken ct) =>
+{
+    if (!filters.Valid() || beforeAt.HasValue != beforeEventId.HasValue || beforeAt.HasValue != beforeInstallationId.HasValue ||
+        beforeEventId == Guid.Empty || beforeInstallationId == Guid.Empty)
+        return Results.BadRequest(new { error = "Choose valid event filters and a complete history cursor." });
+    var cursor = beforeAt is { } at && beforeEventId is { } id && beforeInstallationId is { } installationId
+        ? new EventCursor(at, id, installationId) : null;
+    return Results.Ok(await store.EventHistory(Identity(http).OrganizationId, filters, cursor, ct));
+});
+admin.MapGet("/events/export", ([AsParameters] EventFilters filters, HttpContext http, CancellationToken ct) =>
+{
+    if (!filters.Valid()) return Results.BadRequest(new { error = "Choose valid event filters." });
+    var identity = Identity(http);
+    http.Response.Headers.ContentDisposition = "attachment; filename=\"zekvar-security-events.json\"";
+    http.Response.Headers.XContentTypeOptions = "nosniff";
+    return Results.Ok(new EventExport(identity.OrganizationSlug!, DateTime.UtcNow, filters,
+        store.ReadEvents(identity.OrganizationId, filters, null, null, ct)));
+});
 admin.MapGet("/audit", async (string? action, DateTimeOffset? since, DateTimeOffset? until, DateTimeOffset? beforeAt,
     Guid? beforeId, int? limit, HttpContext http, CancellationToken ct) =>
 {

@@ -40,6 +40,12 @@ Control records group creation, assignment, publication, rollback, and promotion
 
 The preview evaluates the supported text detectors and individual top-level HTTP and HTTPS URLs. Test live app coverage, redirect chains, and the installed Chrome rules in a pilot group before promoting a policy.
 
+## Investigate and export security events
+
+Open **Events** in the sidebar. Filter by application, decision, time range, or browser installation ID, then select **Apply filters**. Select an installation ID in a result to narrow the current view to that browser. Use **Older events** and **Newest events** to review the matching records.
+
+**Export security events (JSON)** downloads all retained records matching the applied filters, even when you are viewing an older page. Both the view and the download use the same cutoff for relative time filters. The file includes organization, filter, and decision metadata. Prompt text, matched values, and tokens stay out of the download. Treat installation IDs and decision history as organization data.
+
 ## Review and export the audit log
 
 Open **Audit log** from the Control sidebar. The log shows policy publishes and restores, enrollment grant issuance, browser enrollment and revocation, and changes to AI app classifications. Filter by action and UTC date range, or select **Older entries** to see more history.

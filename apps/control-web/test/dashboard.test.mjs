@@ -38,6 +38,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
     const denied = await context.request.get(`${dashboard}/audit/export`);
     assert.equal(denied.status(), 401);
     assert.equal(denied.headers()['cache-control'], 'no-store');
+    assert.equal((await context.request.get(`${dashboard}/events/export`)).status(), 401);
     await page.getByLabel('Admin token').fill('0'.repeat(64));
     await page.getByRole('button', { name: 'Sign in' }).click();
     await page.getByRole('alert').filter({ hasText: 'This admin token was rejected.' }).waitFor();
@@ -329,6 +330,78 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await page.getByRole('heading', { name: 'Security overview', exact: true }).waitFor();
   });
 
+  await t.test('investigates older events and exports the complete applied view from Chrome', async () => {
+    const { grant } = await post('/admin/enrollment-grants', {}, token);
+    const browser = await post('/enroll', { grant });
+    const { grant: otherGrant } = await post('/admin/enrollment-grants', {}, token);
+    const other = await post('/enroll', { grant: otherGrant });
+    const policies = await context.request.get(`${api}/admin/policies`, { headers: { Authorization: `Bearer ${token}` } });
+    const [policy] = await policies.json();
+    const sample = { ...event, appId: 'chatgpt', decision: policy.mode, policyVersion: policy.version, timestamp: new Date().toISOString() };
+    const ids = Array.from({ length: 102 }, () => randomUUID());
+    for (let index = 0; index < ids.length; index += 10) {
+      await Promise.all(ids.slice(index, index + 10).map((eventId) => post('/browser/events', { ...sample, eventId }, browser.token)));
+    }
+    await post('/browser/events', { ...sample, eventId: randomUUID() }, other.token);
+    await post('/browser/events', { ...sample, eventId: randomUUID(), appId: 'local-prompt-fixture' }, browser.token);
+    await post('/browser/events', { ...sample, eventId: randomUUID(), timestamp: new Date(Date.now() - 3 * 86_400_000).toISOString() },
+      browser.token).then(() => assert.fail('Expired events must be rejected.'), (error) => assert.match(error.message, /returned 400/));
+    await page.reload();
+    await page.getByLabel('Application', { exact: true }).selectOption('chatgpt');
+    await page.getByLabel('Decision', { exact: true }).selectOption(policy.mode);
+    await page.getByLabel('Time range', { exact: true }).selectOption('day');
+    const installation = page.getByLabel('Browser installation ID', { exact: true });
+    await installation.fill('invalid');
+    await page.getByRole('button', { name: 'Apply filters' }).click();
+    await page.getByRole('alert').filter({ hasText: 'Enter a complete browser installation ID.' }).waitFor();
+    const link = page.getByRole('link', { name: 'Export security events (JSON)', exact: true });
+    assert.equal(await link.count(), 0);
+    await installation.fill(browser.installationId);
+    await page.getByRole('button', { name: 'Apply filters' }).click();
+    const older = page.getByRole('link', { name: 'Older events', exact: true });
+    await older.waitFor();
+    assert.equal(await events.locator('tbody tr').count(), 100);
+    const href = await link.getAttribute('href');
+    const filters = new URL(href, dashboard).searchParams;
+    assert.equal(filters.get('installationId'), browser.installationId);
+    assert.equal(filters.get('appId'), 'chatgpt');
+    assert.equal(filters.get('decision'), policy.mode);
+    assert.ok(filters.get('since'));
+    await older.click();
+    const newest = page.getByRole('link', { name: 'Newest events', exact: true });
+    await newest.waitFor();
+    assert.equal(new URL(page.url()).searchParams.get('since'), filters.get('since'));
+    assert.equal(await link.getAttribute('href'), href);
+    assert.equal(await events.locator('tbody tr').count(), 2);
+    const screenshot = process.env.ZEKVAR_TEST_EVENTS_SCREENSHOT;
+    if (screenshot) await page.locator('#events').screenshot({ path: screenshot });
+
+    const response = await context.request.get(new URL(href, dashboard).href);
+    assert.equal(response.headers()['cache-control'], 'no-store');
+    assert.equal(response.headers()['x-content-type-options'], 'nosniff');
+    assert.equal(response.headers()['cross-origin-resource-policy'], 'same-origin');
+    const downloaded = page.waitForEvent('download');
+    await link.click();
+    const file = await downloaded;
+    assert.equal(file.suggestedFilename(), 'zekvar-security-events.json');
+    const data = await readFile(await file.path(), 'utf8');
+    const { entries, organization, filters: reported } = JSON.parse(data);
+    assert.equal(organization, await page.locator('.eyebrow').textContent());
+    assert.equal(Date.parse(reported.since), Date.parse(filters.get('since')));
+    assert.deepEqual(entries.map(({ eventId }) => eventId).sort(), ids.sort());
+    assert.ok(entries.every((entry) => entry.installationId === browser.installationId && entry.appId === 'chatgpt'));
+    assert.equal([token, browser.token, other.token, grant, otherGrant].some((value) => data.includes(value)), false);
+    for (const query of ['appId=chatgpt&appId=chatgpt', 'beforeAt=now', 'organization=another-tenant']) {
+      assert.equal((await context.request.get(`${dashboard}/events/export?${query}`)).status(), 400);
+    }
+    await newest.click();
+    await older.waitFor();
+    const filterBrowser = events.getByRole('link', { name: `Filter events for installation ${browser.installationId}` }).first();
+    assert.equal(new URL(await filterBrowser.getAttribute('href'), dashboard).searchParams.get('since'), filters.get('since'));
+    await page.getByRole('link', { name: 'Clear filters', exact: true }).click();
+    await page.waitForURL((url) => url.search === '');
+  });
+
   await t.test('fits a mobile viewport and clears the session on sign-out', async () => {
     const screenshot = process.env.ZEKVAR_TEST_SCREENSHOT;
     if (screenshot) await page.screenshot({ path: screenshot, fullPage: true });
@@ -338,6 +411,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await page.getByRole('heading', { name: 'Sign in to Control' }).waitFor();
     assert.ok(!(await context.cookies()).some(({ name }) => name === 'zekvar_control_session'));
     assert.equal((await context.request.get(`${dashboard}/audit/export`)).status(), 401);
+    assert.equal((await context.request.get(`${dashboard}/events/export`)).status(), 401);
     assert.deepEqual(clientErrors, []);
   });
 });

@@ -64,7 +64,7 @@ export default async function Audit({ searchParams }: { searchParams: Promise<Re
               </table>
             </div>
             {!audit.entries.length && <p className="empty">No audit entries match this view.</p>}
-            <div className="audit-footer">
+            <div className="table-footer">
               <p className="table-note">JSON export includes up to 1,000 matching entries, newest first.</p>
               <div className="form-row">
                 {filters.beforeAt && <a className="button small" href={`/audit?${previousFilters ?? ''}`}>Newest entries</a>}
