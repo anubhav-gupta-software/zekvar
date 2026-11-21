@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 const db = process.env.ZEKVAR_TEST_DATABASE;
 assert.ok(db, 'Set ZEKVAR_TEST_DATABASE to a disposable PostgreSQL connection string.');
@@ -16,6 +17,15 @@ const baseUrl = `http://127.0.0.1:${port}`;
 const suffix = randomBytes(8).toString('hex');
 const first = randomBytes(32).toString('hex');
 const second = randomBytes(32).toString('hex');
+const retentionAdmin = randomBytes(32).toString('hex');
+const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
+const sql = promisify(execFile);
+
+async function retentionFixture(query) {
+  assert.match(postgres ?? '', /^zekvar-demo-[a-f0-9]{10}$/);
+  const { stdout } = await sql('docker', ['exec', postgres, 'psql', '-XAtq', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'zekvar', '-c', query]);
+  return stdout.trim();
+}
 
 async function call(path, { token, method = 'GET', body, expect = 200 } = {}) {
   const headers = {};
@@ -34,7 +44,7 @@ async function call(path, { token, method = 'GET', body, expect = 200 } = {}) {
 let processHandle;
 let exited;
 
-async function start() {
+async function start(sweepSeconds = 3600) {
   processHandle = spawn('dotnet', [app], {
     env: {
       ...process.env,
@@ -42,10 +52,13 @@ async function start() {
       ASPNETCORE_ENVIRONMENT: 'Development',
       ConnectionStrings__Control: db,
       Control__Port: port,
+      Control__RetentionSweepSeconds: String(sweepSeconds),
       Control__Organizations__0__Slug: `first-${suffix}`,
       Control__Organizations__0__AdminToken: first,
       Control__Organizations__1__Slug: `second-${suffix}`,
       Control__Organizations__1__AdminToken: second,
+      Control__Organizations__2__Slug: `retention-${suffix}`,
+      Control__Organizations__2__AdminToken: retentionAdmin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -373,5 +386,87 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await stop();
     await start();
     assert.deepEqual(await audit(), all);
+  });
+
+  await t.test('retention immediately expires tenant records, rejects replay, and physically deletes only expired rows', {
+    skip: !postgres && 'The isolated demo runner supplies the disposable PostgreSQL fixture for timestamp aging.',
+  }, async () => {
+    const indefinite = { securityEventDays: null, aiObservationDays: null, auditDays: null };
+    const window = { securityEventDays: 1, aiObservationDays: 1, auditDays: 1 };
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: retentionAdmin, ...options });
+    const save = (body, expect = 204) => admin('retention', { method: 'POST', body, expect });
+    const cleanup = (token = retentionAdmin, expect = 200) => admin('retention/cleanup', { token, method: 'POST', expect });
+    const { grant } = await admin('enrollment-grants', { method: 'POST' });
+    const { token, installationId } = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    assert.match(installationId, /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i);
+    const publish = await admin('policies', { method: 'POST', body: { mode: 'monitor', discoveryEnabled: true } });
+    const browser = (path, body, expect = 204) => call(`/v1/browser/${path}`, { token, method: 'POST', body, expect });
+    const hoursFromNow = (hours) => new Date(Date.now() + hours * 3_600_000).toISOString();
+    const recent = { ...event, eventId: randomUUID(), timestamp: hoursFromNow(0), policyVersion: publish.version };
+    const old = { ...recent, eventId: randomUUID(), timestamp: hoursFromNow(-72) };
+    const future = { ...recent, eventId: randomUUID(), timestamp: hoursFromNow(72) };
+    for (const entry of [recent, old, future]) await browser('events', entry);
+    for (const appId of ['chatgpt', 'claude']) {
+      await browser('ai-app-observations', { appId, observedAt: hoursFromNow(0), policyVersion: publish.version });
+    }
+    const org = `(SELECT organization_id FROM installations WHERE id = '${installationId}')`;
+    await retentionFixture(`
+      UPDATE security_events SET received_at = now() - interval '3 days' WHERE event_id = '${future.eventId}';
+      UPDATE ai_app_observations SET observed_at = now() - interval '3 days' WHERE installation_id = '${installationId}' AND app_id = 'claude';
+      UPDATE control_audit SET occurred_at = now() - interval '3 days' WHERE organization_id = ${org} AND action = 'grant_issued';
+    `);
+    const physicalCounts = () => retentionFixture(`SELECT
+      (SELECT count(*) FROM security_events WHERE organization_id = ${org}),
+      (SELECT count(*) FROM ai_app_observations WHERE organization_id = ${org}),
+      (SELECT count(*) FROM control_audit WHERE organization_id = ${org} AND action = 'grant_issued');`);
+    assert.equal(await physicalCounts(), '3|2|1');
+    assert.deepEqual(await admin('retention'), indefinite);
+    await admin('retention', { token, expect: 401 });
+    await cleanup(token, 401);
+    for (const invalid of [{}, { ...window, auditDays: 0 }, { ...window, aiObservationDays: 3651 },
+      { ...window, securityEventDays: 1.5 }, { ...window, organizationId: randomUUID() }]) await save(invalid, 400);
+    const otherHistory = await admin('events', { token: second });
+    assert.ok(otherHistory.length);
+
+    await Promise.all([save(window), save(window)]);
+    assert.deepEqual(await admin('retention'), window);
+    assert.deepEqual((await admin('events')).map(({ eventId }) => eventId), [recent.eventId]);
+    assert.deepEqual((await admin('ai-apps')).map(({ browsersSeen }) => browsersSeen), [1, 0, 0]);
+    assert.deepEqual((await admin('audit?action=grant_issued')).entries, []);
+    const retentionChanges = (await admin('audit?action=retention_changed')).entries;
+    assert.equal(retentionChanges.length, 1);
+    assert.deepEqual(retentionChanges[0].retention, window);
+    await browser('events', old, 400);
+
+    await save(indefinite);
+    assert.deepEqual(await admin('retention'), indefinite);
+    assert.deepEqual((await admin('events')).map(({ eventId }) => eventId), [recent.eventId]);
+    assert.equal(await physicalCounts(), '3|2|1');
+    const runs = await Promise.all([cleanup(), cleanup()]);
+    assert.deepEqual(runs.sort((a, b) => a.securityEvents - b.securityEvents), [
+      { securityEvents: 0, aiObservations: 0, auditEntries: 0, source: 'manual' },
+      { securityEvents: 2, aiObservations: 1, auditEntries: 1, source: 'manual' },
+    ]);
+    assert.equal(await physicalCounts(), '1|1|0');
+    assert.deepEqual(await admin('events', { token: second }), otherHistory);
+    assert.deepEqual(await admin('retention', { token: second }), indefinite);
+    const recorded = (await admin('audit?action=retention_cleanup')).entries;
+    assert.equal(recorded.length, 1);
+    assert.equal(recorded[0].actor, 'organization_admin');
+    assert.deepEqual(recorded[0].cleanup, runs[1]);
+    await browser('events', old, 400);
+
+    await save(window);
+    await stop();
+    await start(1);
+    assert.deepEqual(await admin('retention'), window);
+    await retentionFixture(`INSERT INTO security_events (organization_id, installation_id, event_id, occurred_at, policy_version, decision)
+      SELECT ${org}, '${installationId}', gen_random_uuid(), now() - interval '3 days', ${publish.version}, 'monitor'
+      FROM generate_series(1, 1001);`);
+    for (let attempt = 0; attempt < 40 && await physicalCounts() !== '1|1|0'; attempt++) await delay(100);
+    assert.equal(await physicalCounts(), '1|1|0');
+    const scheduled = (await admin('audit?action=retention_cleanup')).entries.filter(({ actor }) => actor === 'system');
+    assert.deepEqual(scheduled.map(({ cleanup: { securityEvents, source } }) => [securityEvents, source]).sort((a, b) => a[0] - b[0]),
+      [[1, 'scheduled'], [1000, 'scheduled']]);
   });
 });

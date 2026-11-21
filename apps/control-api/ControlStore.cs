@@ -1,9 +1,14 @@
+using System.Text.Json;
 using Npgsql;
 
 namespace Control;
 
-internal sealed class ControlStore(NpgsqlDataSource dataSource)
+internal sealed partial class ControlStore
 {
+    private readonly NpgsqlDataSource dataSource;
+
+    public ControlStore(NpgsqlDataSource dataSource) => this.dataSource = dataSource;
+
     public async Task Initialize(DemoOrganization[] organizations, CancellationToken ct)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
@@ -21,6 +26,7 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
         await ApplyMigration(connection, 4, "004_ai_discovery.sql", ct);
         await ApplyMigration(connection, 5, "005_domain_rules.sql", ct);
         await ApplyMigration(connection, 6, "006_control_audit.sql", ct);
+        await ApplyMigration(connection, 7, "007_retention.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -240,8 +246,10 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
             ), eligible AS (
                 SELECT p.organization_id FROM active
                 JOIN policy_versions p ON p.organization_id = active.organization_id AND p.version = $4
+                LEFT JOIN retention_cutoffs r ON r.organization_id = active.organization_id
                 WHERE (CASE WHEN $7 = 'github-classic-pat' THEN p.github_pat_mode ELSE p.mode END)
                     = CASE WHEN $5 = 'warn_override' THEN 'warn' ELSE $5 END
+                  AND (r.event_cutoff IS NULL OR $3 >= r.event_cutoff)
             ), written AS (
                 INSERT INTO security_events (organization_id, installation_id, event_id, occurred_at, policy_version, decision, app_id, rule_id)
                 SELECT organization_id, $1, $2, $3, $4, $5, $6, $7 FROM eligible
@@ -257,7 +265,9 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
     {
         await using var command = Command("""
             SELECT event_id, installation_id, occurred_at, received_at, policy_version, decision, app_id, rule_id
-            FROM security_events WHERE organization_id = $1
+            FROM security_events e LEFT JOIN retention_cutoffs r ON e.organization_id = r.organization_id
+            WHERE e.organization_id = $1
+                AND (r.event_cutoff IS NULL OR LEAST(occurred_at, received_at) >= r.event_cutoff)
                 AND ($2::text IS NULL OR decision = $2)
                 AND ($3::timestamptz IS NULL OR occurred_at >= $3)
                 AND ($4::text IS NULL OR app_id = $4)
@@ -280,8 +290,10 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
             ), eligible AS (
                 SELECT p.organization_id FROM active
                 JOIN policy_versions p ON p.organization_id = active.organization_id AND p.version = $4
+                LEFT JOIN retention_cutoffs r ON r.organization_id = active.organization_id
                 WHERE p.discovery_enabled AND $3 BETWEEN GREATEST(enrolled_at - interval '5 minutes', now() - interval '30 days')
                     AND now() + interval '5 minutes'
+                  AND (r.observation_cutoff IS NULL OR $3 >= r.observation_cutoff)
                   AND NOT EXISTS (SELECT 1 FROM policy_versions later
                     WHERE later.organization_id = p.organization_id AND later.version > p.version AND NOT later.discovery_enabled)
             ), recorded AS (
@@ -300,9 +312,10 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
         await using var command = Command("""
             SELECT catalog.app_id, COALESCE(c.status, 'unreviewed'), count(o.installation_id), max(o.observed_at)
             FROM unnest($2::text[]) WITH ORDINALITY AS catalog(app_id, position)
+            LEFT JOIN retention_cutoffs r ON r.organization_id = $1
             LEFT JOIN ai_app_classifications c ON c.organization_id = $1 AND c.app_id = catalog.app_id
             LEFT JOIN ai_app_observations o ON o.organization_id = $1 AND o.app_id = catalog.app_id
-                AND o.observed_at >= now() - interval '30 days'
+                AND o.observed_at >= GREATEST(now() - interval '30 days', r.observation_cutoff)
             GROUP BY catalog.app_id, catalog.position, c.status ORDER BY catalog.position
             """, organizationId, DiscoveryCatalog.AppIds);
         var apps = new List<DiscoveredApp>();
@@ -330,8 +343,10 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
     public async Task<AuditPage> AuditHistory(Guid organizationId, AuditFilters filters, CancellationToken ct)
     {
         await using var command = Command("""
-            SELECT id, occurred_at, action, policy_version, restored_from, installation_id, app_id, classification
-            FROM control_audit WHERE organization_id = $1
+            SELECT id, occurred_at, action, policy_version, restored_from, installation_id, app_id, classification, retention, cleanup
+            FROM control_audit a LEFT JOIN retention_cutoffs r ON a.organization_id = r.organization_id
+            WHERE a.organization_id = $1
+                AND (r.audit_cutoff IS NULL OR occurred_at >= r.audit_cutoff)
                 AND ($2::text IS NULL OR action = $2)
                 AND ($3::timestamptz IS NULL OR occurred_at >= $3)
                 AND ($4::timestamptz IS NULL OR occurred_at < $4)
@@ -345,7 +360,9 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
         while (await rows.ReadAsync(ct))
             entries.Add(new(rows.GetGuid(0), rows.GetDateTime(1), rows.GetString(2), rows.IsDBNull(3) ? null : rows.GetInt32(3),
                 rows.IsDBNull(4) ? null : rows.GetInt32(4), rows.IsDBNull(5) ? null : rows.GetGuid(5),
-                rows.IsDBNull(6) ? null : rows.GetString(6), rows.IsDBNull(7) ? null : rows.GetString(7)));
+                rows.IsDBNull(6) ? null : rows.GetString(6), rows.IsDBNull(7) ? null : rows.GetString(7),
+                rows.IsDBNull(8) ? null : JsonSerializer.Deserialize<RetentionPolicy>(rows.GetString(8), JsonSerializerOptions.Web),
+                rows.IsDBNull(9) ? null : JsonSerializer.Deserialize<RetentionCleanup>(rows.GetString(9), JsonSerializerOptions.Web)));
         if (entries.Count <= filters.Limit) return new(entries, null);
         entries.RemoveAt(filters.Limit);
         var last = entries[^1];

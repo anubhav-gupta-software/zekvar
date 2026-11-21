@@ -14,7 +14,7 @@ export function RefreshSection({ label }: { label: string }) {
 
 export function DomainRulesForm({ rules, version }: { rules?: DomainRules; version?: number }) {
   return <MutationForm action={publishDomainRules} label="Publish domain rules" appearance="primary">
-    <div className="domain-rule-fields" key={version}>
+    <div className="policy-fields" key={version}>
       <DomainList name="allow" label="Allowed domains" initial={rules?.allow} />
       <DomainList name="block" label="Blocked domains" initial={rules?.block} />
     </div>

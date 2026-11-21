@@ -109,6 +109,42 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await events.getByText('Synthetic secret', { exact: true }).first().waitFor();
   });
 
+  await t.test('configures tenant retention and confirms cleanup in Control', async () => {
+    const oldEvent = { ...event, eventId: randomUUID(), policyVersion, decision: 'warn',
+      timestamp: new Date(Date.now() - 3 * 86_400_000).toISOString() };
+    await post('/browser/events', oldEvent, installation.token);
+    await page.getByRole('link', { name: 'Data retention', exact: true }).click();
+    await page.getByRole('heading', { name: 'Data retention', exact: true }).waitFor();
+    const eventDays = page.getByLabel('Security events (days)', { exact: true });
+    assert.equal(await eventDays.inputValue(), '');
+    await eventDays.fill('1');
+    await page.getByLabel('AI observations (days)', { exact: true }).fill('30');
+    await page.getByLabel('Audit log (days)', { exact: true }).fill('90');
+    page.once('dialog', (dialog) => dialog.accept());
+    await page.getByRole('button', { name: 'Save retention' }).click();
+    await page.getByText('Retention settings saved.', { exact: true }).waitFor();
+    await page.reload();
+    assert.equal(await eventDays.inputValue(), '1');
+    assert.equal(await page.getByLabel('AI observations (days)', { exact: true }).inputValue(), '30');
+    assert.equal(await page.getByLabel('Audit log (days)', { exact: true }).inputValue(), '90');
+    const cleanup = page.getByRole('button', { name: 'Run cleanup' });
+    page.once('dialog', (dialog) => dialog.dismiss());
+    await cleanup.click();
+    assert.equal(await page.getByText(/Deleted \d+ security event/).count(), 0);
+    page.once('dialog', (dialog) => dialog.accept());
+    await cleanup.click();
+    await page.getByText('Deleted 1 security event, 0 AI observations, 0 audit entries.', { exact: true }).waitFor();
+    const screenshot = process.env.ZEKVAR_TEST_RETENTION_SCREENSHOT;
+    if (screenshot) await page.screenshot({ path: screenshot, fullPage: true });
+    await page.getByRole('link', { name: 'Audit log', exact: true }).click();
+    const audit = page.getByRole('table', { name: 'Control activity' });
+    await audit.getByText('Expired records deleted', { exact: true }).first().waitFor();
+    await audit.getByText('Security events · 1 day', { exact: true }).first().waitFor();
+    await page.getByRole('link', { name: 'Overview', exact: true }).click();
+    await events.getByText('Synthetic secret', { exact: true }).first().waitFor();
+    assert.equal(await events.locator('tbody tr').count(), 2);
+  });
+
   await t.test('restores an earlier policy and revokes the installation', async () => {
     await page.getByRole('button', { name: 'Restore version 1', exact: true }).click();
     await page.getByRole('status').filter({ hasText: `Version 1 restored as version ${policyVersion + 1}.` }).waitFor();

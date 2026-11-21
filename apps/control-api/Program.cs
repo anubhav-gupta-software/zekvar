@@ -13,6 +13,9 @@ var connectionString = builder.Configuration.GetConnectionString("Control")
 var port = builder.Configuration.GetValue("Control:Port", 5187);
 if (port is < 1024 or > 65535)
     throw new InvalidOperationException("Configure a Control loopback port between 1024 and 65535.");
+var sweepSeconds = builder.Configuration.GetValue("Control:RetentionSweepSeconds", 3600);
+if (sweepSeconds is < 1 or > 86400)
+    throw new InvalidOperationException("Configure a retention sweep interval between 1 and 86400 seconds.");
 var organizations = builder.Configuration.GetSection("Control:Organizations").Get<DemoOrganization[]>();
 if (organizations is not { Length: > 0 } || organizations.Any(org => !ValidOrganization(org)) ||
     organizations.Select(org => org.Slug).Distinct().Count() != organizations.Length ||
@@ -29,6 +32,8 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow);
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
 builder.Services.AddSingleton<ControlStore>();
+builder.Services.AddHostedService<RetentionSweep>(services => new(services.GetRequiredService<ControlStore>(),
+    services.GetRequiredService<ILogger<RetentionSweep>>(), TimeSpan.FromSeconds(sweepSeconds)));
 
 var app = builder.Build();
 var store = app.Services.GetRequiredService<ControlStore>();
@@ -80,6 +85,16 @@ admin.MapGet("/audit", async (string? action, DateTimeOffset? since, DateTimeOff
         ? Results.Ok(await store.AuditHistory(Identity(http).OrganizationId, filters, ct))
         : Results.BadRequest(new { error = "Choose a valid audit action, time range, cursor, and limit." });
 });
+admin.MapGet("/retention", async (HttpContext http, CancellationToken ct) =>
+    Results.Ok(await store.GetRetention(Identity(http).OrganizationId, ct)));
+admin.MapPost("/retention", async (RetentionPolicy policy, HttpContext http, CancellationToken ct) =>
+{
+    if (!policy.IsValid()) return Results.BadRequest(new { error = "Choose retention windows from 1 to 3650 days or no expiry." });
+    await store.SetRetention(Identity(http).OrganizationId, policy, ct);
+    return Results.NoContent();
+});
+admin.MapPost("/retention/cleanup", async (HttpContext http, CancellationToken ct) =>
+    Results.Ok(await store.CleanupRetention(Identity(http).OrganizationId, scheduled: false, ct)));
 admin.MapGet("/ai-apps", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.DiscoveredApps(Identity(http).OrganizationId, ct)));
 admin.MapPost("/ai-apps/{appId}/classification", async (string appId, ClassifyApp request, HttpContext http, CancellationToken ct) =>

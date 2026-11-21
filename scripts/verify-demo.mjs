@@ -133,7 +133,7 @@ try {
   const webOrigin = `http://localhost:${webPort}`;
 
   await run(process.execPath, ['--test', 'test/control.test.mjs'], api, {
-    ZEKVAR_TEST_DATABASE: db, ZEKVAR_TEST_API_PORT: String(apiPort),
+    ZEKVAR_TEST_DATABASE: db, ZEKVAR_TEST_API_PORT: String(apiPort), ZEKVAR_TEST_POSTGRES_CONTAINER: postgres,
   });
   const dashboardAdmin = randomBytes(32).toString('hex');
   const extensionAdmin = randomBytes(32).toString('hex');
@@ -162,6 +162,7 @@ try {
   await run('npm', ['run', 'test:browser'], web, {
     ZEKVAR_TEST_WEB_ORIGIN: webOrigin, ZEKVAR_TEST_API_ORIGIN: apiOrigin, ZEKVAR_TEST_ADMIN_TOKEN: dashboardAdmin,
     ZEKVAR_TEST_AUDIT_SCREENSHOT: artifacts ? join(artifacts, '13-control-audit-log.png') : '',
+    ZEKVAR_TEST_RETENTION_SCREENSHOT: artifacts ? join(artifacts, '14-control-data-retention.png') : '',
   });
   await run('npm', ['run', 'test:control'], extension, {
     ZEKVAR_EXTENSION_TEST_API: apiOrigin, ZEKVAR_EXTENSION_TEST_ADMIN_TOKEN: extensionAdmin,

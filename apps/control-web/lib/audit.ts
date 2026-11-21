@@ -1,4 +1,5 @@
 import type { AiAppId, AppClassification } from './control';
+import type { RetentionCleanup, RetentionPolicy } from './retention';
 
 export const auditActions = {
   policy_published: 'Policy published',
@@ -7,18 +8,22 @@ export const auditActions = {
   browser_enrolled: 'Browser enrolled',
   browser_revoked: 'Browser revoked',
   app_classified: 'AI app classified',
+  retention_changed: 'Retention settings changed',
+  retention_cleanup: 'Expired records deleted',
 } as const;
 
 export type AuditAction = keyof typeof auditActions;
 export type AuditCursor = { occurredAt: string; id: string };
 export type AuditEntry = AuditCursor & {
   action: AuditAction;
-  actor: 'organization_admin' | 'browser_enrollment';
+  actor: 'organization_admin' | 'browser_enrollment' | 'system';
   policyVersion: number | null;
   restoredFrom: number | null;
   installationId: string | null;
   appId: AiAppId | null;
   classification: AppClassification | null;
+  retention: RetentionPolicy | null;
+  cleanup: RetentionCleanup | null;
 };
 export type AuditPage = { entries: AuditEntry[]; next: AuditCursor | null };
 type Search = Record<string, string | string[] | undefined>;

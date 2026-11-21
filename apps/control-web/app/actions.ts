@@ -6,6 +6,7 @@ import { ApiError, controlApi } from '../lib/api';
 import { aiApps, classifications, decisionLabels, detectorModes, modes,
   type AiAppId, type AppClassification, type DetectorMode, type Feedback, type Mode } from '../lib/control';
 import { endSession, sessionToken, startSession } from '../lib/session';
+import { cleanupCounts, retentionFields, type RetentionField, type RetentionPolicy } from '../lib/retention';
 
 export async function signIn(_previous: Feedback, form: FormData): Promise<Feedback> {
   const token = form.get('token');
@@ -114,5 +115,30 @@ export async function revokeInstallation(_previous: Feedback, form: FormData): P
     await controlApi.revoke(token, id);
     revalidatePath('/');
     return { message: 'Browser access revoked.' };
+  });
+}
+
+export async function saveRetention(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const policy: RetentionPolicy = { securityEventDays: null, aiObservationDays: null, auditDays: null };
+  for (const field of Object.keys(retentionFields) as RetentionField[]) {
+    const value = form.get(field);
+    if (typeof value !== 'string' || (value !== '' && (!/^\d{1,4}$/.test(value) || Number(value) < 1 || Number(value) > 3650))) {
+      return { error: 'Enter between 1 and 3,650 days or leave the field blank for no expiry.' };
+    }
+    policy[field] = value === '' ? null : Number(value);
+  }
+  return perform(async (token) => {
+    await controlApi.saveRetention(token, policy);
+    revalidatePath('/retention');
+    return { message: 'Retention settings saved.' };
+  });
+}
+
+export async function cleanupRetention(): Promise<Feedback> {
+  return perform(async (token) => {
+    const result = await controlApi.cleanupRetention(token);
+    revalidatePath('/retention');
+    return { message: result.securityEvents || result.aiObservations || result.auditEntries
+      ? `Deleted ${cleanupCounts(result)}.` : 'No expired records found.' };
   });
 }

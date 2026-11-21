@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../../lib/api';
 import { auditActions, auditFilters, type AuditEntry } from '../../lib/audit';
 import { aiApps, classificationLabels, utc } from '../../lib/control';
+import { cleanupCounts, retentionFields, type RetentionField } from '../../lib/retention';
 import { sessionToken } from '../../lib/session';
 import { Sidebar } from '../workspace';
 
@@ -26,7 +27,7 @@ export default async function Audit({ searchParams }: { searchParams: Promise<Re
   }
 
   return <div className="workspace">
-    <Sidebar onAudit />
+    <Sidebar active="audit" />
     <main className="dashboard">
       <header className="page-heading">
         <div>{session && <p className="eyebrow">{session.organization}</p>}<h1>Audit log</h1></div>
@@ -76,13 +77,26 @@ export default async function Audit({ searchParams }: { searchParams: Promise<Re
   </div>;
 }
 
+const actorLabels = { organization_admin: 'Organization admin', browser_enrollment: 'Browser enrollment', system: 'Scheduled cleanup' };
+
+function auditDetails(entry: AuditEntry) {
+  if (entry.policyVersion) return `v${entry.policyVersion}${entry.restoredFrom ? ` from v${entry.restoredFrom}` : ''}`;
+  if (entry.installationId) return <code title={entry.installationId}>{entry.installationId.slice(0, 13)}</code>;
+  if (entry.appId && entry.classification) return `${aiApps[entry.appId]} · ${classificationLabels[entry.classification]}`;
+  if (entry.cleanup) return cleanupCounts(entry.cleanup);
+  if (entry.retention) {
+    const policy = entry.retention;
+    return <ul>{(Object.keys(retentionFields) as RetentionField[]).map((field) =>
+      <li key={field}>{retentionFields[field]} · {policy[field] === null ? 'No expiry' : policy[field] === 1 ? '1 day' : `${policy[field]} days`}</li>)}</ul>;
+  }
+  return '—';
+}
+
 function AuditRow({ entry }: { entry: AuditEntry }) {
   return <tr>
     <td><time dateTime={entry.occurredAt}>{utc.format(new Date(entry.occurredAt))}</time></td>
     <td className="emphasis">{auditActions[entry.action]}</td>
-    <td>{entry.actor === 'browser_enrollment' ? 'Browser enrollment' : 'Organization admin'}</td>
-    <td>{entry.policyVersion ? `v${entry.policyVersion}${entry.restoredFrom ? ` from v${entry.restoredFrom}` : ''}` :
-      entry.installationId ? <code title={entry.installationId}>{entry.installationId.slice(0, 13)}</code> :
-      entry.appId && entry.classification ? `${aiApps[entry.appId]} · ${classificationLabels[entry.classification]}` : '—'}</td>
+    <td>{actorLabels[entry.actor]}</td>
+    <td>{auditDetails(entry)}</td>
   </tr>;
 }

@@ -6,8 +6,8 @@ export function Brand() {
   </div>;
 }
 
-export function Sidebar({ onAudit = false }: { onAudit?: boolean }) {
-  const root = onAudit ? '/' : '';
+export function Sidebar({ active }: { active?: 'audit' | 'retention' }) {
+  const root = active ? '/' : '';
   return <aside className="sidebar">
     <Brand />
     <nav aria-label="Dashboard sections">
@@ -17,7 +17,8 @@ export function Sidebar({ onAudit = false }: { onAudit?: boolean }) {
       <a href={`${root}#ai-apps`}>AI apps</a>
       <a href={`${root}#browsers`}>Browsers</a>
       <a href={`${root}#events`}>Events</a>
-      <a href="/audit" aria-current={onAudit ? 'page' : undefined}>Audit log</a>
+      <a href="/audit" aria-current={active === 'audit' ? 'page' : undefined}>Audit log</a>
+      <a href="/retention" aria-current={active === 'retention' ? 'page' : undefined}>Data retention</a>
     </nav>
     <div className="sidebar-footer">
       <form action={signOut}><button className="button small">Sign out</button></form>

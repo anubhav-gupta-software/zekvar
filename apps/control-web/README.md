@@ -29,6 +29,12 @@ Open **Audit log** from the Control sidebar. The log shows policy publishes and 
 
 **Export JSON** downloads up to 1,000 matching entries in newest-first order with the organization, export timestamp, and API cursor when more entries are available. The export contains timestamps, action and actor categories, and relevant version, installation, or app identifiers. The local admin token identifies an organization rather than an individual administrator. [Audit API](../control-api/README.md#audit-log)
 
+## Set data retention
+
+Open **Data retention** to set independent windows for security events, AI observations, and audit history. Enter a whole number from 1 to 3,650 days or leave a field blank for no expiry. Saving requires confirmation because shortening a window immediately expires records from views and exports and makes them eligible for permanent deletion. Widening or clearing a window applies to records that have yet to expire.
+
+Control checks for expired records at startup and hourly by default. Use **Run cleanup** to delete up to 1,000 expired records per dataset immediately. **Audit log** displays changes to retention settings and counts from cleanup runs. The cleanup scope is the active PostgreSQL database. [Retention API and expiry rules](../control-api/README.md#data-retention)
+
 ## Verify in Chrome
 
 With both services running against a disposable organization, run the production build or type check separately as needed. The browser test publishes and restores policy versions, enrolls and revokes a test installation, and posts one synthetic event.
