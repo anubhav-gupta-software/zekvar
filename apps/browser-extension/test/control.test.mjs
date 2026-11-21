@@ -326,9 +326,43 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
     const diagnostics = await chatGpt.evaluate(() => navigator.clipboard.readText());
     assert.doesNotMatch(diagnostics, /ZEKVAR_TEST_SECRET|fixture-alt|private-option/);
     assert.deepEqual(JSON.parse(diagnostics), {
-      version: '0.3.1', route: 'conversation', markedEditors: 1, visibleMarkedEditors: 1,
+      version: '0.3.2', route: 'conversation', markedEditors: 1, visibleMarkedEditors: 1,
       hasEditorForm: false, visibleTextareas: 0, visibleEditableRoots: 1,
       hasComposerSubmitId: true, hasSendTestId: false, hasPairedSend: true,
     });
+  });
+
+  await t.test('protects guest conversations after in-tab navigation and direct load', async () => {
+    const [policy] = await adminCall('policies');
+    const baseline = (await adminCall('events?appId=chatgpt')).length;
+    const guest = '/uc/00000000-1234-4321-8765-0123456789ab';
+    const input = chatGpt.getByRole('textbox', { name: 'Message' });
+    const badge = chatGpt.getByText(`Zekvar · BLOCK v${policy.version}`, { exact: true });
+    const submissions = chatGpt.locator('#fixture-sends');
+    await chatGpt.goto('https://chatgpt.com/');
+    await badge.waitFor();
+    await chatGpt.evaluate((path) => history.pushState({}, '', path), guest);
+    await input.fill(marker);
+    await input.press('Enter');
+    await chatGpt.getByRole('alert').filter({ hasText: 'Submission blocked' }).waitFor();
+    assert.equal(await submissions.textContent(), '0');
+
+    await chatGpt.goto(`https://chatgpt.com${guest}`);
+    await badge.waitFor();
+    await input.fill(marker);
+    await chatGpt.getByRole('button', { name: 'Fixture send' }).click();
+    await chatGpt.getByRole('alert').filter({ hasText: 'Submission blocked' }).waitFor();
+    assert.equal(await submissions.textContent(), '0');
+    await input.fill('Clean reply');
+    await input.press('Enter');
+    assert.equal(await submissions.textContent(), '1');
+    await until(async () => (await adminCall('events?appId=chatgpt')).length === baseline + 2,
+      'Both guest-route blocks should reach Control.');
+
+    await chatGpt.getByRole('button', { name: 'Copy composer diagnostics' }).click();
+    await chatGpt.getByRole('button', { name: 'Diagnostics copied' }).waitFor();
+    const diagnostics = await chatGpt.evaluate(() => navigator.clipboard.readText());
+    assert.equal(JSON.parse(diagnostics).route, 'guest-conversation');
+    assert.ok(!diagnostics.includes(guest));
   });
 });

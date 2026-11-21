@@ -30,11 +30,18 @@ type Message = { type: 'status' | 'sync' } | { type: 'enroll'; grant: string } |
   { type: 'decision'; installationId: string; event: PolicyEvent } |
   { type: 'coverage'; installationId: string; coverage: Coverage };
 
-export function isChatGptPage(url: string | undefined): boolean {
-  if (!url) return false;
+export function chatGptRoute(url: string | undefined): 'home' | 'conversation' | 'guest-conversation' | 'other' {
+  if (!url) return 'other';
   const page = new URL(url);
-  return page.origin === 'https://chatgpt.com' &&
-    (page.pathname === '/' || /^\/c\/[a-z\d-]+\/?$/i.test(page.pathname));
+  if (page.origin !== 'https://chatgpt.com') return 'other';
+  if (page.pathname === '/') return 'home';
+  if (/^\/c\/[a-z\d-]+\/?$/i.test(page.pathname)) return 'conversation';
+  if (/^\/uc\/[a-z\d-]+\/?$/i.test(page.pathname)) return 'guest-conversation';
+  return 'other';
+}
+
+export function isChatGptPage(url: string | undefined): boolean {
+  return chatGptRoute(url) !== 'other';
 }
 
 export type Reply = { summary?: Summary; error?: string };

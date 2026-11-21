@@ -1,6 +1,6 @@
 import { recordDecision } from './decisions';
 import { evaluatePrompt, type MatchedDecision } from './policy';
-import { chatGptApp, isChatGptPage, send, type Coverage, type Summary } from './protocol';
+import { chatGptApp, chatGptRoute, isChatGptPage, send, type Coverage, type Summary } from './protocol';
 import { composerDiagnostics, inspectComposer, type Composer } from './chatgpt-composer';
 
 type Warning = { input: HTMLElement; value: string; installationId: string; match: MatchedDecision };
@@ -199,7 +199,7 @@ ui.proceed.addEventListener('click', () => {
 
 ui.copy.addEventListener('click', async (event) => {
   if (!event.isTrusted) return;
-  const route = location.pathname === '/' ? 'home' : isChatGptPage(location.href) ? 'conversation' : 'other';
+  const route = chatGptRoute(location.href);
   const text = JSON.stringify({
     version: chrome.runtime.getManifest().version,
     route,
