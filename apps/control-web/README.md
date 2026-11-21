@@ -5,7 +5,7 @@ Control is a local dashboard for publishing browser policies, issuing enrollment
 ## Run the dashboard
 
 1. Start PostgreSQL and the Control API using the [API instructions](../control-api/README.md#start-the-api). Keep the generated admin token available to paste into the sign-in form.
-2. From the repository root, install dependencies and start the dashboard with Node.js 22 or newer.
+2. Open a second terminal, `cd` into your `zekvar` checkout, and verify that `pwd` ends in `/zekvar`. Install dependencies and start the dashboard with Node.js 22 or newer.
 
    ```sh
    npm --prefix apps/control-web ci

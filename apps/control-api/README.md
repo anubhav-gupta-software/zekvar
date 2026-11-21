@@ -6,7 +6,9 @@ Use the [Control dashboard](../control-web/README.md) to sign in, publish policy
 
 ## Start the API
 
-From the repository root, with the .NET 10 SDK and a local PostgreSQL instance, set `ConnectionStrings__Control` to a connection string for an empty demo database. To start a database with Docker:
+In your terminal, `cd` into your `zekvar` checkout before running these commands. `pwd` should end in `/zekvar`, and `ls apps/control-api/Control.Api.csproj` should find the project. A prompt showing `~` is in your home directory.
+
+With the .NET 10 SDK and a local PostgreSQL instance, set `ConnectionStrings__Control` to a connection string for your demo database. If your `zekvar-control-db` container is already running on port `55432`, reuse it and skip this Docker command.
 
 ```sh
 docker run -d --rm --name zekvar-control-db -p 127.0.0.1:55432:5432 \
@@ -20,10 +22,10 @@ export DOTNET_ENVIRONMENT=Development
 export ConnectionStrings__Control='Host=127.0.0.1;Port=55432;Database=zekvar;Username=postgres;Password=local-demo-only'
 export Control__Organizations__0__Slug=local-demo
 export Control__Organizations__0__AdminToken="$(openssl rand -hex 32)"
-dotnet run --project apps/control-api --no-launch-profile
+dotnet run --project apps/control-api/Control.Api.csproj --no-launch-profile
 ```
 
-In a second terminal, `curl -f http://127.0.0.1:5187/health` confirms the API is ready. Stop the API with Ctrl+C. `docker stop zekvar-control-db` removes the disposable container started with `--rm`.
+Wait for `Now listening on: http://127.0.0.1:5187`. On a first run, .NET may print a welcome banner and links before that line. In a second terminal, `curl -f http://127.0.0.1:5187/health` confirms the API is ready. Stop the API with Ctrl+C. `docker stop zekvar-control-db` removes the disposable container started with `--rm`.
 
 ## Exercise the workflow
 
