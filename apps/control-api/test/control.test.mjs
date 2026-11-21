@@ -312,4 +312,66 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual((await history()).find(({ version }) => version === withRules.version).domainRules, expectedRules);
     assert.deepEqual((await fetchPolicy()).domainRules, empty);
   });
+
+  await t.test('audit records successful scoped changes once and supports stable date and cursor filters', async () => {
+    const audit = (query = '', token = first, expect = 200) => call(`/v1/admin/audit${query ? `?${query}` : ''}`, { token, expect });
+    const auditBefore = await audit();
+    const otherBefore = await audit('', second);
+    await call('/v1/admin/audit', { expect: 401 });
+    for (const query of ['action=invalid', 'limit=0', 'limit=1001', 'beforeId=00000000-0000-0000-0000-000000000000',
+      'beforeAt=2026-01-01T00%3A00%3A00Z', 'since=2026-01-02&until=2026-01-01']) await audit(query, first, 400);
+    const { grant } = await call('/v1/admin/enrollment-grants', { method: 'POST', token: first });
+    const enrollment = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    await call('/v1/enroll', { method: 'POST', body: { grant }, expect: 401 });
+    await audit('', enrollment.token, 401);
+    const domain = 'synthetic-internal.audit.test';
+    const published = await call('/v1/admin/policies', { method: 'POST', token: first,
+      body: { mode: 'monitor', domainRules: { allow: [], block: [domain] } } });
+    await call('/v1/admin/policies/999/restore', { method: 'POST', token: first, expect: 404 });
+    const restored = await call('/v1/admin/policies/1/restore', { method: 'POST', token: first });
+    const classify = (status, expect = 204) => call('/v1/admin/ai-apps/gemini/classification',
+      { method: 'POST', token: first, body: { status }, expect });
+    await Promise.all([classify('unapproved'), classify('unapproved')]);
+    await classify('invalid', 400);
+    const revoke = (token, expect) => call(`/v1/admin/installations/${enrollment.installationId}/revoke`,
+      { method: 'POST', token, expect });
+    await revoke(second, 404);
+    await Promise.all([revoke(first, 204), revoke(first, 204)]);
+
+    const all = await audit();
+    const newer = all.entries.slice(0, 6);
+    assert.deepEqual(all.entries.slice(6), auditBefore.entries);
+    assert.deepEqual(newer.map(({ action }) => action).sort(),
+      ['app_classified', 'browser_enrolled', 'browser_revoked', 'grant_issued', 'policy_published', 'policy_restored']);
+    assert.equal(newer.find(({ action }) => action === 'policy_published').policyVersion, published.version);
+    assert.equal(newer.find(({ action }) => action === 'policy_restored').policyVersion, restored.version);
+    assert.equal(newer.find(({ action }) => action === 'policy_restored').restoredFrom, 1);
+    assert.equal(newer.find(({ action }) => action === 'browser_enrolled').actor, 'browser_enrollment');
+    assert.equal(newer.find(({ action }) => action === 'browser_revoked').installationId, enrollment.installationId);
+    assert.equal(newer.find(({ action }) => action === 'app_classified').classification, 'unapproved');
+    assert.deepEqual(await audit('', second), otherBefore);
+    const serialized = JSON.stringify(all);
+    assert.ok(![first, grant, enrollment.token, domain].some((value) => serialized.includes(value)));
+
+    const pages = [];
+    for (let cursor = null, count = 0; count < 30; count++) {
+      const query = new URLSearchParams({ limit: '2' });
+      if (cursor) {
+        query.set('beforeAt', cursor.occurredAt);
+        query.set('beforeId', cursor.id);
+      }
+      const page = await audit(query.toString());
+      assert.ok(page.entries.length <= 2);
+      pages.push(...page.entries);
+      if (!page.next) break;
+      cursor = page.next;
+    }
+    assert.deepEqual(pages, all.entries);
+    const publishedAudit = newer.find(({ action }) => action === 'policy_published');
+    const eventQuery = new URLSearchParams({ action: 'policy_published', since: publishedAudit.occurredAt });
+    assert.deepEqual((await audit(eventQuery.toString())).entries, [publishedAudit]);
+    await stop();
+    await start();
+    assert.deepEqual(await audit(), all);
+  });
 });

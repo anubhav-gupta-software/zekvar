@@ -35,6 +35,9 @@ test('Control dashboard signs in and manages a real browser installation and eve
   await page.goto(dashboard);
 
   await t.test('rejects invalid tokens and keeps a successful session HTTP-only', async () => {
+    const denied = await context.request.get(`${dashboard}/audit/export`);
+    assert.equal(denied.status(), 401);
+    assert.equal(denied.headers()['cache-control'], 'no-store');
     await page.getByLabel('Admin token').fill('0'.repeat(64));
     await page.getByRole('button', { name: 'Sign in' }).click();
     await page.getByRole('alert').filter({ hasText: 'This admin token was rejected.' }).waitFor();
@@ -51,6 +54,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
   });
 
   let installation;
+  let enrollmentGrant;
   let policyVersion;
   const policyHistory = page.getByRole('table', { name: 'Policy history' });
   const browsers = page.getByRole('table', { name: 'Browser health' });
@@ -59,9 +63,9 @@ test('Control dashboard signs in and manages a real browser installation and eve
   await t.test('creates a grant and shows the enrolled browser', async () => {
     await page.getByRole('button', { name: 'Create enrollment grant' }).click();
     await page.getByLabel('Enrollment grant', { exact: true }).waitFor();
-    const grant = await page.getByLabel('Enrollment grant', { exact: true }).inputValue();
-    assert.match(grant, /^[a-f0-9]{64}$/);
-    installation = await post('/enroll', { grant });
+    enrollmentGrant = await page.getByLabel('Enrollment grant', { exact: true }).inputValue();
+    assert.match(enrollmentGrant, /^[a-f0-9]{64}$/);
+    installation = await post('/enroll', { grant: enrollmentGrant });
     await page.reload();
     await browsers.getByText('Awaiting policy', { exact: true }).waitFor();
     assert.equal(await page.getByLabel('Enrollment grant', { exact: true }).count(), 0);
@@ -115,6 +119,72 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await browsers.getByText('Revoked', { exact: true }).first().waitFor();
   });
 
+  await t.test('reviews and downloads the tenant audit log with the selected dates and action', async () => {
+    await page.getByLabel('Claude classification', { exact: true }).selectOption('approved');
+    await page.getByRole('button', { name: 'Save Claude classification' }).click();
+    await page.getByText('Claude classification saved.', { exact: true }).waitFor();
+    await page.getByRole('link', { name: 'Audit log', exact: true }).click();
+    await page.getByRole('heading', { name: 'Audit log', exact: true }).waitFor();
+    const audit = page.getByRole('table', { name: 'Control activity' });
+    for (const label of ['Policy published', 'Policy restored', 'Enrollment grant issued', 'Browser enrolled', 'Browser revoked', 'AI app classified']) {
+      await audit.getByText(label, { exact: true }).first().waitFor();
+    }
+    await audit.getByText(`v${policyVersion + 1} from v1`, { exact: true }).waitFor();
+    await audit.getByText('Claude · Approved', { exact: true }).waitFor();
+    assert.ok(![token, enrollmentGrant, installation.token].some((value) => page.url().includes(value)));
+    const screenshot = process.env.ZEKVAR_TEST_AUDIT_SCREENSHOT;
+    if (screenshot) await page.screenshot({ path: screenshot, fullPage: true });
+
+    const today = new Date().toISOString().slice(0, 10);
+    await page.getByLabel('Action', { exact: true }).selectOption('policy_restored');
+    await page.getByLabel('From (UTC)', { exact: true }).fill(today);
+    await page.getByLabel('Through (UTC)', { exact: true }).fill(today);
+    await page.getByRole('button', { name: 'Apply filters' }).click();
+    await page.waitForURL((url) => url.searchParams.get('action') === 'policy_restored');
+    await audit.getByText('Policy restored', { exact: true }).first().waitFor();
+    assert.equal(await audit.getByText('Browser revoked', { exact: true }).count(), 0);
+    const link = page.getByRole('link', { name: 'Export JSON', exact: true });
+    const exported = await context.request.get(new URL(await link.getAttribute('href'), dashboard).href);
+    assert.equal(exported.headers()['cache-control'], 'no-store');
+    assert.equal(exported.headers()['x-content-type-options'], 'nosniff');
+    assert.match(exported.headers()['content-disposition'], /^attachment/);
+    const downloadPromise = page.waitForEvent('download');
+    await link.click();
+    const download = await downloadPromise;
+    assert.equal(download.suggestedFilename(), 'zekvar-control-audit.json');
+    const downloaded = await readFile(await download.path(), 'utf8');
+    const { organization, exportedAt, entries, next } = JSON.parse(downloaded);
+    assert.equal(organization, await page.locator('.eyebrow').textContent());
+    assert.ok(Number.isFinite(Date.parse(exportedAt)));
+    assert.equal(next, null);
+    assert.ok(entries.length >= 1 && entries.every(({ action }) => action === 'policy_restored'));
+    assert.ok(entries.some((entry) => entry.policyVersion === policyVersion + 1 && entry.restoredFrom === 1));
+    assert.ok(![token, enrollmentGrant, installation.token].some((value) => downloaded.includes(value)));
+    const invalid = await context.request.get(`${dashboard}/audit/export?from=2026-02-31`);
+    assert.equal(invalid.status(), 400);
+    assert.equal((await context.request.get(`${dashboard}/audit/export?action=browser_revoked&action=grant_issued`)).status(), 400);
+  });
+
+  await t.test('paginates older activity and exports beyond the visible 100 entries', async () => {
+    for (let index = 0; index < 102; index++) {
+      await post('/admin/ai-apps/gemini/classification', { status: index % 2 === 0 ? 'approved' : 'unapproved' }, token);
+    }
+    await page.getByRole('link', { name: 'Clear filters' }).click();
+    const audit = page.getByRole('table', { name: 'Control activity' });
+    const older = page.getByRole('link', { name: 'Older entries' });
+    await older.waitFor();
+    assert.equal(await audit.locator('tbody tr').count(), 100);
+    const data = await (await context.request.get(`${dashboard}/audit/export`)).json();
+    assert.ok(data.entries.length > 100 && data.next === null);
+    await older.click();
+    await page.waitForURL((url) => url.searchParams.has('beforeAt') && url.searchParams.has('beforeId'));
+    await audit.getByText('Browser enrolled', { exact: true }).first().waitFor();
+    await page.getByRole('link', { name: 'Newest entries' }).click();
+    await older.waitFor();
+    await page.getByRole('link', { name: 'Overview', exact: true }).click();
+    await page.getByRole('heading', { name: 'Security overview', exact: true }).waitFor();
+  });
+
   await t.test('fits a mobile viewport and clears the session on sign-out', async () => {
     const screenshot = process.env.ZEKVAR_TEST_SCREENSHOT;
     if (screenshot) await page.screenshot({ path: screenshot, fullPage: true });
@@ -123,6 +193,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await page.getByRole('button', { name: 'Sign out' }).click();
     await page.getByRole('heading', { name: 'Sign in to Control' }).waitFor();
     assert.ok(!(await context.cookies()).some(({ name }) => name === 'zekvar_control_session'));
+    assert.equal((await context.request.get(`${dashboard}/audit/export`)).status(), 401);
     assert.deepEqual(clientErrors, []);
   });
 });

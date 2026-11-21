@@ -31,7 +31,7 @@ button:disabled { cursor: wait; opacity: .62; }
 .brand strong + span { display: block; margin-top: .16rem; color: var(--muted); font-size: .75rem; letter-spacing: .16em; }
 .sidebar nav { display: grid; gap: .25rem; margin-top: 2.6rem; }
 .sidebar nav a { border-radius: .45rem; color: var(--muted); font-size: .9rem; font-weight: 600; padding: .6rem .75rem; }
-.sidebar nav a:hover, .sidebar nav a:focus-visible { background: var(--panel); color: var(--text); }
+.sidebar nav a:hover, .sidebar nav a:focus-visible, .sidebar nav a[aria-current="page"] { background: var(--panel); color: var(--text); }
 .sidebar-footer { margin-top: auto; padding: 1.2rem .35rem 0; border-top: 1px solid var(--line); }
 
 .dashboard { width: 100%; max-width: 99rem; margin-inline: auto; padding: 2.4rem clamp(1rem, 3vw, 3rem) 3rem; }
@@ -96,6 +96,8 @@ td code { color: #d4e5f7; }
 .filters { display: flex; flex-wrap: wrap; align-items: end; gap: .65rem; padding: 0 1.15rem 1rem; }
 .filters > div { display: grid; gap: .25rem; }
 .clear-link { align-self: center; margin-top: 1.5rem; color: var(--mint); font-size: .875rem; text-decoration: underline; }
+.audit-footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;
+  gap: .55rem; padding: .8rem 1.15rem; border-top: 1px solid var(--line); }
 
 .auth-shell { display: grid; min-height: 100dvh; place-items: center; padding: 1.25rem; }
 .auth-card { display: grid; gap: 1rem; width: min(100%, 28rem); padding: clamp(1.25rem, 6vw, 2rem); }

@@ -7,6 +7,7 @@ import {
 import { sessionToken } from '../lib/session';
 import { classifyAiApp, publishPolicy, restorePolicy, revokeInstallation, signOut } from './actions';
 import { DomainRulesForm, EnrollmentForm, MutationForm, RefreshSection, SignInForm } from './forms';
+import { Brand, Sidebar } from './workspace';
 
 type Search = Record<string, string | string[] | undefined>;
 
@@ -34,20 +35,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
     const current = policies[0];
     const active = installations.filter(({ revokedAt }) => !revokedAt).length;
     return <div className="workspace" id="overview">
-      <aside className="sidebar">
-        <Brand />
-        <nav aria-label="Dashboard sections">
-          <a href="#overview">Overview</a>
-          <a href="#policies">Policies</a>
-          <a href="#domain-rules">Domain rules</a>
-          <a href="#ai-apps">AI apps</a>
-          <a href="#browsers">Browsers</a>
-          <a href="#events">Events</a>
-        </nav>
-        <div className="sidebar-footer">
-          <form action={signOut}><button className="button small">Sign out</button></form>
-        </div>
-      </aside>
+      <Sidebar />
       <main className="dashboard">
         <header className="page-heading">
           <div>
@@ -188,12 +176,6 @@ export default async function Control({ searchParams }: { searchParams: Promise<
       </section>
     </main>;
   }
-}
-
-function Brand() {
-  return <div className="brand"><span className="brand-mark" aria-hidden="true">Z</span>
-    <span><strong>ZEKVAR</strong><span>CONTROL</span></span>
-  </div>;
 }
 
 function SignIn({ invalid }: { invalid?: boolean }) {

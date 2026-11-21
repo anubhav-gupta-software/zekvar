@@ -23,6 +23,12 @@ In **Browser health**, **Reporting** indicates Control heard from the installati
 
 The demo applies one policy per organization. The dashboard keeps admin tokens in server memory and gives the browser a short-lived HTTP-only session cookie. Restarting the dashboard clears those sessions. Keep both services on loopback and use synthetic demo data.
 
+## Review and export the audit log
+
+Open **Audit log** from the Control sidebar. The log shows policy publishes and restores, enrollment grant issuance, browser enrollment and revocation, and changes to AI app classifications. Filter by action and UTC date range, or select **Older entries** to see more history.
+
+**Export JSON** downloads up to 1,000 matching entries in newest-first order with the organization, export timestamp, and API cursor when more entries are available. The export contains timestamps, action and actor categories, and relevant version, installation, or app identifiers. The local admin token identifies an organization rather than an individual administrator. [Audit API](../control-api/README.md#audit-log)
+
 ## Verify in Chrome
 
 With both services running against a disposable organization, run the production build or type check separately as needed. The browser test publishes and restores policy versions, enrolls and revokes a test installation, and posts one synthetic event.

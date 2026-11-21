@@ -72,6 +72,14 @@ admin.MapPost("/policies/{version:int}/restore", async (int version, HttpContext
         ? Results.Ok(published) : Results.NotFound());
 admin.MapGet("/events", async (string? appId, string? decision, DateTimeOffset? since, HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.Events(Identity(http).OrganizationId, appId, decision, since, ct)));
+admin.MapGet("/audit", async (string? action, DateTimeOffset? since, DateTimeOffset? until, DateTimeOffset? beforeAt,
+    Guid? beforeId, int? limit, HttpContext http, CancellationToken ct) =>
+{
+    var filters = new AuditFilters(action, since, until, beforeAt, beforeId, limit ?? 100);
+    return filters.IsValid
+        ? Results.Ok(await store.AuditHistory(Identity(http).OrganizationId, filters, ct))
+        : Results.BadRequest(new { error = "Choose a valid audit action, time range, cursor, and limit." });
+});
 admin.MapGet("/ai-apps", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.DiscoveredApps(Identity(http).OrganizationId, ct)));
 admin.MapPost("/ai-apps/{appId}/classification", async (string appId, ClassifyApp request, HttpContext http, CancellationToken ct) =>

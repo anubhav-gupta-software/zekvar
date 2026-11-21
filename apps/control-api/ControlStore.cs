@@ -20,6 +20,7 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
         await ApplyMigration(connection, 3, "003_github_pat.sql", ct);
         await ApplyMigration(connection, 4, "004_ai_discovery.sql", ct);
         await ApplyMigration(connection, 5, "005_domain_rules.sql", ct);
+        await ApplyMigration(connection, 6, "006_control_audit.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -78,8 +79,13 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
     {
         var grant = Tokens.Generate();
         await using var command = Command("""
-            INSERT INTO enrollment_grants (token_hash, organization_id, expires_at)
-            VALUES ($1, $2, now() + interval '10 minutes') RETURNING expires_at
+            WITH issued AS (
+                INSERT INTO enrollment_grants (token_hash, organization_id, expires_at)
+                VALUES ($1, $2, now() + interval '10 minutes') RETURNING organization_id, expires_at
+            ), audit AS (
+                INSERT INTO control_audit (organization_id, action) SELECT organization_id, 'grant_issued' FROM issued
+            )
+            SELECT expires_at FROM issued
             """, Tokens.Hash(grant), organizationId);
         return new(grant, (DateTime)(await command.ExecuteScalarAsync(ct))!);
     }
@@ -93,9 +99,12 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
                 UPDATE enrollment_grants SET redeemed_at = now()
                 WHERE token_hash = $1 AND redeemed_at IS NULL AND expires_at > now()
                 RETURNING organization_id
+            ), enrolled AS (
+                INSERT INTO installations (id, organization_id, token_hash)
+                SELECT $2, organization_id, $3 FROM redeemed RETURNING organization_id, id, enrolled_at
             )
-            INSERT INTO installations (id, organization_id, token_hash)
-            SELECT $2, organization_id, $3 FROM redeemed
+            INSERT INTO control_audit (organization_id, occurred_at, action, installation_id)
+            SELECT organization_id, enrolled_at, 'browser_enrolled', id FROM enrolled
             """, Tokens.Hash(grant), installationId, Tokens.Hash(token));
         return await command.ExecuteNonQueryAsync(ct) == 1 ? new(installationId, token) : null;
     }
@@ -127,9 +136,13 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
                 SELECT id, policy_version, mode, github_pat_mode, discovery_enabled, allowed_domains, blocked_domains
                 FROM next_version CROSS JOIN selection
                 RETURNING organization_id, version, mode, published_at, github_pat_mode, discovery_enabled, allowed_domains, blocked_domains
-            ), audit AS (
+            ), history AS (
                 INSERT INTO policy_audit (organization_id, version, restored_from)
                 SELECT organization_id, version, $3 FROM published
+            ), audit AS (
+                INSERT INTO control_audit (organization_id, occurred_at, action, policy_version, restored_from)
+                SELECT organization_id, published_at, CASE WHEN $3 IS NULL THEN 'policy_published' ELSE 'policy_restored' END,
+                    version, $3 FROM published
             )
             SELECT version, mode, published_at, $3, github_pat_mode, discovery_enabled, allowed_domains, blocked_domains FROM published
             """, connection, transaction);
@@ -207,10 +220,16 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
     public async Task<bool> Revoke(Guid organizationId, Guid installationId, CancellationToken ct)
     {
         await using var command = Command("""
-            UPDATE installations SET revoked_at = COALESCE(revoked_at, now())
-            WHERE organization_id = $1 AND id = $2
+            WITH revoked AS (
+                UPDATE installations SET revoked_at = now() WHERE organization_id = $1 AND id = $2 AND revoked_at IS NULL
+                RETURNING organization_id, id, revoked_at
+            ), audit AS (
+                INSERT INTO control_audit (organization_id, occurred_at, action, installation_id)
+                SELECT organization_id, revoked_at, 'browser_revoked', id FROM revoked
+            )
+            SELECT EXISTS (SELECT 1 FROM installations WHERE organization_id = $1 AND id = $2)
             """, organizationId, installationId);
-        return await command.ExecuteNonQueryAsync(ct) == 1;
+        return (bool)(await command.ExecuteScalarAsync(ct))!;
     }
 
     public async Task<bool> Ingest(Guid installationId, PolicyEvent request, CancellationToken ct)
@@ -296,10 +315,41 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
     public async Task ClassifyApp(Guid organizationId, string appId, string status, CancellationToken ct)
     {
         await using var command = Command("""
-            INSERT INTO ai_app_classifications (organization_id, app_id, status) VALUES ($1, $2, $3)
-            ON CONFLICT (organization_id, app_id) DO UPDATE SET status = EXCLUDED.status
+            WITH changed AS (
+                INSERT INTO ai_app_classifications (organization_id, app_id, status) VALUES ($1, $2, $3)
+                ON CONFLICT (organization_id, app_id) DO UPDATE SET status = EXCLUDED.status
+                WHERE ai_app_classifications.status IS DISTINCT FROM EXCLUDED.status
+                RETURNING organization_id, app_id, status
+            )
+            INSERT INTO control_audit (organization_id, action, app_id, classification)
+            SELECT organization_id, 'app_classified', app_id, status FROM changed
             """, organizationId, appId, status);
         await command.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task<AuditPage> AuditHistory(Guid organizationId, AuditFilters filters, CancellationToken ct)
+    {
+        await using var command = Command("""
+            SELECT id, occurred_at, action, policy_version, restored_from, installation_id, app_id, classification
+            FROM control_audit WHERE organization_id = $1
+                AND ($2::text IS NULL OR action = $2)
+                AND ($3::timestamptz IS NULL OR occurred_at >= $3)
+                AND ($4::timestamptz IS NULL OR occurred_at < $4)
+                AND ($5::timestamptz IS NULL OR (occurred_at, id) < ($5, $6::uuid))
+            ORDER BY occurred_at DESC, id DESC LIMIT $7
+            """, organizationId, (object?)filters.Action ?? DBNull.Value, (object?)filters.Since?.UtcDateTime ?? DBNull.Value,
+            (object?)filters.Until?.UtcDateTime ?? DBNull.Value, (object?)filters.BeforeAt?.UtcDateTime ?? DBNull.Value,
+            (object?)filters.BeforeId ?? DBNull.Value, filters.Limit + 1);
+        var entries = new List<AuditEntry>();
+        await using var rows = await command.ExecuteReaderAsync(ct);
+        while (await rows.ReadAsync(ct))
+            entries.Add(new(rows.GetGuid(0), rows.GetDateTime(1), rows.GetString(2), rows.IsDBNull(3) ? null : rows.GetInt32(3),
+                rows.IsDBNull(4) ? null : rows.GetInt32(4), rows.IsDBNull(5) ? null : rows.GetGuid(5),
+                rows.IsDBNull(6) ? null : rows.GetString(6), rows.IsDBNull(7) ? null : rows.GetString(7)));
+        if (entries.Count <= filters.Limit) return new(entries, null);
+        entries.RemoveAt(filters.Limit);
+        var last = entries[^1];
+        return new(entries, new(last.OccurredAt, last.Id));
     }
 
     private NpgsqlCommand Command(string sql, params object[] values)

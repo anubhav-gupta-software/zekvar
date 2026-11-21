@@ -53,6 +53,12 @@ Publish requests can also supply `domainRules` with `allow` and `block` hostname
 
 For a version with domain rules, the heartbeat must include `domainRulesApplied: true`. Browser v0.7.0 acknowledges this after Chrome applies the list. Earlier browsers stay at their last acknowledged version in Browser health.
 
+## Audit log
+
+`GET /v1/admin/audit` returns the authenticated organization's activity as `{ entries, next }`. Use `action` to filter by `policy_published`, `policy_restored`, `grant_issued`, `browser_enrolled`, `browser_revoked`, or `app_classified`. `since` is inclusive and `until` is exclusive. `limit` defaults to 100 and accepts up to 1,000. When `next` is present, send its `occurredAt` as `beforeAt` and its `id` as `beforeId` with the same filters to get older entries.
+
+Audited changes and their records are written together. Repeating a revocation or saving the same classification preserves one entry for the change. Migration 006 restores the policy and installation history that already had timestamps. Grant issuance and classification activity are tracked from the migration forward. Records identify the organization-admin or browser-enrollment actor category. Credentials, prompts, grant values, and policy content stay out of the audit payload.
+
 For isolated API or browser tests, `Control__Port` selects a different loopback port. The default dashboard and extension use `5187`.
 
 ## Verify the workflow
