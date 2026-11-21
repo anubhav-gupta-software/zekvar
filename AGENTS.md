@@ -11,3 +11,5 @@ After each completed task, append a dated entry to the Decision log in `product_
 ## Commits
 
 After verifying each completed product change, create a local Git commit that includes its decision-log entry. Keep unrelated workspace changes out of the commit.
+
+Push each verified commit to the GitHub branch configured for this checkout when its destination is known and authorized. Record any missing remote or push blocker.
