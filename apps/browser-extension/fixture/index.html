@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zekvar prompt fixture</title>
+  <style>
+    :root { color-scheme: dark; font: 1rem/1.5 system-ui, sans-serif; }
+    body { background: #101927; color: #edf4ff; max-width: 38rem; margin: 4rem auto; padding: 0 1rem; }
+    h1 { line-height: 1.15; }
+    label { display: block; margin: 1rem 0 0.25rem; }
+    input, select, button { border: 1px solid #738198; border-radius: 0.375rem; font: inherit; padding: 0.55rem 0.75rem; }
+    input { width: 100%; box-sizing: border-box; }
+    button { cursor: pointer; margin: 0.75rem 0.5rem 0 0; }
+    button[type="submit"] { background: #59e6b5; color: #101927; border-color: #59e6b5; font-weight: 700; }
+    :focus-visible { outline: 2px solid #59e6b5; outline-offset: 3px; }
+    #policy-feedback p:empty { margin: 0; }
+    #policy-feedback p { color: #ffdca1; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Zekvar prompt fixture</h1>
+    <p>Use <code>ZEKVAR_TEST_SECRET</code> to trigger the selected policy. Submissions only increment the local counter.</p>
+    <form id="prompt-form">
+      <label for="policy-mode">Policy mode</label>
+      <select id="policy-mode">
+        <option value="monitor">Monitor</option>
+        <option value="warn">Warn</option>
+        <option value="block" selected>Block</option>
+      </select>
+      <label for="prompt">Prompt</label>
+      <input id="prompt" type="text" required autocomplete="off" spellcheck="false">
+      <button id="send-prompt" type="submit">Send prompt</button>
+      <div id="policy-feedback"></div>
+    </form>
+    <p>Submissions <output id="submission-count" aria-label="Submission count">0</output></p>
+  </main>
+  <script>
+    const counter = document.querySelector('#submission-count');
+    document.querySelector('#prompt-form').addEventListener('submit', (event) => {
+      event.preventDefault();
+      counter.value = String(Number(counter.value) + 1);
+    });
+  </script>
+</body>
+</html>

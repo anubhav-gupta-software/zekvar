@@ -70,7 +70,7 @@ Assume one builder working sequentially, with customer discovery running alongsi
 
 | Milestone | Depends on | Engineering estimate | Exit criteria |
 | --- | --- | --- | --- |
-| 1. Local proof | Workspace and dev browser | 3–6 days | Real Chrome passes the [first build](#first-build) scenarios on a controlled page. |
+| 1. Local proof (complete) | Workspace and dev browser | 3–6 days originally estimated | Chrome for Testing passed the [first build](#first-build) scenarios on a controlled page. |
 | 2. End-to-end demo | Local submit handling and event contract | 8–15 days | Control publishes policy, an enrolled browser applies it to one tested ChatGPT flow, and Control shows one event per decision across retries. |
 | 3. Design-partner pilot | Demo, managed deployment, tenant isolation, and partner onboarding | 12–25 days of preparation and fixes, plus a proposed 2–4 weeks of observation | A partner admin can deploy, review, roll back, and diagnose coverage. Pilot results support the chosen rules and the buyer confirms a concrete use case. |
 | 4. Direct commercial release | Pilot evidence and verified launch gates | 25–50 days after pilot, subject to app coverage and distribution | Each advertised capability passes release testing. Support, recovery, billing, and brand readiness have been exercised. |
@@ -146,6 +146,8 @@ Order the wider Browser backlog using pilot demand and the cost of maintaining e
 
 ## First build
 
+The local proof is complete. See the [extension instructions](apps/browser-extension/README.md) to run it. Milestone 2 starts with the Control API, PostgreSQL migrations, and shared policy and event fixtures.
+
 Build the local proof in this order. Start with a managed-browser security workflow that can be reproduced on a fixture served from localhost. Use the fixture to prove the policy engine and browser behavior before introducing a live AI site, dashboard, or database.
 
 | Order | Work | Done when |
@@ -153,7 +155,7 @@ Build the local proof in this order. Start with a managed-browser security workf
 | 1 | Scaffold `apps/browser-extension` for TypeScript and the Manifest V3 build. Add a fixture form served locally with a visible submit counter. Document how to build and load the unpacked extension into a test Chrome profile. | The extension loads, attaches only to the fixture origin, and the form submits by click and keyboard. |
 | 2 | Add a test policy and an evaluator for allow, monitor, warn, and block. Use a deterministic inert marker such as `ZEKVAR_TEST_SECRET` for fixtures. | Clean and matched fixture cases return the expected action, rule ID, and reason. Expect the same result on repeated evaluation. |
 | 3 | Connect the evaluator to submit. Display a warning with Edit and Continue actions, or a block that lets the user edit and retry. Apply the warning override to the current attempt and evaluate again when the input changes. | Clean and monitored prompts reach the fixture handler once. Warned prompts wait for a decision. Blocked prompts never reach the fixture handler. |
-| 4 | Emit a local metadata event containing an event ID, app ID, timestamp, rule ID, detector category, policy version, and decision. Preserve an event ID across a retry of the same event. | Captured output contains the structured fields. Searching logs and event output for the synthetic marker yields zero matches. |
+| 4 | Emit a local metadata event containing an event ID, app ID, timestamp, rule ID, detector category, policy version, and decision. Carry this ID across transport retries when event delivery is added in milestone 2. | Captured output contains the structured fields. Searching logs and event output for the synthetic marker yields zero matches. |
 | 5 | Repeat the scenario matrix in Chrome, fix failures, and record the results and any unsupported paths in the decision log. | The proof can be rerun from a fresh local checkout, and the demo shows a clean submit, a block, and a successful edited retry. |
 
 | Scenario | Expected result |
@@ -165,8 +167,6 @@ Build the local proof in this order. Start with a managed-browser security workf
 | Marker in block mode, then clean retry | Zero submissions while blocked, then one after editing |
 | Repeated click during warning, or input changes before Continue | No duplicate submissions. Changed input is evaluated again. |
 | Logs and captured event output | No prompt, match value, or synthetic marker |
-
-The first work session is task 1 and the initial clean-submit check. The local demo ends at task 5. Add the API and Control in milestone 2 after those browser scenarios pass.
 
 ## Decision log
 
@@ -184,3 +184,5 @@ Update this log after each completed task. Record the work and verification perf
 | 2026-11-20 | Planning complete | Replaced the milestone summary and first-build paragraph with a dependency-ordered roadmap, a first-build task list, and a Chrome acceptance matrix. Added customer discovery, pilot operations, release verification, commercial preparation, and expansion gates so technical work leads to a deployable product. | Checked Markdown table structure, internal section links, and whitespace. The first engineering task is the local extension scaffold and fixture. |
 | 2026-11-20 | Proposed | Estimate the early milestones for one builder and re-estimate after each milestone. Keep customer discovery parallel, choose rollout scope based on measured results, and defer exact Endpoint and Agent estimates until each pilot has a defined runtime and buyer. | Staffing, launch timing, design partners, deployment and identity providers, and comparative pricing remain open. |
 | 2026-11-20 | Process adopted | Commit each verified product change together with its plan entry so the rationale and implementation remain traceable in Git. | Recorded the workflow in `AGENTS.md`. |
+| 2026-11-20 | Implemented | Completed the local Browser and AI proof as a TypeScript Manifest V3 extension. Restrict the build to one loopback fixture path and one inert marker to verify native submit behavior in isolation. Warn mode holds an attempt for one explicit override and clears it when input or policy changes. | Seven automated scenarios passed in Chrome for Testing 159.0.8154.6. Reproduced from a fresh source copy with `npm ci` and `npm test`. Live AI apps are milestone 2. |
+| 2026-11-20 | Implemented | Emit decision metadata to the browser console, with a distinct ID for each decision or override and no prompt or match text. Exercise the metadata boundary before adding event delivery. | The browser suite verified the exact event fields, omission of sensitive strings, and absence of prompt traffic. Control ingestion, retry and deduplication are milestone 2. |

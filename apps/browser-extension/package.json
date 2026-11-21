@@ -1,0 +1,16 @@
+{
+  "name": "@zekvar/browser-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && esbuild src/content.ts --bundle --format=iife --outfile=dist/content.js && node -e \"require('node:fs').copyFileSync('manifest.json', 'dist/manifest.json')\"",
+    "fixture": "node fixture/server.mjs",
+    "test": "npm run build && node --test"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "playwright": "1.65.1",
+    "typescript": "7.0.2"
+  }
+}

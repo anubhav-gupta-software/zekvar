@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Zekvar Browser (Local Proof)",
+  "version": "0.1.0",
+  "description": "Tests Zekvar policy decisions on the local prompt fixture.",
+  "content_scripts": [
+    {
+      "matches": ["http://127.0.0.1:4173/zekvar-fixture/"],
+      "js": ["content.js"]
+    }
+  ]
+}
