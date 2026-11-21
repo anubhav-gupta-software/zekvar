@@ -11,7 +11,8 @@ const db = process.env.ZEKVAR_TEST_DATABASE;
 assert.ok(db, 'Set ZEKVAR_TEST_DATABASE to a disposable PostgreSQL connection string.');
 const contract = JSON.parse(await readFile(new URL('../../../contracts/control/demo-v1.json', import.meta.url)));
 const app = fileURLToPath(new URL('../bin/Debug/net10.0/Control.Api.dll', import.meta.url));
-const baseUrl = 'http://127.0.0.1:5187';
+const port = process.env.ZEKVAR_TEST_API_PORT ?? '5187';
+const baseUrl = `http://127.0.0.1:${port}`;
 const suffix = randomBytes(8).toString('hex');
 const first = randomBytes(32).toString('hex');
 const second = randomBytes(32).toString('hex');
@@ -40,6 +41,7 @@ async function start() {
       DOTNET_ENVIRONMENT: 'Development',
       ASPNETCORE_ENVIRONMENT: 'Development',
       ConnectionStrings__Control: db,
+      Control__Port: port,
       Control__Organizations__0__Slug: `first-${suffix}`,
       Control__Organizations__0__AdminToken: first,
       Control__Organizations__1__Slug: `second-${suffix}`,

@@ -28,9 +28,21 @@ When Control is temporarily unreachable, the extension keeps enforcing the last 
 
 The experimental scope is a recognized visible text editor on the homepage, a standard `/c/…` conversation, or a signed-out `/uc/…` conversation. The adapter pairs the editor with an explicitly identified **Send** control in its form or in a nearby container. The English **Ask ChatGPT** textarea can be recognized by its placeholder or accessible label when the editor IDs are absent. The adapter handles native click and plain Enter for that pair. The experiment uses the synthetic marker only. Uploads, voice, other compose surfaces, and programmatic submissions are outside its coverage. In Control, **Detected** or **Unsupported** reflects the last observed composer signature. **Copy composer diagnostics** includes only the extension version, the route category, and structural counts and flags. The copy stays local until you share it.
 
-Chrome for Testing `159.0.8154.6` passed the click, Enter, edit-and-retry, warning override, and coverage-loss checks against controlled composer fixtures. The guest-route case verified in-tab navigation from the homepage, direct load, and event delivery. The labeled-textarea case verified Send appearing after the first input and confirmed that an unrelated form remained outside coverage. The user confirmed v0.3.3 works on their live ChatGPT layout. Other live layouts remain unverified. [ChatGPT guest access](https://help.openai.com/en/articles/9125172-the-chatgpt-home-page)
+Chrome for Testing `159.0.8154.6` passed the click, Enter, edit-and-retry, warning override, and coverage-loss checks against controlled composer fixtures. The guest-route case verified in-tab navigation from the homepage, direct load, and event delivery. The labeled-textarea case verified Send appearing after the first input and confirmed that an unrelated form remained outside coverage. A separate headed Chrome run verified Send and Enter blocks and a clean retry on the live signed-out ChatGPT homepage. The user also confirmed v0.3.3 works on their live layout. Other live layouts remain unverified. [ChatGPT guest access](https://help.openai.com/en/articles/9125172-the-chatgpt-home-page)
 
 ## Verify the scenarios
+
+From the repository root, run the full demo using Node.js 22+, the .NET 10 SDK, and a running Docker daemon.
+
+```sh
+node scripts/verify-demo.mjs --headed --live --artifacts /tmp/zekvar-demo
+```
+
+The command builds in a temporary directory and starts its own PostgreSQL, Control API, dashboard, and Chrome profile. It creates the enrollment grant in the dashboard, redeems it in the extension, publishes and restores policy, and verifies the displayed events. It also simulates disconnected delivery and a lost acknowledgment after a database write, then checks that the retry stores a single event. API, dashboard, and extension regression suites run against isolated organizations. The command tears down its services at the end.
+
+`--headed` opens Chrome during the demo. `--artifacts` saves screenshots of the controlled workflow. `--live` separately attempts the public ChatGPT composer using the isolated profile and synthetic text. The runner reports a skip if the site blocks access or the supported composer is unavailable. The controlled workflow uses a local response for the ChatGPT page and the real loopback API for its events.
+
+To run the standalone extension tests from `apps/browser-extension`:
 
 ```sh
 npx playwright install chromium --no-shell
