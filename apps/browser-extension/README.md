@@ -23,6 +23,6 @@ npx playwright install chromium --no-shell
 npm test
 ```
 
-The suite loads the compiled extension into Playwright's bundled browser and starts its own fixture server. Stop any manually running fixture first so it can bind port `4173`. The suite checks click and keyboard submission, warning edit and override, retry, event fields and privacy, and extension scope.
+The suite loads the compiled extension into Playwright's bundled browser and serves the fixture within its temporary browser profile. It can run while the manual demo is open. It checks click and keyboard submission, warning edit and override, retry, event fields and privacy, and extension scope.
 
 See the [product plan](../../product_plan.md#first-build) for the acceptance matrix.

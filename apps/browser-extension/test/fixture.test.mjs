@@ -1,30 +1,28 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
-import { fixtureUrl, startFixture } from '../fixture/server.mjs';
+import { fixtureUrl } from '../fixture/server.mjs';
 
 const marker = 'ZEKVAR_TEST_SECRET';
 const prefix = 'Zekvar decision ';
 const extension = fileURLToPath(new URL('../dist', import.meta.url));
-let server;
+const contract = JSON.parse(await readFile(new URL('../../../contracts/control/demo-v1.json', import.meta.url)));
+const html = await readFile(new URL('../fixture/index.html', import.meta.url), 'utf8');
 let browser;
 
 before(async () => {
-  server = await startFixture();
   browser = await chromium.launchPersistentContext('', {
     channel: 'chromium',
     args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`],
   });
+  await browser.route(fixtureUrl, (route) => route.fulfill({ contentType: 'text/html; charset=utf-8', body: html }));
+  await browser.route(new URL('/unprotected/', fixtureUrl).href,
+    (route) => route.fulfill({ contentType: 'text/html; charset=utf-8', body: html }));
 });
 
-after(async () => {
-  try {
-    await browser?.close();
-  } finally {
-    await new Promise((resolve) => server ? server.close(resolve) : resolve());
-  }
-});
+after(async () => browser?.close());
 
 async function openFixture(t) {
   const page = await browser.newPage();
@@ -71,13 +69,7 @@ test('monitor mode submits once and emits only decision metadata', async (t) => 
   const { eventId, timestamp, ...metadata } = events[0];
   assert.match(eventId, /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i);
   assert.equal(new Date(timestamp).toISOString(), timestamp);
-  assert.deepEqual(metadata, {
-    appId: 'local-prompt-fixture',
-    ruleId: 'fixture-secret',
-    detectorCategory: 'synthetic-secret',
-    policyVersion: 'fixture-v1-monitor',
-    decision: 'monitor',
-  });
+  assert.deepEqual({ ...metadata, eventId: contract.event.eventId, timestamp: contract.event.timestamp }, contract.event);
   assert.ok(fixture.logs.every((line) => !line.includes(marker) && !line.includes('Private text')));
   assert.deepEqual(fixture.requests, [['GET', fixtureUrl]]);
 });

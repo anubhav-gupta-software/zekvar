@@ -1,0 +1,18 @@
+{
+  "policy": {
+    "version": 1,
+    "appId": "local-prompt-fixture",
+    "mode": "monitor",
+    "ruleId": "fixture-secret",
+    "detectorCategory": "synthetic-secret"
+  },
+  "event": {
+    "eventId": "83d849aa-4876-4bea-84a7-8e0649264c35",
+    "appId": "local-prompt-fixture",
+    "timestamp": "2026-11-20T16:00:00Z",
+    "ruleId": "fixture-secret",
+    "detectorCategory": "synthetic-secret",
+    "policyVersion": 1,
+    "decision": "monitor"
+  }
+}

@@ -1,4 +1,5 @@
 export type PolicyMode = 'monitor' | 'warn' | 'block';
+const fixturePolicyVersions: Record<PolicyMode, number> = { monitor: 1, warn: 2, block: 3 };
 
 export type PolicyDecision =
   | { action: 'allow' }
@@ -6,7 +7,7 @@ export type PolicyDecision =
       action: PolicyMode;
       ruleId: 'fixture-secret';
       detectorCategory: 'synthetic-secret';
-      policyVersion: string;
+      policyVersion: number;
       reason: string;
     };
 
@@ -21,7 +22,7 @@ export function evaluatePrompt(prompt: string, mode: PolicyMode): PolicyDecision
     action: mode,
     ruleId: 'fixture-secret',
     detectorCategory: 'synthetic-secret',
-    policyVersion: `fixture-v1-${mode}`,
+    policyVersion: fixturePolicyVersions[mode],
     reason: 'This prompt contains a test secret.',
   };
 }
