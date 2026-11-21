@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { fixtureUrl } from '../fixture/server.mjs';
+import { domainFixtureArgs, startDomainFixture } from './domain-fixture.mjs';
 
 const api = process.env.ZEKVAR_DEMO_API;
 const web = process.env.ZEKVAR_DEMO_WEB;
@@ -38,10 +39,12 @@ async function until(check, timeout, message) {
 
 test('two managed Chrome profiles enroll, receive policy, and recover after one stops reporting', { timeout: 220_000 }, async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'zekvar-pilot-'));
+  const domains = await startDomainFixture();
   const dist = join(dir, 'extension');
   const contexts = new Set();
   t.after(async () => {
     await Promise.allSettled([...contexts].map((context) => context.close()));
+    await domains.close();
     await rm(dir, { recursive: true, force: true });
   });
   execFileSync(process.execPath, ['build.mjs'], {
@@ -52,7 +55,7 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
   async function openProfile(name) {
     const browser = await chromium.launchPersistentContext(join(dir, name), {
       channel: 'chromium', headless: process.env.ZEKVAR_DEMO_HEADED !== '1', viewport: { width: 1440, height: 950 },
-      args: [`--disable-extensions-except=${dist}`, `--load-extension=${dist}`],
+      args: [`--disable-extensions-except=${dist}`, `--load-extension=${dist}`, ...domainFixtureArgs],
     });
     contexts.add(browser);
     browser.setDefaultTimeout(7000);
@@ -134,21 +137,25 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
   });
 
   await t.test('both profiles receive a centrally published policy on their background cadence', async () => {
+    await dashboard.getByLabel('Blocked domains', { exact: true }).fill('apps.test');
+    await dashboard.getByRole('button', { name: 'Publish domain rules', exact: true }).click();
+    await dashboard.getByText('Domain rules published as version 2.', { exact: true }).waitFor();
     await dashboard.getByLabel('Test marker', { exact: true }).selectOption('block');
     await dashboard.getByRole('button', { name: 'Publish policy' }).click();
-    await dashboard.getByText('Version 2 published in block mode.', { exact: true }).waitFor();
+    await dashboard.getByText('Version 3 published in block mode.', { exact: true }).waitFor();
     await until(async () => {
       const browsers = await installations();
-      return browsers.length === 2 && browsers.every(({ appliedPolicyVersion }) => appliedPolicyVersion === 2);
-    }, 45_000, 'Both browsers should apply v2 without a manual sync.');
+      return browsers.length === 2 && browsers.every(({ appliedPolicyVersion }) => appliedPolicyVersion === 3);
+    }, 45_000, 'Both browsers should apply v3 without a manual sync.');
     await refresh.click();
-    for (const id of [idA, idB]) await browserRow(id).getByText('v2', { exact: true }).waitFor();
+    for (const id of [idA, idB]) await browserRow(id).getByText('v3', { exact: true }).waitFor();
     await capture('07-pilot-two-browsers.png');
 
     for (const profile of [first, second]) {
+      await domains.visit(profile.browser, 'apps.test', true);
       const page = await profile.browser.newPage();
       await page.goto(fixtureUrl);
-      await page.getByText('Control policy: BLOCK · v2', { exact: true }).waitFor();
+      await page.getByText('Control policy: BLOCK · v3', { exact: true }).waitFor();
       await page.getByLabel('Prompt', { exact: true }).fill('ZEKVAR_TEST_SECRET');
       await page.getByRole('button', { name: 'Send prompt' }).click();
       await page.getByText(/Submission blocked/).waitFor();
@@ -161,29 +168,31 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     await second.browser.close();
     contexts.delete(second.browser);
     await dashboard.getByRole('button', { name: 'Restore version 1', exact: true }).click();
-    await dashboard.getByText('Version 1 restored as version 3.', { exact: true }).waitFor();
-    await until(async () => (await installations()).find(({ installationId }) => installationId === idA)?.appliedPolicyVersion === 3,
+    await dashboard.getByText('Version 1 restored as version 4.', { exact: true }).waitFor();
+    await until(async () => (await installations()).find(({ installationId }) => installationId === idA)?.appliedPolicyVersion === 4,
       45_000, 'The running browser should apply the rolled back policy.');
+    await domains.visit(first.browser, 'apps.test', false);
     const stopped = await until(async () => {
       const row = (await installations()).find(({ installationId }) => installationId === idB);
       return Date.now() - Date.parse(row.lastSeenAt) >= 90_000 && row;
     }, 100_000, 'The stopped browser should pass the stale threshold.');
-    assert.equal(stopped.appliedPolicyVersion, 2);
+    assert.equal(stopped.appliedPolicyVersion, 3);
     await refresh.click();
     await browserRow(idB).getByText('Stale', { exact: true }).waitFor();
     await browserRow(idB).getByText('Update pending', { exact: true }).waitFor();
     await browserRow(idA).getByText('Reporting', { exact: true }).waitFor();
-    await browserRow(idA).getByText('v3', { exact: true }).waitFor();
+    await browserRow(idA).getByText('v4', { exact: true }).waitFor();
     await capture('08-pilot-stale-browser.png');
 
     second = await openProfile('second');
     await until(async () => {
       const browsers = await installations();
-      return browsers.length === 2 && browsers.find(({ installationId }) => installationId === idB)?.appliedPolicyVersion === 3;
-    }, 45_000, 'The restarted browser should retain enrollment and apply v3.');
+      return browsers.length === 2 && browsers.find(({ installationId }) => installationId === idB)?.appliedPolicyVersion === 4;
+    }, 45_000, 'The restarted browser should retain enrollment and apply v4.');
+    await domains.visit(second.browser, 'apps.test', false);
     await refresh.click();
     await browserRow(idB).getByText('Reporting', { exact: true }).waitFor();
-    await browserRow(idB).getByText('v3', { exact: true }).waitFor();
+    await browserRow(idB).getByText('v4', { exact: true }).waitFor();
     await capture('09-pilot-recovered-browser.png');
   });
 });

@@ -49,6 +49,10 @@ Publish requests also accept an optional `discoveryEnabled` boolean. Discovery i
 
 `GET /v1/admin/ai-apps` returns ChatGPT, Claude, and Gemini with their classifications, distinct browser counts over 30 days, and latest observation times. `POST /v1/admin/ai-apps/{appId}/classification` accepts a `status` of `unreviewed`, `approved`, or `unapproved`. Classifications apply to the signed-in organization and remain in place when a policy is restored.
 
+Publish requests can also supply `domainRules` with `allow` and `block` hostname arrays. A domain-only publish can omit `mode` and preserve the current prompt and discovery settings. Omitting `domainRules` preserves the lists. Sending two empty lists clears them. Control normalizes accepted names and rejects paths, ports, IPs, wildcards, and entries that appear in both lists. Restore applies the earlier lists as part of a new policy version.
+
+For a version with domain rules, the heartbeat must include `domainRulesApplied: true`. Browser v0.7.0 acknowledges this after Chrome applies the list. Earlier browsers stay at their last acknowledged version in Browser health.
+
 For isolated API or browser tests, `Control__Port` selects a different loopback port. The default dashboard and extension use `5187`.
 
 ## Verify the workflow

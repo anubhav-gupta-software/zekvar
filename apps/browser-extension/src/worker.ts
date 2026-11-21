@@ -3,6 +3,7 @@ import {
   isId, isMode, isRecord, isToken, isVersion, readMetadata,
   type AppId, type AppObservation, type Coverage, type DiscoveryApp, type Policy, type PolicyEvent, type Reply, type Summary,
 } from './protocol';
+import { emptyDomainRules, installDomainRules, readDomainRules, sameDomainRules, type DomainRules } from './domain-rules';
 
 declare const CONTROL_ORIGIN: string;
 
@@ -11,6 +12,8 @@ type State = {
   status: Summary['status'];
   enrollment?: Enrollment;
   policy?: Policy;
+  domainRules?: DomainRules;
+  domainRulesError?: boolean;
   chatGptEnabled?: boolean;
   coveragePending?: Coverage;
   queue: PolicyEvent[];
@@ -51,7 +54,8 @@ function summary(state: State): Summary {
   return {
     status: state.status, installationId: state.enrollment?.installationId, enrollmentSource: state.enrollment?.source,
     policy: state.policy, chatGptEnabled: state.chatGptEnabled, queued: state.queue.length, discarded: state.discarded,
-    managedEnrollment: state.managedEnrollment,
+    managedEnrollment: state.managedEnrollment, domainRulesError: state.domainRulesError,
+    domainRuleCount: state.domainRules ? state.domainRules.allow.length + state.domainRules.block.length : undefined,
   };
 }
 
@@ -78,7 +82,18 @@ async function request(path: string, token?: string, body?: object): Promise<unk
   return response.status === 204 ? undefined : response.json();
 }
 
-function lostConnection(state: State, error: unknown) {
+async function applyDomainRules(state: State, rules: DomainRules) {
+  try {
+    await installDomainRules(rules);
+    state.domainRules = rules;
+    state.domainRulesError = undefined;
+  } catch (error) {
+    state.domainRulesError = true;
+    throw error;
+  }
+}
+
+async function lostConnection(state: State, error: unknown) {
   if (error instanceof HttpError && error.status === 401) {
     state.status = 'revoked';
     state.enrollment = undefined;
@@ -86,6 +101,9 @@ function lostConnection(state: State, error: unknown) {
     state.observations = undefined;
     state.discarded += state.queue.length;
     state.queue = [];
+    state.domainRulesError = true;
+    await save(state);
+    await applyDomainRules(state, emptyDomainRules).catch(() => undefined);
   } else {
     state.status = 'offline';
   }
@@ -98,7 +116,7 @@ async function deliver(state: State) {
       await request('browser/events', state.enrollment.token, state.queue[0]);
     } catch (error) {
       if (!(error instanceof HttpError && error.status === 400)) {
-        lostConnection(state, error);
+        await lostConnection(state, error);
         break;
       }
       state.discarded++;
@@ -116,7 +134,7 @@ async function deliverObservations(state: State) {
       await request('browser/ai-app-observations', state.enrollment.token, observation);
     } catch (error) {
       if (!(error instanceof HttpError && error.status === 400)) {
-        lostConnection(state, error);
+        await lostConnection(state, error);
         return;
       }
     }
@@ -138,9 +156,13 @@ async function sync(state: State) {
     }
     const githubPatMode = policy.githubPatMode ?? 'off';
     const discoveryEnabled = policy.discoveryEnabled ?? false;
+    const domainRules = readDomainRules(policy.domainRules);
+    if (!domainRules) throw new Error('Unknown domain rule format');
     if (!state.policy || policy.version > state.policy.version || (policy.version === state.policy.version &&
         policy.mode === state.policy.mode && githubPatMode === (state.policy.githubPatMode ?? 'off') &&
-        discoveryEnabled === (state.policy.discoveryEnabled ?? false))) {
+        discoveryEnabled === (state.policy.discoveryEnabled ?? false) &&
+        sameDomainRules(domainRules, state.domainRules ?? emptyDomainRules))) {
+      await applyDomainRules(state, domainRules);
       state.policy = { version: policy.version, mode: policy.mode, githubPatMode, discoveryEnabled };
       if (!discoveryEnabled) state.observations = undefined;
       state.chatGptEnabled = Array.isArray(policy.appIds) && policy.appIds.includes(chatGptApp);
@@ -151,7 +173,7 @@ async function sync(state: State) {
     await save(state);
     await deliver(state);
   } catch (error) {
-    lostConnection(state, error);
+    await lostConnection(state, error);
     await save(state);
   }
 }
@@ -161,6 +183,7 @@ async function heartbeat(state: State) {
   await request('browser/heartbeat', state.enrollment.token, {
     policyVersion: state.policy.version,
     chatGptCoverage: state.chatGptEnabled ? state.coveragePending : undefined,
+    domainRulesApplied: state.domainRules && (state.domainRules.allow.length || state.domainRules.block.length) ? true : undefined,
   });
   state.coveragePending = undefined;
 }
@@ -201,6 +224,10 @@ async function syncOrEnroll(state: State): Promise<Reply> {
     await sync(state);
     return { summary: summary(state) };
   }
+  if (state.status === 'revoked' && state.domainRulesError) {
+    await applyDomainRules(state, emptyDomainRules).catch(() => undefined);
+    await save(state);
+  }
   const managed = await chrome.storage.managed.get(managedGrantKey).catch(() => ({} as Record<string, unknown>));
   const grant = managed[managedGrantKey];
   if (!isToken(grant)) {
@@ -239,7 +266,7 @@ async function onMessage(message: Record<string, unknown>, app: AppId | undefine
       try {
         await heartbeat(state);
       } catch (error) {
-        lostConnection(state, error);
+        await lostConnection(state, error);
       }
       await save(state);
     }

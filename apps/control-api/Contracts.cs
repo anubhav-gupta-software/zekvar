@@ -42,14 +42,15 @@ internal static class Tokens
 
 internal sealed record DemoOrganization(string Slug, string AdminToken);
 internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId, string? OrganizationSlug);
-internal sealed record PublishPolicy(string Mode, string? GithubPatMode = null, bool? DiscoveryEnabled = null);
+internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode = null, bool? DiscoveryEnabled = null,
+    DomainRules? DomainRules = null);
 internal sealed record RedeemGrant(string Grant);
-internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = null);
+internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = null, bool DomainRulesApplied = false);
 internal sealed record PolicyEvent(Guid EventId, string AppId, DateTimeOffset Timestamp, string RuleId,
     string DetectorCategory, int PolicyVersion, string Decision);
 
 internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, int? RestoredFrom, string GithubPatMode,
-    bool DiscoveryEnabled)
+    bool DiscoveryEnabled, DomainRules DomainRules)
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => [FixtureContract.AppId, FixtureContract.ChatGpt];

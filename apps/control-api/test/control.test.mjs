@@ -259,4 +259,57 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await start();
     assert.deepEqual(await inventory(), ours);
   });
+
+  await t.test('domain policies validate, preserve other settings, and require an enforcing browser acknowledgment', async () => {
+    const { grant } = await call('/v1/admin/enrollment-grants', { method: 'POST', token: first });
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const history = (token = first) => call('/v1/admin/policies', { token });
+    const publish = (body, expect = 200, token = first) => call('/v1/admin/policies', { method: 'POST', token, body, expect });
+    const restore = (version) => call(`/v1/admin/policies/${version}/restore`, { method: 'POST', token: first });
+    const fetchPolicy = () => call('/v1/browser/policy', { token: browser.token });
+    const heartbeat = (body, expect = 204) => call('/v1/browser/heartbeat', { method: 'POST', token: browser.token, body, expect });
+    const installedVersion = async () => (await call('/v1/admin/installations', { token: first }))
+      .find(({ installationId }) => installationId === browser.installationId).appliedPolicyVersion;
+    const empty = { allow: [], block: [] };
+    const initial = await fetchPolicy();
+    assert.deepEqual(initial.domainRules, empty);
+    await heartbeat({ policyVersion: initial.version });
+
+    const candidate = { allow: [' Work.Example.test. ', 'work.example.test'], block: ['EXAMPLE.TEST'] };
+    for (const block of [
+      ['https://example.test/login'], ['*.example.test'], ['127.0.0.1'], ['example.test:443'],
+      ['example.test?debug=yes'], ['example.test..'], ['evil..test'], ['.example.test'], ['-starts-with-dash.test'],
+      ['x.123'], ['éxample.test'], ['example.' + 'a'.repeat(64)], [null], ['work.example.test.'],
+      Array.from({ length: 51 }, (_, index) => `app${index}.test`),
+    ]) await publish({ domainRules: { allow: candidate.allow, block } }, 400);
+    await publish({ domainRules: { allow: [] } }, 400);
+    await publish({ domainRules: candidate }, 401, browser.token);
+    assert.equal((await history())[0].version, initial.version);
+
+    const expectedRules = { allow: ['work.example.test'], block: ['example.test'] };
+    const [, withRules] = await Promise.all([
+      publish({ mode: 'warn', githubPatMode: 'monitor', discoveryEnabled: true }),
+      publish({ domainRules: candidate }),
+    ]);
+    const active = await fetchPolicy();
+    assert.deepEqual(active.domainRules, expectedRules);
+    assert.equal(active.mode, 'warn');
+    assert.equal(active.githubPatMode, 'monitor');
+    assert.equal(active.discoveryEnabled, true);
+    assert.deepEqual((await history(second))[0].domainRules, empty);
+    await heartbeat({ policyVersion: active.version }, 400);
+    assert.equal(await installedVersion(), initial.version);
+    await heartbeat({ policyVersion: active.version, domainRulesApplied: true });
+    assert.equal(await installedVersion(), active.version);
+
+    const clearing = await publish({ domainRules: empty });
+    assert.deepEqual(clearing.domainRules, empty);
+    assert.equal(clearing.mode, 'warn');
+    assert.deepEqual((await restore(withRules.version)).domainRules, expectedRules);
+    assert.deepEqual((await restore(initial.version)).domainRules, empty);
+    await stop();
+    await start();
+    assert.deepEqual((await history()).find(({ version }) => version === withRules.version).domainRules, expectedRules);
+    assert.deepEqual((await fetchPolicy()).domainRules, empty);
+  });
 });

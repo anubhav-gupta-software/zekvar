@@ -58,9 +58,15 @@ admin.MapPost("/installations/{id:guid}/revoke", async (Guid id, HttpContext htt
 admin.MapGet("/policies", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.PolicyHistory(Identity(http).OrganizationId, ct)));
 admin.MapPost("/policies", async (PublishPolicy request, HttpContext http, CancellationToken ct) =>
-    FixtureContract.IsMode(request.Mode) && (request.GithubPatMode is null or "off" || FixtureContract.IsMode(request.GithubPatMode))
-        ? Results.Ok(await store.Publish(Identity(http).OrganizationId, request, null, ct))
-        : Results.BadRequest(new { error = "Choose a valid rule mode." }));
+{
+    if (!(FixtureContract.IsMode(request.Mode) || request.Mode is null && request.DomainRules is not null) ||
+        !(request.GithubPatMode is null or "off" || FixtureContract.IsMode(request.GithubPatMode)))
+        return Results.BadRequest(new { error = "Choose a valid rule mode." });
+    if (!DomainRules.TryNormalize(request.DomainRules, out var domainRules))
+        return Results.BadRequest(new { error = "Enter up to 50 domains with no domain in both lists." });
+    var policy = await store.Publish(Identity(http).OrganizationId, request with { DomainRules = domainRules }, null, ct);
+    return Results.Ok(policy);
+});
 admin.MapPost("/policies/{version:int}/restore", async (int version, HttpContext http, CancellationToken ct) =>
     await store.Publish(Identity(http).OrganizationId, null, version, ct) is { } published
         ? Results.Ok(published) : Results.NotFound());
@@ -87,7 +93,7 @@ browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
 browser.MapPost("/heartbeat", async (Heartbeat request, HttpContext http, CancellationToken ct) =>
     (request.ChatGptCoverage is null or "ready" or "unsupported") &&
     await store.RecordHeartbeat(Identity(http).InstallationId!.Value, request, ct)
-        ? Results.NoContent() : Results.BadRequest(new { error = "Invalid policy version or coverage status." }));
+        ? Results.NoContent() : Results.BadRequest(new { error = "Policy or browser enforcement could not be acknowledged." }));
 browser.MapPost("/events", async (PolicyEvent request, HttpContext http, CancellationToken ct) =>
     FixtureContract.IsEvent(request) && await store.Ingest(Identity(http).InstallationId!.Value, request, ct)
         ? Results.NoContent() : Results.BadRequest(new { error = "Invalid policy event." }));

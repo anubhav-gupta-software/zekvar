@@ -39,6 +39,8 @@ export type Summary = {
   chatGptEnabled?: boolean;
   enrollmentSource?: 'managed' | 'manual';
   managedEnrollment?: 'invalid' | 'rejected' | 'retrying';
+  domainRuleCount?: number;
+  domainRulesError?: boolean;
   queued: number;
   discarded: number;
 };

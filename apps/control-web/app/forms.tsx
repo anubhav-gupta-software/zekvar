@@ -2,14 +2,32 @@
 
 import { useActionState, useState, useTransition, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { issueGrant, signIn } from './actions';
-import { utc, type Feedback } from '../lib/control';
+import { issueGrant, publishDomainRules, signIn } from './actions';
+import { utc, type DomainRules, type Feedback } from '../lib/control';
 
 export function RefreshSection({ label }: { label: string }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   return <button type="button" className="button small" aria-label={label} disabled={pending}
     onClick={() => startTransition(() => router.refresh())}>{pending ? 'Refreshing…' : 'Refresh'}</button>;
+}
+
+export function DomainRulesForm({ rules, version }: { rules?: DomainRules; version?: number }) {
+  return <MutationForm action={publishDomainRules} label="Publish domain rules" appearance="primary">
+    <div className="domain-rule-fields" key={version}>
+      <DomainList name="allow" label="Allowed domains" initial={rules?.allow} />
+      <DomainList name="block" label="Blocked domains" initial={rules?.block} />
+    </div>
+  </MutationForm>;
+}
+
+function DomainList({ name, label, initial }: { name: 'allow' | 'block'; label: string; initial?: string[] }) {
+  const [value, setValue] = useState(initial?.join('\n') ?? '');
+  return <div className="grid gap-1">
+    <label htmlFor={`${name}-domains`}>{label}</label>
+    <textarea id={`${name}-domains`} name={name} rows={3} maxLength={13000} spellCheck={false} autoCapitalize="none"
+      value={value} onChange={(event) => setValue(event.target.value)} aria-describedby="domain-policy-scope" />
+  </div>;
 }
 
 function Notice({ state }: { state: Feedback }) {

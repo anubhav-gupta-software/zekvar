@@ -6,7 +6,7 @@ import {
 } from '../lib/control';
 import { sessionToken } from '../lib/session';
 import { classifyAiApp, publishPolicy, restorePolicy, revokeInstallation, signOut } from './actions';
-import { EnrollmentForm, MutationForm, RefreshSection, SignInForm } from './forms';
+import { DomainRulesForm, EnrollmentForm, MutationForm, RefreshSection, SignInForm } from './forms';
 
 type Search = Record<string, string | string[] | undefined>;
 
@@ -39,6 +39,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
         <nav aria-label="Dashboard sections">
           <a href="#overview">Overview</a>
           <a href="#policies">Policies</a>
+          <a href="#domain-rules">Domain rules</a>
           <a href="#ai-apps">AI apps</a>
           <a href="#browsers">Browsers</a>
           <a href="#events">Events</a>
@@ -101,11 +102,17 @@ export default async function Control({ searchParams }: { searchParams: Promise<
           </section>
         </div>
 
+        <section className="panel" id="domain-rules" aria-labelledby="domain-rules-heading">
+          <div className="panel-heading"><h2 id="domain-rules-heading">Domain rules</h2><span className="badge">Organization-wide</span></div>
+          <p className="muted" id="domain-policy-scope">Enter one hostname per line, such as example.com. Rules cover top-level navigation and include subdomains. The most specific match wins.</p>
+          <DomainRulesForm rules={current?.domainRules} version={current?.version} />
+        </section>
+
         <section className="panel table-panel" aria-labelledby="history-heading">
           <div className="panel-heading"><h2 id="history-heading">Policy history</h2><span className="table-note">Latest 100 versions</span></div>
           <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="history-heading">
             <table aria-labelledby="history-heading">
-              <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>AI app discovery</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
+              <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>AI app discovery</th><th>Domain rules</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
               <tbody>{policies.map((policy) => <PolicyRow key={policy.version} policy={policy} current={policy.version === current?.version} />)}</tbody>
             </table>
             {policies.length === 0 && <p className="empty">Publish a policy to start the version history.</p>}
@@ -213,10 +220,16 @@ function InstallationId({ value }: { value: string }) {
 }
 
 function PolicyRow({ policy, current }: { policy: Policy; current: boolean }) {
+  const { allow = [], block = [] } = policy.domainRules ?? {};
   return <tr>
     <td className="emphasis">v{policy.version}</td><td><DecisionBadge decision={policy.mode} /></td>
     <td>{detectorModeLabels[policy.githubPatMode ?? 'off']}</td>
     <td>{policy.discoveryEnabled ? 'On' : 'Off'}</td>
+    <td>{allow.length || block.length ? <details className="domain-rule-history">
+      <summary>{allow.length} allow · {block.length} block</summary>
+      {allow.length > 0 && <p>Allow <code>{allow.join(', ')}</code></p>}
+      {block.length > 0 && <p>Block <code>{block.join(', ')}</code></p>}
+    </details> : '—'}</td>
     <td><Timestamp value={policy.publishedAt} /></td>
     <td>{policy.restoredFrom ? `v${policy.restoredFrom}` : '—'}</td>
     <td>{current ? <span className="badge current">Current</span> :

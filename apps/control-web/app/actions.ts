@@ -72,6 +72,25 @@ export async function classifyAiApp(_previous: Feedback, form: FormData): Promis
   });
 }
 
+export async function publishDomainRules(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const allow = form.get('allow');
+  const block = form.get('block');
+  if (typeof allow !== 'string' || typeof block !== 'string') return { error: 'Enter both domain lists.' };
+  const lines = (value: string) => value.split('\n').map((line) => line.trim()).filter(Boolean);
+  return perform(async (token) => {
+    try {
+      const policy = await controlApi.publishDomains(token, { allow: lines(allow), block: lines(block) });
+      revalidatePath('/');
+      return { message: `Domain rules published as version ${policy.version}.` };
+    } catch (error) {
+      if (error instanceof ApiError && (error.status === 400 || error.status === 413)) {
+        return { error: 'Enter up to 50 hostnames, one per line. A hostname can appear in only one list.' };
+      }
+      throw error;
+    }
+  });
+}
+
 export async function restorePolicy(_previous: Feedback, form: FormData): Promise<Feedback> {
   const version = Number(form.get('version'));
   if (!Number.isInteger(version) || version < 1 || version > 2147483647) return { error: 'Choose a policy version.' };

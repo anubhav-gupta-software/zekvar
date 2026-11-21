@@ -1,6 +1,6 @@
 # Zekvar Browser and Control demo
 
-Zekvar Browser applies the policy published in Control to the loopback fixture and the experimental ChatGPT composer adapter. The fixture simulates a submission by incrementing a counter. Zekvar evaluates draft text locally and reports decision metadata to Control. Managed browsers can also report visits to cataloged AI apps when discovery is enabled.
+Zekvar Browser enforces domain rules and applies prompt protection to the loopback fixture and supported ChatGPT composers. Zekvar evaluates draft text locally and reports decision metadata to Control. Managed browsers can also report visits to cataloged AI apps when discovery is enabled.
 
 ## Run the demo
 
@@ -44,6 +44,16 @@ Use `ghp_000000000000000000000000000000000000` in the local prompt fixture to te
 
 Discovery records new document loads on the three cataloged origins. The browser sends the catalog ID, observation time, and policy version. It can retry the latest unsent observation per app after a connection interruption. Restoring an Off policy stops reporting and preserves existing inventory observations. The automated suite uses controlled pages at all three app origins. A separate headed smoke test recorded an observation on each of the live signed-out landing pages.
 
+## Domain rules
+
+1. Load Browser v0.7.0, start Control, and enroll the Chrome profile you want to test. In Control, open **Domain rules**.
+2. Enter a hostname such as `example.com` in **Blocked domains** and click **Publish domain rules**. Use **Sync now** in the extension popup or wait for the next sync. The popup shows the active rule count. Open the hostname in a new tab and Chrome should block the navigation.
+3. For a more specific exception, enter a hostname such as `docs.example.com` in **Allowed domains** in the same policy. Restore the previous version in **Policy history**, or clear both fields and publish, to remove the rules.
+
+Enter one hostname per line. Control accepts up to 50 entries, normalizes hostname case and a trailing dot, and accepts internationalized hostnames in Punycode. The same hostname can belong to one list. Rules cover new top-level page requests and subdomains. The most specific match wins, and unmatched domains remain accessible. Chrome applies the rules locally without sending domain-filtering events. AI app discovery has its own policy and reporting. The current release covers Chrome page navigation. Host-based filtering for other apps and URL-path or category rules are roadmap items. [Chrome declarative network rules](https://developer.chrome.com/docs/extensions/reference/api/declarativeNetRequest)
+
+Chrome keeps the last applied domain rules during connection interruptions. Control shows a version as applied after the browser acknowledges the Chrome rule update. Revoking the installation removes its domain rules when the browser next reaches Control and receives the revocation.
+
 ## Verify the scenarios
 
 The full demo uses Node.js 22+, the .NET 10 SDK, and a running Docker daemon. From `apps/browser-extension`, run:
@@ -58,7 +68,7 @@ From the repository root, run:
 node scripts/verify-demo.mjs --headed --live --artifacts /tmp/zekvar-demo
 ```
 
-The command builds in a temporary directory and starts its own PostgreSQL, Control API, dashboard, and Chrome profile. It generates a temporary admin token, signs in, creates an enrollment grant, and redeems it in the extension. It publishes and restores policy, verifies the displayed events, and checks that an event retry after a lost acknowledgment stores a single record. It exercises all four GitHub rule settings and checks that the candidate value stays out of event transport and storage. It enables app discovery, visits the controlled catalog origins, saves app classifications, and verifies privacy and recovery. API, dashboard, and extension regression suites run against isolated organizations. The command tears down its services at the end. On the first run, it downloads Chrome for Testing before opening the browser.
+The command builds in a temporary directory and starts its own PostgreSQL, Control API, dashboard, and Chrome profile. It generates a temporary admin token, signs in, creates an enrollment grant, and redeems it in the extension. It publishes and restores policy, verifies the displayed events, and checks that an event retry after a lost acknowledgment stores a single record. It exercises all four GitHub rule settings and checks that the candidate value stays out of event transport and storage. It enables app discovery, visits the controlled catalog origins, saves app classifications, and verifies privacy and recovery. It also checks allowed and blocked navigation against a local HTTP server, including while Control is unavailable and after rollback and revocation. API, dashboard, and extension regression suites run against isolated organizations. The command tears down its services at the end. On the first run, it downloads Chrome for Testing before opening the browser.
 
 `--headed` opens Chrome during the demo. `--artifacts` saves screenshots of the controlled workflow. `--live` separately attempts the public ChatGPT composer using the isolated profile and synthetic text. The runner reports a skip if the site blocks access or the supported composer is unavailable. The controlled workflow uses a local response for the ChatGPT page and the real loopback API for its events.
 

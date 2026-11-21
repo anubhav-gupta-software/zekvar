@@ -24,12 +24,14 @@ export const classificationLabels: Record<AppClassification, string> = {
   unreviewed: 'Unreviewed', approved: 'Approved', unapproved: 'Unapproved',
 };
 export type DiscoveredApp = { appId: AiAppId; status: AppClassification; browsersSeen: number; lastObservedAt: string | null };
+export type DomainRules = { allow: string[]; block: string[] };
 
 export type Policy = {
   version: number;
   mode: Mode;
   githubPatMode?: DetectorMode;
   discoveryEnabled?: boolean;
+  domainRules?: DomainRules;
   publishedAt: string;
   restoredFrom: number | null;
 };

@@ -9,7 +9,7 @@
     h1 { margin: 0 0 .7rem; font-size: 1.2rem; }
     p { margin: .35rem 0; }
     #status { color: #9beed3; }
-    #delivery { color: #c6d4e5; }
+    #delivery, #domain-rules { color: #c6d4e5; }
     #managed-enrollment { color: #c6d4e5; }
     #error { color: #ffc5ca; }
     [hidden] { display: none; }
@@ -26,6 +26,7 @@
 <body>
   <h1>Zekvar Browser</h1>
   <p id="status" role="status">Checking Control connection…</p>
+  <p id="domain-rules" aria-live="polite"></p>
   <p id="delivery"></p>
   <p id="managed-enrollment"></p>
   <form id="enroll" hidden>

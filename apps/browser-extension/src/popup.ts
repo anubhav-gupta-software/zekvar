@@ -4,6 +4,7 @@ const form = document.querySelector<HTMLFormElement>('#enroll')!;
 const grant = document.querySelector<HTMLInputElement>('#grant')!;
 const indicator = document.querySelector<HTMLElement>('#status')!;
 const delivery = document.querySelector<HTMLElement>('#delivery')!;
+const domains = document.querySelector<HTMLElement>('#domain-rules')!;
 const managed = document.querySelector<HTMLElement>('#managed-enrollment')!;
 const errorMessage = document.querySelector<HTMLElement>('#error')!;
 const sync = document.querySelector<HTMLButtonElement>('#sync')!;
@@ -13,8 +14,11 @@ let busy = false;
 function render(summary: Summary) {
   const states = { standalone: 'Ready to enroll', connected: 'Connected to Control', offline: 'Control offline', revoked: 'Control access revoked' };
   const policy = summary.policy ? ` · ${summary.policy.mode.toUpperCase()} v${summary.policy.version}` : '';
-  const status = states[summary.status] + policy;
+  const status = (summary.status === 'offline' && summary.domainRulesError ? 'Policy update pending' : states[summary.status]) + policy;
   if (indicator.textContent !== status) indicator.textContent = status;
+  const domainStatus = summary.domainRulesError ? 'Chrome could not update the domain rules. Zekvar will retry.' :
+    summary.domainRuleCount ? `Active domain rules: ${summary.domainRuleCount}` : '';
+  if (domains.textContent !== domainStatus) domains.textContent = domainStatus;
   delivery.textContent = summary.queued || summary.discarded
     ? `${summary.queued} queued${summary.discarded ? ` · ${summary.discarded} discarded` : ''}` : '';
   const onboarding = {

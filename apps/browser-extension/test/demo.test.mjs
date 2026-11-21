@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { domainFixtureArgs, startDomainFixture } from './domain-fixture.mjs';
 
 const api = process.env.ZEKVAR_DEMO_API;
 const web = process.env.ZEKVAR_DEMO_WEB;
@@ -54,6 +55,7 @@ async function screenshot(page, file) {
 
 test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90_000 }, async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'zekvar-demo-profile-'));
+  const domains = await startDomainFixture();
   const dist = join(dir, 'extension');
   const attempts = [];
   const observationAttempts = [];
@@ -97,7 +99,7 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
     try {
       await browser?.close();
     } finally {
-      await new Promise((resolve) => proxy.close(resolve));
+      await Promise.all([domains.close(), new Promise((resolve) => proxy.close(resolve))]);
       await rm(dir, { recursive: true, force: true });
     }
   });
@@ -111,7 +113,7 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
   });
   browser = await chromium.launchPersistentContext(join(dir, 'profile'), {
     channel: 'chromium', headless: process.env.ZEKVAR_DEMO_HEADED !== '1', viewport: { width: 1440, height: 1000 },
-    args: [`--disable-extensions-except=${dist}`, `--load-extension=${dist}`],
+    args: [`--disable-extensions-except=${dist}`, `--load-extension=${dist}`, ...domainFixtureArgs],
   });
   browser.setDefaultTimeout(7000);
   const worker = browser.serviceWorkers()[0] ?? await browser.waitForEvent('serviceworker');
@@ -414,5 +416,88 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
     await sync();
     assert.equal(observationAttempts.length, initialAttempts + 2);
     assert.deepEqual((await inventory())[1], committed);
+  });
+
+  const allowedDomains = dashboard.getByLabel('Allowed domains', { exact: true });
+  const blockedDomains = dashboard.getByLabel('Blocked domains', { exact: true });
+  const publishDomains = () => dashboard.getByRole('button', { name: 'Publish domain rules', exact: true }).click();
+  const currentInstallation = async () => (await adminGet('installations'))[0];
+  let beforeDomains;
+  let withDomains;
+  await t.test('publishes explicit domain rules and Chrome applies the most specific navigation rule', async () => {
+    beforeDomains = await policyVersion();
+    withDomains = beforeDomains + 1;
+    await domains.visit(browser, 'apps.test', false);
+    await allowedDomains.fill('WORK.APPS.TEST.\nwork.apps.test');
+    await blockedDomains.fill('https://apps.test/');
+    await publishDomains();
+    await dashboard.getByRole('alert').filter({ hasText: 'Enter up to 50 hostnames' }).waitFor();
+    assert.equal(await policyVersion(), beforeDomains);
+    assert.equal(await blockedDomains.inputValue(), 'https://apps.test/');
+    await blockedDomains.fill(' APPS.TEST \n restricted.work.apps.test ');
+    await publishDomains();
+    await dashboard.getByText(`Domain rules published as version ${withDomains}.`, { exact: true }).waitFor();
+    assert.equal(await allowedDomains.inputValue(), 'work.apps.test');
+    assert.equal(await blockedDomains.inputValue(), 'apps.test\nrestricted.work.apps.test');
+    await sync();
+    await popup.getByText('Active domain rules: 3', { exact: true }).waitFor();
+    assert.equal((await currentInstallation()).appliedPolicyVersion, withDomains);
+    for (const host of ['apps.test', 'apps.test.', 'other.apps.test', 'restricted.work.apps.test', 'redirect.test']) {
+      await domains.visit(browser, host, true);
+    }
+    for (const host of ['work.apps.test', 'work.apps.test.', 'notapps.test', 'apps.test.other.test']) {
+      await domains.visit(browser, host, false);
+    }
+    assert.ok(!JSON.stringify([...observationAttempts, ...attempts]).includes('private-navigation-'));
+    await dashboard.getByText('1 allow · 2 block', { exact: true }).first().click();
+    await screenshot(dashboard, '12-control-domain-rules.png');
+  });
+
+  await t.test('retains enforcement offline and acknowledges rollback only after replacing Chrome rules', async () => {
+    offline = true;
+    try {
+      await sync();
+      await popup.getByText(new RegExp(`Control offline · [A-Z]+ v${withDomains}$`)).waitFor();
+      await domains.visit(browser, 'apps.test', true);
+      await domains.visit(browser, 'work.apps.test', false);
+    } finally { offline = false; }
+
+    await dashboard.getByRole('button', { name: `Restore version ${beforeDomains}`, exact: true }).click();
+    const restored = withDomains + 1;
+    await dashboard.getByText(`Version ${beforeDomains} restored as version ${restored}.`, { exact: true }).waitFor();
+    await worker.evaluate(() => {
+      const api = chrome.declarativeNetRequest;
+      globalThis.restoreDomainUpdate = () => { api.updateDynamicRules = globalThis.originalDomainUpdate; };
+      globalThis.originalDomainUpdate = api.updateDynamicRules;
+      api.updateDynamicRules = async () => { throw new Error('Synthetic browser rule update failure'); };
+    });
+    try {
+      await sync();
+      await popup.getByText(new RegExp(`Policy update pending · [A-Z]+ v${withDomains}$`)).waitFor();
+      assert.equal((await currentInstallation()).appliedPolicyVersion, withDomains);
+      await domains.visit(browser, 'apps.test', true);
+    } finally {
+      await worker.evaluate(() => globalThis.restoreDomainUpdate());
+    }
+    await sync();
+    await popup.getByText(new RegExp(`Connected to Control · [A-Z]+ v${restored}$`)).waitFor();
+    assert.equal((await currentInstallation()).appliedPolicyVersion, restored);
+    await domains.visit(browser, 'apps.test', false);
+  });
+
+  await t.test('revoking enrollment removes active domain rules', async () => {
+    await blockedDomains.fill('apps.test');
+    await publishDomains();
+    await dashboard.getByText(`Domain rules published as version ${withDomains + 2}.`, { exact: true }).waitFor();
+    await sync();
+    await popup.getByText('Active domain rules: 1', { exact: true }).waitFor();
+    await domains.visit(browser, 'apps.test', true);
+    const { installationId } = await currentInstallation();
+    dashboard.once('dialog', (dialog) => dialog.accept());
+    await dashboard.getByRole('button', { name: `Revoke installation ${installationId}`, exact: true }).click();
+    await health.getByText('Revoked', { exact: true }).waitFor();
+    await sync();
+    await popup.getByText(/Control access revoked/).waitFor();
+    await domains.visit(browser, 'apps.test', false);
   });
 });

@@ -1,4 +1,4 @@
-import type { AiAppId, AppClassification, DetectorMode, DiscoveredApp, Grant, Installation, Mode, Policy, SecurityEvent } from './control';
+import type { AiAppId, AppClassification, DetectorMode, DiscoveredApp, DomainRules, Grant, Installation, Mode, Policy, SecurityEvent } from './control';
 
 const port = Number(process.env.ZEKVAR_CONTROL_PORT ?? 5187);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid Control loopback port.');
@@ -41,6 +41,7 @@ export const controlApi = {
     request<void>(`/ai-apps/${appId}/classification`, token, 'POST', { status }),
   publish: (token: string, mode: Mode, githubPatMode: DetectorMode, discoveryEnabled: boolean) =>
     request<Policy>('/policies', token, 'POST', { mode, githubPatMode, discoveryEnabled }),
+  publishDomains: (token: string, domainRules: DomainRules) => request<Policy>('/policies', token, 'POST', { domainRules }),
   restore: (token: string, version: number) => request<Policy>(`/policies/${version}/restore`, token, 'POST'),
   issueGrant: (token: string) => request<Grant>('/enrollment-grants', token, 'POST'),
   revoke: (token: string, installationId: string) => request<void>(`/installations/${installationId}/revoke`, token, 'POST'),
