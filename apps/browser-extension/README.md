@@ -32,13 +32,19 @@ Chrome for Testing `159.0.8154.6` passed the click, Enter, edit-and-retry, warni
 
 ## Verify the scenarios
 
-From the repository root, run the full demo using Node.js 22+, the .NET 10 SDK, and a running Docker daemon.
+The full demo uses Node.js 22+, the .NET 10 SDK, and a running Docker daemon. From `apps/browser-extension`, run:
+
+```sh
+npm run verify:demo -- --headed --live --artifacts /tmp/zekvar-demo
+```
+
+From the repository root, run:
 
 ```sh
 node scripts/verify-demo.mjs --headed --live --artifacts /tmp/zekvar-demo
 ```
 
-The command builds in a temporary directory and starts its own PostgreSQL, Control API, dashboard, and Chrome profile. It creates the enrollment grant in the dashboard, redeems it in the extension, publishes and restores policy, and verifies the displayed events. It also simulates disconnected delivery and a lost acknowledgment after a database write, then checks that the retry stores a single event. API, dashboard, and extension regression suites run against isolated organizations. The command tears down its services at the end.
+The command builds in a temporary directory and starts its own PostgreSQL, Control API, dashboard, and Chrome profile. It generates a temporary admin token, signs in, creates an enrollment grant, and redeems it in the extension. It publishes and restores policy, verifies the displayed events, and checks that an event retry after a lost acknowledgment stores a single record. API, dashboard, and extension regression suites run against isolated organizations. The command tears down its services at the end. On the first run, it downloads Chrome for Testing before opening the browser.
 
 `--headed` opens Chrome during the demo. `--artifacts` saves screenshots of the controlled workflow. `--live` separately attempts the public ChatGPT composer using the isolated profile and synthetic text. The runner reports a skip if the site blocks access or the supported composer is unavailable. The controlled workflow uses a local response for the ChatGPT page and the real loopback API for its events.
 

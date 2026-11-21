@@ -7,7 +7,8 @@
     "build": "tsc --noEmit && node build.mjs",
     "fixture": "node fixture/server.mjs",
     "test": "npm run build && node --test test/fixture.test.mjs",
-    "test:control": "node --test test/control.test.mjs"
+    "test:control": "node --test test/control.test.mjs",
+    "verify:demo": "node ../../scripts/verify-demo.mjs"
   },
   "devDependencies": {
     "@types/chrome": "0.3.7",
