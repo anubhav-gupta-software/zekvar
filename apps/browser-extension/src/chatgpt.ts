@@ -1,22 +1,9 @@
 import { recordDecision } from './decisions';
 import { evaluatePrompt, type MatchedDecision } from './policy';
 import { chatGptApp, isChatGptPage, send, type Coverage, type Summary } from './protocol';
+import { composerDiagnostics, inspectComposer, type Composer } from './chatgpt-composer';
 
-const sendSelector = 'button[data-testid="send-button"]';
-type Composer = { input: HTMLElement; button?: HTMLButtonElement };
 type Warning = { input: HTMLElement; value: string; installationId: string; match: MatchedDecision };
-
-function composer(): Composer | undefined {
-  const inputs = [...document.querySelectorAll<HTMLElement>('#prompt-textarea')];
-  const active = inputs.filter((input) => (input instanceof HTMLTextAreaElement || input.isContentEditable) &&
-    input.getClientRects().length > 0);
-  if (active.length !== 1) return;
-  const [input] = active;
-  const form = input.closest('form');
-  if (!form) return;
-  const button = form.querySelector<HTMLButtonElement>(sendSelector);
-  return { input, button: button?.getClientRects().length ? button : undefined };
-}
 
 function promptText(input: HTMLElement): string {
   return input instanceof HTMLTextAreaElement ? input.value : input.innerText;
@@ -39,6 +26,8 @@ function controls() {
     button { margin: .55rem .35rem 0 0; padding: .3rem .55rem; border: 1px solid #627b8b;
       border-radius: .35rem; color: #fff; background: #203045; cursor: pointer; font: inherit; }
     button:focus-visible { outline: 2px solid #59e6b5; outline-offset: 2px; }
+    textarea { display: block; box-sizing: border-box; margin-top: .4rem; width: 100%; min-height: 4rem;
+      background: #f4faf8; color: #101927; font: inherit; }
   `;
   const panel = document.createElement('section');
   panel.setAttribute('aria-label', 'Zekvar prompt policy');
@@ -55,9 +44,15 @@ function controls() {
   proceed.textContent = 'Continue anyway';
   actions.hidden = true;
   actions.append(edit, proceed);
-  panel.append(status, notice, actions);
+  const copy = document.createElement('button');
+  copy.textContent = 'Copy composer diagnostics';
+  const diagnostics = document.createElement('textarea');
+  diagnostics.readOnly = true;
+  diagnostics.hidden = true;
+  diagnostics.setAttribute('aria-label', 'Composer diagnostics');
+  panel.append(status, notice, actions, copy, diagnostics);
   root.append(style, panel);
-  return { host, status, notice, actions, edit, proceed };
+  return { host, status, notice, actions, edit, proceed, copy, diagnostics };
 }
 
 const ui = controls();
@@ -75,20 +70,22 @@ function clearWarning() {
 }
 
 function observe() {
-  if (!isChatGptPage(location.href) || !document.body) {
-    ui.host.remove();
+  if (!document.body) return;
+  if (!ui.host.isConnected) document.body.append(ui.host);
+  if (!isChatGptPage(location.href)) {
     clearWarning();
+    ui.status.textContent = 'Zekvar · Unsupported ChatGPT page';
     lastCoverage = undefined;
     unsupportedSince = 0;
     unsupportedInput = undefined;
     return;
   }
-  if (!ui.host.isConnected) document.body.append(ui.host);
-  const current = composer();
+  const inspection = inspectComposer();
+  const current = inspection.composer;
   if (current?.button || (unsupportedInput && unsupportedInput !== current?.input)) unsupportedInput = undefined;
   if (warning && current?.input !== warning.input) clearWarning();
   const now = Date.now();
-  const ready = Boolean(current && !unsupportedInput);
+  const ready = Boolean(current && (current.button || inspection.hasEditorForm) && !unsupportedInput);
   if (ready) unsupportedSince = 0;
   else unsupportedSince ||= now;
   const coverage = ready ? 'ready' : now - unsupportedSince > 2500 ? 'unsupported' : undefined;
@@ -97,8 +94,8 @@ function observe() {
   const policy = control?.policy;
   const managedPolicy = installationId && control?.chatGptEnabled ? policy : undefined;
   const label = !managedPolicy ? 'Zekvar · ChatGPT policy unavailable' : coverage === 'unsupported' ?
-    'Zekvar · Unsupported composer' : !coverage ? 'Zekvar · Checking composer…' :
-      `Zekvar · ${managedPolicy.mode.toUpperCase()} v${managedPolicy.version}${control?.status === 'offline' ? ' · Offline policy' : ''}`;
+    `Zekvar · Unsupported composer (${inspection.gap ?? 'Send control missing'})` : !coverage ? 'Zekvar · Checking composer…' :
+      `Zekvar · ${managedPolicy.mode.toUpperCase()} v${managedPolicy.version}${control?.status === 'offline' ? ' · Offline policy' : ''}${current?.button ? '' : ' · Waiting for Send control'}`;
   if (ui.status.textContent !== label) ui.status.textContent = label;
   if (!managedPolicy || !installationId || !coverage) return;
   if (lastCoverage?.installationId === installationId && lastCoverage.coverage === coverage && now - lastCoverage.at < 60_000) return;
@@ -159,17 +156,15 @@ function check(event: Event, current: Composer) {
 }
 
 window.addEventListener('click', (event) => {
-  if (!event.isTrusted || !isChatGptPage(location.href) || !(event.target instanceof Element)) return;
-  const selected = event.target.closest(sendSelector);
-  if (!selected) return;
-  const current = composer();
-  if (current?.button === selected && !current.button.disabled) check(event, current);
+  if (!event.isTrusted || !isChatGptPage(location.href) || !(event.target instanceof Element) || !event.target.closest('button')) return;
+  const current = inspectComposer().composer;
+  if (current?.button?.contains(event.target) && !current.button.disabled) check(event, current);
 }, { capture: true });
 
 window.addEventListener('keydown', (event) => {
   if (!event.isTrusted || event.key !== 'Enter' || event.shiftKey || event.altKey || event.metaKey || event.ctrlKey ||
       event.isComposing || event.keyCode === 229 || !isChatGptPage(location.href) || !(event.target instanceof Node)) return;
-  const current = composer();
+  const current = inspectComposer().composer;
   if (!current?.input.contains(event.target)) return;
   if (!current.button) {
     // The native handler is unknown in this state. Report the gap rather than claiming coverage.
@@ -181,18 +176,18 @@ window.addEventListener('keydown', (event) => {
 }, { capture: true });
 
 window.addEventListener('input', (event) => {
-  if (event.target instanceof Element && event.target.closest('#prompt-textarea')) clearWarning();
+  if (warning && event.target instanceof Node && warning.input.contains(event.target)) clearWarning();
 }, { capture: true });
 
 ui.edit.addEventListener('click', () => {
-  const current = composer();
+  const current = inspectComposer().composer;
   clearWarning();
   current?.input.focus();
 });
 
 ui.proceed.addEventListener('click', () => {
   const pending = warning;
-  const current = composer();
+  const current = inspectComposer().composer;
   clearWarning();
   if (!pending || current?.input !== pending.input || !current.button || current.button.disabled ||
       promptText(current.input) !== pending.value || !isChatGptPage(location.href) || !control?.chatGptEnabled ||
@@ -200,6 +195,24 @@ ui.proceed.addEventListener('click', () => {
       control.policy?.mode !== 'warn') return;
   recordDecision(chatGptApp, pending.match, pending.installationId, 'warn_override');
   current.button.click();
+});
+
+ui.copy.addEventListener('click', async (event) => {
+  if (!event.isTrusted) return;
+  const route = location.pathname === '/' ? 'home' : isChatGptPage(location.href) ? 'conversation' : 'other';
+  const text = JSON.stringify({
+    version: chrome.runtime.getManifest().version,
+    route,
+    ...(route === 'other' ? {} : composerDiagnostics()),
+  });
+  try {
+    await navigator.clipboard.writeText(text);
+    ui.copy.textContent = 'Diagnostics copied';
+  } catch {
+    ui.diagnostics.value = text;
+    ui.diagnostics.hidden = false;
+    ui.diagnostics.select();
+  }
 });
 
 let wasSupportedPage = false;

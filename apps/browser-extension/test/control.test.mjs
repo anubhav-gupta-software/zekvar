@@ -268,13 +268,13 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
     const coverage = async () => (await adminCall('installations')).find((row) => row.installationId === chatGptInstallation);
     await until(async () => (await coverage()).chatGptCoverage === 'ready', 'The recognized composer status was not reported.');
     await chatGpt.locator('#prompt-textarea').evaluate((element) => { element.id = 'renamed-composer'; });
-    await chatGpt.getByText('Zekvar · Unsupported composer', { exact: true }).waitFor();
+    await chatGpt.getByText('Zekvar · Unsupported composer (editable field missing)', { exact: true }).waitFor();
     await until(async () => (await coverage()).chatGptCoverage === 'unsupported', 'The coverage loss was not reported.');
     assert.ok(Number.isFinite(Date.parse((await coverage()).chatGptCheckedAt)));
     await chatGpt.locator('#renamed-composer').evaluate((element) => { element.id = 'prompt-textarea'; });
     await until(async () => (await coverage()).chatGptCoverage === 'ready', 'Recovery was not reported.');
     await chatGpt.goto('https://chatgpt.com/unrelated');
-    assert.equal(await chatGpt.locator('#zekvar-chatgpt').count(), 0);
+    await chatGpt.getByText('Zekvar · Unsupported ChatGPT page', { exact: true }).waitFor();
   });
 
   await t.test('allows one ChatGPT warning override for the unchanged draft', async () => {
@@ -295,5 +295,40 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
       const rows = (await adminCall('events?appId=chatgpt')).filter((row) => row.policyVersion === warnPolicy.version);
       return rows.map((row) => row.decision).sort().join(',') === 'warn,warn,warn_override';
     }, 'Expected two warnings and one override for ChatGPT.');
+  });
+
+  await t.test('guards an explicitly paired editor and Send control without a form', async () => {
+    const policy = await adminCall('policies', { mode: 'block' });
+    const alternative = chatGptFixture.replace('<form data-fixture-composer', '<div data-fixture-composer')
+      .replace('</form>', '</div>').replace('id="prompt-textarea"', 'id="fixture-editor" data-testid="prompt-textarea"')
+      .replace("querySelector('#prompt-textarea')", "querySelector('[data-testid=prompt-textarea]')")
+      .replace('type="submit" data-testid="send-button"', 'type="button" id="composer-submit-button" aria-label="Send prompt"');
+    await browser.route('https://chatgpt.com/c/fixture-alt?case=*', (route) =>
+      route.fulfill({ contentType: 'text/html', body: alternative }));
+    await chatGpt.goto('https://chatgpt.com/c/fixture-alt?case=private-option');
+    await chatGpt.getByText(`Zekvar · BLOCK v${policy.version}`, { exact: true }).waitFor();
+    const input = chatGpt.getByRole('textbox', { name: 'Message' });
+    const sendButton = chatGpt.getByRole('button', { name: 'Send prompt' });
+    await input.fill('Clean test');
+    await sendButton.click();
+    assert.equal(await chatGpt.locator('#fixture-sends').textContent(), '1');
+    await input.fill(marker);
+    await sendButton.click();
+    await chatGpt.getByRole('alert').filter({ hasText: 'Submission blocked' }).waitFor();
+    await input.press('Enter');
+    assert.equal(await chatGpt.locator('#fixture-sends').textContent(), '1');
+    await until(async () => (await adminCall('events?appId=chatgpt')).filter((row) => row.policyVersion === policy.version).length === 2,
+      'Expected two block events from the paired controls.');
+
+    await browser.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: 'https://chatgpt.com' });
+    await chatGpt.getByRole('button', { name: 'Copy composer diagnostics' }).click();
+    await chatGpt.getByRole('button', { name: 'Diagnostics copied' }).waitFor();
+    const diagnostics = await chatGpt.evaluate(() => navigator.clipboard.readText());
+    assert.doesNotMatch(diagnostics, /ZEKVAR_TEST_SECRET|fixture-alt|private-option/);
+    assert.deepEqual(JSON.parse(diagnostics), {
+      version: '0.3.1', route: 'conversation', markedEditors: 1, visibleMarkedEditors: 1,
+      hasEditorForm: false, visibleTextareas: 0, visibleEditableRoots: 1,
+      hasComposerSubmitId: true, hasSendTestId: false, hasPairedSend: true,
+    });
   });
 });
