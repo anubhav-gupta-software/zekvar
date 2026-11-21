@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "EnrollmentGrant": {
+      "type": "string",
+      "title": "Zekvar enrollment grant",
+      "description": "A short-lived, single-use grant for this Chrome profile."
+    }
+  }
+}

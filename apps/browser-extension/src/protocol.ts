@@ -22,6 +22,8 @@ export type Summary = {
   installationId?: string;
   policy?: Policy;
   chatGptEnabled?: boolean;
+  enrollmentSource?: 'managed' | 'manual';
+  managedEnrollment?: 'invalid' | 'rejected' | 'retrying';
   queued: number;
   discarded: number;
 };

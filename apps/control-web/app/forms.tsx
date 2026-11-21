@@ -1,8 +1,16 @@
 'use client';
 
-import { useActionState, useState, type ReactNode } from 'react';
+import { useActionState, useState, useTransition, type ReactNode } from 'react';
+import { useRouter } from 'next/navigation';
 import { issueGrant, signIn } from './actions';
 import { utc, type Feedback } from '../lib/control';
+
+export function RefreshBrowserHealth() {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  return <button type="button" className="button small" aria-label="Refresh browser health" disabled={pending}
+    onClick={() => startTransition(() => router.refresh())}>{pending ? 'Refreshing…' : 'Refresh'}</button>;
+}
 
 function Notice({ state }: { state: Feedback }) {
   if (state.error) return <p className="feedback error" role="alert">{state.error}</p>;

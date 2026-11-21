@@ -20,4 +20,5 @@ manifest.host_permissions = [`${origin}/*`];
 await Promise.all([
   writeFile(join(outdir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n'),
   copyFile('src/popup.html', join(outdir, 'popup.html')),
+  copyFile('managed-schema.json', join(outdir, 'managed-schema.json')),
 ]);

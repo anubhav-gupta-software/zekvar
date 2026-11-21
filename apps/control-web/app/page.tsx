@@ -5,7 +5,7 @@ import {
 } from '../lib/control';
 import { sessionToken } from '../lib/session';
 import { publishPolicy, restorePolicy, revokeInstallation, signOut } from './actions';
-import { EnrollmentForm, MutationForm, SignInForm } from './forms';
+import { EnrollmentForm, MutationForm, RefreshBrowserHealth, SignInForm } from './forms';
 
 type Search = Record<string, string | string[] | undefined>;
 
@@ -97,10 +97,10 @@ export default async function Control({ searchParams }: { searchParams: Promise<
         </section>
 
         <section className="panel table-panel" id="browsers" aria-labelledby="browsers-heading">
-          <div className="panel-heading"><h2 id="browsers-heading">Browser health</h2><span className="table-note">Latest 100 installations</span></div>
+          <div className="panel-heading"><h2 id="browsers-heading">Browser health</h2><RefreshBrowserHealth /></div>
           <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="browsers-heading">
             <table aria-labelledby="browsers-heading">
-              <thead><tr><th>Installation</th><th>Policy status</th><th>Applied version</th><th>ChatGPT composer</th><th>Last seen (UTC)</th><th>Action</th></tr></thead>
+              <thead><tr><th>Installation</th><th>Reporting</th><th>Policy status</th><th>Applied version</th><th>ChatGPT composer</th><th>Last seen (UTC)</th><th>Action</th></tr></thead>
               <tbody>{installations.map((installation) => <BrowserRow key={installation.installationId}
                 installation={installation} latestVersion={current?.version} />)}</tbody>
             </table>
@@ -201,8 +201,10 @@ function PolicyRow({ policy, current }: { policy: Policy; current: boolean }) {
 function BrowserRow({ installation, latestVersion }: { installation: Installation; latestVersion?: number }) {
   const status = installation.revokedAt ? 'Revoked' : installation.appliedPolicyVersion === null ? 'Awaiting policy' :
     installation.appliedPolicyVersion === latestVersion ? 'Current' : 'Update pending';
+  const stale = Date.now() - Date.parse(installation.lastSeenAt) >= 90_000;
   return <tr>
     <td><InstallationId value={installation.installationId} /></td>
+    <td>{installation.revokedAt ? '—' : <span className={`badge ${stale ? 'warn' : 'current'}`}>{stale ? 'Stale' : 'Reporting'}</span>}</td>
     <td><span className={`badge ${status === 'Current' ? 'current' : ''}`}>{status}</span></td>
     <td>{installation.appliedPolicyVersion ? `v${installation.appliedPolicyVersion}` : '—'}</td>
     <td><span className={`badge ${installation.chatGptCoverage === 'unsupported' ? 'warn' : ''}`}>

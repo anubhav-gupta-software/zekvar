@@ -13,9 +13,9 @@ const flags = new Set();
 let artifacts;
 for (let index = 0; index < args.length; index++) {
   const arg = args[index];
-  if (arg === '--headed' || arg === '--live') flags.add(arg);
+  if (arg === '--headed' || arg === '--live' || arg === '--pilot') flags.add(arg);
   else if (arg === '--artifacts' && args[index + 1] && !args[index + 1].startsWith('--')) artifacts = resolve(args[++index]);
-  else throw new Error('Usage: node scripts/verify-demo.mjs [--headed] [--live] [--artifacts DIRECTORY]');
+  else throw new Error('Usage: node scripts/verify-demo.mjs [--headed] [--live] [--pilot] [--artifacts DIRECTORY]');
 }
 
 const runFile = promisify(execFile);
@@ -137,11 +137,15 @@ try {
   });
   const dashboardAdmin = randomBytes(32).toString('hex');
   const extensionAdmin = randomBytes(32).toString('hex');
+  const pilotAdmin = randomBytes(32).toString('hex');
   const apiServer = startService('dotnet', ['bin/Debug/net10.0/Control.Api.dll'], api, {
     DOTNET_ENVIRONMENT: 'Development', ASPNETCORE_ENVIRONMENT: 'Development', Control__Port: String(apiPort), ConnectionStrings__Control: db,
     Control__Organizations__0__Slug: 'demo', Control__Organizations__0__AdminToken: token,
     Control__Organizations__1__Slug: 'dashboard-regression', Control__Organizations__1__AdminToken: dashboardAdmin,
     Control__Organizations__2__Slug: 'extension-regression', Control__Organizations__2__AdminToken: extensionAdmin,
+    ...(flags.has('--pilot') ? {
+      Control__Organizations__3__Slug: 'managed-pilot', Control__Organizations__3__AdminToken: pilotAdmin,
+    } : {}),
   });
   await ready(`${apiOrigin}/health`, apiServer, apiServer.log);
   const webServer = startService(process.execPath, ['node_modules/next/dist/bin/next', 'start', '--hostname', 'localhost', '--port', String(webPort)], web, {
@@ -161,6 +165,13 @@ try {
   await run('npm', ['run', 'test:control'], extension, {
     ZEKVAR_EXTENSION_TEST_API: apiOrigin, ZEKVAR_EXTENSION_TEST_ADMIN_TOKEN: extensionAdmin,
   });
+  if (flags.has('--pilot')) {
+    console.log('Running the two-profile managed pilot. The stale-browser check takes about 90 seconds.');
+    await run(process.execPath, ['--test', 'test/pilot.test.mjs'], extension, {
+      ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: pilotAdmin,
+      ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_ARTIFACTS: artifacts ?? '',
+    });
+  }
   if (artifacts) console.log(`Browser screenshots saved to ${artifacts}`);
 } catch (error) {
   console.error(error.message);

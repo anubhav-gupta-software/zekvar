@@ -65,4 +65,23 @@ ZEKVAR_EXTENSION_TEST_ADMIN_TOKEN="$Control__Organizations__0__AdminToken" \
 npm run test:control
 ```
 
+## Run the two-profile Chrome pilot lab
+
+From `apps/browser-extension`, with Docker running:
+
+```sh
+npm run verify:demo -- --pilot --headed --artifacts /tmp/zekvar-pilot
+```
+
+The runner opens two temporary Chrome for Testing profiles with the unpacked Zekvar extension. It applies one grant per profile through Chrome’s policy test UI, then checks that the profiles enroll and receive a Block policy in the background. It closes one browser, restores Monitor, waits for the stopped browser to show **Stale** in Control, and reopens it to verify the same installation catches up. Allow about 90 seconds for the stale check after the browser closes. Screenshots are saved when `--artifacts` is provided.
+
+### Apply a grant manually in a test profile
+
+1. Build and load the extension into a dedicated Chrome for Testing profile using the [local demo instructions](#run-the-demo). Start the local Control API and dashboard.
+2. In Control, create an unused enrollment grant for this profile. Open `chrome://policy/test`, select the Zekvar extension ID in the policy row, choose **Local machine**, enter `EnrollmentGrant` as the name, and paste the grant into the value. Click **Apply policies**. Chrome supplies the value through its managed storage. [Chrome managed storage](https://developer.chrome.com/docs/extensions/reference/manifest/storage)
+3. Check for **Enrolled by Chrome policy** in the Zekvar popup and a new installation under **Browser health**. Use a separate grant for the second profile. Remove the grant value from the policy after enrollment. Existing installations keep their browser credentials across restarts.
+4. Publish **Block** in Control. Use **Refresh** in **Browser health** to check the applied version and reporting status. When testing recovery, restore an earlier Monitor version and check that the browser applies the newly published version. Revoke a browser in Control to stop that credential from reporting. Clear the test policy and remove the unpacked extension when the lab is over.
+
+The lab uses unpacked installation and Chrome test policy. An external pilot needs a hosted Control service, an approved extension distribution method, and an administrator-managed pilot group. Chrome Enterprise uses the extension ID and update URL for force installation. [Chrome Enterprise installation settings](https://support.google.com/chrome/a/answer/9867568)
+
 See the [product plan](../../product_plan.md#first-build) for the acceptance matrix.

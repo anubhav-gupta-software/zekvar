@@ -5,7 +5,7 @@ import {
 
 declare const CONTROL_ORIGIN: string;
 
-type Enrollment = { installationId: string; token: string };
+type Enrollment = { installationId: string; token: string; source?: Summary['enrollmentSource'] };
 type State = {
   status: Summary['status'];
   enrollment?: Enrollment;
@@ -14,6 +14,8 @@ type State = {
   coveragePending?: Coverage;
   queue: PolicyEvent[];
   discarded: number;
+  managedEnrollment?: Summary['managedEnrollment'];
+  usedManagedGrant?: string;
 };
 
 const key = 'controlState';
@@ -22,7 +24,11 @@ const maxQueue = 100;
 let work = Promise.resolve();
 let deliveryScheduled = false;
 
-const setup = chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+const managedGrantKey = 'EnrollmentGrant';
+const setup = Promise.all([
+  chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }),
+  chrome.storage.managed.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }),
+]);
 
 function serial<T>(operation: () => Promise<T>): Promise<T> {
   const result = work.then(() => setup).then(operation);
@@ -41,8 +47,9 @@ function save(state: State) {
 
 function summary(state: State): Summary {
   return {
-    status: state.status, installationId: state.enrollment?.installationId,
+    status: state.status, installationId: state.enrollment?.installationId, enrollmentSource: state.enrollment?.source,
     policy: state.policy, chatGptEnabled: state.chatGptEnabled, queued: state.queue.length, discarded: state.discarded,
+    managedEnrollment: state.managedEnrollment,
   };
 }
 
@@ -132,14 +139,20 @@ async function heartbeat(state: State) {
   state.coveragePending = undefined;
 }
 
-async function enroll(state: State, grant: unknown): Promise<Reply> {
+async function enroll(state: State, grant: unknown, managedHash?: string): Promise<Reply> {
   if (state.enrollment) return { summary: summary(state), error: 'This browser is already enrolled.' };
   if (!isToken(grant)) return { summary: summary(state), error: 'Paste the 64-character enrollment grant from Control.' };
   let enrollment;
   try {
     enrollment = await request('enroll', undefined, { grant });
   } catch (error) {
-    return { summary: summary(state), error: error instanceof HttpError && error.status === 401
+    const rejected = error instanceof HttpError && error.status === 401;
+    if (managedHash) {
+      state.managedEnrollment = rejected ? 'rejected' : 'retrying';
+      if (rejected) state.usedManagedGrant = managedHash;
+      await save(state);
+    }
+    return { summary: summary(state), error: rejected
       ? 'The grant is invalid, expired, or already used. Create a new grant in Control.'
       : 'Control is unavailable. Check that the local API is running and try again.' };
   }
@@ -147,12 +160,35 @@ async function enroll(state: State, grant: unknown): Promise<Reply> {
     return { summary: summary(state), error: 'Control returned an invalid enrollment response.' };
   }
   const next: State = {
-    status: 'offline', enrollment: { installationId: enrollment.installationId, token: enrollment.token },
+    status: 'offline', enrollment: { installationId: enrollment.installationId, token: enrollment.token,
+      source: managedHash ? 'managed' : 'manual' },
     queue: [], discarded: 0,
+    usedManagedGrant: managedHash ?? state.usedManagedGrant,
   };
   await save(next);
   await sync(next);
   return { summary: summary(next) };
+}
+
+async function syncOrEnroll(state: State): Promise<Reply> {
+  if (state.enrollment) {
+    await sync(state);
+    return { summary: summary(state) };
+  }
+  const managed = await chrome.storage.managed.get(managedGrantKey).catch(() => ({} as Record<string, unknown>));
+  const grant = managed[managedGrantKey];
+  if (!isToken(grant)) {
+    const status = grant === undefined ? undefined : 'invalid';
+    if (state.managedEnrollment !== status) {
+      state.managedEnrollment = status;
+      await save(state);
+    }
+    return { summary: summary(state) };
+  }
+  const hashBytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(grant));
+  const hash = Array.from(new Uint8Array(hashBytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  if (state.usedManagedGrant === hash) return { summary: summary(state) };
+  return enroll(state, grant, hash);
 }
 
 function scheduleDelivery() {
@@ -167,7 +203,7 @@ function scheduleDelivery() {
 async function onMessage(message: Record<string, unknown>, app: AppId | undefined): Promise<Reply> {
   const state = await readState();
   if (message.type === 'enroll') return enroll(state, message.grant);
-  if (message.type === 'sync') await sync(state);
+  if (message.type === 'sync') return syncOrEnroll(state);
   if (message.type === 'coverage' && state.chatGptEnabled && state.enrollment &&
       message.installationId === state.enrollment.installationId &&
       (message.coverage === 'ready' || message.coverage === 'unsupported')) {
@@ -211,10 +247,20 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, reply: (response
   return true;
 });
 
+function synchronizeInBackground() {
+  void serial(async () => syncOrEnroll(await readState())).catch(() => undefined);
+}
+
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === alarmName) void serial(async () => sync(await readState())).catch(() => undefined);
+  if (alarm.name === alarmName) synchronizeInBackground();
+});
+chrome.runtime.onStartup.addListener(synchronizeInBackground);
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'managed' && managedGrantKey in changes) synchronizeInBackground();
 });
 
 void serial(async () => {
   if (!await chrome.alarms.get(alarmName)) await chrome.alarms.create(alarmName, { periodInMinutes: 0.5 });
+  const state = await readState();
+  if (!state.enrollment) await syncOrEnroll(state);
 }).catch(() => undefined);
