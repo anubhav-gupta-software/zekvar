@@ -30,6 +30,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 7, "007_retention.sql", ct);
         await ApplyMigration(connection, 8, "008_policy_groups.sql", ct);
         await ApplyMigration(connection, 9, "009_event_history.sql", ct);
+        await ApplyMigration(connection, 10, "010_gemini_prompt_protection.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -225,14 +226,17 @@ internal sealed partial class ControlStore
             UPDATE installations i SET last_seen_at = GREATEST(i.last_seen_at, now()),
                 applied_policy_version = GREATEST(i.applied_policy_version, $2),
                 chatgpt_coverage = COALESCE($3::text, i.chatgpt_coverage),
-                chatgpt_checked_at = CASE WHEN $3::text IS NULL THEN i.chatgpt_checked_at ELSE now() END
+                chatgpt_checked_at = CASE WHEN $3::text IS NULL THEN i.chatgpt_checked_at ELSE now() END,
+                gemini_coverage = COALESCE($6::text, i.gemini_coverage),
+                gemini_checked_at = CASE WHEN $6::text IS NULL THEN i.gemini_checked_at ELSE now() END
             WHERE i.id = $1 AND i.revoked_at IS NULL AND i.assignment_version = $5 AND EXISTS (
                 SELECT 1 FROM policy_versions p WHERE p.organization_id = i.organization_id AND p.version = $2
                   AND ($4 OR cardinality(p.allowed_domains) + cardinality(p.blocked_domains) = 0)
                   AND (($5 = 0 AND p.policy_group_id IS NULL) OR EXISTS (SELECT 1 FROM policy_deliveries d
                     WHERE d.installation_id = i.id AND d.assignment_version = $5 AND d.policy_version = $2))
             )
-            """, installationId, request.PolicyVersion, (object?)request.ChatGptCoverage ?? DBNull.Value, request.DomainRulesApplied, request.AssignmentVersion);
+            """, installationId, request.PolicyVersion, (object?)request.ChatGptCoverage ?? DBNull.Value,
+            request.DomainRulesApplied, request.AssignmentVersion, (object?)request.GeminiCoverage ?? DBNull.Value);
         return await command.ExecuteNonQueryAsync(ct) == 1;
     }
 
@@ -240,7 +244,8 @@ internal sealed partial class ControlStore
     {
         await using var command = Command("""
             SELECT i.id, i.enrolled_at, i.last_seen_at, i.applied_policy_version, i.revoked_at, i.chatgpt_coverage, i.chatgpt_checked_at,
-                i.policy_group_id, g.name, COALESCE(g.policy_version, o.policy_version), i.assignment_aware
+                i.policy_group_id, g.name, COALESCE(g.policy_version, o.policy_version), i.assignment_aware,
+                i.gemini_coverage, i.gemini_checked_at
             FROM installations i JOIN organizations o ON o.id = i.organization_id
             LEFT JOIN policy_groups g ON g.organization_id = o.id AND g.id = i.policy_group_id
             WHERE i.organization_id = $1 ORDER BY i.enrolled_at DESC, i.id LIMIT 100
@@ -251,7 +256,8 @@ internal sealed partial class ControlStore
             installations.Add(new(rows.GetGuid(0), rows.GetDateTime(1), rows.GetDateTime(2),
                 rows.IsDBNull(3) ? null : rows.GetInt32(3), rows.IsDBNull(4) ? null : rows.GetDateTime(4),
                 rows.IsDBNull(5) ? null : rows.GetString(5), rows.IsDBNull(6) ? null : rows.GetDateTime(6),
-                rows.IsDBNull(7) ? null : rows.GetGuid(7), rows.IsDBNull(8) ? null : rows.GetString(8), rows.GetInt32(9), rows.GetBoolean(10)));
+                rows.IsDBNull(7) ? null : rows.GetGuid(7), rows.IsDBNull(8) ? null : rows.GetString(8), rows.GetInt32(9), rows.GetBoolean(10),
+                rows.IsDBNull(11) ? null : rows.GetString(11), rows.IsDBNull(12) ? null : rows.GetDateTime(12)));
         return installations;
     }
 

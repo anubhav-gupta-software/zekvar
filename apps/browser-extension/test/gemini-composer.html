@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Gemini composer contract fixture</title></head>
+<body>
+  <h1>Gemini composer contract fixture</h1>
+  <input-area-v2>
+    <rich-textarea>
+      <div class="ql-editor" role="textbox" aria-label="Enter a prompt for Gemini" contenteditable="true"
+        style="min-height: 2rem; border: 1px solid"></div>
+      <div class="ql-clipboard" contenteditable="true" aria-label="Clipboard fixture">Clipboard</div>
+    </rich-textarea>
+    <button type="button" aria-label="Send message" hidden><span>Fixture send</span></button>
+  </input-area-v2>
+  <button type="button" aria-label="Send message" id="unrelated-send">Unrelated send</button>
+  <p>Submissions <output id="fixture-sends">0</output></p>
+  <p>Unrelated actions <output id="unrelated-sends">0</output></p>
+  <script>
+    const input = document.querySelector('.ql-editor');
+    const send = document.querySelector('input-area-v2 button');
+    const submissions = document.querySelector('#fixture-sends');
+    input.addEventListener('input', () => { send.hidden = !input.innerText.trim(); });
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !send.hidden) {
+        event.preventDefault();
+        send.click();
+      }
+    });
+    send.addEventListener('click', () => {
+      if (!input.innerText.trim()) return;
+      submissions.dataset.lastDraft = input.innerText;
+      submissions.value = String(Number(submissions.value) + 1);
+      input.replaceChildren();
+      send.hidden = true;
+    });
+    document.querySelector('#unrelated-send').addEventListener('click', () => {
+      const actions = document.querySelector('#unrelated-sends');
+      actions.value = String(Number(actions.value) + 1);
+    });
+  </script>
+</body>
+</html>

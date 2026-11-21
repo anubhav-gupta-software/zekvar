@@ -8,13 +8,14 @@ internal static class FixtureContract
 {
     public const string AppId = "local-prompt-fixture";
     public const string ChatGpt = "chatgpt";
+    public const string Gemini = "gemini";
     public const string RuleId = "fixture-secret";
     public const string DetectorCategory = "synthetic-secret";
     public const string GitHubPatRule = "github-classic-pat";
     public const string CredentialCategory = "credential";
 
     public static bool IsMode(string? mode) => mode is "monitor" or "warn" or "block";
-    public static bool IsApp(string? appId) => appId is AppId or ChatGpt;
+    public static bool IsApp(string? appId) => appId is AppId or ChatGpt or Gemini;
     public static bool IsDecision(string? decision) => IsMode(decision) || decision == "warn_override";
 
     public static bool IsEvent(PolicyEvent request) =>
@@ -27,7 +28,7 @@ internal static class FixtureContract
 
 internal static class DiscoveryCatalog
 {
-    public static readonly string[] AppIds = [FixtureContract.ChatGpt, "claude", "gemini"];
+    public static readonly string[] AppIds = [FixtureContract.ChatGpt, "claude", FixtureContract.Gemini];
 
     public static bool IsApp(string? appId) => appId is not null && AppIds.Contains(appId);
     public static bool IsStatus(string? status) => status is "unreviewed" or "approved" or "unapproved";
@@ -49,7 +50,11 @@ internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode 
     DomainRules? DomainRules = null, int? ExpectedVersion = null);
 internal sealed record RedeemGrant(string Grant);
 internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = null, bool DomainRulesApplied = false,
-    int AssignmentVersion = 0);
+    int AssignmentVersion = 0, string? GeminiCoverage = null)
+{
+    public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported") &&
+        (GeminiCoverage is null or "ready" or "unsupported");
+}
 internal sealed record PolicyEvent(Guid EventId, string AppId, DateTimeOffset Timestamp, string RuleId,
     string DetectorCategory, int PolicyVersion, string Decision, int AssignmentVersion = 0);
 
@@ -58,7 +63,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int AssignmentVersion = 0)
 {
     public string AppId => FixtureContract.AppId;
-    public string[] AppIds => [FixtureContract.AppId, FixtureContract.ChatGpt];
+    public string[] AppIds => [FixtureContract.AppId, FixtureContract.ChatGpt, FixtureContract.Gemini];
     public string RuleId => FixtureContract.RuleId;
     public string DetectorCategory => FixtureContract.DetectorCategory;
 }
@@ -71,7 +76,8 @@ internal sealed record EnrollmentGrant(string Grant, DateTime ExpiresAt);
 internal sealed record Enrollment(Guid InstallationId, string Token);
 internal sealed record Installation(Guid InstallationId, DateTime EnrolledAt, DateTime LastSeenAt,
     int? AppliedPolicyVersion, DateTime? RevokedAt, string? ChatGptCoverage, DateTime? ChatGptCheckedAt,
-    Guid? PolicyGroupId, string? PolicyGroupName, int ExpectedPolicyVersion, bool AssignmentAware);
+    Guid? PolicyGroupId, string? PolicyGroupName, int ExpectedPolicyVersion, bool AssignmentAware,
+    string? GeminiCoverage, DateTime? GeminiCheckedAt);
 
 internal sealed record StoredEvent(Guid EventId, Guid InstallationId, DateTime Timestamp, DateTime ReceivedAt,
     int PolicyVersion, string Decision, string AppId, string RuleId)

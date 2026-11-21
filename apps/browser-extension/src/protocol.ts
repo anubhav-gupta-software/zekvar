@@ -1,17 +1,17 @@
 import { credentialDetector, fixtureDetector, fixtureRule, githubPatRule, isMode, type PolicyMode,
   type PromptPolicy, type RuleMetadata } from '../../../contracts/policy/prompt';
+import { chatGptApp, fixtureApp, geminiApp, isPromptApp, type AiPromptApp, type AppId } from '../../../contracts/policy/apps';
 
 export { fixtureRule, fixtureDetector, githubPatRule, credentialDetector, isMode, isDetectorMode } from '../../../contracts/policy/prompt';
 export type { PolicyMode, DetectorMode, RuleMetadata } from '../../../contracts/policy/prompt';
+export { chatGptApp, fixtureApp, geminiApp, aiPromptApps, isPromptApp } from '../../../contracts/policy/apps';
+export type { AiPromptApp, AppId } from '../../../contracts/policy/apps';
 
 export const fixtureUrl = 'http://127.0.0.1:4173/zekvar-fixture/';
-export const fixtureApp = 'local-prompt-fixture';
-export const chatGptApp = 'chatgpt';
-export type AppId = typeof fixtureApp | typeof chatGptApp;
 const discoveryCatalog = {
   'https://chatgpt.com': chatGptApp,
   'https://claude.ai': 'claude',
-  'https://gemini.google.com': 'gemini',
+  'https://gemini.google.com': geminiApp,
 } as const;
 export type DiscoveryApp = typeof discoveryCatalog[keyof typeof discoveryCatalog];
 export type AppObservation = { appId: DiscoveryApp; observedAt: string; policyVersion: number; assignmentVersion?: number };
@@ -35,7 +35,7 @@ export type Summary = {
   status: 'standalone' | 'connected' | 'offline' | 'revoked';
   installationId?: string;
   policy?: Policy;
-  chatGptEnabled?: boolean;
+  promptApps?: AiPromptApp[];
   enrollmentSource?: 'managed' | 'manual';
   managedEnrollment?: 'invalid' | 'rejected' | 'retrying';
   domainRuleCount?: number;
@@ -58,8 +58,19 @@ export function chatGptRoute(url: string | undefined): 'home' | 'conversation' |
   return 'other';
 }
 
-export function isChatGptPage(url: string | undefined): boolean {
-  return chatGptRoute(url) !== 'other';
+export function geminiRoute(url: string | undefined): 'home' | 'conversation' | 'other' {
+  if (!url) return 'other';
+  const page = new URL(url);
+  if (page.origin !== 'https://gemini.google.com') return 'other';
+  if (/^\/app\/?$/.test(page.pathname)) return 'home';
+  if (/^\/app\/[a-z\d-]+\/?$/i.test(page.pathname)) return 'conversation';
+  return 'other';
+}
+
+export function promptApp(url: string | undefined): AppId | undefined {
+  if (url === fixtureUrl) return fixtureApp;
+  if (chatGptRoute(url) !== 'other') return chatGptApp;
+  if (geminiRoute(url) !== 'other') return geminiApp;
 }
 
 export type Reply = { summary?: Summary; error?: string };
@@ -87,7 +98,7 @@ export function isId(value: unknown): value is string {
 export function readMetadata(value: unknown): PolicyEvent | undefined {
   if (!isRecord(value) || !isId(value.eventId) || !isVersion(value.policyVersion) ||
       (value.assignmentVersion !== undefined && !isVersion(value.assignmentVersion)) ||
-      (value.appId !== fixtureApp && value.appId !== chatGptApp) ||
+      !isPromptApp(value.appId) ||
       !(isMode(value.decision) || value.decision === 'warn_override') ||
       typeof value.timestamp !== 'string' || !Number.isFinite(Date.parse(value.timestamp))) return;
 

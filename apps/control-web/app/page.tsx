@@ -1,6 +1,6 @@
 import { ApiError, controlApi } from '../lib/api';
 import {
-  aiApps, chatGptApp, classifications, classificationLabels, decisionLabels, decisions, fixtureApp, utc,
+  aiApps, classifications, classificationLabels, decisionLabels, decisions, isPromptApp, promptAppLabels, utc,
   type Decision, type DiscoveredApp, type Installation, type SecurityEvent,
 } from '../lib/control';
 import { eventFilters, setEventCursor } from '../lib/events';
@@ -91,7 +91,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
           <div className="panel-heading"><h2 id="browsers-heading">Browser health</h2><RefreshSection label="Refresh browser health" /></div>
           <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="browsers-heading">
             <table aria-labelledby="browsers-heading">
-              <thead><tr><th>Installation</th><th>Rollout group</th><th>Reporting</th><th>Policy status</th><th>Applied version</th><th>ChatGPT composer</th><th>Last seen (UTC)</th><th>Action</th></tr></thead>
+              <thead><tr><th>Installation</th><th>Rollout group</th><th>Reporting</th><th>Policy status</th><th>Applied version</th><th>ChatGPT composer</th><th>Gemini composer</th><th>Last seen (UTC)</th><th>Action</th></tr></thead>
               <tbody>{installations.map((installation) => <BrowserRow key={installation.installationId}
                 installation={installation} latestVersion={current?.version} />)}</tbody>
             </table>
@@ -107,8 +107,8 @@ export default async function Control({ searchParams }: { searchParams: Promise<
           <form action="/#events" method="get" className="filters">
             <div><label htmlFor="event-application">Application</label>
               <select id="event-application" name="app" defaultValue={filters.app}>
-                <option value="">All applications</option><option value={fixtureApp}>Local prompt fixture</option>
-                <option value={chatGptApp}>ChatGPT</option>
+                <option value="">All applications</option>
+                {Object.entries(promptAppLabels).map(([app, label]) => <option value={app} key={app}>{label}</option>)}
               </select>
             </div>
             <div><label htmlFor="event-decision">Decision</label>
@@ -215,9 +215,8 @@ function BrowserRow({ installation, latestVersion }: { installation: Installatio
     <td>{installation.revokedAt ? '—' : <span className={`badge ${stale ? 'warn' : 'current'}`}>{stale ? 'Stale' : 'Reporting'}</span>}</td>
     <td><span className={`badge ${status === 'Current' ? 'current' : ''}`}>{status}</span></td>
     <td>{installation.appliedPolicyVersion ? `v${installation.appliedPolicyVersion}` : '—'}</td>
-    <td><span className={`badge ${installation.chatGptCoverage === 'unsupported' ? 'warn' : ''}`}>
-      {installation.chatGptCoverage === 'ready' ? 'Detected' : installation.chatGptCoverage === 'unsupported' ? 'Unsupported' : 'Unobserved'}
-    </span>{installation.chatGptCheckedAt && <div className="muted"><Timestamp value={installation.chatGptCheckedAt} /> UTC</div>}</td>
+    <CoverageCell coverage={installation.chatGptCoverage} checkedAt={installation.chatGptCheckedAt} />
+    <CoverageCell coverage={installation.geminiCoverage} checkedAt={installation.geminiCheckedAt} />
     <td><Timestamp value={installation.lastSeenAt} /></td>
     <td>{installation.revokedAt ? '—' :
       <MutationForm action={revokeInstallation} label="Revoke" appearance="small danger"
@@ -229,12 +228,18 @@ function BrowserRow({ installation, latestVersion }: { installation: Installatio
   </tr>;
 }
 
+function CoverageCell({ coverage, checkedAt }: { coverage?: 'ready' | 'unsupported' | null; checkedAt?: string | null }) {
+  return <td><span className={`badge ${coverage === 'unsupported' ? 'warn' : ''}`}>
+    {coverage === 'ready' ? 'Detected' : coverage === 'unsupported' ? 'Unsupported' : 'Unobserved'}
+  </span>{checkedAt && <div className="muted"><Timestamp value={checkedAt} /> UTC</div>}</td>;
+}
+
 function EventRow({ event, filters }: { event: SecurityEvent; filters: URLSearchParams }) {
   const browser = new URLSearchParams(filters);
   browser.set('installation', event.installationId);
   return <tr>
     <td><Timestamp value={event.timestamp} /></td>
-    <td className="emphasis">{event.appId === fixtureApp ? 'Local prompt fixture' : event.appId === chatGptApp ? 'ChatGPT' : event.appId}</td>
+    <td className="emphasis">{isPromptApp(event.appId) ? promptAppLabels[event.appId] : event.appId}</td>
     <td><DecisionBadge decision={event.decision} /></td>
     <td>{event.ruleId === 'github-classic-pat' ? 'GitHub classic PAT' :
       event.detectorCategory === 'synthetic-secret' ? 'Synthetic secret' : event.detectorCategory}</td>

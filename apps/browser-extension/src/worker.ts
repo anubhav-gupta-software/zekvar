@@ -1,7 +1,8 @@
 import {
-  chatGptApp, discoveredApp, fixtureApp, fixtureDetector, fixtureRule, fixtureUrl, isChatGptPage, isDetectorMode,
-  isId, isMode, isRecord, isToken, isVersion, readMetadata,
-  type AppId, type AppObservation, type Coverage, type DiscoveryApp, type Policy, type PolicyEvent, type Reply, type Summary,
+  aiPromptApps, chatGptApp, discoveredApp, fixtureApp, fixtureDetector, fixtureRule, geminiApp, isDetectorMode,
+  isId, isMode, isRecord, isToken, isVersion, promptApp, readMetadata,
+  type AiPromptApp, type AppId, type AppObservation, type Coverage, type DiscoveryApp, type Policy, type PolicyEvent,
+  type Reply, type Summary,
 } from './protocol';
 import { emptyDomainRules, installDomainRules, readDomainRules, sameDomainRules, type DomainRules } from './domain-rules';
 
@@ -16,6 +17,8 @@ type State = {
   domainRulesError?: boolean;
   chatGptEnabled?: boolean;
   coveragePending?: Coverage;
+  geminiEnabled?: boolean;
+  geminiCoveragePending?: Coverage;
   queue: PolicyEvent[];
   observations?: Partial<Record<DiscoveryApp, AppObservation>>;
   discarded: number;
@@ -50,10 +53,20 @@ function save(state: State) {
   return chrome.storage.local.set({ [key]: state });
 }
 
+function appEnabled(state: State, app: AiPromptApp) {
+  return app === chatGptApp ? state.chatGptEnabled === true : state.geminiEnabled === true;
+}
+
+function clearCoverage(state: State) {
+  state.coveragePending = undefined;
+  state.geminiCoveragePending = undefined;
+}
+
 function summary(state: State): Summary {
   return {
     status: state.status, installationId: state.enrollment?.installationId, enrollmentSource: state.enrollment?.source,
-    policy: state.policy, chatGptEnabled: state.chatGptEnabled, queued: state.queue.length, discarded: state.discarded,
+    policy: state.policy, promptApps: aiPromptApps.filter((app) => appEnabled(state, app)),
+    queued: state.queue.length, discarded: state.discarded,
     managedEnrollment: state.managedEnrollment, domainRulesError: state.domainRulesError,
     domainRuleCount: state.domainRules ? state.domainRules.allow.length + state.domainRules.block.length : undefined,
   };
@@ -98,7 +111,7 @@ async function lostConnection(state: State, error: unknown) {
   if (error instanceof HttpError && error.status === 401) {
     state.status = 'revoked';
     state.enrollment = undefined;
-    state.coveragePending = undefined;
+    clearCoverage(state);
     state.observations = undefined;
     state.discarded += state.queue.length;
     state.queue = [];
@@ -170,8 +183,9 @@ async function sync(state: State) {
       await applyDomainRules(state, domainRules);
       state.policy = { version: policy.version, mode: policy.mode, githubPatMode, discoveryEnabled, assignmentVersion: policy.assignmentVersion };
       if (!discoveryEnabled || assignment !== previousAssignment) state.observations = undefined;
-      if (assignment !== previousAssignment) state.coveragePending = undefined;
+      if (assignment !== previousAssignment) clearCoverage(state);
       state.chatGptEnabled = Array.isArray(policy.appIds) && policy.appIds.includes(chatGptApp);
+      state.geminiEnabled = Array.isArray(policy.appIds) && policy.appIds.includes(geminiApp);
       await save(state);
     }
     await heartbeat(state);
@@ -190,9 +204,10 @@ async function heartbeat(state: State) {
     policyVersion: state.policy.version,
     assignmentVersion: state.policy.assignmentVersion,
     chatGptCoverage: state.chatGptEnabled ? state.coveragePending : undefined,
+    geminiCoverage: state.geminiEnabled ? state.geminiCoveragePending : undefined,
     domainRulesApplied: state.domainRules && (state.domainRules.allow.length || state.domainRules.block.length) ? true : undefined,
   });
-  state.coveragePending = undefined;
+  clearCoverage(state);
 }
 
 async function enroll(state: State, grant: unknown, managedHash?: string): Promise<Reply> {
@@ -264,10 +279,11 @@ async function onMessage(message: Record<string, unknown>, app: AppId | undefine
   const state = await readState();
   if (message.type === 'enroll') return enroll(state, message.grant);
   if (message.type === 'sync') return syncOrEnroll(state);
-  if (message.type === 'coverage' && state.chatGptEnabled && state.enrollment &&
+  if (message.type === 'coverage' && app && app !== fixtureApp && appEnabled(state, app) && state.enrollment &&
       message.installationId === state.enrollment.installationId &&
       (message.coverage === 'ready' || message.coverage === 'unsupported')) {
-    state.coveragePending = message.coverage;
+    if (app === chatGptApp) state.coveragePending = message.coverage;
+    else state.geminiCoveragePending = message.coverage;
     await save(state);
     if (state.status === 'connected') {
       try {
@@ -280,7 +296,7 @@ async function onMessage(message: Record<string, unknown>, app: AppId | undefine
   }
   if (message.type === 'decision' && state.enrollment && message.installationId === state.enrollment.installationId) {
     const event = readMetadata(message.event);
-    if (!event || event.appId !== app || (app === chatGptApp && !state.chatGptEnabled)) {
+    if (!event || event.appId !== app || (app !== fixtureApp && !appEnabled(state, app))) {
       return { summary: summary(state), error: 'Invalid event metadata.' };
     }
     if (state.queue.some(({ eventId }) => eventId === event.eventId)) return { summary: summary(state) };
@@ -318,10 +334,10 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, reply: (response
     return true;
   }
   const popup = sender.url === chrome.runtime.getURL('popup.html');
-  const app = sender.url === fixtureUrl ? fixtureApp : isChatGptPage(sender.url) ? chatGptApp : undefined;
+  const app = sender.tab && sender.frameId === 0 && sender.documentLifecycle === 'active' ? promptApp(sender.url) : undefined;
   const allowed = message.type === 'status' || message.type === 'sync' ||
     (popup && message.type === 'enroll') || (app && message.type === 'decision') ||
-    (app === chatGptApp && message.type === 'coverage');
+    (app && app !== fixtureApp && message.type === 'coverage');
   if (!(popup || app) || !allowed) return;
   serial(() => onMessage(message, app)).then(reply, () => reply({ error: 'The extension could not access local storage.' }));
   return true;

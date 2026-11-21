@@ -16,8 +16,7 @@ export const detectorModeLabels: Record<DetectorMode, string> = {
   off: 'Off', monitor: 'Monitor', warn: 'Warn', block: 'Block',
 };
 
-export const fixtureApp = 'local-prompt-fixture';
-export const chatGptApp = 'chatgpt';
+export { promptAppLabels, isPromptApp } from '../../../contracts/policy/apps';
 
 export const aiApps = { chatgpt: 'ChatGPT', claude: 'Claude', gemini: 'Gemini' } as const;
 export type AiAppId = keyof typeof aiApps;
@@ -48,6 +47,8 @@ export type Installation = {
   revokedAt: string | null;
   chatGptCoverage?: 'ready' | 'unsupported' | null;
   chatGptCheckedAt?: string | null;
+  geminiCoverage?: 'ready' | 'unsupported' | null;
+  geminiCheckedAt?: string | null;
   policyGroupId?: string | null;
   policyGroupName?: string | null;
   expectedPolicyVersion?: number;

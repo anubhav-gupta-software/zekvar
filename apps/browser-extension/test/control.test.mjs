@@ -17,6 +17,7 @@ assert.match(admin ?? '', /^[a-f0-9]{64}$/, 'Set ZEKVAR_EXTENSION_TEST_ADMIN_TOK
 const fixture = await readFile(new URL('../fixture/index.html', import.meta.url), 'utf8');
 const chatGptFixture = await readFile(new URL('./chatgpt-composer.html', import.meta.url), 'utf8');
 const guestComposerFixture = await readFile(new URL('./guest-chatgpt-composer.html', import.meta.url), 'utf8');
+const geminiComposerFixture = await readFile(new URL('./gemini-composer.html', import.meta.url), 'utf8');
 const { version: extensionVersion } = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
 const marker = 'ZEKVAR_TEST_SECRET';
 
@@ -501,5 +502,79 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
         rows.some((entry) => entry.policyVersion === tightened.version && entry.decision === 'block');
     }, 'Control should record the warnings and block without warning overrides.');
     assert.doesNotMatch(JSON.stringify(posts), new RegExp(`${marker}|${disabledPat}|REDACTED`));
+  });
+
+  await t.test('protects Gemini sends, isolates coverage, and clears an ambiguous composer', async () => {
+    const block = await adminCall('policies', { mode: 'block', githubPatMode: 'monitor' });
+    await popup.getByRole('button', { name: 'Sync now' }).click();
+    const gemini = await browser.newPage();
+    try {
+      await gemini.route('https://gemini.google.com/**', (route) => route.fulfill({ contentType: 'text/html', body: geminiComposerFixture }));
+      await gemini.goto('https://gemini.google.com/app');
+      const coverage = async () => (await adminCall('installations'))[0];
+      const input = gemini.getByRole('textbox', { name: 'Enter a prompt for Gemini', exact: true });
+      const send = gemini.locator('input-area-v2').getByRole('button', { name: 'Send message' });
+      const submissions = gemini.locator('#fixture-sends');
+      const protectedText = 'Fixture private prompt ' + marker;
+      const label = `Zekvar · BLOCK v${block.version} · GitHub PAT monitor`;
+      await gemini.getByText(`${label} · Waiting for Send control`, { exact: true }).waitFor();
+      assert.equal((await coverage()).geminiCoverage, null);
+      await input.fill(protectedText);
+      await gemini.getByText(label, { exact: true }).waitFor();
+      await until(async () => (await coverage()).geminiCoverage === 'ready', 'Gemini did not report ready coverage.');
+      const originalChatGptCoverage = (await coverage()).chatGptCoverage;
+      await send.click();
+      await gemini.getByRole('alert').filter({ hasText: 'Submission blocked' }).waitFor();
+      await input.press('Enter');
+      assert.equal(await submissions.textContent(), '0');
+      await gemini.locator('#unrelated-send').click();
+      assert.equal(await gemini.locator('#unrelated-sends').textContent(), '1');
+      await gemini.getByRole('button', { name: 'Redact detected values' }).click();
+      await gemini.getByText('Detected values redacted. Review the updated draft before sending.', { exact: true }).waitFor();
+      assert.equal(await submissions.textContent(), '0');
+      await input.press('Enter');
+      assert.equal(await submissions.getAttribute('data-last-draft'), 'Fixture private prompt [REDACTED]');
+      assert.equal(await submissions.textContent(), '1');
+      const rows = () => adminCall('events?appId=gemini');
+      await until(async () => (await rows()).length === 2, 'Both Gemini block events should reach Control.');
+      assert.ok((await rows()).every(({ appId, policyVersion, decision }) =>
+        appId === 'gemini' && policyVersion === block.version && decision === 'block'));
+
+      await input.fill(protectedText);
+      await send.evaluate((button) => {
+        const duplicate = button.cloneNode(true);
+        duplicate.id = 'duplicate-send';
+        button.after(duplicate);
+      });
+      await gemini.getByText('Zekvar · Unsupported composer (multiple Send controls)', { exact: true }).waitFor();
+      await until(async () => (await coverage()).geminiCoverage === 'unsupported', 'Gemini did not report ambiguous pairing.');
+      assert.equal((await coverage()).chatGptCoverage, originalChatGptCoverage);
+      await gemini.locator('#duplicate-send').evaluate((button) => button.remove());
+      await until(async () => (await coverage()).geminiCoverage === 'ready', 'Gemini did not report recovery.');
+
+      const warn = await adminCall('policies', { mode: 'warn' });
+      await popup.getByRole('button', { name: 'Sync now' }).click();
+      await gemini.evaluate(() => history.pushState({}, '', '/app/0123456789abcdef'));
+      await gemini.getByText(`Zekvar · WARN v${warn.version} · GitHub PAT monitor`, { exact: true }).waitFor();
+      await send.click();
+      await gemini.getByRole('button', { name: 'Continue anyway' }).click();
+      assert.equal(await submissions.textContent(), '2');
+      await until(async () => (await rows()).filter(({ policyVersion }) => policyVersion === warn.version).length === 2,
+        'Gemini should record the warning and its override once.');
+      assert.deepEqual((await rows()).filter(({ policyVersion }) => policyVersion === warn.version).map(({ decision }) => decision).sort(),
+        ['warn', 'warn_override']);
+
+      const monitor = await adminCall('policies', { mode: 'monitor' });
+      await popup.getByRole('button', { name: 'Sync now' }).click();
+      await input.fill(protectedText);
+      await gemini.getByText(`Zekvar · MONITOR v${monitor.version} · GitHub PAT monitor`, { exact: true }).waitFor();
+      await send.click();
+      assert.equal(await submissions.textContent(), '3');
+      await until(async () => (await rows()).some(({ policyVersion, decision }) => policyVersion === monitor.version && decision === 'monitor'),
+        'Gemini did not report the monitored attempt.');
+      await gemini.evaluate(() => history.pushState({}, '', '/privacy'));
+      await gemini.getByText('Zekvar · Unsupported Gemini page', { exact: true }).waitFor();
+      assert.doesNotMatch(JSON.stringify(posts), /Fixture private prompt|ZEKVAR_TEST_SECRET|\[REDACTED\]/);
+    } finally { await gemini.close(); }
   });
 });

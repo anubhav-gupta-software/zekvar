@@ -698,4 +698,60 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       assert.deepEqual((await admin(`events/export?${params}`)).entries, entries);
     }
   });
+
+  await t.test('stores Gemini coverage and decisions independently and preserves previous ChatGPT records on upgrade', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: first, ...options });
+    const { grant } = await admin('enrollment-grants', { method: 'POST' });
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const [policy] = await admin('policies');
+    assert.deepEqual(policy.appIds, ['local-prompt-fixture', 'chatgpt', 'gemini']);
+    const send = (path, body, expect = 204) => call(`/v1/browser/${path}`, { token: browser.token, method: 'POST', body, expect });
+    const installation = async () => (await admin('installations')).find(({ installationId }) => installationId === browser.installationId);
+    const scoped = (appId) => new URLSearchParams({ appId, installationId: browser.installationId }).toString();
+    const sample = { ...event, eventId: randomUUID(), appId: 'chatgpt', decision: policy.mode, policyVersion: policy.version };
+    await send('events', sample);
+    await send('heartbeat', { policyVersion: policy.version, chatGptCoverage: 'ready', domainRulesApplied: true });
+    const original = await installation();
+    const legacyRows = (await admin(`events/history?${scoped('chatgpt')}`)).entries;
+    assert.equal(legacyRows.length, 1);
+    assert.equal(original.chatGptCoverage, 'ready');
+    assert.equal(original.geminiCoverage, null);
+
+    if (postgres) {
+      await stop();
+      await retentionFixture(`
+        DELETE FROM schema_migrations WHERE version = 10;
+        ALTER TABLE security_events DROP CONSTRAINT security_events_app_id_check,
+            ADD CONSTRAINT security_events_app_id_check CHECK (app_id IN ('local-prompt-fixture', 'chatgpt'));
+        ALTER TABLE installations DROP COLUMN gemini_coverage, DROP COLUMN gemini_checked_at;
+      `);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 10'), '1');
+      assert.deepEqual(await installation(), original);
+      assert.deepEqual((await admin(`events/history?${scoped('chatgpt')}`)).entries, legacyRows);
+    }
+
+    await send('heartbeat', { policyVersion: policy.version, geminiCoverage: 'draft content', domainRulesApplied: true }, 400);
+    await send('heartbeat', { policyVersion: 2147483647, geminiCoverage: 'ready', domainRulesApplied: true }, 400);
+    await send('heartbeat', { policyVersion: policy.version, assignmentVersion: 1, geminiCoverage: 'ready', domainRulesApplied: true }, 400);
+    assert.equal((await installation()).geminiCoverage, null);
+    await send('heartbeat', { policyVersion: policy.version, geminiCoverage: 'unsupported', domainRulesApplied: true });
+    assert.equal((await installation()).geminiCoverage, 'unsupported');
+    await send('heartbeat', { policyVersion: policy.version, geminiCoverage: 'ready', domainRulesApplied: true });
+    assert.equal((await installation()).geminiCoverage, 'ready');
+    assert.equal((await installation()).chatGptCheckedAt, original.chatGptCheckedAt);
+    assert.ok(Number.isFinite(Date.parse((await installation()).geminiCheckedAt)));
+
+    const gemini = { ...sample, eventId: randomUUID(), appId: 'gemini' };
+    await send('events', { ...gemini, prompt: 'Private synthetic Gemini prompt' }, 400);
+    await send('events', { ...gemini, appId: 'claude' }, 400);
+    await send('events', gemini);
+    await send('events', gemini);
+    const history = (await admin(`events/history?${scoped('gemini')}`)).entries;
+    assert.equal(history.length, 1);
+    assert.equal(history[0].eventId, gemini.eventId);
+    assert.equal(history[0].appId, 'gemini');
+    assert.deepEqual((await admin(`events/export?${scoped('gemini')}`)).entries, history);
+    assert.deepEqual((await admin(`events/export?${scoped('gemini')}`, { token: second })).entries, []);
+  });
 });

@@ -9,7 +9,7 @@ if (!Number.isInteger(port) || port < 1024 || port > 65535) {
 }
 const origin = `http://127.0.0.1:${port}`;
 await build({
-  entryPoints: ['src/content.ts', 'src/chatgpt.ts', 'src/discovery.ts', 'src/popup.ts', 'src/worker.ts'],
+  entryPoints: ['src/content.ts', 'src/chatgpt.ts', 'src/gemini.ts', 'src/discovery.ts', 'src/popup.ts', 'src/worker.ts'],
   bundle: true,
   format: 'iife',
   outdir,

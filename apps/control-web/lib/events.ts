@@ -1,4 +1,4 @@
-import { chatGptApp, decisions, fixtureApp, isId, type SecurityEvent } from './control';
+import { decisions, isId, isPromptApp, type SecurityEvent } from './control';
 
 export type EventCursor = { receivedAt: string; eventId: string; installationId: string };
 export type EventPage = { entries: SecurityEvent[]; next: EventCursor | null };
@@ -23,7 +23,7 @@ export function setEventCursor(query: URLSearchParams, cursor: EventCursor) {
 export function eventFilters(search: Search) {
   const query = new URLSearchParams();
   const page = new URLSearchParams();
-  const app = search.app === fixtureApp || search.app === chatGptApp ? search.app : '';
+  const app = isPromptApp(search.app) ? search.app : '';
   const decision = decisions.find((value) => value === search.decision) ?? '';
   const period = search.period === 'day' || search.period === 'week' ? search.period : '';
   const installation = nonEmptyId(search.installation) ?? '';

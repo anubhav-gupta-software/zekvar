@@ -424,6 +424,63 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
     assert.deepEqual((await inventory())[1], committed);
   });
 
+  await t.test('live public Gemini blocks click and Enter and sends a reviewed redacted draft', {
+    skip: process.env.ZEKVAR_DEMO_LIVE !== '1',
+  }, async (live) => {
+    const [policy] = await adminGet('policies');
+    assert.equal(policy.mode, 'block');
+    const page = await browser.newPage();
+    try {
+      const requests = [];
+      page.on('request', (request) => {
+        const payload = request.postData();
+        if (payload?.includes(marker) && request.url().startsWith('https://gemini.google.com/')) requests.push('marker');
+      });
+      const response = await page.goto('https://gemini.google.com/app', { waitUntil: 'domcontentloaded', timeout: 15_000 })
+        .catch(() => undefined);
+      if (!response?.ok()) return live.skip(response ? `Live Gemini returned HTTP ${response.status()}.` : 'Live Gemini was unreachable.');
+      const editor = page.getByRole('textbox', { name: 'Enter a prompt for Gemini', exact: true });
+      if (!await editor.waitFor({ timeout: 8000 }).then(() => true, () => false)) {
+        return live.skip('Signed-out Gemini did not expose its English text composer.');
+      }
+      const clean = 'Reply with OK. Zekvar synthetic compatibility check. Example: [REDACTED]';
+      await editor.fill(clean.replace('[REDACTED]', marker));
+      const send = page.locator('input-area-v2').getByRole('button', { name: 'Send message', exact: true });
+      await send.waitFor();
+      await page.getByText(new RegExp(`^Zekvar · BLOCK v${policy.version}(?: · GitHub PAT [a-z]+)?$`)).waitFor();
+      await send.click();
+      await page.getByRole('alert').filter({ hasText: 'Submission blocked' }).waitFor();
+      await editor.press('Enter');
+      await waitUntil(async () => (await adminGet('events?appId=gemini')).filter((entry) =>
+        entry.policyVersion === policy.version && entry.decision === 'block').length === 2, 'Control should record both Gemini blocks.');
+      assert.deepEqual(requests, []);
+      await page.getByRole('button', { name: 'Redact detected values', exact: true }).click();
+      await page.getByRole('alert').filter({ hasText: 'Detected values redacted.' }).waitFor();
+      assert.equal(await editor.innerText(), clean);
+      await screenshot(page, '19-live-gemini-redacted-draft.png');
+      await send.click();
+      await page.getByText(clean, { exact: true }).last().waitFor();
+      await editor.waitFor();
+      assert.doesNotMatch(await editor.innerText(), /REDACTED/);
+      assert.deepEqual(requests, []);
+      assert.equal((await adminGet('events?appId=gemini')).length, 2);
+
+      await dashboard.reload();
+      await health.getByRole('columnheader', { name: 'Gemini composer' }).waitFor();
+      assert.equal(await health.getByRole('row').nth(1).getByRole('cell').nth(6).getByText('Detected', { exact: true }).count(), 1);
+      await dashboard.getByLabel('Application', { exact: true }).selectOption('gemini');
+      await dashboard.getByRole('button', { name: 'Apply filters' }).click();
+      await rows.getByText('Gemini', { exact: true }).nth(1).waitFor();
+      assert.equal(await rows.count(), 2);
+      const link = dashboard.getByRole('link', { name: 'Export security events (JSON)' });
+      const report = await dashboard.request.get(new URL(await link.getAttribute('href'), web).href);
+      assert.ok(report.ok());
+      const download = await report.json();
+      assert.equal(download.filters.appId, 'gemini');
+      assert.deepEqual(download.entries, await adminGet('events?appId=gemini'));
+    } finally { await page.close(); }
+  });
+
   const allowedDomains = dashboard.getByLabel('Allowed domains', { exact: true });
   const blockedDomains = dashboard.getByLabel('Blocked domains', { exact: true });
   const publishDomains = () => dashboard.getByRole('button', { name: 'Publish domain rules', exact: true }).click();

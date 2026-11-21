@@ -1,6 +1,6 @@
 # Zekvar Browser and Control demo
 
-Zekvar Browser enforces domain rules and applies prompt protection to the loopback fixture and supported ChatGPT composers. Zekvar evaluates draft text locally and reports decision metadata to Control. Managed browsers can also report visits to cataloged AI apps when discovery is enabled.
+Zekvar Browser enforces domain rules and applies prompt protection to the loopback fixture and supported ChatGPT and Gemini composers. Zekvar evaluates draft text locally and reports decision metadata to Control. Managed browsers can also report visits to cataloged AI apps when discovery is enabled.
 
 ## Run the demo
 
@@ -37,6 +37,14 @@ Browser v0.9.0 offers **Redact detected values** after a warning or block in a s
 The action is available for supported textareas and plain-text contenteditable layouts. Use **Edit prompt** if the draft includes rich content that needs to be preserved. Control records the original warning or block as decision metadata. The original and redacted drafts stay out of Control.
 
 The verification runner exercises redaction in the controlled marked editor and guest textarea. With `--live`, it shows the redacted draft in the public signed-out composer, then sends that draft in a separate step.
+
+## Try the Gemini text adapter
+
+1. Start the updated Control API and dashboard. Build and reload Browser v0.10.0, then click **Sync now**. Gemini uses the same detector policy as ChatGPT for that browser's baseline or rollout group.
+2. Open [Gemini](https://gemini.google.com/app) in the enrolled profile. In a supported English composer, type `Reply with OK. Example: ZEKVAR_TEST_SECRET`. With **Test marker** in **Block**, try **Send** or **Enter**. Choose **Redact detected values**, review the edited draft, and submit it when ready.
+3. In Control, use **Gemini composer** under **Browser health** to see the last pairing check. Filter **Security events** to **Gemini** to review or export decision metadata.
+
+The adapter matches a single visible text editor and Send control in the same Gemini composer. An empty draft may show **Waiting for Send control**. The supported paths are native click and plain Enter with the recognized English editor. Signed-in Workspace layouts, files, voice, and other compose surfaces require separate verification. [Gemini web app access](https://support.google.com/gemini/answer/13275745?hl=en)
 
 ## Try the GitHub classic PAT rule
 

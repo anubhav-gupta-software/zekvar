@@ -159,7 +159,7 @@ browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
     return aware ? Results.Unauthorized() : Results.Conflict(new { error = "Update the browser to receive the assigned policy." });
 });
 browser.MapPost("/heartbeat", async (Heartbeat request, HttpContext http, CancellationToken ct) =>
-    (request.ChatGptCoverage is null or "ready" or "unsupported") &&
+    request.IsValid() &&
     await store.RecordHeartbeat(Identity(http).InstallationId!.Value, request, ct)
         ? Results.NoContent() : Results.BadRequest(new { error = "Policy or browser enforcement could not be acknowledged." }));
 browser.MapPost("/events", async (PolicyEvent request, HttpContext http, CancellationToken ct) =>
