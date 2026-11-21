@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -612,6 +612,69 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
       } finally { await page.close(); }
     });
   }
+
+  await t.test('holds native file drops on live signed-out ChatGPT and Gemini and reports their methods', {
+    skip: process.env.ZEKVAR_DEMO_LIVE !== '1',
+  }, async (live) => {
+    await dashboard.reload();
+    const version = await policyVersion() + 1;
+    await dashboard.getByLabel('ChatGPT file uploads', { exact: true }).selectOption('block');
+    await dashboard.getByLabel('Gemini file uploads', { exact: true }).selectOption('block');
+    await dashboard.getByRole('button', { name: 'Publish policy' }).click();
+    await dashboard.getByText(`Version ${version} published in block mode.`, { exact: true }).waitFor();
+    await sync();
+    const name = 'synthetic-private-live-upload.txt';
+    const content = 'Zekvar synthetic file drop test content';
+    const fixtureFile = join(dir, name);
+    await writeFile(fixtureFile, content);
+    let geminiVerified = false;
+    for (const [app, url, editorSelector] of [
+      ['chatgpt', 'https://chatgpt.com/', 'textarea[placeholder="Ask ChatGPT"]:visible, #prompt-textarea:visible'],
+      ['gemini', 'https://gemini.google.com/app', 'input-area-v2 [role="textbox"][aria-label="Enter a prompt for Gemini"]:visible'],
+    ]) {
+      await live.test(app, async (site) => {
+        const page = await browser.newPage();
+        try {
+          let fileSent = false;
+          page.on('request', (request) => {
+            const body = request.postData();
+            if (body?.includes(name) || body?.includes(content)) fileSent = true;
+          });
+          const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 12_000 }).catch(() => undefined);
+          if (!response?.ok()) return site.skip(`The public ${app} route was unavailable.`);
+          const editor = page.locator(editorSelector).first();
+          if (!await editor.waitFor({ timeout: 6000 }).then(() => true, () => false)) return site.skip('The tested editor was unavailable.');
+          await page.getByText(/File uploads block/).first().waitFor();
+          const cdp = await browser.newCDPSession(page);
+          try {
+            const box = await editor.boundingBox();
+            const data = { items: [], files: [fixtureFile], dragOperationsMask: 1 };
+            for (const type of ['dragEnter', 'dragOver', 'drop']) {
+              await cdp.send('Input.dispatchDragEvent', { type, x: box.x + box.width / 2, y: box.y + box.height / 2, data });
+            }
+          } finally { await cdp.detach(); }
+          await page.getByRole('alert').filter({ hasText: 'File upload blocked by your organization' }).waitFor();
+          await waitUntil(async () => (await adminGet(`events?appId=${app}`)).some(({ policyVersion, ruleId, uploadMethod, decision }) =>
+            policyVersion === version && ruleId === 'ai-file-upload' && uploadMethod === 'drop' && decision === 'block'),
+          'Control did not receive the block.');
+          assert.equal(fileSent, false);
+          if (app === 'gemini') geminiVerified = true;
+          await screenshot(page, `21-${app}-file-drop-blocked.png`);
+        } finally { await page.close(); }
+      });
+    }
+    if (!geminiVerified) return;
+    await dashboard.reload();
+    await dashboard.getByLabel('Application', { exact: true }).selectOption('gemini');
+    await dashboard.getByRole('button', { name: 'Apply filters' }).click();
+    await rows.getByText('Drag and drop', { exact: true }).first().waitFor();
+    const exportLink = dashboard.getByRole('link', { name: 'Export security events (JSON)' });
+    const report = await dashboard.request.get(new URL(await exportLink.getAttribute('href'), web).href);
+    assert.ok(report.ok());
+    const { entries } = await report.json();
+    assert.deepEqual(entries.filter(({ policyVersion }) => policyVersion === version).map(({ uploadMethod }) => uploadMethod), ['drop']);
+    assert.ok(!JSON.stringify(entries).includes(name) && !JSON.stringify(entries).includes(content));
+  });
 
   const allowedDomains = dashboard.getByLabel('Allowed domains', { exact: true });
   const blockedDomains = dashboard.getByLabel('Blocked domains', { exact: true });

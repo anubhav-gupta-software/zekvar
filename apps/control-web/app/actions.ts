@@ -9,6 +9,7 @@ import { endSession, sessionToken, startSession } from '../lib/session';
 import { cleanupCounts, retentionFields, type RetentionField, type RetentionPolicy } from '../lib/retention';
 import { canonicalizeDomainRules, domainLines } from '../../../contracts/policy/domains';
 import { isDetectorMode, isMode } from '../../../contracts/policy/prompt';
+import { isUploadMode } from '../../../contracts/policy/uploads';
 
 export async function signIn(_previous: Feedback, form: FormData): Promise<Feedback> {
   const token = form.get('token');
@@ -48,19 +49,26 @@ async function perform(change: (token: string) => Promise<Feedback>): Promise<Fe
   }
 }
 
+function readUploadSettings(form: FormData) {
+  const chatgpt = form.get('upload-chatgpt');
+  const gemini = form.get('upload-gemini');
+  if (isUploadMode(chatgpt) && isUploadMode(gemini)) return { chatgpt, gemini };
+}
+
 export async function publishPolicy(_previous: Feedback, form: FormData): Promise<Feedback> {
   const mode = form.get('mode') as Mode;
   const githubPatMode = form.get('githubPatMode') as DetectorMode;
   const paymentCardMode = form.get('paymentCardMode');
+  const uploadModes = readUploadSettings(form);
   const discovery = form.get('discoveryEnabled');
   const groupId = form.get('groupId');
   if (groupId !== null && !isId(groupId)) return { error: 'Choose a valid rollout group.' };
-  if (!modes.includes(mode) || !detectorModes.includes(githubPatMode) || !isDetectorMode(paymentCardMode) ||
+  if (!modes.includes(mode) || !detectorModes.includes(githubPatMode) || !isDetectorMode(paymentCardMode) || !uploadModes ||
       (discovery !== 'on' && discovery !== 'off')) {
     return { error: 'Choose a setting for each policy control.' };
   }
   return perform(async (token) => {
-    const policy = await controlApi.publish(token, { mode, githubPatMode, paymentCardMode, discoveryEnabled: discovery === 'on' },
+    const policy = await controlApi.publish(token, { mode, githubPatMode, paymentCardMode, uploadModes, discoveryEnabled: discovery === 'on' },
       groupId ?? undefined);
     refreshPolicyViews();
     return { message: `Version ${policy.version} published in ${decisionLabels[mode].toLowerCase()} mode.` };
@@ -104,12 +112,14 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   const mode = form.get('mode');
   const githubPatMode = form.get('githubPatMode');
   const paymentCardMode = form.get('paymentCardMode');
+  const uploadModes = readUploadSettings(form);
   const discovery = form.get('discoveryEnabled');
   const groupId = form.get('groupId');
   const expectedVersion = Number(form.get('expectedVersion'));
   const allow = form.get('allow');
   const block = form.get('block');
-  if (!isMode(mode) || !isDetectorMode(githubPatMode) || !isDetectorMode(paymentCardMode) || (discovery !== 'on' && discovery !== 'off') ||
+  if (!isMode(mode) || !isDetectorMode(githubPatMode) || !isDetectorMode(paymentCardMode) || !uploadModes ||
+      (discovery !== 'on' && discovery !== 'off') ||
       (groupId !== null && !isId(groupId)) || !Number.isInteger(expectedVersion) || expectedVersion < 1 ||
       expectedVersion > 2147483647 || typeof allow !== 'string' || typeof block !== 'string') {
     return { error: 'Run the preview again before publishing.' };
@@ -118,7 +128,8 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   if (!domainRules) return { error: 'Enter valid, non-conflicting hostnames before publishing.' };
   return perform(async (token) => {
     try {
-      const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, discoveryEnabled: discovery === 'on', domainRules },
+      const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, uploadModes,
+        discoveryEnabled: discovery === 'on', domainRules },
         expectedVersion, groupId ?? undefined);
       refreshPolicyViews();
       return { message: `Previewed policy published as version ${published.version}.` };

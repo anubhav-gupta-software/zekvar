@@ -768,8 +768,9 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     if (postgres) {
       await stop();
       await retentionFixture(`
-        DELETE FROM schema_migrations WHERE version = 11;
-        ALTER TABLE policy_versions DROP COLUMN payment_card_mode;
+        DELETE FROM schema_migrations WHERE version IN (11, 12);
+        ALTER TABLE policy_versions DROP COLUMN payment_card_mode, DROP COLUMN chatgpt_upload_mode, DROP COLUMN gemini_upload_mode;
+        ALTER TABLE security_events DROP CONSTRAINT security_events_upload_method_check, DROP COLUMN upload_method;
         ALTER TABLE security_events DROP CONSTRAINT security_events_rule_id_check,
             ADD CONSTRAINT security_events_rule_id_check CHECK (rule_id IN ('fixture-secret', 'github-classic-pat'));
       `);
@@ -820,6 +821,69 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.ok(entries.every((entry) => entry.detectorCategory === 'payment-card' && entry.ruleId === 'payment-card-number'));
     assert.deepEqual(entries.map(({ decision }) => decision).sort(), ['block', 'warn_override']);
     assert.ok(!JSON.stringify(entries).includes('4242424242424242'));
+    assert.deepEqual((await admin(`events/export?${query}`, { token: second })).entries, []);
+  });
+
+  await t.test('versions and validates file upload policy by destination and exports the attempt method', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: first, ...options });
+    const publish = (body, expect = 200) => admin('policies', { method: 'POST', body, expect });
+    const [before] = await admin('policies');
+    assert.deepEqual(before.uploadModes, { chatgpt: 'off', gemini: 'off' });
+    const history = await admin('events');
+    if (postgres) {
+      await stop();
+      await retentionFixture(`
+        DELETE FROM schema_migrations WHERE version = 12;
+        ALTER TABLE policy_versions DROP COLUMN chatgpt_upload_mode, DROP COLUMN gemini_upload_mode;
+        ALTER TABLE security_events DROP CONSTRAINT security_events_upload_method_check, DROP COLUMN upload_method,
+            DROP CONSTRAINT security_events_rule_id_check,
+            ADD CONSTRAINT security_events_rule_id_check CHECK (rule_id IN ('fixture-secret', 'github-classic-pat', 'payment-card-number'));
+      `);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 12'), '1');
+      assert.deepEqual((await admin('policies'))[0], before);
+      assert.deepEqual(await admin('events'), history);
+    }
+    const { grant } = await admin('enrollment-grants', { method: 'POST' });
+    const client = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const submit = (path, body, expect = 204) => call(`/v1/browser/${path}`, { token: client.token, method: 'POST', body, expect });
+    const applied = async () => (await admin('installations')).find(({ installationId }) => installationId === client.installationId).appliedPolicyVersion;
+    const heartbeat = (policyVersion, flags) => submit('heartbeat', { policyVersion, domainRulesApplied: true, ...flags });
+    await heartbeat(before.version);
+    await publish({ uploadModes: {} }, 400);
+    await publish({ uploadModes: { chatgpt: 'warn' } }, 400);
+    await publish({ uploadModes: { claude: 'block' } }, 400);
+    const monitor = await publish({ uploadModes: { chatgpt: 'monitor' }, expectedVersion: before.version });
+    const block = await publish({ uploadModes: { gemini: 'block' }, expectedVersion: monitor.version });
+    await publish({ uploadModes: { gemini: 'off' }, expectedVersion: monitor.version }, 409);
+    assert.deepEqual(block.uploadModes, { chatgpt: 'monitor', gemini: 'block' });
+    assert.equal(block.paymentCardMode, before.paymentCardMode);
+    await heartbeat(block.version);
+    assert.equal(await applied(), before.version);
+    await heartbeat(block.version, { uploadControlsApplied: true });
+    assert.equal(await applied(), block.version);
+
+    const attempt = { ...event, eventId: randomUUID(), timestamp: new Date().toISOString(), policyVersion: block.version,
+      appId: 'gemini', decision: 'block', ruleId: 'ai-file-upload', detectorCategory: 'file-upload', uploadMethod: 'picker' };
+    for (const invalid of [
+      { ...attempt, appId: 'chatgpt' }, { ...attempt, appId: 'local-prompt-fixture' }, { ...attempt, policyVersion: monitor.version },
+      { ...attempt, detectorCategory: 'credential' }, { ...attempt, decision: 'warn_override' }, { ...attempt, uploadMethod: null },
+      { ...attempt, uploadMethod: 'unknown' }, { ...attempt, fileName: 'private-attachment.txt' },
+    ]) await submit('events', invalid, 400);
+    await submit('events', { ...event, eventId: randomUUID(), uploadMethod: 'picker' }, 400);
+    await submit('events', attempt);
+    await submit('events', attempt);
+    const paste = { ...attempt, eventId: randomUUID(), appId: 'chatgpt', decision: 'monitor', uploadMethod: 'paste' };
+    await submit('events', paste);
+    const restore = await admin(`policies/${before.version}/restore`, { method: 'POST' });
+    assert.deepEqual(restore.uploadModes, before.uploadModes);
+    await heartbeat(restore.version);
+    assert.equal(await applied(), restore.version);
+    await submit('events', { ...attempt, eventId: randomUUID(), policyVersion: restore.version }, 400);
+    const query = new URLSearchParams({ installationId: client.installationId });
+    const { entries } = await admin(`events/export?${query}`);
+    assert.deepEqual(entries.map(({ eventId, uploadMethod }) => [eventId, uploadMethod]), [[paste.eventId, 'paste'], [attempt.eventId, 'picker']]);
+    assert.equal(entries.some((row) => 'fileName' in row || 'content' in row), false);
     assert.deepEqual((await admin(`events/export?${query}`, { token: second })).entries, []);
   });
 });

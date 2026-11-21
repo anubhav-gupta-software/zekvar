@@ -1,8 +1,9 @@
 import { redactPrompt } from '../../../contracts/policy/prompt';
-import { recordDecision } from './decisions';
+import { recordDecision, recordUploadDecision } from './decisions';
 import { evaluatePrompt, type MatchedDecision } from './policy';
 import { isMode, send, type AiPromptApp, type Coverage, type Summary } from './protocol';
 import { promptAppLabels } from '../../../contracts/policy/apps';
+import { bindUploadGuard } from './upload-guard';
 import { promptText, replacePromptText, supportsRedaction, type Composer, type ComposerInspection } from './prompt-composer';
 
 type PromptAdapter = {
@@ -26,8 +27,8 @@ function controls(appId: AiPromptApp) {
       background: #101927; box-shadow: 0 1px 8px #0004; }
     p { margin: 0; }
     #status { color: #8aecc8; }
-    #notice { margin-top: .4rem; }
-    #notice:empty, [hidden] { display: none; }
+    #notice, #upload-notice { margin-top: .4rem; }
+    #notice:empty, #upload-notice:empty, [hidden] { display: none; }
     button { margin: .55rem .35rem 0 0; padding: .3rem .55rem; border: 1px solid #627b8b;
       border-radius: .35rem; color: #fff; background: #203045; cursor: pointer; font: inherit; }
     button:focus-visible { outline: 2px solid #59e6b5; outline-offset: 2px; }
@@ -43,6 +44,9 @@ function controls(appId: AiPromptApp) {
   const notice = document.createElement('p');
   notice.id = 'notice';
   notice.setAttribute('role', 'alert');
+  const uploadNotice = document.createElement('p');
+  uploadNotice.id = 'upload-notice';
+  uploadNotice.setAttribute('role', 'alert');
   const actions = document.createElement('div');
   const redact = document.createElement('button');
   redact.type = 'button';
@@ -60,9 +64,9 @@ function controls(appId: AiPromptApp) {
   diagnostics.readOnly = true;
   diagnostics.hidden = true;
   diagnostics.setAttribute('aria-label', 'Composer diagnostics');
-  panel.append(status, notice, actions, copy, diagnostics);
+  panel.append(status, uploadNotice, notice, actions, copy, diagnostics);
   root.append(style, panel);
-  return { host, status, notice, actions, redact, edit, proceed, copy, diagnostics };
+  return { host, status, notice, uploadNotice, actions, redact, edit, proceed, copy, diagnostics };
 }
 
 export function bindPromptGuard(adapter: PromptAdapter) {
@@ -88,6 +92,7 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     if (!ui.host.isConnected) document.body.append(ui.host);
     if (!supported()) {
       clearInterruption();
+      ui.uploadNotice.textContent = '';
       ui.status.textContent = `Zekvar · Unsupported ${appName} page`;
       lastCoverage = undefined;
       unsupportedSince = 0;
@@ -110,7 +115,10 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     const managedPolicy = installationId && enabled(control) ? policy : undefined;
     const github = managedPolicy?.githubPatMode;
     const card = managedPolicy?.paymentCardMode;
-    const detectors = (isMode(github) ? ` · GitHub PAT ${github}` : '') + (isMode(card) ? ` · Payment card ${card}` : '');
+    const upload = managedPolicy?.uploadModes?.[adapter.appId];
+    if (upload !== 'block') ui.uploadNotice.textContent = '';
+    const detectors = (isMode(github) ? ` · GitHub PAT ${github}` : '') + (isMode(card) ? ` · Payment card ${card}` : '') +
+      (upload && upload !== 'off' ? ` · File uploads ${upload}` : '');
     const label = !managedPolicy ? `Zekvar · ${appName} policy unavailable` : coverage === 'unsupported' ?
       `Zekvar · Unsupported composer (${inspection.gap ?? 'Send control missing'})` : !coverage && !waiting ? 'Zekvar · Checking composer…' :
         `Zekvar · ${managedPolicy.mode.toUpperCase()} v${managedPolicy.version}${detectors}${control?.status === 'offline' ? ' · Offline policy' : ''}${current?.button ? '' : ' · Waiting for Send control'}`;
@@ -267,11 +275,21 @@ export function bindPromptGuard(adapter: PromptAdapter) {
   let wasSupportedPage = false;
   function refreshPage() {
     const supportedPage = supported();
-    if (supportedPage) void refresh(wasSupportedPage ? 'status' : 'sync');
+    if (supportedPage && !wasSupportedPage) void refresh('status').then(() => refresh('sync'));
+    else if (supportedPage) void refresh('status');
     wasSupportedPage = supportedPage;
     observe();
   }
 
+  bindUploadGuard(() => {
+    if (!supported() || !enabled(control) || !control?.installationId) return;
+    const mode = control.policy?.uploadModes?.[adapter.appId];
+    if (mode === 'monitor' || mode === 'block') return mode;
+  }, (decision, method) => {
+    if (!control?.policy || !control.installationId) return;
+    recordUploadDecision(adapter.appId, control.policy, control.installationId, decision, method);
+    if (decision === 'block') ui.uploadNotice.textContent = `File upload blocked by your organization’s ${appName} policy.`;
+  });
   refreshPage();
   window.setInterval(refreshPage, 750);
 }

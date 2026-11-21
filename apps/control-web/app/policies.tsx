@@ -1,4 +1,5 @@
-import { decisionLabels, detectorModeLabels, detectorModes, modes, utc, type Policy } from '../lib/control';
+import { aiPromptApps, decisionLabels, detectorModeLabels, detectorModes, modes, promptAppLabels, utc, type Policy } from '../lib/control';
+import { uploadModes } from '../../../contracts/policy/uploads';
 import { publishPolicy, restorePolicy } from './actions';
 import { MutationForm } from './forms';
 
@@ -29,6 +30,12 @@ export function PublishPolicyForm({ policy, groupId }: { policy?: Policy; groupI
         <option value="off">Off</option><option value="on">On</option>
       </select>
     </div>
+    {aiPromptApps.map((app) => <div className="grid gap-1" key={app}>
+      <label htmlFor={`upload-${app}`}>{promptAppLabels[app]} file uploads</label>
+      <select key={policy?.version} id={`upload-${app}`} name={`upload-${app}`} defaultValue={policy?.uploadModes?.[app] ?? 'off'}>
+        {uploadModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+      </select>
+    </div>)}
   </MutationForm>;
 }
 
@@ -38,7 +45,8 @@ export function PolicyVersionTable({ policies, groupId }: { policies: Policy[]; 
       <span className="table-note">Latest 100 versions</span></div>
     <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="history-heading">
       <table aria-labelledby="history-heading">
-        <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>Payment card number</th><th>AI app discovery</th><th>Domain rules</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
+        <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>Payment card number</th><th>AI app discovery</th>
+          <th>File uploads</th><th>Domain rules</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
         <tbody>{policies.map((policy, index) => <PolicyRow key={policy.version} policy={policy} current={index === 0} groupId={groupId} />)}</tbody>
       </table>
       {policies.length === 0 && <p className="empty">Publish a policy to start the version history.</p>}
@@ -53,6 +61,7 @@ function PolicyRow({ policy, current, groupId }: { policy: Policy; current: bool
     <td>{detectorModeLabels[policy.githubPatMode ?? 'off']}</td>
     <td>{detectorModeLabels[policy.paymentCardMode ?? 'off']}</td>
     <td>{policy.discoveryEnabled ? 'On' : 'Off'}</td>
+    <td>{aiPromptApps.map((app) => <div key={app}>{promptAppLabels[app]} · {detectorModeLabels[policy.uploadModes?.[app] ?? 'off']}</div>)}</td>
     <td>{allow.length || block.length ? <details className="domain-rule-history">
       <summary>{allow.length} allow · {block.length} block</summary>
       {allow.length > 0 && <p>Allow <code>{allow.join(', ')}</code></p>}

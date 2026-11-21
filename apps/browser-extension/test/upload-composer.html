@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>File intake fixture</title></head>
+<body>
+  <h1>File intake fixture</h1>
+  <label>Attach fixture files <input type="file" multiple></label>
+  <form aria-label="Fixture ChatGPT composer">
+    <label for="prompt-textarea">Fixture text</label>
+    <textarea id="prompt-textarea"></textarea>
+    <button type="button" data-testid="send-button">Fixture send</button>
+  </form>
+  <input-area-v2>
+    <rich-textarea><div class="ql-editor" role="textbox" aria-label="Enter a prompt for Gemini" contenteditable="true">Draft</div></rich-textarea>
+    <button type="button" aria-label="Send message">Fixture Gemini send</button>
+  </input-area-v2>
+  <div id="drop-zone" style="width:300px;height:90px;border:1px solid">Drop fixture files</div>
+  <script>
+    window.fileEvents = [];
+    const field = document.querySelector('input[type=file]');
+    field.addEventListener('input', () => { if (field.files.length) fileEvents.push(['input', field.files.length]); });
+    field.addEventListener('change', () => { if (field.files.length) fileEvents.push(['change', field.files.length]); });
+    window.addEventListener('dragover', (event) => event.preventDefault());
+    window.addEventListener('drop', (event) => {
+      if (event.target !== field) event.preventDefault();
+      if (event.dataTransfer.files.length) fileEvents.push(['drop', event.dataTransfer.files.length]);
+    });
+    window.addEventListener('paste', (event) => {
+      if (event.clipboardData.files.length) {
+        event.preventDefault();
+        fileEvents.push(['paste', event.clipboardData.files.length]);
+      }
+    });
+  </script>
+</body>
+</html>

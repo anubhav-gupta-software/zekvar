@@ -254,6 +254,8 @@ test('Control dashboard signs in and manages a real browser installation and eve
       await marker.selectOption('block');
       await page.getByLabel('Draft GitHub classic PAT').selectOption('warn');
       await page.getByLabel('Draft payment card number').selectOption('warn');
+      await page.getByLabel('Draft ChatGPT file uploads').selectOption('block');
+      await page.getByLabel('Draft Gemini file uploads').selectOption('monitor');
       await page.getByLabel('Draft AI app discovery').selectOption('on');
       await allowed.fill('work.pilot.example.test');
       await blocked.fill('Pilot.Example.Test.');
@@ -280,6 +282,8 @@ test('Control dashboard signs in and manages a real browser installation and eve
         ['Token embedded in a longer string', 'Allow', 'Allow'],
         ['Synthetic payment card', 'Allow', 'Warn'],
         ['Payment card with invalid checksum', 'Allow', 'Allow'],
+        ['ChatGPT file upload', 'Allow', 'Block'],
+        ['Gemini file upload', 'Allow', 'Monitor'],
         ['Custom prompt', 'Monitor', 'Block'],
         ['Sample domain', 'Allow', 'Block'],
         ['Sample subdomain', 'Allow', 'Allow'],
@@ -324,6 +328,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       assert.equal(published.mode, 'block');
       assert.equal(published.githubPatMode, 'warn');
       assert.equal(published.paymentCardMode, 'warn');
+      assert.deepEqual(published.uploadModes, { chatgpt: 'block', gemini: 'monitor' });
       assert.equal(published.discoveryEnabled, true);
       assert.deepEqual(published.domainRules, { allow: ['work.pilot.example.test'], block: ['pilot.example.test'] });
       assert.equal(requests.some((request) => /preview-private-(prompt|path)/.test(request)), false);

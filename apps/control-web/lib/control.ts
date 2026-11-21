@@ -4,6 +4,7 @@ export { ruleLabels } from '../../../contracts/policy/prompt';
 export type { DetectorMode } from '../../../contracts/policy/prompt';
 export type { DomainRules } from '../../../contracts/policy/domains';
 import type { DomainRules } from '../../../contracts/policy/domains';
+import type { UploadMethod, UploadModes } from '../../../contracts/policy/uploads';
 
 export const decisions = [...modes, 'warn_override'] as const;
 export type Mode = PolicyMode;
@@ -17,7 +18,7 @@ export const detectorModeLabels: Record<DetectorMode, string> = {
   off: 'Off', monitor: 'Monitor', warn: 'Warn', block: 'Block',
 };
 
-export { promptAppLabels, isPromptApp } from '../../../contracts/policy/apps';
+export { aiPromptApps, promptAppLabels, isPromptApp } from '../../../contracts/policy/apps';
 
 export const aiApps = { chatgpt: 'ChatGPT', claude: 'Claude', gemini: 'Gemini' } as const;
 export type AiAppId = keyof typeof aiApps;
@@ -35,6 +36,7 @@ export type Policy = {
   mode: Mode;
   githubPatMode?: DetectorMode;
   paymentCardMode?: DetectorMode;
+  uploadModes?: UploadModes;
   discoveryEnabled?: boolean;
   domainRules?: DomainRules;
   publishedAt: string;
@@ -67,6 +69,7 @@ export type SecurityEvent = {
   ruleId: string;
   policyVersion: number;
   decision: Decision;
+  uploadMethod?: UploadMethod;
 };
 
 export type Grant = { grant: string; expiresAt: string };

@@ -15,6 +15,8 @@ internal static class FixtureContract
     public const string CredentialCategory = "credential";
     public const string PaymentCardRule = "payment-card-number";
     public const string PaymentCategory = "payment-card";
+    public const string UploadRule = "ai-file-upload";
+    public const string UploadCategory = "file-upload";
 
     public static bool IsMode(string? mode) => mode is "monitor" or "warn" or "block";
     public static bool IsOptionalDetectorMode(string? mode) => mode is null or "off" || IsMode(mode);
@@ -23,11 +25,13 @@ internal static class FixtureContract
 
     public static bool IsEvent(PolicyEvent request) =>
         request.EventId != Guid.Empty && request.Timestamp != default && request.PolicyVersion > 0 &&
-        IsApp(request.AppId) &&
-        ((request.RuleId == RuleId && request.DetectorCategory == DetectorCategory) ||
-         (request.RuleId == GitHubPatRule && request.DetectorCategory == CredentialCategory) ||
-         (request.RuleId == PaymentCardRule && request.DetectorCategory == PaymentCategory)) &&
-        IsDecision(request.Decision);
+        IsApp(request.AppId) && (request.RuleId == UploadRule
+            ? request.AppId != AppId && request.DetectorCategory == UploadCategory &&
+              request.Decision is "monitor" or "block" && request.UploadMethod is "picker" or "drop" or "paste"
+            : request.UploadMethod is null && IsDecision(request.Decision) &&
+              ((request.RuleId == RuleId && request.DetectorCategory == DetectorCategory) ||
+               (request.RuleId == GitHubPatRule && request.DetectorCategory == CredentialCategory) ||
+               (request.RuleId == PaymentCardRule && request.DetectorCategory == PaymentCategory)));
 }
 
 internal static class DiscoveryCatalog
@@ -51,19 +55,24 @@ internal static class Tokens
 internal sealed record DemoOrganization(string Slug, string AdminToken);
 internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId, string? OrganizationSlug);
 internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode = null, bool? DiscoveryEnabled = null,
-    DomainRules? DomainRules = null, int? ExpectedVersion = null, string? PaymentCardMode = null);
+    DomainRules? DomainRules = null, int? ExpectedVersion = null, string? PaymentCardMode = null, UploadModes? UploadModes = null);
+internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null)
+{
+    public bool HasSettings() => Chatgpt is not null || Gemini is not null;
+    public bool IsValid() => (Chatgpt is null or "off" or "monitor" or "block") && (Gemini is null or "off" or "monitor" or "block");
+}
 internal sealed record RedeemGrant(string Grant);
 internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = null, bool DomainRulesApplied = false,
-    int AssignmentVersion = 0, string? GeminiCoverage = null, bool PaymentCardModeApplied = false)
+    int AssignmentVersion = 0, string? GeminiCoverage = null, bool PaymentCardModeApplied = false, bool UploadControlsApplied = false)
 {
     public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported") &&
         (GeminiCoverage is null or "ready" or "unsupported");
 }
 internal sealed record PolicyEvent(Guid EventId, string AppId, DateTimeOffset Timestamp, string RuleId,
-    string DetectorCategory, int PolicyVersion, string Decision, int AssignmentVersion = 0);
+    string DetectorCategory, int PolicyVersion, string Decision, int AssignmentVersion = 0, string? UploadMethod = null);
 
 internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, int? RestoredFrom, string GithubPatMode,
-    bool DiscoveryEnabled, DomainRules DomainRules, string PaymentCardMode,
+    bool DiscoveryEnabled, DomainRules DomainRules, string PaymentCardMode, UploadModes UploadModes,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int AssignmentVersion = 0)
 {
     public string AppId => FixtureContract.AppId;
@@ -84,12 +93,14 @@ internal sealed record Installation(Guid InstallationId, DateTime EnrolledAt, Da
     string? GeminiCoverage, DateTime? GeminiCheckedAt);
 
 internal sealed record StoredEvent(Guid EventId, Guid InstallationId, DateTime Timestamp, DateTime ReceivedAt,
-    int PolicyVersion, string Decision, string AppId, string RuleId)
+    int PolicyVersion, string Decision, string AppId, string RuleId,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? UploadMethod)
 {
     public string DetectorCategory => RuleId switch
     {
         FixtureContract.GitHubPatRule => FixtureContract.CredentialCategory,
         FixtureContract.PaymentCardRule => FixtureContract.PaymentCategory,
+        FixtureContract.UploadRule => FixtureContract.UploadCategory,
         _ => FixtureContract.DetectorCategory
     };
 }

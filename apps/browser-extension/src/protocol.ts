@@ -1,6 +1,7 @@
 import { credentialDetector, fixtureDetector, fixtureRule, githubPatRule, isMode, paymentCardRule, paymentDetector, type PolicyMode,
   type PromptPolicy, type RuleMetadata } from '../../../contracts/policy/prompt';
 import { chatGptApp, fixtureApp, geminiApp, isPromptApp, type AiPromptApp, type AppId } from '../../../contracts/policy/apps';
+import { isUploadMethod, uploadCategory, uploadRule, type UploadMetadata, type UploadModes } from '../../../contracts/policy/uploads';
 
 export { fixtureRule, fixtureDetector, githubPatRule, credentialDetector, isMode, isDetectorMode } from '../../../contracts/policy/prompt';
 export type { PolicyMode, DetectorMode, RuleMetadata } from '../../../contracts/policy/prompt';
@@ -21,7 +22,7 @@ export function discoveredApp(url: string | undefined): DiscoveryApp | undefined
   if (origin && Object.hasOwn(discoveryCatalog, origin)) return discoveryCatalog[origin as keyof typeof discoveryCatalog];
 }
 export type Coverage = 'ready' | 'unsupported';
-export type Policy = PromptPolicy & { version: number; discoveryEnabled?: boolean; assignmentVersion?: number };
+export type Policy = PromptPolicy & { version: number; discoveryEnabled?: boolean; assignmentVersion?: number; uploadModes?: UploadModes };
 export type PolicyEvent = {
   eventId: string;
   appId: AppId;
@@ -29,7 +30,7 @@ export type PolicyEvent = {
   policyVersion: number;
   assignmentVersion?: number;
   decision: PolicyMode | 'warn_override';
-} & RuleMetadata;
+} & (RuleMetadata | UploadMetadata);
 
 export type Summary = {
   status: 'standalone' | 'connected' | 'offline' | 'revoked';
@@ -106,6 +107,11 @@ export function readMetadata(value: unknown): PolicyEvent | undefined {
     eventId: value.eventId, appId: value.appId, timestamp: new Date(value.timestamp).toISOString(),
     policyVersion: value.policyVersion, decision: value.decision, assignmentVersion: value.assignmentVersion,
   } as const;
+  if (value.ruleId === uploadRule && value.detectorCategory === uploadCategory && value.appId !== fixtureApp &&
+      (value.decision === 'monitor' || value.decision === 'block') && isUploadMethod(value.uploadMethod)) {
+    return { ...event, ruleId: uploadRule, detectorCategory: uploadCategory, uploadMethod: value.uploadMethod };
+  }
+  if (value.uploadMethod !== undefined) return;
   if (value.ruleId === fixtureRule && value.detectorCategory === fixtureDetector) {
     return { ...event, ruleId: fixtureRule, detectorCategory: fixtureDetector };
   }

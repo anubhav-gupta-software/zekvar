@@ -1,9 +1,12 @@
 import { evaluateNavigation, parseWebAddress, sameDomainRules, emptyDomainRules, type DomainRules } from '../../../contracts/policy/domains';
 import { evaluatePrompt, fixtureRule, ruleLabels, testMarker, type DetectorMode, type PolicyMode } from '../../../contracts/policy/prompt';
+import { aiPromptApps, promptAppLabels } from '../../../contracts/policy/apps';
+import { uploadsOff, type UploadMode, type UploadModes } from '../../../contracts/policy/uploads';
 import type { Policy } from './control';
 
 export type PreviewPolicy = {
-  mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; discoveryEnabled: boolean; domainRules: DomainRules;
+  mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; discoveryEnabled: boolean;
+  domainRules: DomainRules; uploadModes: UploadModes;
 };
 export type PreviewSnapshot = PreviewPolicy & { version: number; label: string };
 export type PreviewDecision = { action: 'allow' | PolicyMode; rule?: string };
@@ -16,12 +19,13 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     mode: policy.mode, githubPatMode: policy.githubPatMode ?? 'off', paymentCardMode: policy.paymentCardMode ?? 'off',
     discoveryEnabled: policy.discoveryEnabled ?? false,
     domainRules: policy.domainRules ?? emptyDomainRules,
+    uploadModes: policy.uploadModes ?? uploadsOff,
   };
 }
 
 export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
   return a.mode === b.mode && a.githubPatMode === b.githubPatMode && a.paymentCardMode === b.paymentCardMode &&
-    a.discoveryEnabled === b.discoveryEnabled &&
+    a.discoveryEnabled === b.discoveryEnabled && aiPromptApps.every((app) => a.uploadModes[app] === b.uploadModes[app]) &&
     sameDomainRules(a.domainRules, b.domainRules);
 }
 
@@ -56,6 +60,10 @@ function navigationOutcome(url: URL, policy: PreviewPolicy): PreviewDecision {
   return { action: outcome.action, rule: outcome.domain };
 }
 
+function uploadOutcome(mode: UploadMode): PreviewDecision {
+  return mode === 'off' ? { action: 'allow' } : { action: mode, rule: 'File upload policy' };
+}
+
 export function runComparison(reference: PreviewSnapshot, candidate: PreviewPolicy, prompt: string, address?: URL): PreviewResult {
   const rows: PreviewRow[] = prompts.map(({ name, content }) => ({
     name, current: promptOutcome(content, reference), draft: promptOutcome(content, candidate),
@@ -66,6 +74,10 @@ export function runComparison(reference: PreviewSnapshot, candidate: PreviewPoli
     rows.push({ name, current: navigationOutcome(url, reference), draft: navigationOutcome(url, candidate) });
   }
   if (address) rows.push({ name: 'Custom navigation', current: navigationOutcome(address, reference), draft: navigationOutcome(address, candidate) });
+  for (const app of aiPromptApps) {
+    rows.push({ name: `${promptAppLabels[app]} file upload`, current: uploadOutcome(reference.uploadModes[app]),
+      draft: uploadOutcome(candidate.uploadModes[app]) });
+  }
   return { reference, candidate, rows };
 }
 

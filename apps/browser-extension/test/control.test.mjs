@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +18,7 @@ const fixture = await readFile(new URL('../fixture/index.html', import.meta.url)
 const chatGptFixture = await readFile(new URL('./chatgpt-composer.html', import.meta.url), 'utf8');
 const guestComposerFixture = await readFile(new URL('./guest-chatgpt-composer.html', import.meta.url), 'utf8');
 const geminiComposerFixture = await readFile(new URL('./gemini-composer.html', import.meta.url), 'utf8');
+const uploadFixture = await readFile(new URL('./upload-composer.html', import.meta.url), 'utf8');
 const { version: extensionVersion } = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
 const marker = 'ZEKVAR_TEST_SECRET';
 
@@ -576,5 +577,128 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
       await gemini.getByText('Zekvar · Unsupported Gemini page', { exact: true }).waitFor();
       assert.doesNotMatch(JSON.stringify(posts), /Fixture private prompt|ZEKVAR_TEST_SECRET|\[REDACTED\]/);
     } finally { await gemini.close(); }
+  });
+
+  await t.test('applies per-app controls to native picker, drop, and clipboard file events', async () => {
+    const [original] = await adminCall('policies');
+    assert.deepEqual(original.uploadModes, { chatgpt: 'off', gemini: 'off' });
+    const localFiles = [join(root, 'fixture-private-name.txt'), join(root, 'fixture-second.txt')];
+    await Promise.all(localFiles.map((file) => writeFile(file, 'Synthetic private attachment contents.')));
+    const chat = await browser.newPage();
+    const gemini = await browser.newPage();
+    const rows = async () => (await adminCall('events')).filter(({ ruleId }) => ruleId === 'ai-file-upload');
+    const observed = (page) => page.evaluate(() => window.fileEvents);
+    const input = (page) => page.getByLabel('Attach fixture files');
+    const pasteTarget = (page) => page.getByLabel('Fixture text', { exact: true });
+    const pick = async (page) => {
+      const chooser = page.waitForEvent('filechooser');
+      await input(page).click();
+      await (await chooser).setFiles(localFiles);
+    };
+    const drag = async (page, target = page.locator('#drop-zone')) => {
+      const cdp = await browser.newCDPSession(page);
+      try {
+        const box = await target.boundingBox();
+        const data = { items: [], files: localFiles, dragOperationsMask: 1 };
+        for (const type of ['dragEnter', 'dragOver', 'drop']) {
+          await cdp.send('Input.dispatchDragEvent', { type, x: box.x + 10, y: box.y + 10, data });
+        }
+      } finally { await cdp.detach(); }
+    };
+    const pasteFile = async (page) => {
+      await page.bringToFront();
+      await page.evaluate(async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 2;
+        const data = await new Promise((done) => canvas.toBlob(done, 'image/png'));
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': data })]);
+      });
+      await pasteTarget(page).press('ControlOrMeta+v');
+    };
+    try {
+      const destinations = [[chat, 'https://chatgpt.com/'], [gemini, 'https://gemini.google.com/app']];
+      for (const [page, url] of destinations) {
+        await page.route(`${new URL(url).origin}/**`, (route) => route.fulfill({ contentType: 'text/html', body: uploadFixture }));
+        await browser.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(url).origin });
+        await page.goto(url);
+      }
+      await pick(chat);
+      assert.deepEqual(await observed(chat), [['input', 2], ['change', 2]]);
+      await input(chat).setInputFiles([]);
+      assert.deepEqual(await rows(), []);
+
+      const policy = await adminCall('policies', { uploadModes: { chatgpt: 'monitor', gemini: 'block' } });
+      await popup.getByRole('button', { name: 'Sync now' }).click();
+      await chat.getByText(new RegExp(` v${policy.version}.*File uploads monitor$`)).waitFor();
+      await gemini.getByText(new RegExp(` v${policy.version}.*File uploads block$`)).waitFor();
+      await pick(chat);
+      await drag(chat);
+      await pasteFile(chat);
+      assert.deepEqual((await observed(chat)).slice(2), [['input', 2], ['change', 2], ['drop', 2], ['paste', 1]]);
+      await input(chat).setInputFiles([]);
+      await drag(chat, input(chat));
+      assert.deepEqual((await observed(chat)).slice(6), [['drop', 2], ['input', 2], ['change', 2]]);
+      await pick(gemini);
+      await gemini.getByRole('alert').filter({ hasText: 'File upload blocked' }).waitFor();
+      assert.equal(await input(gemini).evaluate((field) => field.files.length), 0);
+      await drag(gemini);
+      await pasteFile(gemini);
+      assert.deepEqual(await observed(gemini), []);
+
+      await gemini.evaluate(() => navigator.clipboard.writeText('Plain text still works'));
+      await pasteTarget(gemini).press('ControlOrMeta+v');
+      assert.equal(await pasteTarget(gemini).inputValue(), 'Plain text still works');
+      await until(async () => (await rows()).length === 7, 'Control did not record one decision per file attempt.');
+      const triples = (await rows()).map(({ appId, decision, uploadMethod }) => [appId, decision, uploadMethod].join('/')).sort();
+      assert.deepEqual(triples, ['chatgpt/monitor/drop', 'chatgpt/monitor/drop', 'chatgpt/monitor/paste', 'chatgpt/monitor/picker',
+        'gemini/block/drop', 'gemini/block/paste', 'gemini/block/picker']);
+
+      await gemini.evaluate(() => history.pushState({}, '', '/privacy'));
+      await gemini.getByText('Zekvar · Unsupported Gemini page', { exact: true }).waitFor();
+      await pick(gemini);
+      assert.deepEqual(await observed(gemini), [['input', 2], ['change', 2]]);
+      assert.equal((await rows()).length, 7);
+      await gemini.goto('https://gemini.google.com/app');
+      await gemini.getByText(new RegExp(` v${policy.version}.*File uploads block$`)).waitFor();
+
+      offline = true;
+      try {
+        await popup.getByRole('button', { name: 'Sync now' }).click();
+        await gemini.getByText(/File uploads block · Offline policy$/).waitFor();
+        await pick(gemini);
+        assert.deepEqual(await observed(gemini), []);
+        assert.equal((await rows()).length, 7);
+      } finally { offline = false; }
+      loseNextAcknowledgment = true;
+      await popup.getByRole('button', { name: 'Sync now' }).click();
+      await until(() => !loseNextAcknowledgment, 'The proxy did not drop the queued upload acknowledgment.');
+      await popup.getByRole('button', { name: 'Sync now' }).click();
+      await until(() => posts.filter(({ eventId }) => eventId === posts.at(-1).eventId).length >= 2, 'The browser did not retry the upload metadata.');
+      assert.equal((await rows()).length, 8);
+      assert.doesNotMatch(JSON.stringify([...posts, ...await rows()]), /fixture-private-name|fixture-second|Synthetic private attachment|Plain text still works/);
+
+      const restored = await adminCall(`policies/${original.version}/restore`, {});
+      await popup.getByRole('button', { name: 'Sync now' }).click();
+      await gemini.getByText(new RegExp(`^Zekvar · [A-Z]+ v${restored.version}(?: · GitHub PAT [a-z]+)?$`)).waitFor();
+      await pick(gemini);
+      assert.deepEqual(await observed(gemini), [['input', 2], ['change', 2]]);
+      assert.equal(await gemini.getByRole('alert').filter({ hasText: 'File upload blocked' }).count(), 0);
+      assert.equal((await rows()).length, 8);
+      const resumed = await adminCall('policies', { uploadModes: { gemini: 'block' } });
+      await popup.getByRole('button', { name: 'Sync now' }).click();
+      await gemini.getByText(new RegExp(` v${resumed.version}.*File uploads block$`)).waitFor();
+      await input(gemini).setInputFiles([]);
+      await pick(gemini);
+      await gemini.getByRole('alert').filter({ hasText: 'File upload blocked' }).waitFor();
+      await until(async () => (await rows()).length === 9, 'Control did not record the resumed block.');
+      const [{ installationId }] = await adminCall('installations');
+      await adminCall(`installations/${installationId}/revoke`, {});
+      await popup.getByRole('button', { name: 'Sync now' }).click();
+      await gemini.getByText('Zekvar · Gemini policy unavailable', { exact: true }).waitFor();
+      assert.equal(await gemini.getByRole('alert').filter({ hasText: 'File upload blocked' }).count(), 0);
+      await pick(gemini);
+      assert.deepEqual(await observed(gemini), [['input', 2], ['change', 2], ['input', 2], ['change', 2]]);
+      assert.equal((await rows()).length, 9);
+    } finally { await Promise.all([chat.close(), gemini.close()]); }
   });
 });

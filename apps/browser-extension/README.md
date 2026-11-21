@@ -1,6 +1,6 @@
 # Zekvar Browser and Control demo
 
-Zekvar Browser enforces domain rules and applies prompt protection to the loopback fixture and supported ChatGPT and Gemini composers. Zekvar evaluates draft text locally and reports decision metadata to Control. Managed browsers can also report visits to cataloged AI apps when discovery is enabled.
+Zekvar Browser enforces domain rules, evaluates prompts locally, and controls native file intake on supported ChatGPT and Gemini routes. It also supports the loopback prompt fixture. Managed browsers send decision metadata to Control and can report visits to cataloged AI apps when discovery is enabled.
 
 ## Run the demo
 
@@ -61,6 +61,14 @@ Use `ghp_000000000000000000000000000000000000` in the local prompt fixture to te
 The detector combines supported issuer ranges and lengths with the Luhn checksum. It covers standalone ASCII card numbers and common groupings with consistent spaces or hyphens. Supported formats include Visa, Mastercard, American Express, Discover, JCB, and Diners Club. The browser applies the strictest matching mode. On a tie, payment card takes precedence over GitHub PAT, followed by the test marker. [PCI SSC checksum guidance](https://www.pcisecuritystandards.org/faqs/1137/) · [Cybersource card formats](https://developer.cybersource.com/docs/cybs/en-us/test-data/developer/all/so/test-data/best_practices_intro/card_type_id.html)
 
 Use **Monitor** to measure false positives before enforcing the rule. Browser health shows a payment policy as current after an updated browser acknowledges the detector. Coverage of card numbers in files, unsupported separators and issuer formats, CVVs, and expiry dates remains open.
+
+## Test file upload policies
+
+1. Start the updated Control services and load Browser v0.12.0. In **Publish a policy** or a rollout group, choose **Off**, **Monitor**, or **Block** separately for **ChatGPT file uploads** and **Gemini file uploads**. Existing policies start Off. **Policy preview** compares each destination without asking for a file.
+2. Publish and click **Sync now**. Open or refresh the top-level chat page and check the Zekvar status for **File uploads monitor** or **File uploads block**. Try an attachment with a synthetic file. Block holds a native picker selection, file drop, or clipboard-file paste when Chrome exposes the event to the page guard. Text-only paste remains available.
+3. Under **Security events**, look for **File upload** with **File picker**, **Drag and drop**, or **Clipboard file**. Control receives the app, decision, method, and usual policy metadata. The guard uses file presence and leaves names, paths, sizes, and contents out of telemetry.
+
+The upload policy covers the supported top-level ChatGPT home and conversation routes and the Gemini `/app` chat routes. The browser suite tests all three native methods on controlled pages. The live signed-out check covers blocked drops. Signed-in attachment menus, cloud pickers, programmatic uploads, and file content inspection require separate coverage. [ChatGPT attachment access](https://help.openai.com/en/articles/8555545-uploading-files-and-audio-to-chatgpt) · [Gemini signed-out capabilities](https://support.google.com/gemini/answer/13275745?hl=en)
 
 ## AI app discovery
 

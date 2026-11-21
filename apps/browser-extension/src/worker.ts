@@ -5,6 +5,7 @@ import {
   type Reply, type Summary,
 } from './protocol';
 import { emptyDomainRules, installDomainRules, readDomainRules, sameDomainRules, type DomainRules } from './domain-rules';
+import { isUploadModes, uploadsOff } from '../../../contracts/policy/uploads';
 
 declare const CONTROL_ORIGIN: string;
 
@@ -166,12 +167,15 @@ async function sync(state: State) {
         (policy.assignmentVersion !== undefined && !isVersion(policy.assignmentVersion)) ||
         (policy.githubPatMode !== undefined && !isDetectorMode(policy.githubPatMode)) ||
         (policy.paymentCardMode !== undefined && !isDetectorMode(policy.paymentCardMode)) ||
+        (policy.uploadModes !== undefined && !isUploadModes(policy.uploadModes)) ||
         (policy.discoveryEnabled !== undefined && typeof policy.discoveryEnabled !== 'boolean') ||
         policy.appId !== fixtureApp || policy.ruleId !== fixtureRule || policy.detectorCategory !== fixtureDetector) {
       throw new Error('Unknown policy format');
     }
     const githubPatMode = policy.githubPatMode ?? 'off';
     const paymentCardMode = policy.paymentCardMode ?? 'off';
+    const uploads = policy.uploadModes ?? uploadsOff;
+    const previousUploads = state.policy?.uploadModes;
     const discoveryEnabled = policy.discoveryEnabled ?? false;
     const domainRules = readDomainRules(policy.domainRules);
     if (!domainRules) throw new Error('Unknown domain rule format');
@@ -182,11 +186,12 @@ async function sync(state: State) {
       (policy.version > state.policy.version || (policy.version === state.policy.version &&
         policy.mode === state.policy.mode && githubPatMode === (state.policy.githubPatMode ?? 'off') &&
         (state.policy.paymentCardMode === undefined || paymentCardMode === state.policy.paymentCardMode) &&
+        (!previousUploads || uploads.chatgpt === previousUploads.chatgpt && uploads.gemini === previousUploads.gemini) &&
         discoveryEnabled === (state.policy.discoveryEnabled ?? false) &&
         sameDomainRules(domainRules, state.domainRules ?? emptyDomainRules))))) {
       await applyDomainRules(state, domainRules);
       state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, discoveryEnabled,
-        assignmentVersion: policy.assignmentVersion };
+        assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini } };
       if (!discoveryEnabled || assignment !== previousAssignment) state.observations = undefined;
       if (assignment !== previousAssignment) clearCoverage(state);
       state.chatGptEnabled = Array.isArray(policy.appIds) && policy.appIds.includes(chatGptApp);
@@ -211,6 +216,8 @@ async function heartbeat(state: State) {
     chatGptCoverage: state.chatGptEnabled ? state.coveragePending : undefined,
     geminiCoverage: state.geminiEnabled ? state.geminiCoveragePending : undefined,
     paymentCardModeApplied: isMode(state.policy.paymentCardMode) ? true : undefined,
+    uploadControlsApplied: state.policy.uploadModes &&
+      (state.policy.uploadModes.chatgpt !== 'off' || state.policy.uploadModes.gemini !== 'off') ? true : undefined,
     domainRulesApplied: state.domainRules && (state.domainRules.allow.length || state.domainRules.block.length) ? true : undefined,
   });
   clearCoverage(state);

@@ -176,9 +176,12 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
 {
     if (request.ExpectedVersion is <= 0) return Results.BadRequest(new { error = "Choose a valid expected policy version." });
     if (!(FixtureContract.IsMode(request.Mode) ||
-          request.Mode is null && (request.DomainRules is not null || request.PaymentCardMode is not null)) ||
+          request.Mode is null && (request.DomainRules is not null || request.PaymentCardMode is not null ||
+              request.UploadModes?.HasSettings() == true)) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode))
         return Results.BadRequest(new { error = "Choose a valid rule mode." });
+    if (request.UploadModes?.IsValid() == false)
+        return Results.BadRequest(new { error = "Choose Off, Monitor, or Block for each upload destination." });
     if (!DomainRules.TryNormalize(request.DomainRules, out var domainRules))
         return Results.BadRequest(new { error = "Enter up to 50 domains with no domain in both lists." });
     if (await store.Publish(Identity(http).OrganizationId, request with { DomainRules = domainRules }, null, ct, groupId) is { } policy)

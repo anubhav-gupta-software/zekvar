@@ -9,6 +9,7 @@ import { classifyAiApp, revokeInstallation, signOut } from './actions';
 import { DomainRulesForm, EnrollmentForm, MutationForm, RefreshSection, SignInForm } from './forms';
 import { PolicyVersionTable, PublishPolicyForm } from './policies';
 import { Brand, Sidebar } from './workspace';
+import { uploadMethods } from '../../../contracts/policy/uploads';
 
 type Search = Record<string, string | string[] | undefined>;
 
@@ -241,7 +242,8 @@ function EventRow({ event, filters }: { event: SecurityEvent; filters: URLSearch
     <td><Timestamp value={event.timestamp} /></td>
     <td className="emphasis">{isPromptApp(event.appId) ? promptAppLabels[event.appId] : event.appId}</td>
     <td><DecisionBadge decision={event.decision} /></td>
-    <td>{ruleLabels[event.ruleId as keyof typeof ruleLabels] ?? event.detectorCategory}</td>
+    <td>{event.uploadMethod ? <>File upload <div className="muted">{uploadMethods[event.uploadMethod]}</div></> :
+      ruleLabels[event.ruleId as keyof typeof ruleLabels] ?? event.detectorCategory}</td>
     <td>v{event.policyVersion}</td>
     <td><a className="underline" href={`/?${browser}#events`}
       aria-label={`Filter events for installation ${event.installationId}`}><InstallationId value={event.installationId} /></a></td>

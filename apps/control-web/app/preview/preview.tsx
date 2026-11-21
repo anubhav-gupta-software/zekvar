@@ -3,7 +3,8 @@
 import { useState } from 'react';
 import { canonicalizeDomainRules, domainLines } from '../../../../contracts/policy/domains';
 import { detectorModes, modes, type DetectorMode, type PolicyMode } from '../../../../contracts/policy/prompt';
-import { decisionLabels, detectorModeLabels } from '../../lib/control';
+import { uploadModes, type UploadMode } from '../../../../contracts/policy/uploads';
+import { aiPromptApps, decisionLabels, detectorModeLabels, promptAppLabels } from '../../lib/control';
 import { changedDecision, parseWebAddress, runComparison, samePolicy,
   type PreviewDecision, type PreviewPolicy, type PreviewResult, type PreviewSnapshot } from '../../lib/preview';
 import { publishPreview } from '../actions';
@@ -15,6 +16,7 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
   return {
     mode: snapshot.mode, githubPatMode: snapshot.githubPatMode, paymentCardMode: snapshot.paymentCardMode,
     discoveryEnabled: snapshot.discoveryEnabled,
+    uploadModes: snapshot.uploadModes,
     allow: snapshot.domainRules.allow.join('\n'), block: snapshot.domainRules.block.join('\n'),
   };
 }
@@ -61,7 +63,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName }: {
     setError('');
     setResult(runComparison(reference, {
       mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode,
-      discoveryEnabled: editor.discoveryEnabled, domainRules,
+      discoveryEnabled: editor.discoveryEnabled, domainRules, uploadModes: editor.uploadModes,
     }, customPrompt, address));
   }
 
@@ -101,6 +103,13 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName }: {
             <option value="off">Off</option><option value="on">On</option>
           </select>
         </div>
+        {aiPromptApps.map((app) => <div className="grid gap-1" key={app}>
+          <label htmlFor={`draft-upload-${app}`}>Draft {promptAppLabels[app]} file uploads</label>
+          <select id={`draft-upload-${app}`} value={editor.uploadModes[app]}
+            onChange={(event) => edit('uploadModes', { ...editor.uploadModes, [app]: event.target.value as UploadMode })}>
+            {uploadModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+          </select>
+        </div>)}
       </div>
       <div className="policy-fields">
         {(['allow', 'block'] as const).map((action) => <div key={action} className="grid gap-1">
@@ -112,7 +121,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName }: {
     </section>
     <section className="panel" aria-labelledby="preview-samples-heading">
       <h2 id="preview-samples-heading">Test samples</h2>
-      <p className="muted">Built-in cases cover prompt detectors and top-level HTTP and HTTPS navigation. Custom samples stay in this tab.</p>
+      <p className="muted">Built-in cases cover prompt detectors, navigation, and file upload policies. Custom samples stay in this tab.</p>
       <div className="policy-fields preview-inputs">
         <div className="grid gap-1">
           <label htmlFor="preview-prompt">Custom prompt</label>
@@ -162,6 +171,7 @@ function PreviewResults({ result, groupId, scopeName }: { result: PreviewResult;
         <input type="hidden" name="githubPatMode" value={candidate.githubPatMode} />
         <input type="hidden" name="paymentCardMode" value={candidate.paymentCardMode} />
         <input type="hidden" name="discoveryEnabled" value={candidate.discoveryEnabled ? 'on' : 'off'} />
+        {aiPromptApps.map((app) => <input key={app} type="hidden" name={`upload-${app}`} value={candidate.uploadModes[app]} />)}
         <input type="hidden" name="allow" value={candidate.domainRules.allow.join('\n')} />
         <input type="hidden" name="block" value={candidate.domainRules.block.join('\n')} />
       </MutationForm>
@@ -176,6 +186,8 @@ function PolicyChanges({ reference, candidate }: { reference: PreviewPolicy; can
     ['GitHub classic PAT', detectorModeLabels[reference.githubPatMode], detectorModeLabels[candidate.githubPatMode]],
     ['Payment card number', detectorModeLabels[reference.paymentCardMode], detectorModeLabels[candidate.paymentCardMode]],
     ['AI app discovery', toggle(reference.discoveryEnabled), toggle(candidate.discoveryEnabled)],
+    ...aiPromptApps.map((app) => [`${promptAppLabels[app]} file uploads`, detectorModeLabels[reference.uploadModes[app]],
+      detectorModeLabels[candidate.uploadModes[app]]]),
   ];
   return <ul className="preview-changes" aria-label="Policy setting changes">
     {fields.filter(([, before, after]) => before !== after).map(([field, before, after]) =>

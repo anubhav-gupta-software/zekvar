@@ -57,6 +57,10 @@ For a version with domain rules, the heartbeat must include `domainRulesApplied:
 
 The independent `paymentCardMode` setting accepts `off`, `monitor`, `warn`, or `block` on baseline and group policies. Existing versions start with the detector Off. Omitting the setting preserves the current value. Restoring or promoting a policy copies the saved setting. A browser heartbeat without `paymentCardModeApplied: true` still reports liveness but cannot acknowledge a version that enables this detector. Event ingestion accepts the `payment-card-number` rule with category `payment-card` and validates the decision against that version's setting.
 
+The `uploadModes` policy object accepts `chatgpt` and `gemini` settings with `off`, `monitor`, or `block`. An upload-only publish may supply either destination and preserves omitted settings. Older snapshots default to Off for both. Restoring or promoting a policy copies both settings. A heartbeat must supply `uploadControlsApplied: true` to acknowledge a version that enables either destination.
+
+Upload attempt events use `ai-file-upload` and category `file-upload`. They require an `uploadMethod` of `picker`, `drop`, or `paste` and a decision matching the app's setting on the named policy version. The method appears on retained history and exports. Prompt decision contracts retain their existing shape.
+
 ## Security event history and export
 
 - `GET /v1/admin/events` returns an array of up to 100 events for existing clients.
