@@ -1,23 +1,6 @@
 import { evaluatePrompt, standalonePolicy, type MatchedDecision } from './policy';
-import { fixtureApp, fixtureUrl, isMode, send, type PolicyEvent, type PolicyMode, type Summary } from './protocol';
-
-function recordDecision(match: MatchedDecision, installationId: string | undefined, decision: PolicyEvent['decision'] = match.action) {
-  const event: PolicyEvent = {
-    eventId: crypto.randomUUID(),
-    appId: fixtureApp,
-    timestamp: new Date().toISOString(),
-    ruleId: match.ruleId,
-    detectorCategory: match.detectorCategory,
-    policyVersion: match.policyVersion,
-    decision,
-  };
-  console.info(`Zekvar decision ${JSON.stringify(event)}`);
-  if (installationId) {
-    void send({ type: 'decision', installationId, event }).then(({ error }) => {
-      if (error) console.warn('Zekvar could not queue this event.');
-    }, () => console.warn('Zekvar could not queue this event.'));
-  }
-}
+import { recordDecision } from './decisions';
+import { fixtureApp, fixtureUrl, isMode, send, type Summary } from './protocol';
 
 function attachFixture() {
   const form = document.querySelector('#prompt-form');
@@ -120,7 +103,7 @@ function attachFixture() {
 
   form.addEventListener('submit', (event) => {
     if (approved) {
-      recordDecision(approved, control?.installationId, 'warn_override');
+      recordDecision(fixtureApp, approved, control?.installationId, 'warn_override');
       approved = undefined;
       return;
     }
@@ -142,7 +125,7 @@ function attachFixture() {
 
     if (match.action === 'monitor') {
       clearFeedback();
-      recordDecision(match, control?.installationId);
+      recordDecision(fixtureApp, match, control?.installationId);
       return;
     }
 
@@ -153,7 +136,7 @@ function attachFixture() {
     }
 
     clearFeedback();
-    recordDecision(match, control?.policy ? control.installationId : undefined);
+    recordDecision(fixtureApp, match, control?.policy ? control.installationId : undefined);
     if (match.action === 'warn') {
       pending = { value: prompt.value, match };
       message.textContent = `${match.reason} Edit the prompt or confirm that you want to send it.`;

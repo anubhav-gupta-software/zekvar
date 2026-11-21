@@ -4,8 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { chromium } from 'playwright';
 
-const dashboard = 'http://localhost:3000';
-const api = 'http://127.0.0.1:5187/v1';
+const dashboard = process.env.ZEKVAR_TEST_WEB_ORIGIN ?? 'http://localhost:3000';
+const api = `${process.env.ZEKVAR_TEST_API_ORIGIN ?? 'http://127.0.0.1:5187'}/v1`;
 const token = process.env.ZEKVAR_TEST_ADMIN_TOKEN;
 assert.match(token ?? '', /^[a-f0-9]{64}$/, 'Set ZEKVAR_TEST_ADMIN_TOKEN for a disposable demo organization.');
 const { event } = JSON.parse(await readFile(new URL('../../../contracts/control/demo-v1.json', import.meta.url)));
@@ -82,8 +82,19 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await post('/browser/events', {
       ...event, eventId: randomUUID(), policyVersion, decision: 'warn', timestamp: new Date().toISOString(),
     }, installation.token);
+    await post('/browser/events', {
+      ...event, appId: 'chatgpt', eventId: randomUUID(), policyVersion, decision: 'warn', timestamp: new Date().toISOString(),
+    }, installation.token);
+    await post('/browser/heartbeat', { policyVersion, chatGptCoverage: 'unsupported' }, installation.token);
     await page.reload();
     await events.getByText('Local prompt fixture', { exact: true }).first().waitFor();
+    await events.getByText('ChatGPT', { exact: true }).first().waitFor();
+    await browsers.getByText('Unsupported', { exact: true }).first().waitFor();
+    await page.getByLabel('Application', { exact: true }).selectOption('chatgpt');
+    await page.getByRole('button', { name: 'Apply filters' }).click();
+    await page.waitForURL((url) => url.searchParams.get('app') === 'chatgpt');
+    await events.getByText('ChatGPT', { exact: true }).first().waitFor();
+    assert.equal(await events.getByText('Local prompt fixture', { exact: true }).count(), 0);
     await page.getByLabel('Application', { exact: true }).selectOption('local-prompt-fixture');
     await page.getByLabel('Decision', { exact: true }).selectOption('block');
     await page.getByLabel('Time range', { exact: true }).selectOption('day');

@@ -15,19 +15,8 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
             """;
         await setup.ExecuteNonQueryAsync(ct);
 
-        await using var check = connection.CreateCommand();
-        check.CommandText = "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 1)";
-        if (!(bool)(await check.ExecuteScalarAsync(ct))!)
-        {
-            using var stream = typeof(ControlStore).Assembly.GetManifestResourceStream("001_initial.sql")
-                ?? throw new InvalidOperationException("Initial schema migration is missing.");
-            using var reader = new StreamReader(stream);
-            await using var migration = connection.CreateCommand();
-            migration.CommandText = await reader.ReadToEndAsync(ct);
-            await migration.ExecuteNonQueryAsync(ct);
-            migration.CommandText = "INSERT INTO schema_migrations (version) VALUES (1)";
-            await migration.ExecuteNonQueryAsync(ct);
-        }
+        await ApplyMigration(connection, 1, "001_initial.sql", ct);
+        await ApplyMigration(connection, 2, "002_chatgpt_coverage.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -50,6 +39,24 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
             await seed.ExecuteNonQueryAsync(ct);
         }
         await transaction.CommitAsync(ct);
+    }
+
+    private static async Task ApplyMigration(NpgsqlConnection connection, int version, string resourceName, CancellationToken ct)
+    {
+        await using var check = connection.CreateCommand();
+        check.CommandText = "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)";
+        check.Parameters.AddWithValue(version);
+        if ((bool)(await check.ExecuteScalarAsync(ct))!) return;
+
+        using var stream = typeof(ControlStore).Assembly.GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException($"Schema migration {version} is missing.");
+        using var reader = new StreamReader(stream);
+        await using var migration = connection.CreateCommand();
+        migration.CommandText = await reader.ReadToEndAsync(ct);
+        await migration.ExecuteNonQueryAsync(ct);
+        migration.CommandText = "INSERT INTO schema_migrations (version) VALUES ($1)";
+        migration.Parameters.AddWithValue(version);
+        await migration.ExecuteNonQueryAsync(ct);
     }
 
     public async Task<RequestIdentity?> Authenticate(string token, bool browser, CancellationToken ct)
@@ -143,29 +150,32 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
         return await rows.ReadAsync(ct) ? ReadPolicy(rows) : null;
     }
 
-    public async Task<bool> RecordHeartbeat(Guid installationId, int version, CancellationToken ct)
+    public async Task<bool> RecordHeartbeat(Guid installationId, Heartbeat request, CancellationToken ct)
     {
         await using var command = Command("""
             UPDATE installations i SET last_seen_at = GREATEST(i.last_seen_at, now()),
-                applied_policy_version = GREATEST(i.applied_policy_version, $2)
+                applied_policy_version = GREATEST(i.applied_policy_version, $2),
+                chatgpt_coverage = COALESCE($3::text, i.chatgpt_coverage),
+                chatgpt_checked_at = CASE WHEN $3::text IS NULL THEN i.chatgpt_checked_at ELSE now() END
             WHERE i.id = $1 AND i.revoked_at IS NULL AND EXISTS (
                 SELECT 1 FROM policy_versions p WHERE p.organization_id = i.organization_id AND p.version = $2
             )
-            """, installationId, version);
+            """, installationId, request.PolicyVersion, (object?)request.ChatGptCoverage ?? DBNull.Value);
         return await command.ExecuteNonQueryAsync(ct) == 1;
     }
 
     public async Task<IReadOnlyList<Installation>> Installations(Guid organizationId, CancellationToken ct)
     {
         await using var command = Command("""
-            SELECT id, enrolled_at, last_seen_at, applied_policy_version, revoked_at
+            SELECT id, enrolled_at, last_seen_at, applied_policy_version, revoked_at, chatgpt_coverage, chatgpt_checked_at
             FROM installations WHERE organization_id = $1 ORDER BY enrolled_at DESC, id LIMIT 100
             """, organizationId);
         var installations = new List<Installation>();
         await using var rows = await command.ExecuteReaderAsync(ct);
         while (await rows.ReadAsync(ct))
             installations.Add(new(rows.GetGuid(0), rows.GetDateTime(1), rows.GetDateTime(2),
-                rows.IsDBNull(3) ? null : rows.GetInt32(3), rows.IsDBNull(4) ? null : rows.GetDateTime(4)));
+                rows.IsDBNull(3) ? null : rows.GetInt32(3), rows.IsDBNull(4) ? null : rows.GetDateTime(4),
+                rows.IsDBNull(5) ? null : rows.GetString(5), rows.IsDBNull(6) ? null : rows.GetDateTime(6)));
         return installations;
     }
 
@@ -188,30 +198,32 @@ internal sealed class ControlStore(NpgsqlDataSource dataSource)
                 JOIN policy_versions p ON p.organization_id = active.organization_id AND p.version = $4
                 WHERE p.mode = CASE WHEN $5 = 'warn_override' THEN 'warn' ELSE $5 END
             ), written AS (
-                INSERT INTO security_events (organization_id, installation_id, event_id, occurred_at, policy_version, decision)
-                SELECT organization_id, $1, $2, $3, $4, $5 FROM eligible
+                INSERT INTO security_events (organization_id, installation_id, event_id, occurred_at, policy_version, decision, app_id)
+                SELECT organization_id, $1, $2, $3, $4, $5, $6 FROM eligible
                 ON CONFLICT (installation_id, event_id) DO NOTHING
             )
             SELECT EXISTS (SELECT 1 FROM eligible)
-            """, installationId, request.EventId, request.Timestamp.UtcDateTime, request.PolicyVersion, request.Decision);
+            """, installationId, request.EventId, request.Timestamp.UtcDateTime, request.PolicyVersion, request.Decision, request.AppId);
         return (bool)(await command.ExecuteScalarAsync(ct))!;
     }
 
-    public async Task<IReadOnlyList<StoredEvent>> Events(Guid organizationId, string? decision,
+    public async Task<IReadOnlyList<StoredEvent>> Events(Guid organizationId, string? appId, string? decision,
         DateTimeOffset? since, CancellationToken ct)
     {
         await using var command = Command("""
-            SELECT event_id, installation_id, occurred_at, received_at, policy_version, decision
+            SELECT event_id, installation_id, occurred_at, received_at, policy_version, decision, app_id
             FROM security_events WHERE organization_id = $1
                 AND ($2::text IS NULL OR decision = $2)
                 AND ($3::timestamptz IS NULL OR occurred_at >= $3)
+                AND ($4::text IS NULL OR app_id = $4)
             ORDER BY received_at DESC, event_id LIMIT 100
-            """, organizationId, (object?)decision ?? DBNull.Value, (object?)since?.UtcDateTime ?? DBNull.Value);
+            """, organizationId, (object?)decision ?? DBNull.Value, (object?)since?.UtcDateTime ?? DBNull.Value,
+            (object?)appId ?? DBNull.Value);
         var events = new List<StoredEvent>();
         await using var rows = await command.ExecuteReaderAsync(ct);
         while (await rows.ReadAsync(ct))
             events.Add(new(rows.GetGuid(0), rows.GetGuid(1), rows.GetDateTime(2), rows.GetDateTime(3),
-                rows.GetInt32(4), rows.GetString(5)));
+                rows.GetInt32(4), rows.GetString(5), rows.GetString(6)));
         return events;
     }
 

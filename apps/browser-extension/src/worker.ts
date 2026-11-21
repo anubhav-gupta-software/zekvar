@@ -1,6 +1,6 @@
 import {
-  fixtureApp, fixtureDetector, fixtureRule, fixtureUrl, isId, isMode, isRecord, isToken, isVersion, readMetadata,
-  type Policy, type PolicyEvent, type Reply, type Summary,
+  chatGptApp, fixtureApp, fixtureDetector, fixtureRule, fixtureUrl, isChatGptPage, isId, isMode, isRecord, isToken, isVersion, readMetadata,
+  type AppId, type Coverage, type Policy, type PolicyEvent, type Reply, type Summary,
 } from './protocol';
 
 declare const CONTROL_ORIGIN: string;
@@ -10,6 +10,8 @@ type State = {
   status: Summary['status'];
   enrollment?: Enrollment;
   policy?: Policy;
+  chatGptEnabled?: boolean;
+  coveragePending?: Coverage;
   queue: PolicyEvent[];
   discarded: number;
 };
@@ -40,7 +42,7 @@ function save(state: State) {
 function summary(state: State): Summary {
   return {
     status: state.status, installationId: state.enrollment?.installationId,
-    policy: state.policy, queued: state.queue.length, discarded: state.discarded,
+    policy: state.policy, chatGptEnabled: state.chatGptEnabled, queued: state.queue.length, discarded: state.discarded,
   };
 }
 
@@ -71,6 +73,7 @@ function lostConnection(state: State, error: unknown) {
   if (error instanceof HttpError && error.status === 401) {
     state.status = 'revoked';
     state.enrollment = undefined;
+    state.coveragePending = undefined;
     state.discarded += state.queue.length;
     state.queue = [];
   } else {
@@ -104,11 +107,13 @@ async function sync(state: State) {
         policy.appId !== fixtureApp || policy.ruleId !== fixtureRule || policy.detectorCategory !== fixtureDetector) {
       throw new Error('Unknown policy format');
     }
-    if (!state.policy || policy.version > state.policy.version) {
+    if (!state.policy || policy.version > state.policy.version ||
+        (policy.version === state.policy.version && policy.mode === state.policy.mode)) {
       state.policy = { version: policy.version, mode: policy.mode };
+      state.chatGptEnabled = Array.isArray(policy.appIds) && policy.appIds.includes(chatGptApp);
       await save(state);
     }
-    await request('browser/heartbeat', token, { policyVersion: state.policy.version });
+    await heartbeat(state);
     state.status = 'connected';
     await save(state);
     await deliver(state);
@@ -116,6 +121,15 @@ async function sync(state: State) {
     lostConnection(state, error);
     await save(state);
   }
+}
+
+async function heartbeat(state: State) {
+  if (!state.enrollment || !state.policy) return;
+  await request('browser/heartbeat', state.enrollment.token, {
+    policyVersion: state.policy.version,
+    chatGptCoverage: state.chatGptEnabled ? state.coveragePending : undefined,
+  });
+  state.coveragePending = undefined;
 }
 
 async function enroll(state: State, grant: unknown): Promise<Reply> {
@@ -150,13 +164,29 @@ function scheduleDelivery() {
   }).catch(() => undefined);
 }
 
-async function onMessage(message: Record<string, unknown>): Promise<Reply> {
+async function onMessage(message: Record<string, unknown>, app: AppId | undefined): Promise<Reply> {
   const state = await readState();
   if (message.type === 'enroll') return enroll(state, message.grant);
   if (message.type === 'sync') await sync(state);
+  if (message.type === 'coverage' && state.chatGptEnabled && state.enrollment &&
+      message.installationId === state.enrollment.installationId &&
+      (message.coverage === 'ready' || message.coverage === 'unsupported')) {
+    state.coveragePending = message.coverage;
+    await save(state);
+    if (state.status === 'connected') {
+      try {
+        await heartbeat(state);
+      } catch (error) {
+        lostConnection(state, error);
+      }
+      await save(state);
+    }
+  }
   if (message.type === 'decision' && state.enrollment && message.installationId === state.enrollment.installationId) {
     const event = readMetadata(message.event);
-    if (!event) return { summary: summary(state), error: 'Invalid event metadata.' };
+    if (!event || event.appId !== app || (app === chatGptApp && !state.chatGptEnabled)) {
+      return { summary: summary(state), error: 'Invalid event metadata.' };
+    }
     if (state.queue.some(({ eventId }) => eventId === event.eventId)) return { summary: summary(state) };
     if (state.queue.length >= maxQueue) {
       state.queue.shift();
@@ -172,11 +202,12 @@ async function onMessage(message: Record<string, unknown>): Promise<Reply> {
 chrome.runtime.onMessage.addListener((message: unknown, sender, reply: (response: Reply) => void) => {
   if (sender.id !== chrome.runtime.id || !isRecord(message)) return;
   const popup = sender.url === chrome.runtime.getURL('popup.html');
-  const fixture = sender.url === fixtureUrl;
+  const app = sender.url === fixtureUrl ? fixtureApp : isChatGptPage(sender.url) ? chatGptApp : undefined;
   const allowed = message.type === 'status' || message.type === 'sync' ||
-    (popup && message.type === 'enroll') || (fixture && message.type === 'decision');
-  if (!(popup || fixture) || !allowed) return;
-  serial(() => onMessage(message)).then(reply, () => reply({ error: 'The extension could not access local storage.' }));
+    (popup && message.type === 'enroll') || (app && message.type === 'decision') ||
+    (app === chatGptApp && message.type === 'coverage');
+  if (!(popup || app) || !allowed) return;
+  serial(() => onMessage(message, app)).then(reply, () => reply({ error: 'The extension could not access local storage.' }));
   return true;
 });
 

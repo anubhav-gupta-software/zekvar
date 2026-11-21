@@ -1,6 +1,6 @@
 # Zekvar Control API local demo
 
-This ASP.NET Core API issues enrollment grants, publishes policy versions, tracks browser health, and stores metadata-only fixture events in PostgreSQL. It runs in the Development environment at `http://127.0.0.1:5187`. Use a disposable database and synthetic data.
+This ASP.NET Core API issues enrollment grants, publishes policy versions, tracks browser health, and stores metadata-only fixture and ChatGPT decisions in PostgreSQL. It runs in the Development environment at `http://127.0.0.1:5187`. Use a disposable database and synthetic data.
 
 Use the [Control dashboard](../control-web/README.md) to sign in and publish a policy. The [Zekvar Browser extension](../browser-extension/README.md#run-the-demo) can redeem a grant, apply the policy, and report fixture events automatically.
 
@@ -43,7 +43,7 @@ Use `Authorization: Bearer …` with the admin token for `/v1/admin` routes and 
 | 8 | `POST /v1/admin/policies/1/restore` | A new version that restores the initial monitor mode |
 | 9 | `POST /v1/admin/installations/{id}/revoke` | The installation credential is revoked. |
 
-The [shared fixture](../../contracts/control/demo-v1.json) defines example policy and event payloads. Event ingestion accepts only the fixture app, rule, and detector identifiers and verifies the decision against the named policy version. The event list supports `decision` and `since` query filters.
+The [shared fixture](../../contracts/control/demo-v1.json) defines example policy and event payloads. Policies advertise the available app IDs in `appIds`. Event ingestion accepts the fixed app IDs `local-prompt-fixture` and `chatgpt`, the synthetic rule and detector identifiers, and a decision consistent with the named policy version. Heartbeats can include `chatGptCoverage` set to `ready` or `unsupported`. The event list supports `appId`, `decision`, and `since` query filters.
 
 For isolated API or browser tests, `Control__Port` selects a different loopback port. The default dashboard and extension use `5187`.
 

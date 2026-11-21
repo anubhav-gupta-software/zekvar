@@ -1,6 +1,6 @@
 import { ApiError, controlApi } from '../lib/api';
 import {
-  decisionLabels, decisions, fixtureApp, modes, utc,
+  chatGptApp, decisionLabels, decisions, fixtureApp, modes, utc,
   type Decision, type Installation, type Policy, type SecurityEvent,
 } from '../lib/control';
 import { sessionToken } from '../lib/session';
@@ -11,7 +11,7 @@ type Search = Record<string, string | string[] | undefined>;
 
 function eventFilters(search: Search) {
   const query = new URLSearchParams();
-  const app = search.app === fixtureApp ? fixtureApp : '';
+  const app = search.app === fixtureApp || search.app === chatGptApp ? search.app : '';
   const decision = decisions.find((value) => value === search.decision) ?? '';
   const period = search.period === 'day' || search.period === 'week' ? search.period : '';
   if (app) query.set('appId', app);
@@ -70,7 +70,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
         <div className="controls-grid">
           <section className="panel" id="policies" aria-labelledby="policies-heading">
             <div className="panel-heading"><h2 id="policies-heading">Publish a policy</h2><span className="badge">Organization-wide</span></div>
-            <p className="muted">Set how Zekvar responds when the local prompt rule matches.</p>
+            <p className="muted">Set how Zekvar responds when the synthetic prompt rule matches.</p>
             <MutationForm action={publishPolicy} label="Publish policy" appearance="primary">
               <label htmlFor="publish-mode" className="sr-only">Policy mode</label>
               <select key={current?.version} id="publish-mode" name="mode" defaultValue={current?.mode ?? 'monitor'}>
@@ -100,7 +100,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
           <div className="panel-heading"><h2 id="browsers-heading">Browser health</h2><span className="table-note">Latest 100 installations</span></div>
           <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="browsers-heading">
             <table aria-labelledby="browsers-heading">
-              <thead><tr><th>Installation</th><th>Policy status</th><th>Applied version</th><th>Last seen (UTC)</th><th>Action</th></tr></thead>
+              <thead><tr><th>Installation</th><th>Policy status</th><th>Applied version</th><th>ChatGPT composer</th><th>Last seen (UTC)</th><th>Action</th></tr></thead>
               <tbody>{installations.map((installation) => <BrowserRow key={installation.installationId}
                 installation={installation} latestVersion={current?.version} />)}</tbody>
             </table>
@@ -114,6 +114,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
             <div><label htmlFor="event-application">Application</label>
               <select id="event-application" name="app" defaultValue={filters.app}>
                 <option value="">All applications</option><option value={fixtureApp}>Local prompt fixture</option>
+                <option value={chatGptApp}>ChatGPT</option>
               </select>
             </div>
             <div><label htmlFor="event-decision">Decision</label>
@@ -204,6 +205,9 @@ function BrowserRow({ installation, latestVersion }: { installation: Installatio
     <td><InstallationId value={installation.installationId} /></td>
     <td><span className={`badge ${status === 'Current' ? 'current' : ''}`}>{status}</span></td>
     <td>{installation.appliedPolicyVersion ? `v${installation.appliedPolicyVersion}` : '—'}</td>
+    <td><span className={`badge ${installation.chatGptCoverage === 'unsupported' ? 'warn' : ''}`}>
+      {installation.chatGptCoverage === 'ready' ? 'Detected' : installation.chatGptCoverage === 'unsupported' ? 'Unsupported' : 'Unobserved'}
+    </span>{installation.chatGptCheckedAt && <div className="muted"><Timestamp value={installation.chatGptCheckedAt} /> UTC</div>}</td>
     <td><Timestamp value={installation.lastSeenAt} /></td>
     <td>{installation.revokedAt ? '—' :
       <MutationForm action={revokeInstallation} label="Revoke" appearance="small danger"
@@ -218,7 +222,7 @@ function BrowserRow({ installation, latestVersion }: { installation: Installatio
 function EventRow({ event }: { event: SecurityEvent }) {
   return <tr>
     <td><Timestamp value={event.timestamp} /></td>
-    <td className="emphasis">{event.appId === fixtureApp ? 'Local prompt fixture' : event.appId}</td>
+    <td className="emphasis">{event.appId === fixtureApp ? 'Local prompt fixture' : event.appId === chatGptApp ? 'ChatGPT' : event.appId}</td>
     <td><DecisionBadge decision={event.decision} /></td>
     <td>{event.detectorCategory === 'synthetic-secret' ? 'Synthetic secret' : event.detectorCategory}</td>
     <td>v{event.policyVersion}</td>

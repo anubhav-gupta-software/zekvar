@@ -1,6 +1,8 @@
 import type { Grant, Installation, Mode, Policy, SecurityEvent } from './control';
 
-const api = 'http://127.0.0.1:5187/v1/admin';
+const port = Number(process.env.ZEKVAR_CONTROL_PORT ?? 5187);
+if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid Control loopback port.');
+const api = `http://127.0.0.1:${port}/v1/admin`;
 
 export class ApiError extends Error {
   constructor(readonly status: number) {

@@ -8,6 +8,7 @@ export const decisionLabels: Record<Decision, string> = {
 };
 
 export const fixtureApp = 'local-prompt-fixture';
+export const chatGptApp = 'chatgpt';
 
 export type Policy = {
   version: number;
@@ -22,6 +23,8 @@ export type Installation = {
   lastSeenAt: string;
   appliedPolicyVersion: number | null;
   revokedAt: string | null;
+  chatGptCoverage?: 'ready' | 'unsupported' | null;
+  chatGptCheckedAt?: string | null;
 };
 
 export type SecurityEvent = {

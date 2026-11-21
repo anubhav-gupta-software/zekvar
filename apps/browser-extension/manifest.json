@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Zekvar Browser",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "minimum_chrome_version": "120",
-  "description": "Applies Zekvar Control policies on the local prompt fixture.",
+  "description": "Applies Zekvar Control policies on the local prompt fixture and supported ChatGPT compose flows.",
   "permissions": ["storage", "alarms"],
   "host_permissions": ["http://127.0.0.1:5187/*"],
   "background": { "service_worker": "worker.js" },
@@ -12,6 +12,11 @@
     {
       "matches": ["http://127.0.0.1:4173/zekvar-fixture/"],
       "js": ["content.js"]
+    },
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["chatgpt.js"],
+      "run_at": "document_start"
     }
   ]
 }

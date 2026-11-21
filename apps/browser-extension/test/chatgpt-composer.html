@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Composer contract fixture</title></head>
+<body>
+  <h1>Composer contract fixture</h1>
+  <form aria-label="Fixture composer">
+    <div id="prompt-textarea" role="textbox" aria-label="Message" contenteditable="true" style="min-height: 2rem; border: 1px solid"></div>
+    <button type="submit" data-testid="send-button"><span>Fixture send</span></button>
+  </form>
+  <p>Submissions <output id="fixture-sends">0</output></p>
+  <script>
+    const input = document.querySelector('#prompt-textarea');
+    const send = document.querySelector('[data-testid="send-button"]');
+    const sends = document.querySelector('#fixture-sends');
+    window.addEventListener('keydown', (event) => {
+      if (event.target === input && event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        send.click();
+      }
+    }, true);
+    document.querySelector('form').addEventListener('submit', (event) => {
+      event.preventDefault();
+      if (!input.textContent.trim()) return;
+      sends.value = String(Number(sends.value) + 1);
+      input.textContent = '';
+    });
+  </script>
+</body>
+</html>

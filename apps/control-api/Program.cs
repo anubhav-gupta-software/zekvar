@@ -65,9 +65,7 @@ admin.MapPost("/policies/{version:int}/restore", async (int version, HttpContext
     await store.Publish(Identity(http).OrganizationId, null, version, ct) is { } published
         ? Results.Ok(published) : Results.NotFound());
 admin.MapGet("/events", async (string? appId, string? decision, DateTimeOffset? since, HttpContext http, CancellationToken ct) =>
-    Results.Ok(appId is null or FixtureContract.AppId
-        ? await store.Events(Identity(http).OrganizationId, decision, since, ct)
-        : Array.Empty<StoredEvent>()));
+    Results.Ok(await store.Events(Identity(http).OrganizationId, appId, decision, since, ct)));
 
 app.MapPost("/v1/enroll", async (RedeemGrant request, CancellationToken ct) =>
     Tokens.IsValid(request.Grant) && await store.Enroll(request.Grant, ct) is { } enrollment
@@ -78,8 +76,9 @@ browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
     await store.CurrentPolicy(Identity(http).InstallationId!.Value, ct) is { } policy
         ? Results.Ok(policy) : Results.Unauthorized());
 browser.MapPost("/heartbeat", async (Heartbeat request, HttpContext http, CancellationToken ct) =>
-    await store.RecordHeartbeat(Identity(http).InstallationId!.Value, request.PolicyVersion, ct)
-        ? Results.NoContent() : Results.BadRequest(new { error = "Policy version is unavailable." }));
+    (request.ChatGptCoverage is null or "ready" or "unsupported") &&
+    await store.RecordHeartbeat(Identity(http).InstallationId!.Value, request, ct)
+        ? Results.NoContent() : Results.BadRequest(new { error = "Invalid policy version or coverage status." }));
 browser.MapPost("/events", async (PolicyEvent request, HttpContext http, CancellationToken ct) =>
     FixtureContract.IsEvent(request) && await store.Ingest(Identity(http).InstallationId!.Value, request, ct)
         ? Results.NoContent() : Results.BadRequest(new { error = "Invalid policy event." }));

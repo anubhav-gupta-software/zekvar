@@ -15,6 +15,7 @@ const admin = process.env.ZEKVAR_EXTENSION_TEST_ADMIN_TOKEN;
 assert.match(origin ?? '', /^http:\/\/127\.0\.0\.1:\d+$/, 'Set ZEKVAR_EXTENSION_TEST_API to a loopback API origin.');
 assert.match(admin ?? '', /^[a-f0-9]{64}$/, 'Set ZEKVAR_EXTENSION_TEST_ADMIN_TOKEN for a disposable organization.');
 const fixture = await readFile(new URL('../fixture/index.html', import.meta.url), 'utf8');
+const chatGptFixture = await readFile(new URL('./chatgpt-composer.html', import.meta.url), 'utf8');
 const marker = 'ZEKVAR_TEST_SECRET';
 
 async function adminCall(path, body) {
@@ -129,6 +130,8 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
   const used = await adminCall('enrollment-grants', {});
   let installationId;
   let policy;
+  let chatGpt;
+  let chatGptInstallation;
 
   await t.test('rejects an unavailable grant and redeems a fresh grant', async () => {
     const consumed = await fetch(`${origin}/v1/enroll`, {
@@ -216,6 +219,7 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
     await enroll(grant.grant);
     await page.getByText(`Control policy: WARN · v${warning.version}`, { exact: true }).waitFor();
     const newId = (await adminCall('installations'))[0].installationId;
+    chatGptInstallation = newId;
     assert.notEqual(newId, installationId);
     await page.getByLabel('Prompt', { exact: true }).fill(marker);
     await page.getByRole('button', { name: 'Send prompt' }).click();
@@ -227,5 +231,69 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
       return rows.length === 2 && rows.every((row) => row.policyVersion === warning.version) &&
         rows.map((row) => row.decision).sort().join(',') === 'warn,warn_override';
     }, 'Control did not record the warning and override.');
+  });
+
+  await t.test('guards click and Enter on the supported ChatGPT-shaped composer and sends edited text', async () => {
+    const block = await adminCall('policies', { mode: 'block' });
+    await browser.route('https://chatgpt.com/**', (route) => route.fulfill({ contentType: 'text/html', body: chatGptFixture }));
+    chatGpt = await browser.newPage();
+    await chatGpt.goto('https://chatgpt.com/');
+    await chatGpt.getByText(`Zekvar · BLOCK v${block.version}`, { exact: true }).waitFor();
+    const input = chatGpt.getByRole('textbox', { name: 'Message' });
+    const clickSend = chatGpt.getByRole('button', { name: 'Fixture send' });
+    const submissions = chatGpt.locator('#fixture-sends');
+
+    await input.fill('Clean test prompt');
+    await clickSend.click();
+    assert.equal(await submissions.textContent(), '1');
+    await input.fill(`${marker} sample`);
+    await clickSend.click();
+    await chatGpt.getByRole('alert').filter({ hasText: 'Submission blocked' }).waitFor();
+    await input.press('Enter');
+    assert.equal(await submissions.textContent(), '1');
+    await input.fill('Edited test prompt');
+    await input.press('Enter');
+    assert.equal(await submissions.textContent(), '2');
+
+    await until(async () => (await adminCall('events?appId=chatgpt')).length === 2, 'Expected two ChatGPT block events.');
+    const rows = await adminCall('events?appId=chatgpt');
+    assert.ok(rows.every((row) => row.appId === 'chatgpt' && row.decision === 'block' && row.policyVersion === block.version));
+    assert.ok((await adminCall('events?appId=local-prompt-fixture')).every((row) => row.appId === 'local-prompt-fixture'));
+    assert.ok(posts.filter(({ appId }) => appId === 'chatgpt').every((event) =>
+      JSON.stringify(Object.keys(event).sort()) === JSON.stringify(['appId', 'decision', 'detectorCategory', 'eventId', 'policyVersion', 'ruleId', 'timestamp']) &&
+      !JSON.stringify(event).includes(marker)));
+  });
+
+  await t.test('reports an unsupported composer and recovers when it returns', async () => {
+    const coverage = async () => (await adminCall('installations')).find((row) => row.installationId === chatGptInstallation);
+    await until(async () => (await coverage()).chatGptCoverage === 'ready', 'The recognized composer status was not reported.');
+    await chatGpt.locator('#prompt-textarea').evaluate((element) => { element.id = 'renamed-composer'; });
+    await chatGpt.getByText('Zekvar · Unsupported composer', { exact: true }).waitFor();
+    await until(async () => (await coverage()).chatGptCoverage === 'unsupported', 'The coverage loss was not reported.');
+    assert.ok(Number.isFinite(Date.parse((await coverage()).chatGptCheckedAt)));
+    await chatGpt.locator('#renamed-composer').evaluate((element) => { element.id = 'prompt-textarea'; });
+    await until(async () => (await coverage()).chatGptCoverage === 'ready', 'Recovery was not reported.');
+    await chatGpt.goto('https://chatgpt.com/unrelated');
+    assert.equal(await chatGpt.locator('#zekvar-chatgpt').count(), 0);
+  });
+
+  await t.test('allows one ChatGPT warning override for the unchanged draft', async () => {
+    const warnPolicy = await adminCall('policies', { mode: 'warn' });
+    await chatGpt.goto('https://chatgpt.com/c/fixture-conversation');
+    await chatGpt.getByText(`Zekvar · WARN v${warnPolicy.version}`, { exact: true }).waitFor();
+    const input = chatGpt.getByRole('textbox', { name: 'Message' });
+    const proceed = chatGpt.getByRole('button', { name: 'Continue anyway' });
+    await input.fill(marker);
+    await input.press('Enter');
+    await proceed.waitFor();
+    await input.fill(`${marker} edited`);
+    assert.equal(await proceed.isVisible(), false);
+    await input.press('Enter');
+    await proceed.click();
+    assert.equal(await chatGpt.locator('#fixture-sends').textContent(), '1');
+    await until(async () => {
+      const rows = (await adminCall('events?appId=chatgpt')).filter((row) => row.policyVersion === warnPolicy.version);
+      return rows.map((row) => row.decision).sort().join(',') === 'warn,warn,warn_override';
+    }, 'Expected two warnings and one override for ChatGPT.');
   });
 });

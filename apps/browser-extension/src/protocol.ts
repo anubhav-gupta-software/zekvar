@@ -1,12 +1,15 @@
 export const fixtureUrl = 'http://127.0.0.1:4173/zekvar-fixture/';
 export const fixtureApp = 'local-prompt-fixture';
+export const chatGptApp = 'chatgpt';
+export type AppId = typeof fixtureApp | typeof chatGptApp;
+export type Coverage = 'ready' | 'unsupported';
 export const fixtureRule = 'fixture-secret';
 export const fixtureDetector = 'synthetic-secret';
 export type PolicyMode = 'monitor' | 'warn' | 'block';
 export type Policy = { version: number; mode: PolicyMode };
 export type PolicyEvent = {
   eventId: string;
-  appId: typeof fixtureApp;
+  appId: AppId;
   timestamp: string;
   ruleId: typeof fixtureRule;
   detectorCategory: typeof fixtureDetector;
@@ -18,12 +21,21 @@ export type Summary = {
   status: 'standalone' | 'connected' | 'offline' | 'revoked';
   installationId?: string;
   policy?: Policy;
+  chatGptEnabled?: boolean;
   queued: number;
   discarded: number;
 };
 
 type Message = { type: 'status' | 'sync' } | { type: 'enroll'; grant: string } |
-  { type: 'decision'; installationId: string; event: PolicyEvent };
+  { type: 'decision'; installationId: string; event: PolicyEvent } |
+  { type: 'coverage'; installationId: string; coverage: Coverage };
+
+export function isChatGptPage(url: string | undefined): boolean {
+  if (!url) return false;
+  const page = new URL(url);
+  return page.origin === 'https://chatgpt.com' &&
+    (page.pathname === '/' || /^\/c\/[a-z\d-]+\/?$/i.test(page.pathname));
+}
 
 export type Reply = { summary?: Summary; error?: string };
 
@@ -53,12 +65,12 @@ export function isId(value: unknown): value is string {
 
 export function readMetadata(value: unknown): PolicyEvent | undefined {
   if (!isRecord(value) || !isId(value.eventId) || !isVersion(value.policyVersion) ||
-      value.appId !== fixtureApp || value.ruleId !== fixtureRule || value.detectorCategory !== fixtureDetector ||
+      (value.appId !== fixtureApp && value.appId !== chatGptApp) || value.ruleId !== fixtureRule || value.detectorCategory !== fixtureDetector ||
       !(isMode(value.decision) || value.decision === 'warn_override') ||
       typeof value.timestamp !== 'string' || !Number.isFinite(Date.parse(value.timestamp))) return;
 
   return {
-    eventId: value.eventId, appId: fixtureApp, timestamp: new Date(value.timestamp).toISOString(),
+    eventId: value.eventId, appId: value.appId, timestamp: new Date(value.timestamp).toISOString(),
     ruleId: fixtureRule, detectorCategory: fixtureDetector, policyVersion: value.policyVersion, decision: value.decision,
   };
 }
