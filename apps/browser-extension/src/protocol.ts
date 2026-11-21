@@ -3,6 +3,7 @@ import { credentialDetector, fixtureDetector, fixtureRule, githubPatRule, isMode
 import { chatGptApp, fixtureApp, geminiApp, isPromptApp, type AiPromptApp, type AppId } from '../../../contracts/policy/apps';
 import { isUploadMethod, uploadCategory, uploadRule, type TargetedUploads, type UploadMetadata, type UploadModes } from '../../../contracts/policy/uploads';
 import type { InventoryStatus } from '../../../contracts/policy/extension-inventory';
+import { builtInDiscoveryApps, type BuiltInDiscoveryApp, type CustomAppId } from '../../../contracts/policy/discovery';
 
 export { fixtureRule, fixtureDetector, githubPatRule, credentialDetector, isMode, isDetectorMode } from '../../../contracts/policy/prompt';
 export type { PolicyMode, DetectorMode, RuleMetadata } from '../../../contracts/policy/prompt';
@@ -10,17 +11,13 @@ export { chatGptApp, fixtureApp, geminiApp, aiPromptApps, isPromptApp } from '..
 export type { AiPromptApp, AppId } from '../../../contracts/policy/apps';
 
 export const fixtureUrl = 'http://127.0.0.1:4173/zekvar-fixture/';
-const discoveryCatalog = {
-  'https://chatgpt.com': chatGptApp,
-  'https://claude.ai': 'claude',
-  'https://gemini.google.com': geminiApp,
-} as const;
-export type DiscoveryApp = typeof discoveryCatalog[keyof typeof discoveryCatalog];
+export const discoveryPermission: chrome.permissions.Permissions = { permissions: ['webNavigation'] };
+export type DiscoveryApp = BuiltInDiscoveryApp | CustomAppId;
 export type AppObservation = { appId: DiscoveryApp; observedAt: string; policyVersion: number; assignmentVersion?: number };
 
-export function discoveredApp(url: string | undefined): DiscoveryApp | undefined {
+export function discoveredApp(url: string | undefined): BuiltInDiscoveryApp | undefined {
   const origin = url && new URL(url).origin;
-  if (origin && Object.hasOwn(discoveryCatalog, origin)) return discoveryCatalog[origin as keyof typeof discoveryCatalog];
+  if (origin && Object.hasOwn(builtInDiscoveryApps, origin)) return builtInDiscoveryApps[origin as keyof typeof builtInDiscoveryApps];
 }
 export type Coverage = 'ready' | 'unsupported';
 export type Policy = PromptPolicy & {
@@ -47,6 +44,7 @@ export type Summary = {
   pathRuleCount?: number;
   domainRulesError?: boolean;
   inventoryStatus?: InventoryStatus;
+  customDiscoveryCount?: number;
   queued: number;
   discarded: number;
 };

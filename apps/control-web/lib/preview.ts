@@ -5,11 +5,13 @@ import { aiPromptApps, promptAppLabels } from '../../../contracts/policy/apps';
 import { allUploadTypes, matchesUploadType, sameUploadTypes, uploadsOff, type UploadFile, type UploadMode,
   type UploadModes, type UploadTypes } from '../../../contracts/policy/uploads';
 import type { Policy } from './control';
+import { sameCustomApps, type CustomAppSetting } from '../../../contracts/policy/discovery';
 
 export type PreviewPolicy = {
   mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; discoveryEnabled: boolean;
   extensionInventoryEnabled: boolean;
   domainRules: DomainRules; pathRules: PathRules; uploadModes: UploadModes; uploadTypes: UploadTypes;
+  customApps: CustomAppSetting[];
 };
 export type PreviewSnapshot = PreviewPolicy & { version: number; label: string };
 export type PreviewDecision = { action: 'allow' | PolicyMode; rule?: string };
@@ -21,6 +23,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     version: policy.version, label: `${scope} v${policy.version}`,
     mode: policy.mode, githubPatMode: policy.githubPatMode ?? 'off', paymentCardMode: policy.paymentCardMode ?? 'off',
     discoveryEnabled: policy.discoveryEnabled ?? false,
+    customApps: (policy.customApps ?? []).map(({ host, name }) => ({ host, name })),
     extensionInventoryEnabled: policy.extensionInventoryEnabled ?? false,
     domainRules: policy.domainRules ?? emptyDomainRules,
     pathRules: policy.pathRules ?? emptyPathRules,
@@ -33,6 +36,7 @@ export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
   return a.mode === b.mode && a.githubPatMode === b.githubPatMode && a.paymentCardMode === b.paymentCardMode &&
     a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
     aiPromptApps.every((app) => a.uploadModes[app] === b.uploadModes[app] && sameUploadTypes(a.uploadTypes[app], b.uploadTypes[app])) &&
+    sameCustomApps(a.customApps, b.customApps) &&
     sameDomainRules(a.domainRules, b.domainRules) && sameDomainRules(a.pathRules, b.pathRules);
 }
 

@@ -350,8 +350,8 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
 
   let discoveryOffVersion;
   let discoveryOnVersion;
-  const discoveryMode = dashboard.getByLabel('AI app discovery', { exact: true });
-  const apps = dashboard.getByRole('table', { name: 'AI apps' });
+  const discoveryMode = dashboard.getByLabel('App discovery', { exact: true });
+  const apps = dashboard.getByRole('table', { name: 'App inventory' });
   const appPage = await browser.newPage();
   const privateDetail = 'SYNTHETIC_PRIVATE_PAGE_DETAIL';
   const appFixture = `<html><title>${privateDetail}</title><p>${privateDetail}</p></html>`;
@@ -392,7 +392,7 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
       assert.equal(observation.policyVersion, discoveryOnVersion);
     }
     assert.ok(!JSON.stringify(observationAttempts).includes(privateDetail));
-    await dashboard.getByRole('button', { name: 'Refresh AI apps' }).click();
+    await dashboard.getByRole('button', { name: 'Refresh app inventory' }).click();
     await apps.getByRole('row', { name: /Gemini/ }).getByText('1', { exact: true }).waitFor();
     await dashboard.getByLabel('Claude classification', { exact: true }).selectOption('unapproved');
     await dashboard.getByRole('button', { name: 'Save Claude classification' }).click();

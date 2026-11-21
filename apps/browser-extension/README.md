@@ -1,6 +1,6 @@
 # Zekvar Browser and Control demo
 
-Zekvar Browser enforces domain rules, evaluates prompts locally, and controls native file intake on supported ChatGPT and Gemini routes. It also supports the loopback prompt fixture. Managed browsers send decision metadata to Control and can report visits to cataloged AI apps when discovery is enabled.
+Zekvar Browser enforces domain rules, evaluates prompts locally, and controls native file intake on supported ChatGPT and Gemini routes. It also supports the loopback prompt fixture. Managed browsers send decision metadata to Control and can report visits to cataloged apps when discovery is enabled.
 
 ## Run the demo
 
@@ -72,13 +72,15 @@ The upload policy covers the supported top-level ChatGPT home and conversation r
 
 Update enrolled Chrome profiles to v0.15.0 before publishing scoped file types. Older builds skip the scoped portion and Control leaves the policy version unacknowledged. Other enabled controls and any unscoped upload mode continue to apply.
 
-## AI app discovery
+## App discovery
 
-1. Load Browser v0.6.0, start Control, and enroll the test browser. Set **AI app discovery** to **On** under **Publish a policy**. Publish, then click **Sync now** in the Zekvar popup.
-2. Open `chatgpt.com`, `claude.ai`, or `gemini.google.com` in a top-level tab. Go to **AI apps** in Control and click **Refresh**. The app row shows the number of distinct browsers seen in the past 30 days and the latest observation time.
-3. Use the row’s classification selector and **Save** to mark the app **Approved**, **Unapproved**, or **Unreviewed**. This label is for admin review. Use the prompt-protection settings to control supported sends.
+1. Load Browser v0.16.0, start Control, and enroll the test browser. Set **App discovery** to **On** under **Publish a policy**. Publish, then click **Sync now** in the Zekvar popup.
+2. Open `chatgpt.com`, `claude.ai`, or `gemini.google.com` in a top-level tab. Go to **App inventory** in Control and choose **Refresh app inventory**. The app row shows distinct browsers seen in the past 30 days and the latest observation time.
+3. Use the row’s classification selector and **Save** to mark the app **Approved**, **Unapproved**, or **Unreviewed**. Classification helps admins review usage. Enforcement uses the separate prompt and navigation policy settings.
 
-Discovery records new document loads on the three cataloged origins. The browser sends the catalog ID, observation time, and policy version. It can retry the latest unsent observation per app after a connection interruption. Restoring an Off policy stops reporting and preserves existing inventory observations. The automated suite uses controlled pages at all three app origins. A separate headed smoke test recorded an observation on each of the live signed-out landing pages.
+To discover a custom SaaS or AI app, open **App inventory → Edit app catalog** or **Preview group policy** for a rollout group. Enter one exact hostname and display name per line in **Custom app catalog**, such as `workspace.example.test, Example Workspace`. Turn on app discovery and publish or request review. Click **Sync now** and then **Allow custom app discovery** in the extension, and accept the Chrome permission prompt. Open the configured HTTPS site in a top-level tab and refresh Control. When permission is missing, Control leaves a policy with an active custom catalog pending. Chrome can remove the permission from the Zekvar popup.
+
+Custom discovery uses Chrome's navigation permission and checks only top-level committed HTTPS pages on exact configured domains using the default port. Reports contain the app ID, observation time, policy version and assignment. The extension queues the latest unsent observation per app. URLs, query strings, page contents and account details stay out of observation reports. Remove a site to stop collection while preserving the inventory retention window. [Chrome navigation API](https://developer.chrome.com/docs/extensions/reference/api/webNavigation#event-onCommitted) · [Chrome optional permissions](https://developer.chrome.com/docs/extensions/reference/api/permissions)
 
 ## Domain rules
 

@@ -7,7 +7,7 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     ['Test marker', decisionLabels[reference.mode], decisionLabels[candidate.mode]],
     ['GitHub classic PAT', detectorModeLabels[reference.githubPatMode], detectorModeLabels[candidate.githubPatMode]],
     ['Payment card number', detectorModeLabels[reference.paymentCardMode], detectorModeLabels[candidate.paymentCardMode]],
-    ['AI app discovery', toggle(reference.discoveryEnabled), toggle(candidate.discoveryEnabled)],
+    ['App discovery', toggle(reference.discoveryEnabled), toggle(candidate.discoveryEnabled)],
     ['Extension inventory', toggle(reference.extensionInventoryEnabled), toggle(candidate.extensionInventoryEnabled)],
     ...aiPromptApps.map((app) => [`${promptAppLabels[app]} file uploads`, detectorModeLabels[reference.uploadModes[app]],
       detectorModeLabels[candidate.uploadModes[app]]]),
@@ -17,6 +17,14 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
   return <ul className="preview-changes" aria-label="Policy setting changes">
     {fields.filter(([, before, after]) => before !== after).map(([field, before, after]) =>
       <li key={field}>{field} · {before} → {after}</li>)}
+    {candidate.customApps.map(({ host, name }) => {
+      const before = reference.customApps.find((app) => app.host === host);
+      if (!before) return <li key={host}>Add {name} · <code>{host}</code></li>;
+      if (before.name !== name) return <li key={host}>{before.name} → {name} · <code>{host}</code></li>;
+      return null;
+    })}
+    {reference.customApps.filter(({ host }) => !candidate.customApps.some((app) => app.host === host))
+      .map(({ host, name }) => <li key={host}>Remove {name} · <code>{host}</code></li>)}
     {(['domainRules', 'pathRules'] as const).flatMap((field) => (['allow', 'block'] as const).flatMap((action) => {
       const before = reference[field][action];
       const after = candidate[field][action];

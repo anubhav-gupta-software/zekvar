@@ -263,7 +263,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       await page.getByLabel('Draft Gemini file uploads').selectOption('monitor');
       await page.getByLabel('Draft ChatGPT file types', { exact: true }).fill('IMAGE/*, .PDF');
       await geminiTypes.fill('application/x-zekvar-private-type');
-      await page.getByLabel('Draft AI app discovery').selectOption('on');
+      await page.getByLabel('Draft app discovery').selectOption('on');
       await allowed.fill('work.pilot.example.test');
       await blocked.fill('Pilot.Example.Test.');
       await allowedPaths.fill('PILOT.EXAMPLE.TEST./start/');
@@ -594,6 +594,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       await author.getByRole('link', { name: 'Policy preview', exact: true }).click();
       await author.getByLabel('Draft test marker', { exact: true }).selectOption('block');
       await author.getByLabel('Draft extension inventory', { exact: true }).selectOption('on');
+      await author.getByLabel('Custom app catalog', { exact: true }).fill('workspace.review.test, Review Workspace');
       await author.getByLabel('Draft ChatGPT file types', { exact: true }).fill('.csv');
       await author.getByLabel('Draft blocked paths', { exact: true }).fill('work.review.test/private');
       await author.getByRole('button', { name: 'Run preview', exact: true }).click();
@@ -614,6 +615,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       const reviewed = approver.locator(hash);
       await reviewed.getByText('work.review.test/private', { exact: true }).waitFor();
       await reviewed.getByText('Extension inventory · Off → On', { exact: true }).waitFor();
+      await reviewed.getByText('workspace.review.test', { exact: true }).waitFor();
       await reviewed.getByText(/ChatGPT file types .* → \.csv$/).waitFor();
       await reviewed.getByText(`Reference v${prior.version}`, { exact: true }).waitFor();
       const screenshot = process.env.ZEKVAR_TEST_REVIEW_SCREENSHOT;
@@ -628,6 +630,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       assert.equal(current.version, prior.version + 1);
       assert.equal(current.mode, 'block');
       assert.equal(current.extensionInventoryEnabled, true);
+      assert.deepEqual(current.customApps.map(({ host, name }) => ({ host, name })), [{ host: 'workspace.review.test', name: 'Review Workspace' }]);
       assert.deepEqual(current.uploadTypes.chatgpt, ['.csv']);
       assert.deepEqual(current.pathRules.block, ['work.review.test/private']);
       await approver.getByRole('link', { name: 'Audit log', exact: true }).click();

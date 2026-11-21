@@ -38,7 +38,8 @@ internal static class DiscoveryCatalog
 {
     public static readonly string[] AppIds = [FixtureContract.ChatGpt, "claude", FixtureContract.Gemini];
 
-    public static bool IsApp(string? appId) => appId is not null && AppIds.Contains(appId);
+    public static bool IsBuiltIn(string? appId) => appId is not null && AppIds.Contains(appId);
+    public static bool IsApp(string? appId) => IsBuiltIn(appId) || CustomApps.IsId(appId);
     public static bool IsStatus(string? status) => status is "unreviewed" or "approved" or "unapproved";
 }
 
@@ -59,7 +60,8 @@ internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId
 }
 internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode = null, bool? DiscoveryEnabled = null,
     DomainRules? DomainRules = null, int? ExpectedVersion = null, string? PaymentCardMode = null, UploadModes? UploadModes = null,
-    PathRules? PathRules = null, bool? ExtensionInventoryEnabled = null, UploadTypes? UploadTypes = null);
+    PathRules? PathRules = null, bool? ExtensionInventoryEnabled = null, UploadTypes? UploadTypes = null,
+    CustomAppSetting?[]? CustomApps = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null)
 {
     public bool HasSettings() => Chatgpt is not null || Gemini is not null;
@@ -68,7 +70,7 @@ internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null
 internal sealed record RedeemGrant(string Grant);
 internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = null, bool DomainRulesApplied = false,
     int AssignmentVersion = 0, string? GeminiCoverage = null, bool PaymentCardModeApplied = false, bool UploadControlsApplied = false,
-    bool PathRulesApplied = false, bool UploadTypesApplied = false)
+    bool PathRulesApplied = false, bool UploadTypesApplied = false, bool CustomDiscoveryApplied = false)
 {
     public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported") &&
         (GeminiCoverage is null or "ready" or "unsupported");
@@ -80,6 +82,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     bool DiscoveryEnabled, DomainRules DomainRules, string PaymentCardMode, UploadModes UploadModes, PathRules PathRules,
     bool ExtensionInventoryEnabled = false,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] UploadTypes? UploadTypes = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CustomApp[]? CustomApps = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] TargetedUploads? TargetedUploads = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int AssignmentVersion = 0)
 {
@@ -105,7 +108,9 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
 
 internal sealed record AppObservation(string AppId, DateTimeOffset ObservedAt, int PolicyVersion, int AssignmentVersion = 0);
 internal sealed record ClassifyApp(string Status);
-internal sealed record DiscoveredApp(string AppId, string Status, long BrowsersSeen, DateTime? LastObservedAt);
+internal sealed record DiscoveredApp(string AppId, string Status, long BrowsersSeen, DateTime? LastObservedAt,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Host = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Name = null);
 
 internal sealed record EnrollmentGrant(string Grant, DateTime ExpiresAt);
 internal sealed record Enrollment(Guid InstallationId, string Token);

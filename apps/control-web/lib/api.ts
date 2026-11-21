@@ -1,4 +1,4 @@
-import type { AiAppId, AppClassification, DiscoveredApp, Grant, Installation, Policy, PolicyGroup } from './control';
+import type { AppClassification, DiscoveredApp, DiscoveredAppId, Grant, Installation, Policy, PolicyGroup } from './control';
 import type { AuditPage } from './audit';
 import type { EventPage } from './events';
 import type { RetentionCleanup, RetentionPolicy } from './retention';
@@ -79,9 +79,9 @@ export const controlApi = {
   saveRetention: (token: string, policy: RetentionPolicy) => request<void>('/retention', token, 'POST', policy),
   cleanupRetention: (token: string) => request<RetentionCleanup>('/retention/cleanup', token, 'POST'),
   aiApps: (token: string) => request<DiscoveredApp[]>('/ai-apps', token),
-  classifyApp: (token: string, appId: AiAppId, status: AppClassification) =>
+  classifyApp: (token: string, appId: DiscoveredAppId, status: AppClassification) =>
     request<void>(`/ai-apps/${appId}/classification`, token, 'POST', { status }),
-  publish: (token: string, policy: Omit<PreviewPolicy, 'domainRules' | 'pathRules'> & { expectedVersion?: number }, review: boolean, groupId?: string) =>
+  publish: (token: string, policy: Omit<PreviewPolicy, 'domainRules' | 'pathRules' | 'customApps'> & { expectedVersion?: number }, review: boolean, groupId?: string) =>
     request<PolicyChange>(policiesPath(groupId), token, 'POST', policy, review),
   publishNavigation: (token: string, rules: Pick<PreviewPolicy, 'domainRules' | 'pathRules'>, expectedVersion: number, review: boolean, groupId?: string) =>
     request<PolicyChange>(policiesPath(groupId), token, 'POST', { ...rules, expectedVersion }, review),

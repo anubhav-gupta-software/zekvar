@@ -16,7 +16,7 @@ Control is a local dashboard for publishing browser policies, issuing enrollment
 4. Set **Test marker** and **GitHub classic PAT** independently under **Publish a policy**. The GitHub rule defaults to **Off** with **Monitor**, **Warn**, and **Block** available. To revert the policy settings, restore an earlier version. Control publishes the restored configuration as a new version.
 5. Create an enrollment grant and paste it into the Zekvar Browser popup. After testing a prompt, refresh the dashboard to see the installation and its decision metadata. **Security events** names the rule responsible for each decision. [Run the browser demo](../browser-extension/README.md#run-the-demo)
 6. For the [experimental ChatGPT adapter](../browser-extension/README.md#try-the-experimental-chatgpt-adapter), filter **Application** to **ChatGPT**, and check the **ChatGPT composer** column under **Browser health**. The timestamp shows when Control last received a coverage observation.
-7. Publish **AI app discovery** as **On** to populate **AI apps** from enrolled browsers. The inventory shows the latest observation and distinct browser count over 30 days. Classify each app from its row and click **Save**. [Try app discovery](../browser-extension/README.md#ai-app-discovery)
+7. Publish **App discovery** as **On** to populate **App inventory** from enrolled browsers. The inventory shows the latest observation and distinct browser count over 30 days. Classify each app from its row and click **Save**. [Try app discovery](../browser-extension/README.md#app-discovery)
 8. Open **Navigation rules** to publish allowed and blocked hostnames or paths. Policy history shows the lists for each version. Browser health shows whether Chrome has applied the latest policy. [Try navigation rules](../browser-extension/README.md#domain-rules)
 
 In **Browser health**, **Reporting** indicates Control heard from the installation within the last 90 seconds. **Stale** indicates the reporting window elapsed. **Policy status** shows whether the browser’s last applied version matches the current policy. Use **Refresh** to update the table. The [two-profile pilot lab](../browser-extension/README.md#run-the-two-profile-chrome-pilot-lab) demonstrates both states.
@@ -65,6 +65,10 @@ Control records group creation, assignment, publication, rollback, and promotion
 3. Review the outcomes and setting changes. Choose **Publish previewed policy** and confirm to publish the draft to the selected scope. If the current version changed while you were editing, reload the page and run the comparison again.
 
 The preview evaluates the supported text detectors, file metadata, and individual top-level HTTP and HTTPS URLs. For each AI app, a blank **File types** field applies its upload mode to all files. Enter types such as `.pdf` or `image/*` for selected files. Use a pilot group to test native browser actions before promotion. [File upload test guide](../browser-extension/README.md#test-file-upload-policies)
+
+## Configure app inventory
+
+Choose **App inventory → Edit app catalog** for the baseline or **Preview group policy** for a rollout group. Enable **App discovery** and enter custom sites in the form `workspace.example.test, Example Workspace`. Run the preview, review the catalog changes, then publish or request approval. Enrolled Chrome browsers with the discovery permission report visits to the exact configured HTTPS sites. Use **App inventory** to inspect observed browser counts and classify each app. [Browser permission and test guide](../browser-extension/README.md#app-discovery)
 
 ## Investigate and export security events
 

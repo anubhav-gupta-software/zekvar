@@ -1439,4 +1439,115 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       assert.equal(await retentionFixture(`SELECT count(*) FROM extension_inventory_snapshots WHERE installation_id = '${browser.installationId}'`), '0');
     }
   });
+
+  await t.test('versions a scoped app catalog and rejects uncataloged or withdrawn observations', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: first, ...options });
+    const post = (path, body, expect = 200, token = first) => admin(path, { token, method: 'POST', body, expect });
+    const inventory = (token) => admin('ai-apps', token ? { token } : undefined);
+    const [before] = await admin('policies');
+    const previousInventory = await inventory();
+    assert.deepEqual(before.customApps, []);
+    if (postgres) {
+      await stop();
+      const constraints = ['ai_app_observations', 'ai_app_classifications', 'control_audit'].map((table) => `
+        ALTER TABLE ${table} DROP CONSTRAINT ${table}_app_id_check,
+          ADD CONSTRAINT ${table}_app_id_check CHECK (app_id IN ('chatgpt', 'claude', 'gemini'));
+      `).join('\n');
+      await retentionFixture(`
+        DELETE FROM schema_migrations WHERE version = 18;
+        ALTER TABLE policy_versions DROP COLUMN custom_apps;
+        ${constraints}
+      `);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 18'), '1');
+      assert.deepEqual((await admin('policies'))[0], before);
+      assert.deepEqual(await inventory(), previousInventory);
+    }
+    for (const customApps of [
+      [{ host: 'https://workspace.example.test', name: 'Workspace' }],
+      [{ host: 'workspace.example.test/private', name: 'Workspace' }],
+      [{ host: '*.example.test', name: 'Wildcard' }],
+      [{ host: 'project.example.test:443', name: 'Port' }],
+      [{ host: 'chatgpt.com', name: 'Built in' }],
+      [{ host: 'localhost', name: 'Localhost' }],
+      [{ host: 'project.example.test', name: 'A\u202eB' }],
+      [null],
+      [{ host: 'workspace.example.test', name: 'First' }, { host: 'WORKSPACE.EXAMPLE.TEST.', name: 'Duplicate' }],
+      Array.from({ length: 26 }, (_, index) => ({ host: `site-${index}.example.test`, name: 'Site' })),
+    ]) await post('policies', { customApps }, 400);
+
+    const baseline = await post('policies', { mode: before.mode, discoveryEnabled: true,
+      customApps: [{ host: ' WorkSpace.Example.Test. ', name: ' Project Workspace ' }] });
+    const [app] = baseline.customApps;
+    assert.equal(app.name, 'Project Workspace');
+    assert.equal(app.host, 'workspace.example.test');
+    assert.match(app.id, /^saas:[a-f0-9]{64}$/);
+    await post('policies', { customApps: [], expectedVersion: before.version }, 409);
+    assert.deepEqual((await inventory()).find((entry) => entry.appId === app.id),
+      { appId: app.id, name: app.name, host: app.host, status: 'unreviewed', browsersSeen: 0, lastObservedAt: null });
+    assert.equal((await inventory(second)).some((entry) => entry.appId === app.id), false);
+    const classify = (status, expect = 204, token = first) => post(`ai-apps/${app.id}/classification`, { status }, expect, token);
+    await classify('unapproved', 404, second);
+    const { grant } = await post('enrollment-grants');
+    const client = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const getPolicy = () => call('/v1/browser/policy', { token: client.token, assignmentAware: true });
+    const observe = (body, expect = 204) => call('/v1/browser/ai-app-observations', { token: client.token, body, method: 'POST', expect });
+    const ack = (policyVersion, customDiscoveryApplied) => call('/v1/browser/heartbeat', {
+      token: client.token, method: 'POST', expect: 204,
+      body: { policyVersion, domainRulesApplied: true, pathRulesApplied: true, paymentCardModeApplied: true, uploadControlsApplied: true,
+        uploadTypesApplied: true, customDiscoveryApplied },
+    });
+    const applied = async () => (await admin('installations')).find((row) => row.installationId === client.installationId).appliedPolicyVersion;
+    assert.deepEqual((await getPolicy()).customApps, baseline.customApps);
+    await ack(baseline.version);
+    assert.equal(await applied(), null);
+    await ack(baseline.version, true);
+    assert.equal(await applied(), baseline.version);
+    const sample = { appId: app.id, observedAt: new Date().toISOString(), policyVersion: baseline.version };
+    await observe({ ...sample, policyVersion: before.version }, 400);
+    await observe({ ...sample, appId: 'saas:' + '0'.repeat(64) }, 400);
+    await observe({ ...sample, host: app.host }, 400);
+    await observe({ ...sample, url: 'https://workspace.example.test/account' }, 400);
+    await Promise.all([observe(sample), observe(sample)]);
+    await classify('approved');
+    await classify('approved');
+    const [seen] = (await inventory()).filter((entry) => entry.appId === app.id);
+    assert.equal(seen.browsersSeen, 1);
+    assert.equal(seen.status, 'approved');
+    const matches = (await admin('audit')).entries.filter((entry) => entry.appId === app.id);
+    assert.equal(matches.length, 1);
+    assert.equal(matches[0].classification, 'approved');
+
+    const removed = await post('policies', { customApps: [] });
+    assert.equal((await inventory()).some((entry) => entry.appId === app.id), false);
+    await classify('unreviewed', 404);
+    await observe(sample, 400);
+    const renamed = await post('policies', { customApps: [{ host: app.host, name: 'Renamed Workspace' }], expectedVersion: removed.version });
+    assert.equal(renamed.customApps[0].id, app.id);
+    assert.equal((await inventory()).find((entry) => entry.appId === app.id).status, 'approved');
+    await observe(sample, 400);
+    await observe({ ...sample, policyVersion: renamed.version });
+
+    const group = await post('policy-groups', { name: 'Catalog canary' });
+    const scoped = await post(`policy-groups/${group.id}/policies`, {
+      customApps: [{ host: 'canary.workspace.example.test', name: 'Canary Workspace' }],
+    });
+    const [canary] = scoped.customApps;
+    await post(`installations/${client.installationId}/policy-group`, { groupId: group.id }, 204);
+    const assignment = await getPolicy();
+    assert.equal(assignment.version, scoped.version);
+    const groupSample = { ...sample, policyVersion: scoped.version, assignmentVersion: assignment.assignmentVersion };
+    await observe(groupSample, 400);
+    await observe({ ...groupSample, appId: canary.id, assignmentVersion: 0 }, 400);
+    await observe({ ...groupSample, appId: canary.id });
+    const scopedInventory = await inventory();
+    assert.ok(scopedInventory.some((entry) => entry.appId === canary.id && entry.browsersSeen === 1));
+    assert.ok(scopedInventory.some((entry) => entry.appId === app.id && entry.browsersSeen === 1));
+    const promoted = await post(`policy-groups/${group.id}/promote`, { expectedVersion: scoped.version });
+    assert.deepEqual(promoted.customApps, scoped.customApps);
+    const restored = await post(`policies/${baseline.version}/restore`);
+    assert.deepEqual(restored.customApps, baseline.customApps);
+    await post(`installations/${client.installationId}/revoke`, undefined, 204);
+    await observe({ ...groupSample, appId: canary.id }, 401);
+  });
 });

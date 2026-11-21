@@ -83,14 +83,16 @@ export default async function Control({ searchParams }: { searchParams: Promise<
         <PolicyVersionTable policies={policies} writable={policyWritable} review={session.reviewRequired} />
 
         <section className="panel table-panel" id="ai-apps" aria-labelledby="ai-apps-heading">
-          <div className="panel-heading"><h2 id="ai-apps-heading">AI apps</h2><RefreshSection label="Refresh AI apps" /></div>
+          <div className="panel-heading"><h2 id="ai-apps-heading">App inventory</h2><div className="form-row">
+            {policyWritable && <a className="button small" href="/preview#draft-app-catalog">Edit app catalog</a>}
+            <RefreshSection label="Refresh app inventory" /></div></div>
           <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="ai-apps-heading">
             <table aria-labelledby="ai-apps-heading">
               <thead><tr><th>Application</th><th>Browsers seen (30 days)</th><th>Last observed (UTC)</th><th>Classification</th></tr></thead>
               <tbody>{discoveredApps.map((app) => <DiscoveredAppRow key={app.appId} app={app} writable={writable} />)}</tbody>
             </table>
           </div>
-          <p className="empty">Cataloged pages opened in enrolled Chrome browsers. Classification labels help review usage. Configure enforcement in policies.</p>
+          <p className="empty">Cataloged sites opened in enrolled Chrome browsers. Use classification labels to review adoption and configure enforcement in policies.</p>
         </section>
 
         <section className="panel table-panel" id="browsers" aria-labelledby="browsers-heading">
@@ -195,15 +197,16 @@ function InstallationId({ value }: { value: string }) {
 }
 
 function DiscoveredAppRow({ app, writable }: { app: DiscoveredApp; writable: boolean }) {
-  const name = aiApps[app.appId];
+  const name = app.name ?? aiApps[app.appId as keyof typeof aiApps];
+  const caption = app.host ? `${name} at ${app.host}` : name;
   return <tr>
-    <th scope="row" className="emphasis">{name}</th>
+    <th scope="row" className="emphasis">{name}{app.host && <div className="muted">{app.host}</div>}</th>
     <td>{app.browsersSeen}</td>
     <td>{app.lastObservedAt ? <Timestamp value={app.lastObservedAt} /> : '—'}</td>
     <td>
-      {writable ? <MutationForm action={classifyAiApp} label="Save" appearance="small" accessibleLabel={`Save ${name} classification`}>
+      {writable ? <MutationForm action={classifyAiApp} label="Save" appearance="small" accessibleLabel={`Save ${caption} classification`}>
         <input type="hidden" name="appId" value={app.appId} />
-        <select key={app.status} name="status" aria-label={`${name} classification`} defaultValue={app.status}>
+        <select key={app.status} name="status" aria-label={`${caption} classification`} defaultValue={app.status}>
           {classifications.map((status) => <option key={status} value={status}>{classificationLabels[status]}</option>)}
         </select>
       </MutationForm> : classificationLabels[app.status]}

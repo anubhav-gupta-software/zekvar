@@ -55,7 +55,7 @@ app.Use(async (context, next) =>
     if (HttpMethods.IsPost(context.Request.Method) && context.Request.Path.StartsWithSegments("/v1/admin") &&
         context.Request.Path.Value?.TrimEnd('/').EndsWith("/policies", StringComparison.OrdinalIgnoreCase) == true &&
         context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } policyLimit)
-        policyLimit.MaxRequestBodySize = 24 * 1024;
+        policyLimit.MaxRequestBodySize = 48 * 1024;
     await next(context);
 });
 
@@ -189,8 +189,7 @@ admin.MapPost("/ai-apps/{appId}/classification", async (string appId, ClassifyAp
 {
     if (!DiscoveryCatalog.IsApp(appId) || !DiscoveryCatalog.IsStatus(request.Status))
         return Results.BadRequest(new { error = "Choose a cataloged app and a valid classification." });
-    await store.ClassifyApp(Identity(http), appId, request.Status, ct);
-    return Results.NoContent();
+    return await store.ClassifyApp(Identity(http), appId, request.Status, ct) ? Results.NoContent() : Results.NotFound();
 });
 
 app.MapPost("/v1/enroll", async (RedeemGrant request, CancellationToken ct) =>
@@ -230,19 +229,21 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
     if (!(FixtureContract.IsMode(request.Mode) ||
           request.Mode is null && (request.DomainRules is not null || request.PaymentCardMode is not null ||
               request.PathRules is not null || request.UploadModes?.HasSettings() == true ||
-              request.UploadTypes?.HasSettings() == true || request.ExtensionInventoryEnabled.HasValue)) ||
+              request.UploadTypes?.HasSettings() == true || request.ExtensionInventoryEnabled.HasValue || request.CustomApps is not null)) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode))
         return Results.BadRequest(new { error = "Choose a valid rule mode." });
     if (request.UploadModes?.IsValid() == false)
         return Results.BadRequest(new { error = "Choose Off, Monitor, or Block for each upload destination." });
     if (!UploadTypes.TryNormalize(request.UploadTypes, out var uploadTypes))
         return Results.BadRequest(new { error = "Enter up to 25 valid file extensions or media types per app, with at most 64 characters per type." });
+    if (!CustomApps.TryNormalize(request.CustomApps, out var customApps))
+        return Results.BadRequest(new { error = "Enter up to 25 unique app hostnames and names. Built-in domains are reserved." });
     if (!DomainRules.TryNormalize(request.DomainRules, out var domainRules))
         return Results.BadRequest(new { error = "Enter up to 50 domains with no domain in both lists." });
     if (!PathRules.TryNormalize(request.PathRules, out var pathRules))
         return Results.BadRequest(new { error = "Use distinct hostname/path prefixes with paths up to 64 characters long." });
     var normalized = request with { DomainRules = domainRules, PathRules = pathRules, UploadTypes = uploadTypes };
-    var result = await store.ChangePolicy(Identity(http), normalized, null, ExpectsReview(http), ct, groupId);
+    var result = await store.ChangePolicy(Identity(http), normalized, null, ExpectsReview(http), ct, groupId, customApps: customApps);
     return PolicyOutcome(result, request.ExpectedVersion.HasValue
         ? Results.Conflict(new { error = "The policy changed after preview or is unavailable." }) : Results.NotFound());
 }

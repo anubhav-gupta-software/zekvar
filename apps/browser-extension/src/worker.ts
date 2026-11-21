@@ -1,5 +1,5 @@
 import {
-  aiPromptApps, chatGptApp, discoveredApp, fixtureApp, fixtureDetector, fixtureRule, geminiApp, isDetectorMode,
+  aiPromptApps, chatGptApp, discoveredApp, discoveryPermission, fixtureApp, fixtureDetector, fixtureRule, geminiApp, isDetectorMode,
   isId, isMode, isRecord, isToken, isVersion, promptApp, readMetadata,
   type AiPromptApp, type AppId, type AppObservation, type Coverage, type DiscoveryApp, type Policy, type PolicyEvent,
   type Reply, type Summary,
@@ -9,6 +9,7 @@ import { domainRuleLimit, emptyDomainRules, emptyPathRules, installDomainRules, 
 import { isUploadModes, readTargetedUpload, sameUploadTypes, uploadsOff, type TargetedUploads } from '../../../contracts/policy/uploads';
 import { collectExtensionInventory } from './extension-inventory';
 import type { InventoryStatus } from '../../../contracts/policy/extension-inventory';
+import { isCustomAppId, readCustomApps, type CustomApp } from '../../../contracts/policy/discovery';
 
 declare const CONTROL_ORIGIN: string;
 
@@ -16,7 +17,7 @@ type Enrollment = { installationId: string; token: string; source?: Summary['enr
 type State = {
   status: Summary['status'];
   enrollment?: Enrollment;
-  policy?: Policy;
+  policy?: Policy & { customApps?: CustomApp[] };
   domainRules?: DomainRules;
   pathRules?: PathRules;
   domainRulesError?: boolean;
@@ -71,14 +72,16 @@ function clearCoverage(state: State) {
 }
 
 function summary(state: State): Summary {
+  const { customApps, ...policy } = state.policy ?? {};
   return {
     status: state.status, installationId: state.enrollment?.installationId, enrollmentSource: state.enrollment?.source,
-    policy: state.policy, promptApps: aiPromptApps.filter((app) => appEnabled(state, app)),
+    policy: state.policy && policy as Policy, promptApps: aiPromptApps.filter((app) => appEnabled(state, app)),
     queued: state.queue.length, discarded: state.discarded,
     managedEnrollment: state.managedEnrollment, domainRulesError: state.domainRulesError,
     domainRuleCount: state.domainRules && ruleCount(state.domainRules),
     pathRuleCount: state.pathRules && ruleCount(state.pathRules),
     inventoryStatus: state.inventoryStatus,
+    customDiscoveryCount: state.policy?.discoveryEnabled ? customApps?.length : undefined,
   };
 }
 
@@ -157,6 +160,12 @@ async function deliver(state: State) {
 async function deliverObservations(state: State) {
   if (!state.enrollment || state.status !== 'connected' || !state.observations) return;
   for (const observation of Object.values(state.observations)) {
+    if (!observation) continue;
+    if (isCustomAppId(observation.appId) &&
+        (!state.policy?.customApps?.some(({ id }) => id === observation.appId) || !await canDiscoverCustomApps())) {
+      delete state.observations[observation.appId];
+      continue;
+    }
     try {
       await request('browser/ai-app-observations', state.enrollment.token, observation);
     } catch (error) {
@@ -214,6 +223,9 @@ async function sync(state: State) {
       throw new Error('Invalid combination of file upload rules');
     }
     const discoveryEnabled = policy.discoveryEnabled ?? false;
+    const customApps = readCustomApps(policy.customApps);
+    if (!customApps) throw new Error('Invalid custom app catalog');
+    const previousCatalog = state.policy?.customApps;
     const extensionInventoryEnabled = policy.extensionInventoryEnabled ?? false;
     const domainRules = readDomainRules(policy.domainRules);
     const pathRules = readPathRules(policy.pathRules);
@@ -230,11 +242,13 @@ async function sync(state: State) {
         (!previousUploads || uploads.chatgpt === previousUploads.chatgpt && uploads.gemini === previousUploads.gemini) &&
         (!previousTargets || sameTargetedUploads(previousTargets, targetedUploads)) &&
         discoveryEnabled === (state.policy.discoveryEnabled ?? false) &&
+        (!previousCatalog || (previousCatalog.length === customApps.length && previousCatalog.every(({ id, host, name }, index) =>
+          id === customApps[index].id && host === customApps[index].host && name === customApps[index].name))) &&
         (state.policy.extensionInventoryEnabled === undefined || extensionInventoryEnabled === state.policy.extensionInventoryEnabled) &&
         sameDomainRules(domainRules, state.domainRules ?? emptyDomainRules) &&
         (!state.pathRules || sameDomainRules(pathRules, state.pathRules)))))) {
       await applyDomainRules(state, domainRules, pathRules);
-      state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, discoveryEnabled, extensionInventoryEnabled,
+      state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, discoveryEnabled, customApps, extensionInventoryEnabled,
         assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini }, targetedUploads };
       if (!discoveryEnabled || assignment !== previousAssignment) state.observations = undefined;
       if (assignment !== previousAssignment) clearCoverage(state);
@@ -297,6 +311,7 @@ async function heartbeat(state: State) {
     uploadControlsApplied: scopedUploads || (state.policy.uploadModes &&
       aiPromptApps.some((app) => state.policy?.uploadModes?.[app] !== 'off')) ? true : undefined,
     uploadTypesApplied: scopedUploads ? true : undefined,
+    customDiscoveryApplied: state.policy.discoveryEnabled && state.policy.customApps?.length && await canDiscoverCustomApps() ? true : undefined,
     domainRulesApplied: state.domainRules && ruleCount(state.domainRules) ? true : undefined,
     pathRulesApplied: state.pathRules && ruleCount(state.pathRules) ? true : undefined,
   });
@@ -404,8 +419,7 @@ async function onMessage(message: Record<string, unknown>, app: AppId | undefine
   return { summary: summary(state) };
 }
 
-async function observeApp(appId: DiscoveryApp, observedAt: string) {
-  const state = await readState();
+async function observeApp(state: State, appId: DiscoveryApp, observedAt: string) {
   if (!state.enrollment || !state.policy?.discoveryEnabled) return {};
   state.observations ??= {};
   const previous = state.observations[appId];
@@ -417,13 +431,38 @@ async function observeApp(appId: DiscoveryApp, observedAt: string) {
   return {};
 }
 
+function observeCustomApp(details: chrome.webNavigation.WebNavigationTransitionCallbackDetails) {
+  if (details.frameId !== 0 || details.documentLifecycle !== 'active') return;
+  const url = new URL(details.url);
+  if (url.protocol !== 'https:' || url.port) return;
+  const host = url.hostname;
+  const observedAt = new Date().toISOString();
+  void serial(async () => {
+    const state = await readState();
+    const app = state.policy?.customApps?.find((entry) => entry.host === host);
+    if (app && await canDiscoverCustomApps()) await observeApp(state, app.id, observedAt);
+  }).catch(() => undefined);
+}
+
+function listenForCustomApps() {
+  const event = chrome.webNavigation?.onCommitted;
+  if (event && !event.hasListener(observeCustomApp)) {
+    event.addListener(observeCustomApp, { url: [{ schemes: ['https'], ports: [443] }] });
+  }
+}
+
+async function canDiscoverCustomApps() {
+  return chrome.webNavigation?.onCommitted.hasListener(observeCustomApp) === true &&
+    await chrome.permissions.contains(discoveryPermission);
+}
+
 chrome.runtime.onMessage.addListener((message: unknown, sender, reply: (response: Reply) => void) => {
   if (sender.id !== chrome.runtime.id || !isRecord(message)) return;
   if (message.type === 'observe-app') {
     const app = sender.tab && sender.frameId === 0 && sender.documentLifecycle === 'active' && discoveredApp(sender.url);
     if (!app) return;
     const observedAt = new Date().toISOString();
-    serial(() => observeApp(app, observedAt)).then(reply, () => reply({}));
+    serial(async () => observeApp(await readState(), app, observedAt)).then(reply, () => reply({}));
     return true;
   }
   const popup = sender.url === chrome.runtime.getURL('popup.html');
@@ -445,11 +484,21 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 chrome.runtime.onStartup.addListener(synchronizeInBackground);
 chrome.permissions.onAdded.addListener(({ permissions }) => {
-  if (permissions?.includes('management')) synchronizeInBackground();
+  if (permissions?.includes('webNavigation')) listenForCustomApps();
+  if (permissions?.some((permission) => permission === 'management' || permission === 'webNavigation')) synchronizeInBackground();
 });
 chrome.permissions.onRemoved.addListener(({ permissions }) => {
-  if (permissions?.includes('management')) synchronizeInBackground();
+  if (permissions?.includes('webNavigation')) void serial(async () => {
+    const state = await readState();
+    if (!state.observations) return;
+    for (const appId of Object.keys(state.observations)) {
+      if (isCustomAppId(appId)) delete state.observations[appId];
+    }
+    await save(state);
+  }).catch(() => undefined);
+  if (permissions?.some((permission) => permission === 'management' || permission === 'webNavigation')) synchronizeInBackground();
 });
+listenForCustomApps();
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'managed' && managedGrantKey in changes) synchronizeInBackground();
 });

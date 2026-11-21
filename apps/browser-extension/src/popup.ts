@@ -1,4 +1,4 @@
-import { send, type Summary } from './protocol';
+import { discoveryPermission, send, type Summary } from './protocol';
 import { inventoryPermission } from './extension-inventory';
 
 const form = document.querySelector<HTMLFormElement>('#enroll')!;
@@ -14,10 +14,15 @@ const enrollButton = form.querySelector<HTMLButtonElement>('button')!;
 const inventory = document.querySelector<HTMLElement>('#inventory')!;
 const inventorySummary = document.querySelector<HTMLElement>('#inventory-status')!;
 const inventoryButton = document.querySelector<HTMLButtonElement>('#inventory-permission')!;
+const discovery = document.querySelector<HTMLElement>('#discovery')!;
+const discoverySummary = document.querySelector<HTMLElement>('#discovery-status')!;
+const discoveryButton = document.querySelector<HTMLButtonElement>('#discovery-permission')!;
 let busy = false;
 let inventoryEnabled = false;
 let inventoryAllowed = false;
 let inventoryStatus: Summary['inventoryStatus'];
+let discoveryCount = 0;
+let discoveryAllowed = false;
 
 function renderInventory() {
   inventory.hidden = !inventoryEnabled && !inventoryAllowed;
@@ -34,6 +39,20 @@ function renderInventory() {
 async function refreshInventoryPermission() {
   inventoryAllowed = await chrome.permissions.contains(inventoryPermission).catch(() => false);
   renderInventory();
+}
+
+function renderDiscovery() {
+  discovery.hidden = !discoveryCount && !discoveryAllowed;
+  discoveryButton.textContent = discoveryAllowed ? 'Remove custom app discovery permission' : 'Allow custom app discovery';
+  const label = !discoveryCount ? 'Custom app discovery is off in Control.' : discoveryAllowed ?
+    `Custom app discovery enabled for ${discoveryCount} cataloged ${discoveryCount === 1 ? 'site' : 'sites'}.` :
+    'Control requests permission to report visits to the sites in your organization’s app catalog.';
+  if (discoverySummary.textContent !== label) discoverySummary.textContent = label;
+}
+
+async function refreshDiscoveryPermission() {
+  discoveryAllowed = await chrome.permissions.contains(discoveryPermission).catch(() => false);
+  renderDiscovery();
 }
 
 function render(summary: Summary) {
@@ -59,7 +78,9 @@ function render(summary: Summary) {
   sync.hidden = !summary.installationId;
   inventoryEnabled = Boolean(summary.installationId && summary.policy?.extensionInventoryEnabled);
   inventoryStatus = summary.inventoryStatus;
+  discoveryCount = summary.installationId ? summary.customDiscoveryCount ?? 0 : 0;
   renderInventory();
+  renderDiscovery();
 }
 
 async function update(type: 'status' | 'sync' | 'enroll') {
@@ -102,8 +123,28 @@ inventoryButton.addEventListener('click', async () => {
     inventoryButton.disabled = false;
   }
 });
-chrome.permissions.onAdded.addListener(() => void refreshInventoryPermission());
-chrome.permissions.onRemoved.addListener(() => void refreshInventoryPermission());
-void refreshInventoryPermission();
+discoveryButton.addEventListener('click', async () => {
+  discoveryButton.disabled = true;
+  errorMessage.textContent = '';
+  try {
+    if (discoveryAllowed) await chrome.permissions.remove(discoveryPermission);
+    else if (discoveryCount && !await chrome.permissions.request(discoveryPermission)) {
+      errorMessage.textContent = 'Custom app discovery permission was not granted.';
+    }
+    await refreshDiscoveryPermission();
+    if (!errorMessage.textContent) await update('sync');
+  } catch {
+    errorMessage.textContent = 'Chrome could not change the custom app discovery permission.';
+  } finally {
+    discoveryButton.disabled = false;
+  }
+});
+function refreshPermissions() {
+  void refreshInventoryPermission();
+  void refreshDiscoveryPermission();
+}
+chrome.permissions.onAdded.addListener(refreshPermissions);
+chrome.permissions.onRemoved.addListener(refreshPermissions);
+refreshPermissions();
 void update('sync');
 window.setInterval(() => void update('status'), 1500);

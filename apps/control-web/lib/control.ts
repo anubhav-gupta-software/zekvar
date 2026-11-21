@@ -5,6 +5,7 @@ export type { DetectorMode } from '../../../contracts/policy/prompt';
 export type { DomainRules, PathRules } from '../../../contracts/policy/domains';
 import type { DomainRules, PathRules } from '../../../contracts/policy/domains';
 import type { UploadMethod, UploadModes, UploadTypes } from '../../../contracts/policy/uploads';
+import type { CustomApp, CustomAppId } from '../../../contracts/policy/discovery';
 
 export const decisions = [...modes, 'warn_override'] as const;
 export type Mode = PolicyMode;
@@ -22,12 +23,15 @@ export { aiPromptApps, promptAppLabels, isPromptApp } from '../../../contracts/p
 
 export const aiApps = { chatgpt: 'ChatGPT', claude: 'Claude', gemini: 'Gemini' } as const;
 export type AiAppId = keyof typeof aiApps;
+export type DiscoveredAppId = AiAppId | CustomAppId;
 export const classifications = ['unreviewed', 'approved', 'unapproved'] as const;
 export type AppClassification = typeof classifications[number];
 export const classificationLabels: Record<AppClassification, string> = {
   unreviewed: 'Unreviewed', approved: 'Approved', unapproved: 'Unapproved',
 };
-export type DiscoveredApp = { appId: AiAppId; status: AppClassification; browsersSeen: number; lastObservedAt: string | null };
+export type DiscoveredApp = {
+  appId: DiscoveredAppId; status: AppClassification; browsersSeen: number; lastObservedAt: string | null; name?: string; host?: string;
+};
 export type PolicyGroup = { id: string; name: string; effectiveVersion: number; publishedVersion: number | null; browsers: number };
 export type PolicyGroupChange = { groupId: string | null; groupName: string | null; installationId: string | null; sourceVersion: number | null };
 
@@ -39,6 +43,7 @@ export type Policy = {
   uploadModes?: UploadModes;
   uploadTypes?: UploadTypes;
   discoveryEnabled?: boolean;
+  customApps?: CustomApp[];
   extensionInventoryEnabled?: boolean;
   domainRules?: DomainRules;
   pathRules?: PathRules;

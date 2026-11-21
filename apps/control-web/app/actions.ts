@@ -4,12 +4,13 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../lib/api';
 import { aiApps, classifications, decisionLabels, detectorModes, isId, modes,
-  type AiAppId, type AppClassification, type DetectorMode, type Feedback, type Mode } from '../lib/control';
+  type AppClassification, type DetectorMode, type DiscoveredAppId, type Feedback, type Mode } from '../lib/control';
 import { endSession, sessionToken, startSession } from '../lib/session';
 import { cleanupCounts, retentionFields, type RetentionField, type RetentionPolicy } from '../lib/retention';
 import { readNavigationRules } from '../lib/navigation';
 import { isDetectorMode, isMode } from '../../../contracts/policy/prompt';
 import { isUploadMode, parseUploadTypes, uploadTypesError } from '../../../contracts/policy/uploads';
+import { customAppError, isCustomAppId, parseCustomApps } from '../../../contracts/policy/discovery';
 
 export async function signIn(_previous: Feedback, form: FormData): Promise<Feedback> {
   const token = form.get('token');
@@ -132,15 +133,15 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
 }
 
 export async function classifyAiApp(_previous: Feedback, form: FormData): Promise<Feedback> {
-  const app = form.get('appId') as AiAppId;
+  const app = form.get('appId');
   const status = form.get('status') as AppClassification;
-  if (typeof app !== 'string' || !Object.hasOwn(aiApps, app) || !classifications.includes(status)) {
+  if (typeof app !== 'string' || (!isCustomAppId(app) && !Object.hasOwn(aiApps, app)) || !classifications.includes(status)) {
     return { error: 'Choose a cataloged app and a valid classification.' };
   }
   return perform(async (token) => {
-    await controlApi.classifyApp(token, app, status);
+    await controlApi.classifyApp(token, app as DiscoveredAppId, status);
     revalidatePath('/');
-    return { message: `${aiApps[app]} classification saved.` };
+    return { message: `${isCustomAppId(app) ? 'App' : aiApps[app as keyof typeof aiApps]} classification saved.` };
   });
 }
 
@@ -196,10 +197,12 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   const { domainRules, pathRules, error } = navigationDraft(form);
   if (!domainRules || !pathRules) return { error };
   if (!uploadTypes) return { error: uploadTypesError };
+  const customApps = parseCustomApps(String(form.get('customApps') ?? ''));
+  if (!customApps) return { error: customAppError };
   return perform(async (token) => {
     try {
       const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, uploadModes, uploadTypes,
-        discoveryEnabled: discovery === 'on', extensionInventoryEnabled: inventory === 'on', domainRules, pathRules },
+        discoveryEnabled: discovery === 'on', extensionInventoryEnabled: inventory === 'on', domainRules, pathRules, customApps },
         expectedVersion, form.get('expectReview') === 'on', groupId ?? undefined);
       if ('reviewId' in published) return queued(published.reviewId);
       refreshPolicyViews();

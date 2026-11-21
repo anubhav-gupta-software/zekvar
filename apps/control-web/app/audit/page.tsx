@@ -96,7 +96,9 @@ function auditDetails(entry: AuditEntry) {
   if (group?.groupName) return `${group.groupName}${entry.policyVersion ? ` · v${entry.policyVersion}${entry.restoredFrom ? ` from v${entry.restoredFrom}` : ''}` : ''}`;
   if (entry.policyVersion) return `v${entry.policyVersion}${entry.restoredFrom ? ` from v${entry.restoredFrom}` : ''}`;
   if (entry.installationId) return <code title={entry.installationId}>{entry.installationId.slice(0, 13)}</code>;
-  if (entry.appId && entry.classification) return `${aiApps[entry.appId]} · ${classificationLabels[entry.classification]}`;
+  if (entry.appId && entry.classification) {
+    return `${aiApps[entry.appId as keyof typeof aiApps] ?? 'Custom app'} · ${classificationLabels[entry.classification]}`;
+  }
   if (entry.cleanup) return cleanupCounts(entry.cleanup);
   if (entry.retention) {
     const policy = entry.retention;

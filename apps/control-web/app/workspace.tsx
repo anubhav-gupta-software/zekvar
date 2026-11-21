@@ -21,7 +21,7 @@ export function Sidebar({ active, session }: {
       <a href="/reviews" aria-current={active === 'reviews' ? 'page' : undefined}>Policy reviews</a>
       <a href="/groups" aria-current={active === 'groups' ? 'page' : undefined}>Rollout groups</a>
       {canChangePolicy(session) && <a href={`${root}#domain-rules`}>Navigation rules</a>}
-      <a href={`${root}#ai-apps`}>AI apps</a>
+      <a href={`${root}#ai-apps`}>App inventory</a>
       <a href={`${root}#browsers`}>Browsers</a>
       <a href="/extensions" aria-current={active === 'extensions' ? 'page' : undefined}>Browser extensions</a>
       <a href={`${root}#events`}>Events</a>

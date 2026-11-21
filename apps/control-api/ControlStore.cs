@@ -38,6 +38,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 15, "015_policy_reviews.sql", ct);
         await ApplyMigration(connection, 16, "016_extension_inventory.sql", ct);
         await ApplyMigration(connection, 17, "017_upload_types.sql", ct);
+        await ApplyMigration(connection, 18, "018_custom_app_catalog.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -120,7 +121,8 @@ internal sealed partial class ControlStore
         await using var command = Command("""
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
                 p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
-                p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types
+                p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
+                p.custom_apps
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.policy_group_id IS NOT DISTINCT FROM $2::uuid ORDER BY p.version DESC LIMIT 100
             """, organizationId, (object?)groupId ?? DBNull.Value);
@@ -149,12 +151,12 @@ internal sealed partial class ControlStore
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
                 p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
-                e.assignment_version
+                p.custom_apps, e.assignment_version
             FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
             LEFT JOIN policy_audit a ON a.organization_id = p.organization_id AND a.version = p.version
             """, installationId, assignmentAware);
         await using var rows = await command.ExecuteReaderAsync(ct);
-        return await rows.ReadAsync(ct) ? ReadPolicy(rows) with { AssignmentVersion = rows.GetInt32(16) } : null;
+        return await rows.ReadAsync(ct) ? ReadPolicy(rows) with { AssignmentVersion = rows.GetInt32(17) } : null;
     }
 
     public async Task<bool> RecordHeartbeat(Guid installationId, Heartbeat request, CancellationToken ct)
@@ -166,6 +168,7 @@ internal sealed partial class ControlStore
                     AND (cardinality(p.allowed_paths) + cardinality(p.blocked_paths) = 0 OR $9)
                     AND ($10 OR (p.chatgpt_upload_mode = 'off' OR cardinality(p.chatgpt_upload_types) = 0)
                         AND (p.gemini_upload_mode = 'off' OR cardinality(p.gemini_upload_types) = 0))
+                    AND (NOT p.discovery_enabled OR p.custom_apps = '[]'::jsonb OR $11)
                     THEN GREATEST(i.applied_policy_version, $2)
                     WHEN i.applied_policy_version = $2 THEN NULL ELSE i.applied_policy_version END,
                 chatgpt_coverage = COALESCE($3::text, i.chatgpt_coverage),
@@ -180,7 +183,8 @@ internal sealed partial class ControlStore
                     WHERE d.installation_id = i.id AND d.assignment_version = $5 AND d.policy_version = $2))
             """, installationId, request.PolicyVersion, (object?)request.ChatGptCoverage ?? DBNull.Value,
             request.DomainRulesApplied, request.AssignmentVersion, (object?)request.GeminiCoverage ?? DBNull.Value,
-            request.PaymentCardModeApplied, request.UploadControlsApplied, request.PathRulesApplied, request.UploadTypesApplied);
+            request.PaymentCardModeApplied, request.UploadControlsApplied, request.PathRulesApplied, request.UploadTypesApplied,
+            request.CustomDiscoveryApplied);
         return await command.ExecuteNonQueryAsync(ct) == 1;
     }
 
@@ -297,13 +301,15 @@ internal sealed partial class ControlStore
                 SELECT p.organization_id FROM active
                 JOIN policy_versions p ON p.organization_id = active.organization_id AND p.version = $4
                 LEFT JOIN retention_cutoffs r ON r.organization_id = active.organization_id
-                WHERE p.discovery_enabled AND $3 BETWEEN GREATEST(enrolled_at - interval '5 minutes', now() - interval '30 days')
+                WHERE p.discovery_enabled AND ($6 OR p.custom_apps @> $7::jsonb)
+                  AND $3 BETWEEN GREATEST(enrolled_at - interval '5 minutes', now() - interval '30 days')
                     AND now() + interval '5 minutes'
                   AND (r.observation_cutoff IS NULL OR $3 >= r.observation_cutoff)
                   AND (($5 = 0 AND p.policy_group_id IS NULL) OR EXISTS (SELECT 1 FROM policy_deliveries d
                     WHERE d.installation_id = $1 AND d.assignment_version = $5 AND d.policy_version = $4))
                   AND NOT EXISTS (SELECT 1 FROM policy_versions later
-                    WHERE later.organization_id = p.organization_id AND later.version > p.version AND NOT later.discovery_enabled
+                    WHERE later.organization_id = p.organization_id AND later.version > p.version
+                      AND (NOT later.discovery_enabled OR (NOT $6 AND NOT (later.custom_apps @> $7::jsonb)))
                       AND (later.policy_group_id = active.policy_group_id OR (later.policy_group_id IS NULL AND p.policy_group_id IS NULL
                         AND NOT EXISTS (SELECT 1 FROM policy_versions first_group
                           WHERE first_group.organization_id = p.organization_id AND first_group.policy_group_id = active.policy_group_id
@@ -315,41 +321,65 @@ internal sealed partial class ControlStore
                 WHERE ai_app_observations.observed_at < EXCLUDED.observed_at
             )
             SELECT EXISTS (SELECT 1 FROM eligible)
-            """, installationId, observation.AppId, observation.ObservedAt.UtcDateTime, observation.PolicyVersion, observation.AssignmentVersion);
+            """, installationId, observation.AppId, observation.ObservedAt.UtcDateTime, observation.PolicyVersion, observation.AssignmentVersion,
+            DiscoveryCatalog.IsBuiltIn(observation.AppId), JsonSerializer.Serialize(new[] { new { id = observation.AppId } }));
         return (bool)(await command.ExecuteScalarAsync(ct))!;
     }
 
+    private const string ActiveCustomCatalog = """
+        SELECT DISTINCT ON (entry->>'id') entry->>'id' AS app_id, entry->>'host' AS host, entry->>'name' AS name
+        FROM policy_versions p CROSS JOIN LATERAL jsonb_array_elements(p.custom_apps) AS entry
+        WHERE p.organization_id = $1 AND p.version IN (
+            SELECT policy_version FROM organizations WHERE id = $1
+            UNION SELECT policy_version FROM policy_groups WHERE organization_id = $1 AND policy_version IS NOT NULL
+        )
+        ORDER BY entry->>'id', p.version DESC
+        """;
+
     public async Task<IReadOnlyList<DiscoveredApp>> DiscoveredApps(Guid organizationId, CancellationToken ct)
     {
-        await using var command = Command("""
-            SELECT catalog.app_id, COALESCE(c.status, 'unreviewed'), count(o.installation_id), max(o.observed_at)
-            FROM unnest($2::text[]) WITH ORDINALITY AS catalog(app_id, position)
+        await using var command = Command($"""
+            WITH custom AS ({ActiveCustomCatalog}), catalog AS (
+                SELECT app_id, position, NULL::text AS host, NULL::text AS name
+                FROM unnest($2::text[]) WITH ORDINALITY AS built_in(app_id, position)
+                UNION ALL SELECT app_id, 4, host, name FROM custom
+            )
+            SELECT catalog.app_id, COALESCE(c.status, 'unreviewed'), count(o.installation_id), max(o.observed_at),
+                catalog.host, catalog.name
+            FROM catalog
             LEFT JOIN retention_cutoffs r ON r.organization_id = $1
             LEFT JOIN ai_app_classifications c ON c.organization_id = $1 AND c.app_id = catalog.app_id
             LEFT JOIN ai_app_observations o ON o.organization_id = $1 AND o.app_id = catalog.app_id
                 AND o.observed_at >= GREATEST(now() - interval '30 days', r.observation_cutoff)
-            GROUP BY catalog.app_id, catalog.position, c.status ORDER BY catalog.position
+            GROUP BY catalog.app_id, catalog.position, catalog.host, catalog.name, c.status
+            ORDER BY catalog.position, catalog.name, catalog.app_id
             """, organizationId, DiscoveryCatalog.AppIds);
         var apps = new List<DiscoveredApp>();
         await using var rows = await command.ExecuteReaderAsync(ct);
         while (await rows.ReadAsync(ct))
-            apps.Add(new(rows.GetString(0), rows.GetString(1), rows.GetInt64(2), rows.IsDBNull(3) ? null : rows.GetDateTime(3)));
+            apps.Add(new(rows.GetString(0), rows.GetString(1), rows.GetInt64(2), rows.IsDBNull(3) ? null : rows.GetDateTime(3),
+                rows.IsDBNull(4) ? null : rows.GetString(4), rows.IsDBNull(5) ? null : rows.GetString(5)));
         return apps;
     }
 
-    public async Task ClassifyApp(RequestIdentity identity, string appId, string status, CancellationToken ct)
+    public async Task<bool> ClassifyApp(RequestIdentity identity, string appId, string status, CancellationToken ct)
     {
-        await using var command = Command("""
-            WITH changed AS (
-                INSERT INTO ai_app_classifications (organization_id, app_id, status) VALUES ($1, $2, $3)
+        await using var command = Command($"""
+            WITH custom AS ({ActiveCustomCatalog}), allowed AS (
+                SELECT $1 AS organization_id WHERE $5 OR EXISTS (SELECT 1 FROM custom WHERE app_id = $2)
+            ), changed AS (
+                INSERT INTO ai_app_classifications (organization_id, app_id, status)
+                SELECT organization_id, $2, $3 FROM allowed
                 ON CONFLICT (organization_id, app_id) DO UPDATE SET status = EXCLUDED.status
                 WHERE ai_app_classifications.status IS DISTINCT FROM EXCLUDED.status
                 RETURNING organization_id, app_id, status
+            ), audit AS (
+                INSERT INTO control_audit (organization_id, action, app_id, classification, actor_access_id)
+                SELECT organization_id, 'app_classified', app_id, status, $4 FROM changed
             )
-            INSERT INTO control_audit (organization_id, action, app_id, classification, actor_access_id)
-            SELECT organization_id, 'app_classified', app_id, status, $4 FROM changed
-            """, identity.OrganizationId, appId, status, (object?)identity.Access?.Id ?? DBNull.Value);
-        await command.ExecuteNonQueryAsync(ct);
+            SELECT EXISTS (SELECT 1 FROM allowed)
+            """, identity.OrganizationId, appId, status, (object?)identity.Access?.Id ?? DBNull.Value, DiscoveryCatalog.IsBuiltIn(appId));
+        return (bool)(await command.ExecuteScalarAsync(ct))!;
     }
 
     public async Task<AuditPage> AuditHistory(Guid organizationId, AuditFilters filters, CancellationToken ct)
@@ -403,5 +433,6 @@ internal sealed partial class ControlStore
         rows.GetDateTime(2), rows.IsDBNull(3) ? null : rows.GetInt32(3), rows.GetString(4), rows.GetBoolean(5),
         new(rows.GetFieldValue<string[]>(6), rows.GetFieldValue<string[]>(7)), rows.GetString(8), new(rows.GetString(9), rows.GetString(10)),
         new(rows.GetFieldValue<string[]>(11), rows.GetFieldValue<string[]>(12)), rows.GetBoolean(13),
-        new(rows.GetFieldValue<string[]>(14), rows.GetFieldValue<string[]>(15)));
+        new(rows.GetFieldValue<string[]>(14), rows.GetFieldValue<string[]>(15)),
+        JsonSerializer.Deserialize<CustomApp[]>(rows.GetString(16), JsonSerializerOptions.Web));
 }

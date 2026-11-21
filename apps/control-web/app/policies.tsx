@@ -28,7 +28,7 @@ export function PublishPolicyForm({ policy, groupId, review }: { policy?: Policy
       </select>
     </div>
     <div className="grid gap-1">
-      <label htmlFor="discovery-mode">AI app discovery</label>
+      <label htmlFor="discovery-mode">App discovery</label>
       <select key={policy?.version} id="discovery-mode" name="discoveryEnabled" defaultValue={policy?.discoveryEnabled ? 'on' : 'off'}>
         <option value="off">Off</option><option value="on">On</option>
       </select>
@@ -62,7 +62,7 @@ export function PolicyVersionTable({ policies, groupId, writable, review }: {
       <span className="table-note">Latest 100 versions</span></div>
     <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="history-heading">
       <table aria-labelledby="history-heading">
-        <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>Payment card number</th><th>AI app discovery</th>
+        <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>Payment card number</th><th>App discovery</th>
           <th>Extension inventory</th><th>File uploads</th><th>Navigation rules</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
         <tbody>{policies.map((policy, index) => <PolicyRow key={policy.version} policy={policy} current={index === 0}
           groupId={groupId} writable={writable} review={review} />)}</tbody>
@@ -81,7 +81,11 @@ function PolicyRow({ policy, current, groupId, writable, review }: {
     <td className="emphasis">v{policy.version}</td><td><span className={`badge decision ${policy.mode}`}>{decisionLabels[policy.mode]}</span></td>
     <td>{detectorModeLabels[policy.githubPatMode ?? 'off']}</td>
     <td>{detectorModeLabels[policy.paymentCardMode ?? 'off']}</td>
-    <td>{policy.discoveryEnabled ? 'On' : 'Off'}</td>
+    <td>{policy.discoveryEnabled ? 'On' : 'Off'}
+      {!!policy.customApps?.length && <details className="domain-rule-history">
+        <summary>{policy.customApps.length} custom {policy.customApps.length === 1 ? 'site' : 'sites'}</summary>
+        {policy.customApps.map(({ id, host, name }) => <p key={id}>{name} · <code>{host}</code></p>)}
+      </details>}</td>
     <td>{policy.extensionInventoryEnabled ? 'On' : 'Off'}</td>
     <td>{aiPromptApps.map((app) => {
       const types = policy.uploadTypes?.[app] ?? [];

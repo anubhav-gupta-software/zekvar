@@ -10,13 +10,14 @@ import { changedDecision, parseWebAddress, runComparison, samePolicy,
 import { publishPreview } from '../actions';
 import { MutationForm } from '../forms';
 import { PolicyChanges } from '../policy-changes';
+import { customAppError, parseCustomApps } from '../../../../contracts/policy/discovery';
 
 const navigationFields = [
   ['allow', 'Draft allowed domains'], ['block', 'Draft blocked domains'],
   ['allowPaths', 'Draft allowed paths'], ['blockPaths', 'Draft blocked paths'],
 ] as const;
-type Editor = Omit<PreviewPolicy, 'domainRules' | 'pathRules' | 'uploadTypes'> &
-  Record<typeof navigationFields[number][0], string> & { uploadTypeText: Record<typeof aiPromptApps[number], string> };
+type Editor = Omit<PreviewPolicy, 'domainRules' | 'pathRules' | 'uploadTypes' | 'customApps'> &
+  Record<typeof navigationFields[number][0], string> & { uploadTypeText: Record<typeof aiPromptApps[number], string>; catalog: string };
 
 function editorFor(snapshot: PreviewSnapshot): Editor {
   return {
@@ -25,6 +26,7 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
     extensionInventoryEnabled: snapshot.extensionInventoryEnabled,
     uploadModes: snapshot.uploadModes,
     uploadTypeText: { chatgpt: snapshot.uploadTypes.chatgpt.join(', '), gemini: snapshot.uploadTypes.gemini.join(', ') },
+    catalog: snapshot.customApps.map(({ host, name }) => `${host}, ${name}`).join('\n'),
     allow: snapshot.domainRules.allow.join('\n'), block: snapshot.domainRules.block.join('\n'),
     allowPaths: snapshot.pathRules.allow.join('\n'), blockPaths: snapshot.pathRules.block.join('\n'),
   };
@@ -76,12 +78,17 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
       setError(uploadTypesError);
       return;
     }
+    const customApps = parseCustomApps(editor.catalog);
+    if (!customApps) {
+      setError(customAppError);
+      return;
+    }
     const file = customFile.name || customFile.type.trim() ? customFile : undefined;
     setError('');
     setResult(runComparison(reference, {
       mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode,
       discoveryEnabled: editor.discoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled, domainRules, pathRules,
-      uploadModes: editor.uploadModes, uploadTypes: { chatgpt, gemini },
+      uploadModes: editor.uploadModes, uploadTypes: { chatgpt, gemini }, customApps,
     }, customPrompt, address, file));
   }
 
@@ -116,7 +123,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
           </select>
         </div>
         <div className="grid gap-1">
-          <label htmlFor="draft-discovery">Draft AI app discovery</label>
+          <label htmlFor="draft-discovery">Draft app discovery</label>
           <select id="draft-discovery" value={editor.discoveryEnabled ? 'on' : 'off'} onChange={(event) => edit('discoveryEnabled', event.target.value === 'on')}>
             <option value="off">Off</option><option value="on">On</option>
           </select>
@@ -141,6 +148,14 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
         </div>)}
       </div>
       <p className="muted" id="draft-upload-types-hint">{uploadTypesHint}</p>
+      <div className="grid gap-1" id="draft-app-catalog">
+        <label htmlFor="draft-custom-apps">Custom app catalog</label>
+        <p className="muted" id="custom-apps-hint">Enter the exact hostname and display name for each HTTPS site, one per line.
+          App discovery must be on and enrolled browsers must grant the Chrome permission.</p>
+        <textarea id="draft-custom-apps" rows={3} maxLength={8500} spellCheck={false} autoCapitalize="none"
+          placeholder="workspace.example.test, Example Workspace" value={editor.catalog}
+          aria-describedby="custom-apps-hint" onChange={(event) => edit('catalog', event.target.value)} />
+      </div>
       <div className="policy-fields">
         {navigationFields.map(([field, label]) => <div key={field} className="grid gap-1">
           <label htmlFor={`draft-${field}`}>{label}</label>
@@ -215,6 +230,7 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         <input type="hidden" name="githubPatMode" value={candidate.githubPatMode} />
         <input type="hidden" name="paymentCardMode" value={candidate.paymentCardMode} />
         <input type="hidden" name="discoveryEnabled" value={candidate.discoveryEnabled ? 'on' : 'off'} />
+        <input type="hidden" name="customApps" value={candidate.customApps.map(({ host, name }) => `${host}, ${name}`).join('\n')} />
         <input type="hidden" name="extensionInventoryEnabled" value={candidate.extensionInventoryEnabled ? 'on' : 'off'} />
         {aiPromptApps.map((app) => <input key={app} type="hidden" name={`upload-${app}`} value={candidate.uploadModes[app]} />)}
         {aiPromptApps.map((app) => <input key={app} type="hidden" name={`upload-types-${app}`} value={candidate.uploadTypes[app].join(', ')} />)}

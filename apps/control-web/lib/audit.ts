@@ -1,4 +1,4 @@
-import type { AiAppId, AppClassification, PolicyGroupChange } from './control';
+import type { DiscoveredAppId, AppClassification, PolicyGroupChange } from './control';
 import type { RetentionCleanup, RetentionPolicy } from './retention';
 import type { AccessIdentity } from './access';
 import type { PolicyReviewAudit } from './reviews';
@@ -32,7 +32,7 @@ export type AuditEntry = AuditCursor & {
   policyVersion: number | null;
   restoredFrom: number | null;
   installationId: string | null;
-  appId: AiAppId | null;
+  appId: DiscoveredAppId | null;
   classification: AppClassification | null;
   retention: RetentionPolicy | null;
   cleanup: RetentionCleanup | null;
