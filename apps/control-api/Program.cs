@@ -175,8 +175,9 @@ await app.RunAsync();
 async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, CancellationToken ct, Guid? groupId = null)
 {
     if (request.ExpectedVersion is <= 0) return Results.BadRequest(new { error = "Choose a valid expected policy version." });
-    if (!(FixtureContract.IsMode(request.Mode) || request.Mode is null && request.DomainRules is not null) ||
-        !(request.GithubPatMode is null or "off" || FixtureContract.IsMode(request.GithubPatMode)))
+    if (!(FixtureContract.IsMode(request.Mode) ||
+          request.Mode is null && (request.DomainRules is not null || request.PaymentCardMode is not null)) ||
+        !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode))
         return Results.BadRequest(new { error = "Choose a valid rule mode." });
     if (!DomainRules.TryNormalize(request.DomainRules, out var domainRules))
         return Results.BadRequest(new { error = "Enter up to 50 domains with no domain in both lists." });

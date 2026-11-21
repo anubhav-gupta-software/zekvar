@@ -223,6 +223,7 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     };
     await sync(popupA, 'Connected to Control · MONITOR v4');
     await dashboard.getByLabel('Test marker', { exact: true }).selectOption('block');
+    await dashboard.getByLabel('Payment card number', { exact: true }).selectOption('block');
     await dashboard.getByRole('button', { name: 'Publish group policy', exact: true }).click();
     await dashboard.getByText('Version 5 published in block mode.', { exact: true }).waitFor();
     await dashboard.getByLabel('Blocked domains', { exact: true }).fill('apps.test');
@@ -233,19 +234,21 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     await domains.visit(first.browser, 'apps.test', true);
     await domains.visit(second.browser, 'apps.test', false);
 
-    const checkPrompt = async (profile, label, blocked) => {
+    const checkPrompt = async (profile, label, draft, blocked) => {
       const page = await profile.browser.newPage();
       try {
         await page.goto(fixtureUrl);
         await page.getByText(`Control policy: ${label}`, { exact: true }).waitFor();
-        await page.getByLabel('Prompt', { exact: true }).fill('ZEKVAR_TEST_SECRET');
+        await page.getByLabel('Prompt', { exact: true }).fill(draft);
         await page.getByRole('button', { name: 'Send prompt' }).click();
         if (blocked) await page.getByText(/Submission blocked/).waitFor();
         assert.equal(await page.locator('#submission-count').textContent(), blocked ? '0' : '1');
       } finally { await page.close(); }
     };
-    await checkPrompt(first, 'BLOCK · v6', true);
-    await checkPrompt(second, 'MONITOR · v4', false);
+    await checkPrompt(first, 'BLOCK · v6 · Payment card block', 'ZEKVAR_TEST_SECRET', true);
+    await checkPrompt(second, 'MONITOR · v4', 'ZEKVAR_TEST_SECRET', false);
+    await checkPrompt(first, 'BLOCK · v6 · Payment card block', '4242-4242-4242-4242', true);
+    await checkPrompt(second, 'MONITOR · v4', '4242-4242-4242-4242', false);
     const browserStatus = await installations();
     assert.equal(browserStatus.find(({ installationId }) => installationId === idA).expectedPolicyVersion, 6);
     assert.equal(browserStatus.find(({ installationId }) => installationId === idB).expectedPolicyVersion, 4);
@@ -259,7 +262,7 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
       await preview.getByLabel('Custom navigation URL').fill('http://apps.test/');
       await preview.getByRole('button', { name: 'Run preview', exact: true }).click();
       const table = preview.getByRole('table', { name: 'Preview results' });
-      for (const [sample, draft] of [['Synthetic test marker', 'Monitor'], ['Custom navigation', 'Allow']]) {
+      for (const [sample, draft] of [['Synthetic test marker', 'Monitor'], ['Synthetic payment card', 'Allow'], ['Custom navigation', 'Allow']]) {
         const cells = table.getByRole('row', { name: new RegExp(`^${sample} `) }).getByRole('cell');
         await cells.nth(0).getByText('Block', { exact: true }).waitFor();
         await cells.nth(1).getByText(draft, { exact: true }).waitFor();
@@ -300,7 +303,7 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     await sync(popupA, 'Connected to Control · MONITOR v4');
     await popupA.waitForFunction(() => !document.querySelector('#sync').disabled);
     await popupA.getByText('Connected to Control · MONITOR v4', { exact: true }).waitFor();
-    await checkPrompt(first, 'MONITOR · v4', false);
+    await checkPrompt(first, 'MONITOR · v4', '4242-4242-4242-4242', false);
 
     const concurrentPublish = await fetch(`${api}/v1/admin/policy-groups/${groupId}/policies`, {
       method: 'POST', headers: { Authorization: `Bearer ${admin}`, 'Content-Type': 'application/json' },
@@ -318,7 +321,7 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     await promote.click();
     await dashboard.getByText('Group policy promoted as organization version 9.', { exact: true }).waitFor();
     await sync(popupB, 'Connected to Control · BLOCK v9');
-    await checkPrompt(second, 'BLOCK · v9', true);
+    await checkPrompt(second, 'BLOCK · v9 · Payment card block', '4242-4242-4242-4242', true);
     await Promise.all([popupA.close(), popupB.close()]);
   });
 });

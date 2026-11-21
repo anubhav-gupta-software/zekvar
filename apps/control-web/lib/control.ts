@@ -1,5 +1,6 @@
 import { modes, type DetectorMode, type PolicyMode } from '../../../contracts/policy/prompt';
 export { modes, detectorModes } from '../../../contracts/policy/prompt';
+export { ruleLabels } from '../../../contracts/policy/prompt';
 export type { DetectorMode } from '../../../contracts/policy/prompt';
 export type { DomainRules } from '../../../contracts/policy/domains';
 import type { DomainRules } from '../../../contracts/policy/domains';
@@ -33,6 +34,7 @@ export type Policy = {
   version: number;
   mode: Mode;
   githubPatMode?: DetectorMode;
+  paymentCardMode?: DetectorMode;
   discoveryEnabled?: boolean;
   domainRules?: DomainRules;
   publishedAt: string;

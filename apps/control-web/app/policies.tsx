@@ -18,6 +18,12 @@ export function PublishPolicyForm({ policy, groupId }: { policy?: Policy; groupI
       </select>
     </div>
     <div className="grid gap-1">
+      <label htmlFor="payment-card-mode">Payment card number</label>
+      <select key={policy?.version} id="payment-card-mode" name="paymentCardMode" defaultValue={policy?.paymentCardMode ?? 'off'}>
+        {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+      </select>
+    </div>
+    <div className="grid gap-1">
       <label htmlFor="discovery-mode">AI app discovery</label>
       <select key={policy?.version} id="discovery-mode" name="discoveryEnabled" defaultValue={policy?.discoveryEnabled ? 'on' : 'off'}>
         <option value="off">Off</option><option value="on">On</option>
@@ -32,7 +38,7 @@ export function PolicyVersionTable({ policies, groupId }: { policies: Policy[]; 
       <span className="table-note">Latest 100 versions</span></div>
     <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="history-heading">
       <table aria-labelledby="history-heading">
-        <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>AI app discovery</th><th>Domain rules</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
+        <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>Payment card number</th><th>AI app discovery</th><th>Domain rules</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
         <tbody>{policies.map((policy, index) => <PolicyRow key={policy.version} policy={policy} current={index === 0} groupId={groupId} />)}</tbody>
       </table>
       {policies.length === 0 && <p className="empty">Publish a policy to start the version history.</p>}
@@ -45,6 +51,7 @@ function PolicyRow({ policy, current, groupId }: { policy: Policy; current: bool
   return <tr>
     <td className="emphasis">v{policy.version}</td><td><span className={`badge decision ${policy.mode}`}>{decisionLabels[policy.mode]}</span></td>
     <td>{detectorModeLabels[policy.githubPatMode ?? 'off']}</td>
+    <td>{detectorModeLabels[policy.paymentCardMode ?? 'off']}</td>
     <td>{policy.discoveryEnabled ? 'On' : 'Off'}</td>
     <td>{allow.length || block.length ? <details className="domain-rule-history">
       <summary>{allow.length} allow · {block.length} block</summary>

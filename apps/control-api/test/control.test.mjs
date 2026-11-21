@@ -754,4 +754,72 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual((await admin(`events/export?${scoped('gemini')}`)).entries, history);
     assert.deepEqual((await admin(`events/export?${scoped('gemini')}`, { token: second })).entries, []);
   });
+
+  await t.test('requires payment detector acknowledgment and validates decision metadata against historical policy', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: first, ...options });
+    const publish = (body, expect = 200) => admin('policies', { method: 'POST', body, expect });
+    const [initial] = await admin('policies');
+    assert.equal(initial.paymentCardMode, 'off');
+    const { grant } = await admin('enrollment-grants', { method: 'POST' });
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const post = (path, body, expect = 204) => call(`/v1/browser/${path}`, { method: 'POST', token: browser.token, body, expect });
+    const installation = async () => (await admin('installations')).find(({ installationId }) => installationId === browser.installationId);
+    const legacyEvents = await admin('events');
+    if (postgres) {
+      await stop();
+      await retentionFixture(`
+        DELETE FROM schema_migrations WHERE version = 11;
+        ALTER TABLE policy_versions DROP COLUMN payment_card_mode;
+        ALTER TABLE security_events DROP CONSTRAINT security_events_rule_id_check,
+            ADD CONSTRAINT security_events_rule_id_check CHECK (rule_id IN ('fixture-secret', 'github-classic-pat'));
+      `);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 11'), '1');
+      assert.deepEqual((await admin('policies'))[0], initial);
+      assert.deepEqual(await admin('events'), legacyEvents);
+    }
+
+    const heartbeat = (policyVersion, extra) => post('heartbeat', { policyVersion, domainRulesApplied: true, ...extra });
+    await heartbeat(initial.version);
+    const card = { ...event, timestamp: new Date().toISOString(), eventId: randomUUID(), appId: 'gemini',
+      decision: 'block', policyVersion: initial.version, ruleId: 'payment-card-number', detectorCategory: 'payment-card' };
+    await post('events', card, 400);
+    await publish({ paymentCardMode: 'allow' }, 400);
+    const block = await publish({ paymentCardMode: 'block', expectedVersion: initial.version });
+    assert.equal(block.mode, initial.mode);
+    assert.equal(block.githubPatMode, initial.githubPatMode);
+    assert.deepEqual(block.domainRules, initial.domainRules);
+    await heartbeat(block.version);
+    assert.equal((await installation()).appliedPolicyVersion, initial.version);
+    assert.equal((await installation()).expectedPolicyVersion, block.version);
+    await heartbeat(block.version, { paymentCardModeApplied: true });
+    assert.equal((await installation()).appliedPolicyVersion, block.version);
+    await heartbeat(initial.version);
+    assert.equal((await installation()).appliedPolicyVersion, block.version);
+    await heartbeat(block.version);
+    assert.equal((await installation()).appliedPolicyVersion, null);
+    await heartbeat(block.version, { paymentCardModeApplied: true });
+    assert.equal((await installation()).appliedPolicyVersion, block.version);
+
+    const blocked = { ...card, policyVersion: block.version };
+    await post('events', { ...blocked, cardNumber: '4242424242424242' }, 400);
+    await post('events', { ...blocked, detectorCategory: 'credential' }, 400);
+    await post('events', { ...blocked, decision: 'warn_override' }, 400);
+    await post('events', blocked);
+    await post('events', blocked);
+    const warned = await publish({ paymentCardMode: 'warn' });
+    const restored = await admin(`policies/${initial.version}/restore`, { method: 'POST' });
+    assert.equal(restored.paymentCardMode, 'off');
+    await heartbeat(restored.version);
+    assert.equal((await installation()).appliedPolicyVersion, restored.version);
+    await post('events', { ...card, eventId: randomUUID(), policyVersion: warned.version, decision: 'warn_override' });
+    await post('events', { ...card, eventId: randomUUID(), policyVersion: restored.version }, 400);
+    const query = new URLSearchParams({ installationId: browser.installationId });
+    const { entries } = await admin(`events/export?${query}`);
+    assert.equal(entries.length, 2);
+    assert.ok(entries.every((entry) => entry.detectorCategory === 'payment-card' && entry.ruleId === 'payment-card-number'));
+    assert.deepEqual(entries.map(({ decision }) => decision).sort(), ['block', 'warn_override']);
+    assert.ok(!JSON.stringify(entries).includes('4242424242424242'));
+    assert.deepEqual((await admin(`events/export?${query}`, { token: second })).entries, []);
+  });
 });

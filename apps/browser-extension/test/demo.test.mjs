@@ -118,6 +118,8 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
   });
   browser.setDefaultTimeout(7000);
   const worker = browser.serviceWorkers()[0] ?? await browser.waitForEvent('serviceworker');
+  const buildManifest = JSON.parse(await readFile(join(dist, 'manifest.json'), 'utf8'));
+  assert.equal(new URL(worker.url()).pathname, `/worker-${buildManifest.version}.js`);
   const popup = await browser.newPage();
   await popup.goto(new URL('popup.html', worker.url()).href);
   const dashboard = await browser.newPage();
@@ -480,6 +482,136 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
       assert.deepEqual(download.entries, await adminGet('events?appId=gemini'));
     } finally { await page.close(); }
   });
+
+  const testCard = '4242-4242-4242-4242';
+  const cardRule = 'payment-card-number';
+  const cardEvents = async () => (await adminGet('events')).filter(({ ruleId }) => ruleId === cardRule);
+  await t.test('publishes the payment detector, retries delivery, and handles Off, Monitor, Warn, and Block in Chrome', async () => {
+    await dashboard.reload();
+    const mode = dashboard.getByLabel('Payment card number', { exact: true });
+    assert.equal(await mode.inputValue(), 'off');
+    let sends = Number(await submissions.textContent());
+    await prompt.fill(testCard);
+    await prompt.press('Enter');
+    assert.equal(await submissions.textContent(), String(++sends));
+    assert.deepEqual(await cardEvents(), []);
+    const publish = async (value) => {
+      const version = await policyVersion() + 1;
+      await mode.selectOption(value);
+      await dashboard.getByRole('button', { name: 'Publish policy' }).click();
+      await dashboard.getByText(`Version ${version} published in block mode.`, { exact: true }).waitFor();
+      await sync();
+      await popup.getByText(`Connected to Control · BLOCK v${version}`, { exact: true }).waitFor();
+      await prompt.fill(testCard);
+      await chat.getByText(new RegExp(`^Zekvar · BLOCK v${version}.* · Payment card ${value}$`)).waitFor();
+      return version;
+    };
+    const monitor = await publish('monitor');
+    loseAcknowledgment = true;
+    await send.click();
+    assert.equal(await submissions.textContent(), String(++sends));
+    await waitUntil(() => !loseAcknowledgment, 'The proxy did not drop the payment event acknowledgment.');
+    await sync();
+    await waitUntil(() => attempts.filter(({ ruleId }) => ruleId === cardRule).length === 2, 'The browser did not replay the payment event.');
+    assert.equal(new Set(attempts.filter(({ ruleId }) => ruleId === cardRule).map(({ eventId }) => eventId)).size, 1);
+    assert.deepEqual((await cardEvents()).map(({ policyVersion, decision }) => [policyVersion, decision]), [[monitor, 'monitor']]);
+
+    const warn = await publish('warn');
+    await prompt.press('Enter');
+    await chat.getByRole('alert').filter({ hasText: 'possible payment card number' }).waitFor();
+    assert.equal(await submissions.textContent(), String(sends));
+    await chat.getByRole('button', { name: 'Continue anyway' }).click();
+    assert.equal(await submissions.textContent(), String(++sends));
+    await waitUntil(async () => (await cardEvents()).filter(({ policyVersion }) => policyVersion === warn).length === 2,
+      'Expected warning and override metadata.');
+
+    const block = await publish('block');
+    await worker.evaluate(async () => {
+      const { controlState } = await chrome.storage.local.get('controlState');
+      delete controlState.policy.paymentCardMode;
+      await chrome.storage.local.set({ controlState });
+    });
+    await sync();
+    const cachedMode = () => worker.evaluate(async () => (await chrome.storage.local.get('controlState')).controlState.policy.paymentCardMode);
+    await waitUntil(async () => await cachedMode() === 'block', 'The browser did not add the detector to a legacy cache at the same version.');
+    const [versionWithoutDetector] = await adminGet('policies');
+    delete versionWithoutDetector.paymentCardMode;
+    await worker.evaluate((older) => {
+      const fetchPolicy = globalThis.fetch;
+      globalThis.fetch = (url, options) => {
+        if (String(url).endsWith('/v1/browser/policy')) {
+          globalThis.fetch = fetchPolicy;
+          return Promise.resolve(Response.json(older));
+        }
+        return fetchPolicy(url, options);
+      };
+    }, versionWithoutDetector);
+    await sync();
+    await popup.waitForFunction(() => !document.querySelector('#sync').disabled);
+    assert.equal(await cachedMode(), 'block');
+    await prompt.fill('Invalid checksum 4242-4242-4242-4243');
+    await prompt.press('Enter');
+    assert.equal(await submissions.textContent(), String(++sends));
+    await prompt.fill(`Marker ${marker}; card ${testCard}; token ${fakePat}.`);
+    await send.click();
+    await chat.getByRole('alert').filter({ hasText: 'Submission blocked. This prompt contains a possible payment card number.' }).waitFor();
+    await chat.getByRole('button', { name: 'Redact detected values' }).click();
+    assert.equal(await prompt.inputValue(), 'Marker [REDACTED]; card [REDACTED]; token [REDACTED].');
+    assert.equal(await submissions.textContent(), String(sends));
+    await prompt.press('Enter');
+    assert.equal(await submissions.textContent(), String(++sends));
+    await waitUntil(async () => (await cardEvents()).length === 4, 'Expected one payment card block.');
+    assert.deepEqual((await cardEvents()).filter(({ policyVersion }) => policyVersion === block).map(({ decision }) => decision), ['block']);
+    assert.doesNotMatch(JSON.stringify([...await cardEvents(), ...attempts]), /4242(?:[- ]?4242){3}|REDACTED/);
+    await dashboard.reload();
+    await dashboard.getByLabel('Application', { exact: true }).selectOption('chatgpt');
+    await dashboard.getByRole('button', { name: 'Apply filters' }).click();
+    await rows.getByText('Payment card number', { exact: true }).nth(3).waitFor();
+  });
+
+  for (const site of [
+    { appId: 'chatgpt', name: 'ChatGPT', url: 'https://chatgpt.com/',
+      editor: 'textarea[placeholder="Ask ChatGPT"]:visible, #prompt-textarea:visible, [data-testid="prompt-textarea"]:visible', method: 'enter' },
+    { appId: 'gemini', name: 'Gemini', url: 'https://gemini.google.com/app',
+      editor: 'input-area-v2 [role="textbox"][aria-label="Enter a prompt for Gemini"]:visible', method: 'click' },
+  ]) {
+    await t.test(`live signed-out ${site.name} keeps the sandbox card out of the sent prompt`, {
+      skip: process.env.ZEKVAR_DEMO_LIVE !== '1',
+    }, async (live) => {
+      const page = await browser.newPage();
+      const safe = 'Reply with OK. Zekvar payment detector check. Example: [REDACTED]';
+      let leaked = false;
+      page.on('request', (request) => {
+        const body = request.postData();
+        if (body?.includes(testCard) || body?.includes(testCard.replaceAll('-', ''))) leaked = true;
+      });
+      try {
+        const response = await page.goto(site.url, { waitUntil: 'domcontentloaded', timeout: 12_000 }).catch(() => undefined);
+        if (!response?.ok()) return live.skip(response ? `Live ${site.name} returned HTTP ${response.status()}.` : `Live ${site.name} was unreachable.`);
+        const editor = page.locator(site.editor).first();
+        if (!await editor.waitFor({ timeout: 6000 }).then(() => true, () => false)) {
+          return live.skip(`Signed-out ${site.name} did not expose a tested text composer.`);
+        }
+        await editor.fill(safe.replace('[REDACTED]', testCard));
+        await page.getByText(/Zekvar · BLOCK v\d+.*Payment card block$/).waitFor();
+        const sendLive = page.getByRole('button', { name: /^(Send prompt|Send message|Send)$/i });
+        if (site.method === 'click') await sendLive.click();
+        else await editor.press('Enter');
+        await page.getByRole('alert').filter({ hasText: 'Submission blocked. This prompt contains a possible payment card number.' }).waitFor();
+        const version = await policyVersion();
+        await waitUntil(async () => (await cardEvents()).some(({ appId, policyVersion, decision }) =>
+          appId === site.appId && policyVersion === version && decision === 'block'), 'The payment decision did not reach Control.');
+        await page.getByRole('button', { name: 'Redact detected values', exact: true }).click();
+        await page.getByRole('alert').filter({ hasText: 'Detected values redacted.' }).waitFor();
+        assert.equal(await editor.evaluate((element) => element instanceof HTMLTextAreaElement ? element.value : element.innerText), safe);
+        await screenshot(page, `20-${site.appId}-payment-redaction.png`);
+        if (site.method === 'click') await sendLive.click();
+        else await editor.press('Enter');
+        await page.getByText(safe, { exact: true }).last().waitFor();
+        assert.equal(leaked, false);
+      } finally { await page.close(); }
+    });
+  }
 
   const allowedDomains = dashboard.getByLabel('Allowed domains', { exact: true });
   const blockedDomains = dashboard.getByLabel('Blocked domains', { exact: true });

@@ -109,9 +109,11 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     const policy = control?.policy;
     const managedPolicy = installationId && enabled(control) ? policy : undefined;
     const github = managedPolicy?.githubPatMode;
+    const card = managedPolicy?.paymentCardMode;
+    const detectors = (isMode(github) ? ` · GitHub PAT ${github}` : '') + (isMode(card) ? ` · Payment card ${card}` : '');
     const label = !managedPolicy ? `Zekvar · ${appName} policy unavailable` : coverage === 'unsupported' ?
       `Zekvar · Unsupported composer (${inspection.gap ?? 'Send control missing'})` : !coverage && !waiting ? 'Zekvar · Checking composer…' :
-        `Zekvar · ${managedPolicy.mode.toUpperCase()} v${managedPolicy.version}${isMode(github) ? ` · GitHub PAT ${github}` : ''}${control?.status === 'offline' ? ' · Offline policy' : ''}${current?.button ? '' : ' · Waiting for Send control'}`;
+        `Zekvar · ${managedPolicy.mode.toUpperCase()} v${managedPolicy.version}${detectors}${control?.status === 'offline' ? ' · Offline policy' : ''}${current?.button ? '' : ' · Waiting for Send control'}`;
     if (ui.status.textContent !== label) ui.status.textContent = label;
     if (!managedPolicy || !installationId || !coverage) return;
     if (lastCoverage?.installationId === installationId && lastCoverage.coverage === coverage &&

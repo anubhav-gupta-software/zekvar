@@ -1,4 +1,4 @@
-import type { AiAppId, AppClassification, DetectorMode, DiscoveredApp, DomainRules, Grant, Installation, Mode, Policy, PolicyGroup } from './control';
+import type { AiAppId, AppClassification, DiscoveredApp, DomainRules, Grant, Installation, Policy, PolicyGroup } from './control';
 import type { AuditPage } from './audit';
 import type { EventPage } from './events';
 import type { RetentionCleanup, RetentionPolicy } from './retention';
@@ -62,8 +62,8 @@ export const controlApi = {
   aiApps: (token: string) => request<DiscoveredApp[]>('/ai-apps', token),
   classifyApp: (token: string, appId: AiAppId, status: AppClassification) =>
     request<void>(`/ai-apps/${appId}/classification`, token, 'POST', { status }),
-  publish: (token: string, mode: Mode, githubPatMode: DetectorMode, discoveryEnabled: boolean, groupId?: string) =>
-    request<Policy>(policiesPath(groupId), token, 'POST', { mode, githubPatMode, discoveryEnabled }),
+  publish: (token: string, policy: Omit<PreviewPolicy, 'domainRules'>, groupId?: string) =>
+    request<Policy>(policiesPath(groupId), token, 'POST', policy),
   publishDomains: (token: string, domainRules: DomainRules, groupId?: string) =>
     request<Policy>(policiesPath(groupId), token, 'POST', { domainRules }),
   publishPreview: (token: string, policy: PreviewPolicy, expectedVersion: number, groupId?: string) =>

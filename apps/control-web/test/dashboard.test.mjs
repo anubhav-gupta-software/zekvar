@@ -253,6 +253,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
     async function prepareDraft() {
       await marker.selectOption('block');
       await page.getByLabel('Draft GitHub classic PAT').selectOption('warn');
+      await page.getByLabel('Draft payment card number').selectOption('warn');
       await page.getByLabel('Draft AI app discovery').selectOption('on');
       await allowed.fill('work.pilot.example.test');
       await blocked.fill('Pilot.Example.Test.');
@@ -277,6 +278,8 @@ test('Control dashboard signs in and manages a real browser installation and eve
         ['Synthetic GitHub token', 'Allow', 'Warn'],
         ['Both detectors match', 'Monitor', 'Block'],
         ['Token embedded in a longer string', 'Allow', 'Allow'],
+        ['Synthetic payment card', 'Allow', 'Warn'],
+        ['Payment card with invalid checksum', 'Allow', 'Allow'],
         ['Custom prompt', 'Monitor', 'Block'],
         ['Sample domain', 'Allow', 'Block'],
         ['Sample subdomain', 'Allow', 'Allow'],
@@ -320,6 +323,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       const published = await currentPolicy();
       assert.equal(published.mode, 'block');
       assert.equal(published.githubPatMode, 'warn');
+      assert.equal(published.paymentCardMode, 'warn');
       assert.equal(published.discoveryEnabled, true);
       assert.deepEqual(published.domainRules, { allow: ['work.pilot.example.test'], block: ['pilot.example.test'] });
       assert.equal(requests.some((request) => /preview-private-(prompt|path)/.test(request)), false);

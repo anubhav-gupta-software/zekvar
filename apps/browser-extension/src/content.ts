@@ -58,7 +58,9 @@ function attachFixture() {
       sync.hidden = control.status === 'standalone';
       if (mode.disabled && control.policy) mode.value = control.policy.mode;
       const github = control.policy?.githubPatMode;
-      const label = control.policy ? `${control.policy.mode.toUpperCase()} · v${control.policy.version}${isMode(github) ? ` · GitHub PAT ${github}` : ''}` : 'waiting for a policy';
+      const card = control.policy?.paymentCardMode;
+      const detectors = (isMode(github) ? ` · GitHub PAT ${github}` : '') + (isMode(card) ? ` · Payment card ${card}` : '');
+      const label = control.policy ? `${control.policy.mode.toUpperCase()} · v${control.policy.version}${detectors}` : 'waiting for a policy';
       const status = control.status === 'standalone' ? 'Standalone fixture. Open Zekvar Browser to enroll.' :
         control.status === 'connected' ? `Control policy: ${label}` :
         control.status === 'revoked' ? `Control access revoked. Last policy: ${label}.` :

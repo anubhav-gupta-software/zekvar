@@ -9,11 +9,12 @@ import { changedDecision, parseWebAddress, runComparison, samePolicy,
 import { publishPreview } from '../actions';
 import { MutationForm } from '../forms';
 
-type Editor = { mode: PolicyMode; githubPatMode: DetectorMode; discoveryEnabled: boolean; allow: string; block: string };
+type Editor = Omit<PreviewPolicy, 'domainRules'> & { allow: string; block: string };
 
 function editorFor(snapshot: PreviewSnapshot): Editor {
   return {
-    mode: snapshot.mode, githubPatMode: snapshot.githubPatMode, discoveryEnabled: snapshot.discoveryEnabled,
+    mode: snapshot.mode, githubPatMode: snapshot.githubPatMode, paymentCardMode: snapshot.paymentCardMode,
+    discoveryEnabled: snapshot.discoveryEnabled,
     allow: snapshot.domainRules.allow.join('\n'), block: snapshot.domainRules.block.join('\n'),
   };
 }
@@ -59,7 +60,8 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName }: {
     }
     setError('');
     setResult(runComparison(reference, {
-      mode: editor.mode, githubPatMode: editor.githubPatMode, discoveryEnabled: editor.discoveryEnabled, domainRules,
+      mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode,
+      discoveryEnabled: editor.discoveryEnabled, domainRules,
     }, customPrompt, address));
   }
 
@@ -83,6 +85,13 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName }: {
         <div className="grid gap-1">
           <label htmlFor="draft-github">Draft GitHub classic PAT</label>
           <select id="draft-github" value={editor.githubPatMode} onChange={(event) => edit('githubPatMode', event.target.value as DetectorMode)}>
+            {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+          </select>
+        </div>
+        <div className="grid gap-1">
+          <label htmlFor="draft-payment-card">Draft payment card number</label>
+          <select id="draft-payment-card" value={editor.paymentCardMode}
+            onChange={(event) => edit('paymentCardMode', event.target.value as DetectorMode)}>
             {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
           </select>
         </div>
@@ -151,6 +160,7 @@ function PreviewResults({ result, groupId, scopeName }: { result: PreviewResult;
         <input type="hidden" name="expectedVersion" value={reference.version} />
         <input type="hidden" name="mode" value={candidate.mode} />
         <input type="hidden" name="githubPatMode" value={candidate.githubPatMode} />
+        <input type="hidden" name="paymentCardMode" value={candidate.paymentCardMode} />
         <input type="hidden" name="discoveryEnabled" value={candidate.discoveryEnabled ? 'on' : 'off'} />
         <input type="hidden" name="allow" value={candidate.domainRules.allow.join('\n')} />
         <input type="hidden" name="block" value={candidate.domainRules.block.join('\n')} />
@@ -164,6 +174,7 @@ function PolicyChanges({ reference, candidate }: { reference: PreviewPolicy; can
   const fields = [
     ['Test marker', decisionLabels[reference.mode], decisionLabels[candidate.mode]],
     ['GitHub classic PAT', detectorModeLabels[reference.githubPatMode], detectorModeLabels[candidate.githubPatMode]],
+    ['Payment card number', detectorModeLabels[reference.paymentCardMode], detectorModeLabels[candidate.paymentCardMode]],
     ['AI app discovery', toggle(reference.discoveryEnabled), toggle(candidate.discoveryEnabled)],
   ];
   return <ul className="preview-changes" aria-label="Policy setting changes">

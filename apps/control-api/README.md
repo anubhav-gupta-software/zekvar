@@ -55,6 +55,8 @@ Baseline and group publishes accept an optional positive integer `expectedVersio
 
 For a version with domain rules, the heartbeat must include `domainRulesApplied: true`. Browser v0.7.0 acknowledges this after Chrome applies the list. Earlier browsers stay at their last acknowledged version in Browser health.
 
+The independent `paymentCardMode` setting accepts `off`, `monitor`, `warn`, or `block` on baseline and group policies. Existing versions start with the detector Off. Omitting the setting preserves the current value. Restoring or promoting a policy copies the saved setting. A browser heartbeat without `paymentCardModeApplied: true` still reports liveness but cannot acknowledge a version that enables this detector. Event ingestion accepts the `payment-card-number` rule with category `payment-card` and validates the decision against that version's setting.
+
 ## Security event history and export
 
 - `GET /v1/admin/events` returns an array of up to 100 events for existing clients.

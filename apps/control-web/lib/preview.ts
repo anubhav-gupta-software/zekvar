@@ -1,8 +1,10 @@
 import { evaluateNavigation, parseWebAddress, sameDomainRules, emptyDomainRules, type DomainRules } from '../../../contracts/policy/domains';
-import { evaluatePrompt, githubPatRule, testMarker, type DetectorMode, type PolicyMode } from '../../../contracts/policy/prompt';
+import { evaluatePrompt, fixtureRule, ruleLabels, testMarker, type DetectorMode, type PolicyMode } from '../../../contracts/policy/prompt';
 import type { Policy } from './control';
 
-export type PreviewPolicy = { mode: PolicyMode; githubPatMode: DetectorMode; discoveryEnabled: boolean; domainRules: DomainRules };
+export type PreviewPolicy = {
+  mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; discoveryEnabled: boolean; domainRules: DomainRules;
+};
 export type PreviewSnapshot = PreviewPolicy & { version: number; label: string };
 export type PreviewDecision = { action: 'allow' | PolicyMode; rule?: string };
 export type PreviewRow = { name: string; current: PreviewDecision; draft: PreviewDecision };
@@ -11,13 +13,15 @@ export type PreviewResult = { reference: PreviewSnapshot; candidate: PreviewPoli
 export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot {
   return {
     version: policy.version, label: `${scope} v${policy.version}`,
-    mode: policy.mode, githubPatMode: policy.githubPatMode ?? 'off', discoveryEnabled: policy.discoveryEnabled ?? false,
+    mode: policy.mode, githubPatMode: policy.githubPatMode ?? 'off', paymentCardMode: policy.paymentCardMode ?? 'off',
+    discoveryEnabled: policy.discoveryEnabled ?? false,
     domainRules: policy.domainRules ?? emptyDomainRules,
   };
 }
 
 export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
-  return a.mode === b.mode && a.githubPatMode === b.githubPatMode && a.discoveryEnabled === b.discoveryEnabled &&
+  return a.mode === b.mode && a.githubPatMode === b.githubPatMode && a.paymentCardMode === b.paymentCardMode &&
+    a.discoveryEnabled === b.discoveryEnabled &&
     sameDomainRules(a.domainRules, b.domainRules);
 }
 
@@ -32,6 +36,8 @@ const prompts = [
   { name: 'Synthetic GitHub token', content: `token=${fakePat}` },
   { name: 'Both detectors match', content: `${testMarker} ${fakePat}` },
   { name: 'Token embedded in a longer string', content: `prefix_${fakePat}_suffix` },
+  { name: 'Synthetic payment card', content: 'Test card 4242 4242 4242 4242' },
+  { name: 'Payment card with invalid checksum', content: 'Test card 4242 4242 4242 4243' },
 ];
 const navigations = [
   { name: 'Sample domain', content: 'https://pilot.example.test/start' },
@@ -42,7 +48,7 @@ const navigations = [
 function promptOutcome(content: string, policy: PreviewPolicy): PreviewDecision {
   const outcome = evaluatePrompt(content, policy);
   if (outcome.action === 'allow') return outcome;
-  return { action: outcome.action, rule: outcome.ruleId === githubPatRule ? 'GitHub classic PAT' : 'Test marker' };
+  return { action: outcome.action, rule: outcome.ruleId === fixtureRule ? 'Test marker' : ruleLabels[outcome.ruleId] };
 }
 
 function navigationOutcome(url: URL, policy: PreviewPolicy): PreviewDecision {

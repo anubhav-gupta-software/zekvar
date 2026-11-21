@@ -1,6 +1,6 @@
 import { ApiError, controlApi } from '../lib/api';
 import {
-  aiApps, classifications, classificationLabels, decisionLabels, decisions, isPromptApp, promptAppLabels, utc,
+  aiApps, classifications, classificationLabels, decisionLabels, decisions, isPromptApp, promptAppLabels, ruleLabels, utc,
   type Decision, type DiscoveredApp, type Installation, type SecurityEvent,
 } from '../lib/control';
 import { eventFilters, setEventCursor } from '../lib/events';
@@ -241,8 +241,7 @@ function EventRow({ event, filters }: { event: SecurityEvent; filters: URLSearch
     <td><Timestamp value={event.timestamp} /></td>
     <td className="emphasis">{isPromptApp(event.appId) ? promptAppLabels[event.appId] : event.appId}</td>
     <td><DecisionBadge decision={event.decision} /></td>
-    <td>{event.ruleId === 'github-classic-pat' ? 'GitHub classic PAT' :
-      event.detectorCategory === 'synthetic-secret' ? 'Synthetic secret' : event.detectorCategory}</td>
+    <td>{ruleLabels[event.ruleId as keyof typeof ruleLabels] ?? event.detectorCategory}</td>
     <td>v{event.policyVersion}</td>
     <td><a className="underline" href={`/?${browser}#events`}
       aria-label={`Filter events for installation ${event.installationId}`}><InstallationId value={event.installationId} /></a></td>

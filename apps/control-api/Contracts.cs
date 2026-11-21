@@ -13,8 +13,11 @@ internal static class FixtureContract
     public const string DetectorCategory = "synthetic-secret";
     public const string GitHubPatRule = "github-classic-pat";
     public const string CredentialCategory = "credential";
+    public const string PaymentCardRule = "payment-card-number";
+    public const string PaymentCategory = "payment-card";
 
     public static bool IsMode(string? mode) => mode is "monitor" or "warn" or "block";
+    public static bool IsOptionalDetectorMode(string? mode) => mode is null or "off" || IsMode(mode);
     public static bool IsApp(string? appId) => appId is AppId or ChatGpt or Gemini;
     public static bool IsDecision(string? decision) => IsMode(decision) || decision == "warn_override";
 
@@ -22,7 +25,8 @@ internal static class FixtureContract
         request.EventId != Guid.Empty && request.Timestamp != default && request.PolicyVersion > 0 &&
         IsApp(request.AppId) &&
         ((request.RuleId == RuleId && request.DetectorCategory == DetectorCategory) ||
-         (request.RuleId == GitHubPatRule && request.DetectorCategory == CredentialCategory)) &&
+         (request.RuleId == GitHubPatRule && request.DetectorCategory == CredentialCategory) ||
+         (request.RuleId == PaymentCardRule && request.DetectorCategory == PaymentCategory)) &&
         IsDecision(request.Decision);
 }
 
@@ -47,10 +51,10 @@ internal static class Tokens
 internal sealed record DemoOrganization(string Slug, string AdminToken);
 internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId, string? OrganizationSlug);
 internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode = null, bool? DiscoveryEnabled = null,
-    DomainRules? DomainRules = null, int? ExpectedVersion = null);
+    DomainRules? DomainRules = null, int? ExpectedVersion = null, string? PaymentCardMode = null);
 internal sealed record RedeemGrant(string Grant);
 internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = null, bool DomainRulesApplied = false,
-    int AssignmentVersion = 0, string? GeminiCoverage = null)
+    int AssignmentVersion = 0, string? GeminiCoverage = null, bool PaymentCardModeApplied = false)
 {
     public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported") &&
         (GeminiCoverage is null or "ready" or "unsupported");
@@ -59,7 +63,7 @@ internal sealed record PolicyEvent(Guid EventId, string AppId, DateTimeOffset Ti
     string DetectorCategory, int PolicyVersion, string Decision, int AssignmentVersion = 0);
 
 internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, int? RestoredFrom, string GithubPatMode,
-    bool DiscoveryEnabled, DomainRules DomainRules,
+    bool DiscoveryEnabled, DomainRules DomainRules, string PaymentCardMode,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int AssignmentVersion = 0)
 {
     public string AppId => FixtureContract.AppId;
@@ -82,8 +86,12 @@ internal sealed record Installation(Guid InstallationId, DateTime EnrolledAt, Da
 internal sealed record StoredEvent(Guid EventId, Guid InstallationId, DateTime Timestamp, DateTime ReceivedAt,
     int PolicyVersion, string Decision, string AppId, string RuleId)
 {
-    public string DetectorCategory => RuleId == FixtureContract.GitHubPatRule
-        ? FixtureContract.CredentialCategory : FixtureContract.DetectorCategory;
+    public string DetectorCategory => RuleId switch
+    {
+        FixtureContract.GitHubPatRule => FixtureContract.CredentialCategory,
+        FixtureContract.PaymentCardRule => FixtureContract.PaymentCategory,
+        _ => FixtureContract.DetectorCategory
+    };
 }
 
 internal sealed record EventFilters(string? AppId, string? Decision, DateTimeOffset? Since, DateTimeOffset? Until, Guid? InstallationId)

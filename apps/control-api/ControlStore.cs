@@ -31,6 +31,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 8, "008_policy_groups.sql", ct);
         await ApplyMigration(connection, 9, "009_event_history.sql", ct);
         await ApplyMigration(connection, 10, "010_gemini_prompt_protection.sql", ct);
+        await ApplyMigration(connection, 11, "011_payment_card_detection.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -135,6 +136,7 @@ internal sealed partial class ControlStore
                     COALESCE($5::boolean, p.discovery_enabled) AS discovery_enabled,
                     COALESCE($6::text[], p.allowed_domains) AS allowed_domains,
                     COALESCE($7::text[], p.blocked_domains) AS blocked_domains,
+                    COALESCE($12::text, p.payment_card_mode) AS payment_card_mode,
                     COALESCE(source.name, g.name) AS group_name, source.policy_version AS promoted_version
                 FROM organizations o
                 LEFT JOIN policy_groups g ON g.organization_id = o.id AND g.id = $8::uuid
@@ -151,10 +153,12 @@ internal sealed partial class ControlStore
                 WHERE id = $1 AND EXISTS (SELECT 1 FROM selection)
                 RETURNING id, policy_sequence
             ), published AS (
-                INSERT INTO policy_versions (organization_id, version, mode, github_pat_mode, discovery_enabled, allowed_domains, blocked_domains, policy_group_id)
-                SELECT id, policy_sequence, mode, github_pat_mode, discovery_enabled, allowed_domains, blocked_domains, $8
+                INSERT INTO policy_versions (organization_id, version, mode, github_pat_mode, discovery_enabled, allowed_domains,
+                    blocked_domains, policy_group_id, payment_card_mode)
+                SELECT id, policy_sequence, mode, github_pat_mode, discovery_enabled, allowed_domains, blocked_domains, $8, payment_card_mode
                 FROM next_version CROSS JOIN selection
-                RETURNING organization_id, version, mode, published_at, github_pat_mode, discovery_enabled, allowed_domains, blocked_domains
+                RETURNING organization_id, version, mode, published_at, github_pat_mode, discovery_enabled, allowed_domains,
+                    blocked_domains, payment_card_mode
             ), group_pointer AS (
                 UPDATE policy_groups g SET policy_version = p.version FROM published p WHERE g.organization_id = p.organization_id AND g.id = $8
             ), history AS (
@@ -167,13 +171,14 @@ internal sealed partial class ControlStore
                         'groupId', COALESCE($8, $9), 'groupName', group_name, 'sourceVersion', promoted_version) END
                 FROM published CROSS JOIN selection
             )
-            SELECT version, mode, published_at, $3, github_pat_mode, discovery_enabled, allowed_domains, blocked_domains FROM published
+            SELECT version, mode, published_at, $3, github_pat_mode, discovery_enabled, allowed_domains, blocked_domains, payment_card_mode
+            FROM published
             """, connection, transaction);
         AddParameters(command, organizationId, (object?)request?.Mode ?? DBNull.Value, (object?)restoredFrom ?? DBNull.Value,
             (object?)request?.GithubPatMode ?? DBNull.Value, (object?)request?.DiscoveryEnabled ?? DBNull.Value,
             (object?)request?.DomainRules?.Allow ?? DBNull.Value, (object?)request?.DomainRules?.Block ?? DBNull.Value,
             (object?)groupId ?? DBNull.Value, (object?)sourceGroupId ?? DBNull.Value, (object?)expectedSourceVersion ?? DBNull.Value,
-            (object?)request?.ExpectedVersion ?? DBNull.Value);
+            (object?)request?.ExpectedVersion ?? DBNull.Value, (object?)request?.PaymentCardMode ?? DBNull.Value);
         Policy? policy;
         await using (var rows = await command.ExecuteReaderAsync(ct))
             policy = await rows.ReadAsync(ct) ? ReadPolicy(rows) : null;
@@ -185,7 +190,7 @@ internal sealed partial class ControlStore
     {
         await using var command = Command("""
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
-                p.allowed_domains, p.blocked_domains
+                p.allowed_domains, p.blocked_domains, p.payment_card_mode
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.policy_group_id IS NOT DISTINCT FROM $2::uuid ORDER BY p.version DESC LIMIT 100
             """, organizationId, (object?)groupId ?? DBNull.Value);
@@ -212,31 +217,32 @@ internal sealed partial class ControlStore
                 ON CONFLICT DO NOTHING
             )
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
-                p.allowed_domains, p.blocked_domains, e.assignment_version
+                p.allowed_domains, p.blocked_domains, p.payment_card_mode, e.assignment_version
             FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
             LEFT JOIN policy_audit a ON a.organization_id = p.organization_id AND a.version = p.version
             """, installationId, assignmentAware);
         await using var rows = await command.ExecuteReaderAsync(ct);
-        return await rows.ReadAsync(ct) ? ReadPolicy(rows) with { AssignmentVersion = rows.GetInt32(8) } : null;
+        return await rows.ReadAsync(ct) ? ReadPolicy(rows) with { AssignmentVersion = rows.GetInt32(9) } : null;
     }
 
     public async Task<bool> RecordHeartbeat(Guid installationId, Heartbeat request, CancellationToken ct)
     {
         await using var command = Command("""
             UPDATE installations i SET last_seen_at = GREATEST(i.last_seen_at, now()),
-                applied_policy_version = GREATEST(i.applied_policy_version, $2),
+                applied_policy_version = CASE WHEN p.payment_card_mode = 'off' OR $7 THEN GREATEST(i.applied_policy_version, $2)
+                    WHEN i.applied_policy_version = $2 THEN NULL ELSE i.applied_policy_version END,
                 chatgpt_coverage = COALESCE($3::text, i.chatgpt_coverage),
                 chatgpt_checked_at = CASE WHEN $3::text IS NULL THEN i.chatgpt_checked_at ELSE now() END,
                 gemini_coverage = COALESCE($6::text, i.gemini_coverage),
                 gemini_checked_at = CASE WHEN $6::text IS NULL THEN i.gemini_checked_at ELSE now() END
-            WHERE i.id = $1 AND i.revoked_at IS NULL AND i.assignment_version = $5 AND EXISTS (
-                SELECT 1 FROM policy_versions p WHERE p.organization_id = i.organization_id AND p.version = $2
-                  AND ($4 OR cardinality(p.allowed_domains) + cardinality(p.blocked_domains) = 0)
-                  AND (($5 = 0 AND p.policy_group_id IS NULL) OR EXISTS (SELECT 1 FROM policy_deliveries d
+            FROM policy_versions p
+            WHERE i.id = $1 AND i.revoked_at IS NULL AND i.assignment_version = $5
+                AND p.organization_id = i.organization_id AND p.version = $2
+                AND ($4 OR cardinality(p.allowed_domains) + cardinality(p.blocked_domains) = 0)
+                AND (($5 = 0 AND p.policy_group_id IS NULL) OR EXISTS (SELECT 1 FROM policy_deliveries d
                     WHERE d.installation_id = i.id AND d.assignment_version = $5 AND d.policy_version = $2))
-            )
             """, installationId, request.PolicyVersion, (object?)request.ChatGptCoverage ?? DBNull.Value,
-            request.DomainRulesApplied, request.AssignmentVersion, (object?)request.GeminiCoverage ?? DBNull.Value);
+            request.DomainRulesApplied, request.AssignmentVersion, (object?)request.GeminiCoverage ?? DBNull.Value, request.PaymentCardModeApplied);
         return await command.ExecuteNonQueryAsync(ct) == 1;
     }
 
@@ -285,7 +291,8 @@ internal sealed partial class ControlStore
                 SELECT p.organization_id FROM active
                 JOIN policy_versions p ON p.organization_id = active.organization_id AND p.version = $4
                 LEFT JOIN retention_cutoffs r ON r.organization_id = active.organization_id
-                WHERE (CASE WHEN $7 = 'github-classic-pat' THEN p.github_pat_mode ELSE p.mode END)
+                WHERE (CASE $7 WHEN 'github-classic-pat' THEN p.github_pat_mode
+                    WHEN 'payment-card-number' THEN p.payment_card_mode ELSE p.mode END)
                     = CASE WHEN $5 = 'warn_override' THEN 'warn' ELSE $5 END
                   AND (r.event_cutoff IS NULL OR $3 >= r.event_cutoff)
                   AND (($8 = 0 AND p.policy_group_id IS NULL) OR EXISTS (SELECT 1 FROM policy_deliveries d
@@ -447,5 +454,5 @@ internal sealed partial class ControlStore
 
     private static Policy ReadPolicy(NpgsqlDataReader rows) => new(rows.GetInt32(0), rows.GetString(1),
         rows.GetDateTime(2), rows.IsDBNull(3) ? null : rows.GetInt32(3), rows.GetString(4), rows.GetBoolean(5),
-        new(rows.GetFieldValue<string[]>(6), rows.GetFieldValue<string[]>(7)));
+        new(rows.GetFieldValue<string[]>(6), rows.GetFieldValue<string[]>(7)), rows.GetString(8));
 }

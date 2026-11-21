@@ -32,7 +32,7 @@ Chrome for Testing `159.0.8154.6` passed the click, Enter, edit-and-retry, warni
 
 ### Review a redacted draft
 
-Browser v0.9.0 offers **Redact detected values** after a warning or block in a supported ChatGPT text composer. It replaces the test marker and any matches from the enabled GitHub classic PAT detector with `[REDACTED]`. The change happens in the composer so you can review the draft, undo the edit, or change the text before choosing **Send**.
+Browser v0.9.0 introduced **Redact detected values** after a warning or block in a supported ChatGPT text composer. The current Browser build replaces matches from enabled detectors with `[REDACTED]` in supported ChatGPT and Gemini composers. You can review the draft, undo the edit, or change the text before choosing **Send**.
 
 The action is available for supported textareas and plain-text contenteditable layouts. Use **Edit prompt** if the draft includes rich content that needs to be preserved. Control records the original warning or block as decision metadata. The original and redacted drafts stay out of Control.
 
@@ -51,6 +51,16 @@ The adapter matches a single visible text editor and Send control in the same Ge
 Set **GitHub classic PAT** under **Publish a policy** in Control, publish, and use **Sync now** in the Zekvar Browser popup. The rule starts **Off** and has its own setting. In **Monitor**, it records a matching attempt and allows Send. **Warn** asks the user to edit or continue. **Block** holds the attempt until the prompt is edited. When both rules match, Zekvar applies the stricter action and reports the rule that determined it. A tie is attributed to the GitHub rule.
 
 Use `ghp_000000000000000000000000000000000000` in the local prompt fixture to test each setting. Refresh **Security events** in Control and look for **GitHub classic PAT** under **Detector**. The extension matches the classic token format locally. Control receives the decision and its metadata. Automated credential checks use a controlled composer and a synthetic token-shaped string. [Open the local fixture](http://127.0.0.1:4173/zekvar-fixture/)
+
+## Test payment card detection
+
+1. Start the updated Control services and build and reload Browser v0.11.0. In Control, set **Payment card number** to **Monitor**, **Warn**, or **Block** in the baseline or a rollout group. The detector starts **Off**. Use **Policy preview** to compare the built-in valid and invalid examples before publishing.
+2. Click **Sync now**, then open or refresh your test composer. In the local fixture or a supported ChatGPT or Gemini text composer, use the sandbox number `4242-4242-4242-4242`. On supported ChatGPT and Gemini editors, choose **Redact detected values** after a warning or block and review the draft before sending it. [Stripe sandbox cards](https://docs.stripe.com/testing)
+3. Open **Security events** in Control and look for **Payment card number**. Control receives the decision and rule metadata. Inspection and redaction take place in the browser.
+
+The detector combines supported issuer ranges and lengths with the Luhn checksum. It covers standalone ASCII card numbers and common groupings with consistent spaces or hyphens. Supported formats include Visa, Mastercard, American Express, Discover, JCB, and Diners Club. The browser applies the strictest matching mode. On a tie, payment card takes precedence over GitHub PAT, followed by the test marker. [PCI SSC checksum guidance](https://www.pcisecuritystandards.org/faqs/1137/) · [Cybersource card formats](https://developer.cybersource.com/docs/cybs/en-us/test-data/developer/all/so/test-data/best_practices_intro/card_type_id.html)
+
+Use **Monitor** to measure false positives before enforcing the rule. Browser health shows a payment policy as current after an updated browser acknowledges the detector. Coverage of card numbers in files, unsupported separators and issuer formats, CVVs, and expiry dates remains open.
 
 ## AI app discovery
 

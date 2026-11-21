@@ -165,23 +165,28 @@ async function sync(state: State) {
     if (!isRecord(policy) || !isVersion(policy.version) || !isMode(policy.mode) ||
         (policy.assignmentVersion !== undefined && !isVersion(policy.assignmentVersion)) ||
         (policy.githubPatMode !== undefined && !isDetectorMode(policy.githubPatMode)) ||
+        (policy.paymentCardMode !== undefined && !isDetectorMode(policy.paymentCardMode)) ||
         (policy.discoveryEnabled !== undefined && typeof policy.discoveryEnabled !== 'boolean') ||
         policy.appId !== fixtureApp || policy.ruleId !== fixtureRule || policy.detectorCategory !== fixtureDetector) {
       throw new Error('Unknown policy format');
     }
     const githubPatMode = policy.githubPatMode ?? 'off';
+    const paymentCardMode = policy.paymentCardMode ?? 'off';
     const discoveryEnabled = policy.discoveryEnabled ?? false;
     const domainRules = readDomainRules(policy.domainRules);
     if (!domainRules) throw new Error('Unknown domain rule format');
     const assignment = policy.assignmentVersion ?? 0;
     const previousAssignment = state.policy?.assignmentVersion ?? 0;
+    // Earlier Browser builds may already have this version cached without the payment detector setting.
     if (!state.policy || assignment > previousAssignment || (assignment === previousAssignment &&
       (policy.version > state.policy.version || (policy.version === state.policy.version &&
         policy.mode === state.policy.mode && githubPatMode === (state.policy.githubPatMode ?? 'off') &&
+        (state.policy.paymentCardMode === undefined || paymentCardMode === state.policy.paymentCardMode) &&
         discoveryEnabled === (state.policy.discoveryEnabled ?? false) &&
         sameDomainRules(domainRules, state.domainRules ?? emptyDomainRules))))) {
       await applyDomainRules(state, domainRules);
-      state.policy = { version: policy.version, mode: policy.mode, githubPatMode, discoveryEnabled, assignmentVersion: policy.assignmentVersion };
+      state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, discoveryEnabled,
+        assignmentVersion: policy.assignmentVersion };
       if (!discoveryEnabled || assignment !== previousAssignment) state.observations = undefined;
       if (assignment !== previousAssignment) clearCoverage(state);
       state.chatGptEnabled = Array.isArray(policy.appIds) && policy.appIds.includes(chatGptApp);
@@ -205,6 +210,7 @@ async function heartbeat(state: State) {
     assignmentVersion: state.policy.assignmentVersion,
     chatGptCoverage: state.chatGptEnabled ? state.coveragePending : undefined,
     geminiCoverage: state.geminiEnabled ? state.geminiCoveragePending : undefined,
+    paymentCardModeApplied: isMode(state.policy.paymentCardMode) ? true : undefined,
     domainRulesApplied: state.domainRules && (state.domainRules.allow.length || state.domainRules.block.length) ? true : undefined,
   });
   clearCoverage(state);
