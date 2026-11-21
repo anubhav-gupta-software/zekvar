@@ -38,6 +38,7 @@ export type Policy = {
   paymentCardMode?: DetectorMode;
   uploadModes?: UploadModes;
   discoveryEnabled?: boolean;
+  extensionInventoryEnabled?: boolean;
   domainRules?: DomainRules;
   pathRules?: PathRules;
   publishedAt: string;

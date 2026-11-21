@@ -33,6 +33,13 @@ export function PublishPolicyForm({ policy, groupId, review }: { policy?: Policy
         <option value="off">Off</option><option value="on">On</option>
       </select>
     </div>
+    <div className="grid gap-1">
+      <label htmlFor="extension-inventory-mode">Extension inventory</label>
+      <select key={policy?.version} id="extension-inventory-mode" name="extensionInventoryEnabled"
+        defaultValue={policy?.extensionInventoryEnabled ? 'on' : 'off'}>
+        <option value="off">Off</option><option value="on">On</option>
+      </select>
+    </div>
     {aiPromptApps.map((app) => <div className="grid gap-1" key={app}>
       <label htmlFor={`upload-${app}`}>{promptAppLabels[app]} file uploads</label>
       <select key={policy?.version} id={`upload-${app}`} name={`upload-${app}`} defaultValue={policy?.uploadModes?.[app] ?? 'off'}>
@@ -51,7 +58,7 @@ export function PolicyVersionTable({ policies, groupId, writable, review }: {
     <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="history-heading">
       <table aria-labelledby="history-heading">
         <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>Payment card number</th><th>AI app discovery</th>
-          <th>File uploads</th><th>Navigation rules</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
+          <th>Extension inventory</th><th>File uploads</th><th>Navigation rules</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
         <tbody>{policies.map((policy, index) => <PolicyRow key={policy.version} policy={policy} current={index === 0}
           groupId={groupId} writable={writable} review={review} />)}</tbody>
       </table>
@@ -70,6 +77,7 @@ function PolicyRow({ policy, current, groupId, writable, review }: {
     <td>{detectorModeLabels[policy.githubPatMode ?? 'off']}</td>
     <td>{detectorModeLabels[policy.paymentCardMode ?? 'off']}</td>
     <td>{policy.discoveryEnabled ? 'On' : 'Off'}</td>
+    <td>{policy.extensionInventoryEnabled ? 'On' : 'Off'}</td>
     <td>{aiPromptApps.map((app) => <div key={app}>{promptAppLabels[app]} · {detectorModeLabels[policy.uploadModes?.[app] ?? 'off']}</div>)}</td>
     <td>
       {allow.length + block.length + allowPaths.length + blockPaths.length === 0 && '—'}

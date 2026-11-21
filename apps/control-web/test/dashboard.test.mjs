@@ -554,6 +554,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       }));
       await author.getByRole('link', { name: 'Policy preview', exact: true }).click();
       await author.getByLabel('Draft test marker', { exact: true }).selectOption('block');
+      await author.getByLabel('Draft extension inventory', { exact: true }).selectOption('on');
       await author.getByLabel('Draft blocked paths', { exact: true }).fill('work.review.test/private');
       await author.getByRole('button', { name: 'Run preview', exact: true }).click();
       author.once('dialog', (dialog) => dialog.accept());
@@ -572,6 +573,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       await approver.goto(new URL(href, dashboard).href);
       const reviewed = approver.locator(hash);
       await reviewed.getByText('work.review.test/private', { exact: true }).waitFor();
+      await reviewed.getByText('Extension inventory · Off → On', { exact: true }).waitFor();
       await reviewed.getByText(`Reference v${prior.version}`, { exact: true }).waitFor();
       const screenshot = process.env.ZEKVAR_TEST_REVIEW_SCREENSHOT;
       if (screenshot) await approver.screenshot({ path: screenshot, fullPage: true });
@@ -584,6 +586,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       const [current] = await history();
       assert.equal(current.version, prior.version + 1);
       assert.equal(current.mode, 'block');
+      assert.equal(current.extensionInventoryEnabled, true);
       assert.deepEqual(current.pathRules.block, ['work.review.test/private']);
       await approver.getByRole('link', { name: 'Audit log', exact: true }).click();
       const audit = approver.getByRole('table', { name: 'Control activity' });

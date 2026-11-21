@@ -64,7 +64,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
           <section className="panel" id="policies" aria-labelledby="policies-heading">
             <div className="panel-heading"><h2 id="policies-heading">{session.reviewRequired ? 'Policy changes' : 'Publish a policy'}</h2>
               <span className="badge">Organization-wide</span></div>
-            {policyWritable ? <><p className="muted">Set prompt protection and app discovery for enrolled browsers.</p>
+            {policyWritable ? <><p className="muted">Set prompt protection, app discovery, and extension inventory for enrolled browsers.</p>
               <PublishPolicyForm policy={current} review={session.reviewRequired} /></> :
               <p className="muted">Sign in as a named administrator to request policy changes.</p>}
           </section>

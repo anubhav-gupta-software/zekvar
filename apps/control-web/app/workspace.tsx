@@ -8,7 +8,7 @@ export function Brand() {
 }
 
 export function Sidebar({ active, session }: {
-  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews'; session?: ControlSession;
+  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews' | 'extensions'; session?: ControlSession;
 }) {
   const root = active ? '/' : '';
   const writable = canWrite(session);
@@ -23,6 +23,7 @@ export function Sidebar({ active, session }: {
       {canChangePolicy(session) && <a href={`${root}#domain-rules`}>Navigation rules</a>}
       <a href={`${root}#ai-apps`}>AI apps</a>
       <a href={`${root}#browsers`}>Browsers</a>
+      <a href="/extensions" aria-current={active === 'extensions' ? 'page' : undefined}>Browser extensions</a>
       <a href={`${root}#events`}>Events</a>
       <a href="/audit" aria-current={active === 'audit' ? 'page' : undefined}>Audit log</a>
       <a href="/retention" aria-current={active === 'retention' ? 'page' : undefined}>Data retention</a>

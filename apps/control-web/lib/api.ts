@@ -5,6 +5,7 @@ import type { RetentionCleanup, RetentionPolicy } from './retention';
 import type { PreviewPolicy } from './preview';
 import type { ControlAccess, ControlSession, DelegatedRole, IssuedControlAccess } from './access';
 import type { PolicyChange, PolicyReviewQueue } from './reviews';
+import type { InventoryInstallation } from './extension-inventory';
 
 const port = Number(process.env.ZEKVAR_CONTROL_PORT ?? 5187);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid Control loopback port.');
@@ -68,6 +69,8 @@ export const controlApi = {
   decidePolicyReview: (token: string, id: string, approve: boolean) =>
     request<Policy | undefined>(`/policy-reviews/${id}/decision`, token, 'POST', { approve }),
   installations: (token: string) => request<Installation[]>('/installations', token),
+  extensionInventory: (token: string) => request<InventoryInstallation[]>('/extension-inventory', token),
+  browserExtensionInventory: (token: string, id: string) => request<InventoryInstallation>(`/extension-inventory/${id}`, token),
   events: (token: string, filters: URLSearchParams) => request<EventPage>(`/events/history?${filters}`, token),
   exportEvents: (token: string, filters: URLSearchParams, signal: AbortSignal) =>
     apiResponse(`/events/export?${filters}`, token, { signal }),

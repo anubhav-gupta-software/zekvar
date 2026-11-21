@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json.Serialization;
 using Control;
+using Microsoft.AspNetCore.Http.Features;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -47,6 +48,10 @@ app.Use(async (context, next) =>
         context.Response.StatusCode = StatusCodes.Status403Forbidden;
         return;
     }
+    if (HttpMethods.IsPost(context.Request.Method) &&
+        context.Request.Path.Value?.TrimEnd('/').Equals("/v1/browser/extension-inventory", StringComparison.OrdinalIgnoreCase) == true &&
+        context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } inventoryLimit)
+        inventoryLimit.MaxRequestBodySize = ReportExtensionInventory.MaxBodySize;
     await next(context);
 });
 
@@ -77,6 +82,11 @@ admin.MapPost("/enrollment-grants", async (HttpContext http, CancellationToken c
     Results.Ok(await store.CreateGrant(Identity(http), ct)));
 admin.MapGet("/installations", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.Installations(Identity(http).OrganizationId, ct)));
+admin.MapGet("/extension-inventory", async (HttpContext http, CancellationToken ct) =>
+    Results.Ok(await store.ExtensionInventory(Identity(http).OrganizationId, null, ct)));
+admin.MapGet("/extension-inventory/{id:guid}", async (Guid id, HttpContext http, CancellationToken ct) =>
+    (await store.ExtensionInventory(Identity(http).OrganizationId, id, ct)).FirstOrDefault() is { } installation
+        ? Results.Ok(installation) : Results.NotFound());
 admin.MapPost("/installations/{id:guid}/revoke", async (Guid id, HttpContext http, CancellationToken ct) =>
     await store.Revoke(Identity(http), id, ct) ? Results.NoContent() : Results.NotFound());
 admin.MapGet("/policies", async (HttpContext http, CancellationToken ct) =>
@@ -201,6 +211,12 @@ browser.MapPost("/ai-app-observations", async (AppObservation request, HttpConte
     DiscoveryCatalog.IsApp(request.AppId) && request.PolicyVersion > 0 &&
     await store.ObserveApp(Identity(http).InstallationId!.Value, request, ct)
         ? Results.NoContent() : Results.BadRequest(new { error = "Invalid app observation or discovery disabled." }));
+browser.MapPost("/extension-inventory", async (ReportExtensionInventory request, HttpContext http, CancellationToken ct) =>
+{
+    if (!request.IsValid(DateTimeOffset.UtcNow)) return Results.BadRequest(new { error = "Invalid extension inventory report." });
+    return await store.ReportInventory(Identity(http).InstallationId!.Value, request, ct)
+        ? Results.NoContent() : Results.Conflict(new { error = "The inventory report does not match the current enabled policy." });
+});
 
 await app.RunAsync();
 
@@ -209,7 +225,7 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
     if (request.ExpectedVersion is <= 0) return Results.BadRequest(new { error = "Choose a valid expected policy version." });
     if (!(FixtureContract.IsMode(request.Mode) ||
           request.Mode is null && (request.DomainRules is not null || request.PaymentCardMode is not null ||
-              request.PathRules is not null || request.UploadModes?.HasSettings() == true)) ||
+              request.PathRules is not null || request.UploadModes?.HasSettings() == true || request.ExtensionInventoryEnabled.HasValue)) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode))
         return Results.BadRequest(new { error = "Choose a valid rule mode." });
     if (request.UploadModes?.IsValid() == false)

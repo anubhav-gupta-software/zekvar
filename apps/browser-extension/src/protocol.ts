@@ -2,6 +2,7 @@ import { credentialDetector, fixtureDetector, fixtureRule, githubPatRule, isMode
   type PromptPolicy, type RuleMetadata } from '../../../contracts/policy/prompt';
 import { chatGptApp, fixtureApp, geminiApp, isPromptApp, type AiPromptApp, type AppId } from '../../../contracts/policy/apps';
 import { isUploadMethod, uploadCategory, uploadRule, type UploadMetadata, type UploadModes } from '../../../contracts/policy/uploads';
+import type { InventoryStatus } from '../../../contracts/policy/extension-inventory';
 
 export { fixtureRule, fixtureDetector, githubPatRule, credentialDetector, isMode, isDetectorMode } from '../../../contracts/policy/prompt';
 export type { PolicyMode, DetectorMode, RuleMetadata } from '../../../contracts/policy/prompt';
@@ -22,7 +23,9 @@ export function discoveredApp(url: string | undefined): DiscoveryApp | undefined
   if (origin && Object.hasOwn(discoveryCatalog, origin)) return discoveryCatalog[origin as keyof typeof discoveryCatalog];
 }
 export type Coverage = 'ready' | 'unsupported';
-export type Policy = PromptPolicy & { version: number; discoveryEnabled?: boolean; assignmentVersion?: number; uploadModes?: UploadModes };
+export type Policy = PromptPolicy & {
+  version: number; discoveryEnabled?: boolean; assignmentVersion?: number; uploadModes?: UploadModes; extensionInventoryEnabled?: boolean;
+};
 export type PolicyEvent = {
   eventId: string;
   appId: AppId;
@@ -42,6 +45,7 @@ export type Summary = {
   domainRuleCount?: number;
   pathRuleCount?: number;
   domainRulesError?: boolean;
+  inventoryStatus?: InventoryStatus;
   queued: number;
   discarded: number;
 };

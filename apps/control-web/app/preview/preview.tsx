@@ -21,6 +21,7 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
   return {
     mode: snapshot.mode, githubPatMode: snapshot.githubPatMode, paymentCardMode: snapshot.paymentCardMode,
     discoveryEnabled: snapshot.discoveryEnabled,
+    extensionInventoryEnabled: snapshot.extensionInventoryEnabled,
     uploadModes: snapshot.uploadModes,
     allow: snapshot.domainRules.allow.join('\n'), block: snapshot.domainRules.block.join('\n'),
     allowPaths: snapshot.pathRules.allow.join('\n'), blockPaths: snapshot.pathRules.block.join('\n'),
@@ -69,7 +70,8 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
     setError('');
     setResult(runComparison(reference, {
       mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode,
-      discoveryEnabled: editor.discoveryEnabled, domainRules, pathRules, uploadModes: editor.uploadModes,
+      discoveryEnabled: editor.discoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled, domainRules, pathRules,
+      uploadModes: editor.uploadModes,
     }, customPrompt, address));
   }
 
@@ -106,6 +108,13 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
         <div className="grid gap-1">
           <label htmlFor="draft-discovery">Draft AI app discovery</label>
           <select id="draft-discovery" value={editor.discoveryEnabled ? 'on' : 'off'} onChange={(event) => edit('discoveryEnabled', event.target.value === 'on')}>
+            <option value="off">Off</option><option value="on">On</option>
+          </select>
+        </div>
+        <div className="grid gap-1">
+          <label htmlFor="draft-extension-inventory">Draft extension inventory</label>
+          <select id="draft-extension-inventory" value={editor.extensionInventoryEnabled ? 'on' : 'off'}
+            onChange={(event) => edit('extensionInventoryEnabled', event.target.value === 'on')}>
             <option value="off">Off</option><option value="on">On</option>
           </select>
         </div>
@@ -181,6 +190,7 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         <input type="hidden" name="githubPatMode" value={candidate.githubPatMode} />
         <input type="hidden" name="paymentCardMode" value={candidate.paymentCardMode} />
         <input type="hidden" name="discoveryEnabled" value={candidate.discoveryEnabled ? 'on' : 'off'} />
+        <input type="hidden" name="extensionInventoryEnabled" value={candidate.extensionInventoryEnabled ? 'on' : 'off'} />
         {aiPromptApps.map((app) => <input key={app} type="hidden" name={`upload-${app}`} value={candidate.uploadModes[app]} />)}
         <input type="hidden" name="allow" value={candidate.domainRules.allow.join('\n')} />
         <input type="hidden" name="block" value={candidate.domainRules.block.join('\n')} />

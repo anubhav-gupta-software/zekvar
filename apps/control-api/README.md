@@ -88,6 +88,15 @@ Policy reviews are optional by default. The owner can enable the requirement wit
 
 Approved publication and its review decision commit in the same transaction. Audit records include reviewer identity, request ID, status, reference version, and the version published when applicable. Audit payloads exclude the before and candidate policy snapshots.
 
+## Extension inventory
+
+Policy publishes accept `extensionInventoryEnabled` as an optional boolean. Existing policies start with it Off. Restore, promotion, and the policy review queue preserve the setting.
+
+- `POST /v1/browser/extension-inventory` accepts the current `policyVersion`, `assignmentVersion`, `capturedAt`, `status`, `entries`, and `omitted` count from an enrolled browser. The effective policy must enable inventory. A stale policy, scope change, or disabled setting returns HTTP 409.
+- `reported` accepts up to 100 entries. Entries describe identifiers, names, versions, enabled states, install types, site-access categories, and selected API permissions. `permission_required` and `unavailable` use empty entry lists. Reports may be up to 128 KiB. The general API request limit stays at 16 KiB.
+- Reports replace the latest per-installation snapshot. Older reports and replays cannot replace a more recent snapshot. Browsers resend changed reports on sync and periodically refresh identical reports.
+- `GET /v1/admin/extension-inventory` lists status and counts for the latest 100 active installations in the organization. `GET /v1/admin/extension-inventory/{id}` includes entries for one active installation. The response shows data only for the current effective policy and assignment. Control hides reports after 30 days and clears revoked installations or expired and disabled snapshots as part of the documented retention lifecycle.
+
 ## Security event history and export
 
 - `GET /v1/admin/events` returns an array of up to 100 events for existing clients.

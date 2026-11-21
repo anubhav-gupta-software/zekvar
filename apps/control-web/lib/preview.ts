@@ -7,6 +7,7 @@ import type { Policy } from './control';
 
 export type PreviewPolicy = {
   mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; discoveryEnabled: boolean;
+  extensionInventoryEnabled: boolean;
   domainRules: DomainRules; pathRules: PathRules; uploadModes: UploadModes;
 };
 export type PreviewSnapshot = PreviewPolicy & { version: number; label: string };
@@ -19,6 +20,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     version: policy.version, label: `${scope} v${policy.version}`,
     mode: policy.mode, githubPatMode: policy.githubPatMode ?? 'off', paymentCardMode: policy.paymentCardMode ?? 'off',
     discoveryEnabled: policy.discoveryEnabled ?? false,
+    extensionInventoryEnabled: policy.extensionInventoryEnabled ?? false,
     domainRules: policy.domainRules ?? emptyDomainRules,
     pathRules: policy.pathRules ?? emptyPathRules,
     uploadModes: policy.uploadModes ?? uploadsOff,
@@ -27,7 +29,8 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
 
 export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
   return a.mode === b.mode && a.githubPatMode === b.githubPatMode && a.paymentCardMode === b.paymentCardMode &&
-    a.discoveryEnabled === b.discoveryEnabled && aiPromptApps.every((app) => a.uploadModes[app] === b.uploadModes[app]) &&
+    a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
+    aiPromptApps.every((app) => a.uploadModes[app] === b.uploadModes[app]) &&
     sameDomainRules(a.domainRules, b.domainRules) && sameDomainRules(a.pathRules, b.pathRules);
 }
 

@@ -96,6 +96,15 @@ Chrome keeps the last applied navigation rules during connection interruptions. 
 
 With Browser v0.8.0, use the two-profile lab to enroll two managed Chrome profiles. Assign one to a rollout group in Control, publish its prompt or domain policy, and sync both browsers. The assigned browser uses the group policy while the other follows the baseline. Return the browser to the baseline through **Browser assignments**, or promote the verified group policy to the entire baseline. [Rollout group workflow](../control-web/README.md#roll-out-policies-to-a-pilot-group)
 
+## Report browser extensions
+
+1. Use Browser v0.14.0 or later. Enroll the Chrome profile and publish a policy with **Extension inventory** set to **On** for its baseline or rollout group.
+2. Select **Sync now** in the popup. Select **Allow extension inventory** and confirm Chrome’s optional permission prompt when shown.
+3. In Control, open **Browser extensions** and select the installation. For each extension Chrome exposes, Control shows the identifier, name, version, enabled state, installation type, broad or selected site access, and selected API permissions.
+4. To stop reporting, remove the permission in the popup or turn the assigned setting Off. The permission removal takes effect in Control on the next successful sync.
+
+Zekvar reads extension metadata and keeps literal host patterns, descriptions, and links out of its reports. It excludes its own extension from the list. Review flags identify certain permissions and install sources. Publisher verification, reputation checks, and extension allow or block enforcement are separate roadmap items. [Chrome management API](https://developer.chrome.com/docs/extensions/reference/api/management) · [Chrome optional permissions](https://developer.chrome.com/docs/extensions/reference/api/permissions)
+
 ## Verify the scenarios
 
 The full demo uses Node.js 22+, the .NET 10 SDK, and a running Docker daemon. From `apps/browser-extension`, run:

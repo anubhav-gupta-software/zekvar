@@ -1,4 +1,5 @@
 import { send, type Summary } from './protocol';
+import { inventoryPermission } from './extension-inventory';
 
 const form = document.querySelector<HTMLFormElement>('#enroll')!;
 const grant = document.querySelector<HTMLInputElement>('#grant')!;
@@ -10,7 +11,30 @@ const managed = document.querySelector<HTMLElement>('#managed-enrollment')!;
 const errorMessage = document.querySelector<HTMLElement>('#error')!;
 const sync = document.querySelector<HTMLButtonElement>('#sync')!;
 const enrollButton = form.querySelector<HTMLButtonElement>('button')!;
+const inventory = document.querySelector<HTMLElement>('#inventory')!;
+const inventorySummary = document.querySelector<HTMLElement>('#inventory-status')!;
+const inventoryButton = document.querySelector<HTMLButtonElement>('#inventory-permission')!;
 let busy = false;
+let inventoryEnabled = false;
+let inventoryAllowed = false;
+let inventoryStatus: Summary['inventoryStatus'];
+
+function renderInventory() {
+  inventory.hidden = !inventoryEnabled && !inventoryAllowed;
+  inventoryButton.textContent = inventoryAllowed ? 'Remove extension inventory permission' : 'Allow extension inventory';
+  let label = 'Extension inventory is off in Control.';
+  if (inventoryEnabled) {
+    label = !inventoryAllowed ? 'Control requests extension names, versions, and selected permission metadata.' :
+      inventoryStatus === 'reported' ? 'Extension inventory reported to Control.' :
+        inventoryStatus === 'unavailable' ? 'Extension inventory is unavailable. Zekvar will retry.' : 'Waiting to report extension inventory…';
+  }
+  if (inventorySummary.textContent !== label) inventorySummary.textContent = label;
+}
+
+async function refreshInventoryPermission() {
+  inventoryAllowed = await chrome.permissions.contains(inventoryPermission).catch(() => false);
+  renderInventory();
+}
 
 function render(summary: Summary) {
   const states = { standalone: 'Ready to enroll', connected: 'Connected to Control', offline: 'Control offline', revoked: 'Control access revoked' };
@@ -33,6 +57,9 @@ function render(summary: Summary) {
     summary.managedEnrollment ? onboarding[summary.managedEnrollment] : '';
   form.hidden = Boolean(summary.installationId);
   sync.hidden = !summary.installationId;
+  inventoryEnabled = Boolean(summary.installationId && summary.policy?.extensionInventoryEnabled);
+  inventoryStatus = summary.inventoryStatus;
+  renderInventory();
 }
 
 async function update(type: 'status' | 'sync' | 'enroll') {
@@ -59,5 +86,24 @@ form.addEventListener('submit', (event) => {
   void update('enroll');
 });
 sync.addEventListener('click', () => void update('sync'));
+inventoryButton.addEventListener('click', async () => {
+  inventoryButton.disabled = true;
+  errorMessage.textContent = '';
+  try {
+    if (inventoryAllowed) await chrome.permissions.remove(inventoryPermission);
+    else if (inventoryEnabled && !await chrome.permissions.request(inventoryPermission)) {
+      errorMessage.textContent = 'Extension inventory permission was not granted.';
+    }
+    await refreshInventoryPermission();
+    if (!errorMessage.textContent) await update('sync');
+  } catch {
+    errorMessage.textContent = 'Chrome could not change the extension inventory permission.';
+  } finally {
+    inventoryButton.disabled = false;
+  }
+});
+chrome.permissions.onAdded.addListener(() => void refreshInventoryPermission());
+chrome.permissions.onRemoved.addListener(() => void refreshInventoryPermission());
+void refreshInventoryPermission();
 void update('sync');
 window.setInterval(() => void update('status'), 1500);

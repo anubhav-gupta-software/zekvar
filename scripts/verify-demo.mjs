@@ -139,11 +139,13 @@ try {
   const extensionAdmin = randomBytes(32).toString('hex');
   const pilotAdmin = randomBytes(32).toString('hex');
   const reviewAdmin = randomBytes(32).toString('hex');
+  const inventoryAdmin = randomBytes(32).toString('hex');
   const apiServer = startService('dotnet', ['bin/Debug/net10.0/Control.Api.dll'], api, {
     DOTNET_ENVIRONMENT: 'Development', ASPNETCORE_ENVIRONMENT: 'Development', Control__Port: String(apiPort), ConnectionStrings__Control: db,
     Control__Organizations__0__Slug: 'demo', Control__Organizations__0__AdminToken: token,
     Control__Organizations__1__Slug: 'dashboard-regression', Control__Organizations__1__AdminToken: dashboardAdmin,
     Control__Organizations__2__Slug: 'extension-regression', Control__Organizations__2__AdminToken: extensionAdmin,
+    Control__Organizations__5__Slug: 'extension-inventory', Control__Organizations__5__AdminToken: inventoryAdmin,
     ...(flags.has('--pilot') ? {
       Control__Organizations__3__Slug: 'managed-pilot', Control__Organizations__3__AdminToken: pilotAdmin,
       Control__Organizations__4__Slug: 'review-pilot', Control__Organizations__4__AdminToken: reviewAdmin,
@@ -172,6 +174,10 @@ try {
   });
   await run('npm', ['run', 'test:control'], extension, {
     ZEKVAR_EXTENSION_TEST_API: apiOrigin, ZEKVAR_EXTENSION_TEST_ADMIN_TOKEN: extensionAdmin,
+  });
+  await run(process.execPath, ['--test', 'test/extension-inventory.test.mjs'], extension, {
+    ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: inventoryAdmin,
+    ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_ARTIFACTS: artifacts ?? '',
   });
   if (flags.has('--pilot')) {
     await run(process.execPath, ['--test', 'test/review-pilot.test.mjs'], extension, {

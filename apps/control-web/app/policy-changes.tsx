@@ -8,6 +8,7 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     ['GitHub classic PAT', detectorModeLabels[reference.githubPatMode], detectorModeLabels[candidate.githubPatMode]],
     ['Payment card number', detectorModeLabels[reference.paymentCardMode], detectorModeLabels[candidate.paymentCardMode]],
     ['AI app discovery', toggle(reference.discoveryEnabled), toggle(candidate.discoveryEnabled)],
+    ['Extension inventory', toggle(reference.extensionInventoryEnabled), toggle(candidate.extensionInventoryEnabled)],
     ...aiPromptApps.map((app) => [`${promptAppLabels[app]} file uploads`, detectorModeLabels[reference.uploadModes[app]],
       detectorModeLabels[candidate.uploadModes[app]]]),
   ];

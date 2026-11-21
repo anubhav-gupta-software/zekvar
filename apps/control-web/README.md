@@ -23,6 +23,14 @@ In **Browser health**, **Reporting** indicates Control heard from the installati
 
 The organization baseline applies to unassigned browsers and groups that follow it. The dashboard keeps Control tokens in server memory and gives the browser a short-lived HTTP-only session cookie. Restarting the dashboard clears those sessions. Keep both services on loopback and use synthetic demo data.
 
+## Review browser extension inventory
+
+Publish **Extension inventory** on the organization baseline or a rollout group. The enrolled profile needs Browser v0.14.0 or later and Chrome’s optional management permission. The setting starts Off. Use policy preview and a policy review when those are part of your rollout.
+
+Open **Browser extensions** to see reporting status and select an installation. **Permission needed** means the profile must grant the optional permission in the extension popup. **Awaiting report** means no current snapshot has arrived. The per-browser view shows extension details and flags entries for review based on install source, broad site access, or selected permissions. A Review flag identifies a condition for inspection.
+
+Control keeps the latest snapshot per browser and labels counts when Chrome reports more than 100 extensions. A new policy or group assignment hides the old snapshot until the browser reports again. Revocation removes the snapshot immediately. The scheduled cleanup clears snapshots older than 30 days and snapshots for browsers whose current policy is Off. [Browser instructions](../browser-extension/README.md#report-browser-extensions)
+
 ## Delegate Control access
 
 1. Sign in with the configured owner token and open **Control access**.

@@ -7,6 +7,8 @@ import {
 import { domainRuleLimit, emptyDomainRules, emptyPathRules, installDomainRules, readDomainRules, readPathRules,
   ruleCount, sameDomainRules, type DomainRules, type PathRules } from './domain-rules';
 import { isUploadModes, uploadsOff } from '../../../contracts/policy/uploads';
+import { collectExtensionInventory } from './extension-inventory';
+import type { InventoryStatus } from '../../../contracts/policy/extension-inventory';
 
 declare const CONTROL_ORIGIN: string;
 
@@ -24,6 +26,8 @@ type State = {
   geminiCoveragePending?: Coverage;
   queue: PolicyEvent[];
   observations?: Partial<Record<DiscoveryApp, AppObservation>>;
+  inventoryStatus?: InventoryStatus;
+  inventoryReceipt?: { policyVersion: number; assignmentVersion: number; digest: string; reportedAt: number };
   discarded: number;
   managedEnrollment?: Summary['managedEnrollment'];
   usedManagedGrant?: string;
@@ -32,6 +36,7 @@ type State = {
 const key = 'controlState';
 const alarmName = 'control-sync';
 const maxQueue = 100;
+const inventoryRefreshMs = 15 * 60_000;
 let work = Promise.resolve();
 let deliveryScheduled = false;
 
@@ -73,6 +78,7 @@ function summary(state: State): Summary {
     managedEnrollment: state.managedEnrollment, domainRulesError: state.domainRulesError,
     domainRuleCount: state.domainRules && ruleCount(state.domainRules),
     pathRuleCount: state.pathRules && ruleCount(state.pathRules),
+    inventoryStatus: state.inventoryStatus,
   };
 }
 
@@ -118,6 +124,8 @@ async function lostConnection(state: State, error: unknown) {
     state.enrollment = undefined;
     clearCoverage(state);
     state.observations = undefined;
+    state.inventoryStatus = undefined;
+    state.inventoryReceipt = undefined;
     state.discarded += state.queue.length;
     state.queue = [];
     state.domainRulesError = true;
@@ -173,6 +181,7 @@ async function sync(state: State) {
         (policy.paymentCardMode !== undefined && !isDetectorMode(policy.paymentCardMode)) ||
         (policy.uploadModes !== undefined && !isUploadModes(policy.uploadModes)) ||
         (policy.discoveryEnabled !== undefined && typeof policy.discoveryEnabled !== 'boolean') ||
+        (policy.extensionInventoryEnabled !== undefined && typeof policy.extensionInventoryEnabled !== 'boolean') ||
         policy.appId !== fixtureApp || policy.ruleId !== fixtureRule || policy.detectorCategory !== fixtureDetector) {
       throw new Error('Unknown policy format');
     }
@@ -181,6 +190,7 @@ async function sync(state: State) {
     const uploads = policy.uploadModes ?? uploadsOff;
     const previousUploads = state.policy?.uploadModes;
     const discoveryEnabled = policy.discoveryEnabled ?? false;
+    const extensionInventoryEnabled = policy.extensionInventoryEnabled ?? false;
     const domainRules = readDomainRules(policy.domainRules);
     const pathRules = readPathRules(policy.pathRules);
     if (!domainRules || !pathRules || ruleCount(domainRules) + ruleCount(pathRules) > domainRuleLimit) {
@@ -195,10 +205,11 @@ async function sync(state: State) {
         (state.policy.paymentCardMode === undefined || paymentCardMode === state.policy.paymentCardMode) &&
         (!previousUploads || uploads.chatgpt === previousUploads.chatgpt && uploads.gemini === previousUploads.gemini) &&
         discoveryEnabled === (state.policy.discoveryEnabled ?? false) &&
+        (state.policy.extensionInventoryEnabled === undefined || extensionInventoryEnabled === state.policy.extensionInventoryEnabled) &&
         sameDomainRules(domainRules, state.domainRules ?? emptyDomainRules) &&
         (!state.pathRules || sameDomainRules(pathRules, state.pathRules)))))) {
       await applyDomainRules(state, domainRules, pathRules);
-      state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, discoveryEnabled,
+      state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, discoveryEnabled, extensionInventoryEnabled,
         assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini } };
       if (!discoveryEnabled || assignment !== previousAssignment) state.observations = undefined;
       if (assignment !== previousAssignment) clearCoverage(state);
@@ -210,10 +221,43 @@ async function sync(state: State) {
     state.status = 'connected';
     await save(state);
     await deliver(state);
+    await reportExtensionInventory(state);
   } catch (error) {
     await lostConnection(state, error);
     await save(state);
   }
+}
+
+async function reportExtensionInventory(state: State) {
+  const policy = state.policy;
+  if (!state.enrollment || state.status !== 'connected') return;
+  if (!policy?.extensionInventoryEnabled) {
+    if (state.inventoryReceipt || state.inventoryStatus) {
+      state.inventoryReceipt = undefined;
+      state.inventoryStatus = undefined;
+      await save(state);
+    }
+    return;
+  }
+  const snapshot = await collectExtensionInventory();
+  const capturedAt = Date.now();
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(snapshot)));
+  const digest = Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  const assignmentVersion = policy.assignmentVersion ?? 0;
+  const receipt = state.inventoryReceipt;
+  if (receipt?.digest === digest && receipt.policyVersion === policy.version && receipt.assignmentVersion === assignmentVersion &&
+      capturedAt - receipt.reportedAt < inventoryRefreshMs && state.inventoryStatus === snapshot.status) return;
+  try {
+    await request('browser/extension-inventory', state.enrollment.token, {
+      ...snapshot, capturedAt: new Date(capturedAt).toISOString(), policyVersion: policy.version, assignmentVersion,
+    });
+    state.inventoryReceipt = { policyVersion: policy.version, assignmentVersion, digest, reportedAt: capturedAt };
+    state.inventoryStatus = snapshot.status;
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 401) await lostConnection(state, error);
+    else state.inventoryStatus = snapshot.status === 'permission_required' ? snapshot.status : 'unavailable';
+  }
+  await save(state);
 }
 
 async function heartbeat(state: State) {
@@ -373,6 +417,12 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === alarmName) synchronizeInBackground();
 });
 chrome.runtime.onStartup.addListener(synchronizeInBackground);
+chrome.permissions.onAdded.addListener(({ permissions }) => {
+  if (permissions?.includes('management')) synchronizeInBackground();
+});
+chrome.permissions.onRemoved.addListener(({ permissions }) => {
+  if (permissions?.includes('management')) synchronizeInBackground();
+});
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'managed' && managedGrantKey in changes) synchronizeInBackground();
 });

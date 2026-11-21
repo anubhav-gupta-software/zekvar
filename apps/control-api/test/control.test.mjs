@@ -1144,13 +1144,15 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await post(restoreBaseline, first, undefined, 403);
     await post(groupPolicies, first, { mode: 'warn' }, 403);
     await post(promote, first, { expectedVersion: settings.version }, 403);
-    const candidate = { mode: 'block', githubPatMode: 'warn', pathRules: { allow: [], block: ['private-fixture.test/review'] },
+    const candidate = { mode: 'block', githubPatMode: 'warn', extensionInventoryEnabled: true,
+      pathRules: { allow: [], block: ['private-fixture.test/review'] },
       expectedVersion: settings.version };
     const initial = await post('policies', proposer.token, candidate, 202, true);
     const pending = await status(initial.reviewId);
     assert.equal(pending.status, 'pending');
     assert.deepEqual(pending.snapshots.before, settings);
     assert.deepEqual(pending.snapshots.candidate.pathRules, candidate.pathRules);
+    assert.equal(pending.snapshots.candidate.extensionInventoryEnabled, true);
     assert.equal(Date.parse(pending.expiresAt) - Date.parse(pending.requestedAt), 86_400_000);
     assert.equal(pending.requester.id, proposer.access.id);
     assert.deepEqual(await baseline(), settings);
@@ -1173,6 +1175,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(firstVersion.version, settings.version + 1);
     assert.deepEqual(firstVersion.pathRules, candidate.pathRules);
     assert.equal(firstVersion.githubPatMode, 'warn');
+    assert.equal(firstVersion.extensionInventoryEnabled, true);
     assert.equal((await status(initial.reviewId)).publishedVersion, firstVersion.version);
     assert.equal((await status(initial.reviewId)).reviewer.id, reviewer.access.id);
     assert.equal((await decide(competing.reviewId, reviewer.token, true, 409)).code, 'review_stale');
@@ -1233,5 +1236,124 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(audit.entries.filter(({ action }) => action === 'policy_review_setting_changed').length, 2);
     assert.ok(!JSON.stringify(audit).includes('private-fixture.test/review'));
     assert.ok(!JSON.stringify(await queue()).includes(proposer.token));
+  });
+
+  await t.test('accepts private, bounded extension inventory only for the current enabled scope', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: first, ...options });
+    const current = async () => (await admin('policies'))[0];
+    const empty = await current();
+    assert.equal(empty.extensionInventoryEnabled, false);
+    if (postgres) {
+      await stop();
+      await retentionFixture(`
+        DELETE FROM schema_migrations WHERE version = 16;
+        DROP TABLE extension_inventory_snapshots;
+        ALTER TABLE policy_versions DROP COLUMN extension_inventory_enabled;
+      `);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 16'), '1');
+      assert.deepEqual(await current(), empty);
+    }
+    const change = (path, body) => admin(path, { method: 'POST', body });
+    const { grant } = await change('enrollment-grants');
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const path = `extension-inventory/${browser.installationId}`;
+    const read = () => admin(path);
+    const publish = (enabled) => change('policies', { extensionInventoryEnabled: enabled });
+    const report = (body, expect = 204, token = browser.token) =>
+      call('/v1/browser/extension-inventory', { method: 'POST', token, body, expect });
+    const sample = { id: 'a'.repeat(32), name: 'Inventory fixture', version: '1.1', enabled: true,
+      installType: 'development', siteAccess: 'all', permissions: ['cookies', 'tabs'] };
+    const timestamp = Date.now();
+    const base = { policyVersion: empty.version, assignmentVersion: 0, capturedAt: new Date(timestamp).toISOString(),
+      status: 'reported', entries: [sample], omitted: 0 };
+    await report(base, 409);
+    assert.equal((await read()).status, 'off');
+    const enabled = await publish(true);
+    assert.equal(enabled.extensionInventoryEnabled, true);
+    const effective = await call('/v1/browser/policy', { token: browser.token, assignmentAware: true });
+    assert.equal(effective.extensionInventoryEnabled, true);
+    assert.equal((await read()).status, 'awaiting');
+    assert.equal((await admin('extension-inventory')).find(({ installationId }) => installationId === browser.installationId).entries, null);
+
+    const body = { ...base, policyVersion: enabled.version };
+    for (const invalid of [
+      { ...body, status: 'permission_required' }, { ...body, entries: [sample, sample] },
+      { ...body, capturedAt: new Date(timestamp + 180_000).toISOString() },
+      { ...body, capturedAt: new Date(timestamp - 1_000_000).toISOString() },
+      { ...body, entries: [{ ...sample, id: 'q'.repeat(32) }] }, { ...body, entries: [{ ...sample, name: '\n' }] },
+      { ...body, entries: [{ ...sample, version: '1.99999' }] },
+      { ...body, entries: [{ ...sample, hostPermissions: ['https://private-fixture.example.test/*'] }] },
+      { ...body, entries: [{ ...sample, permissions: ['https://private-fixture.example.test/*'] }] },
+      { ...body, entries: [{ ...sample, permissions: ['tabs', 'tabs'] }] },
+      { ...body, entries: [{ ...sample, enabled: undefined }] },
+      { ...body, entries: Array.from({ length: 101 }, () => sample) },
+    ]) await report(invalid, 400);
+    await report({ ...body, entries: [{ ...sample, name: 'x'.repeat(132_000) }] }, 413);
+    await report({ ...body, assignmentVersion: 1 }, 409);
+    await report(body, 401, first);
+    await admin(path, { token: browser.token, expect: 401 });
+    await admin(path, { token: second, expect: 404 });
+    assert.equal((await admin('extension-inventory', { token: second })).some(({ installationId }) => installationId === browser.installationId), false);
+
+    await report({ ...body, status: 'permission_required', entries: [] });
+    assert.equal((await read()).status, 'permission_required');
+    const withEntries = { ...body, capturedAt: new Date(timestamp + 100).toISOString() };
+    await report(withEntries);
+    const accepted = await read();
+    assert.deepEqual(accepted.entries, [sample]);
+    await Promise.all([report(withEntries), report({ ...body, status: 'unavailable', entries: [] })]);
+    assert.deepEqual(await read(), accepted);
+    const large = Array.from({ length: 100 }, (_, i) => ({
+      ...sample,
+      id: 'a'.repeat(30) + String.fromCharCode(97 + Math.floor(i / 16), 97 + i % 16),
+      name: 'Fixture ' + 'x'.repeat(90),
+    }));
+    assert.ok(JSON.stringify(large).length > 16_384);
+    await report({ ...body, capturedAt: new Date(timestamp + 200).toISOString(), entries: large, omitted: 3 });
+    assert.equal((await read()).extensionCount, 100);
+    assert.equal((await read()).omitted, 3);
+    const noPermission = { ...body, capturedAt: new Date(timestamp + 300).toISOString(), status: 'permission_required', entries: [] };
+    await report(noPermission);
+    assert.deepEqual((await read()).entries, []);
+    const restored = await change(`policies/${empty.version}/restore`);
+    assert.equal(restored.extensionInventoryEnabled, false);
+    assert.equal((await read()).status, 'off');
+    await report({ ...body, capturedAt: new Date(timestamp + 400).toISOString() }, 409);
+
+    const group = await change('policy-groups', { name: 'Extension inventory scope' });
+    const scoped = await change(`policy-groups/${group.id}/policies`, { extensionInventoryEnabled: true });
+    await admin(`installations/${browser.installationId}/policy-group`, { method: 'POST', body: { groupId: group.id }, expect: 204 });
+    const moved = await call('/v1/browser/policy', { token: browser.token, assignmentAware: true });
+    assert.equal(moved.version, scoped.version);
+    assert.equal(moved.assignmentVersion, 1);
+    await report({ ...body, policyVersion: scoped.version }, 409);
+    const currentScope = { ...body, policyVersion: scoped.version, assignmentVersion: 1, capturedAt: new Date(timestamp + 500).toISOString() };
+    await report(currentScope);
+    assert.equal((await read()).groupName, group.name);
+    assert.deepEqual((await read()).entries, [sample]);
+    const promoted = await change(`policy-groups/${group.id}/promote`, { expectedVersion: scoped.version });
+    assert.equal(promoted.extensionInventoryEnabled, true);
+    assert.deepEqual((await read()).entries, [sample]);
+    if (postgres) {
+      const count = () => retentionFixture(`SELECT count(*) FROM extension_inventory_snapshots WHERE installation_id = '${browser.installationId}'`);
+      await retentionFixture(`
+        UPDATE extension_inventory_snapshots SET received_at = now() - interval '31 days' WHERE installation_id = '${browser.installationId}'
+      `);
+      assert.equal((await read()).status, 'awaiting');
+      assert.equal(await count(), '1');
+      await stop();
+      await start();
+      for (let retry = 0; await count() !== '0' && retry < 20; retry++) await delay(50);
+      assert.equal(await count(), '0');
+      await report({ ...currentScope, capturedAt: new Date(timestamp + 600).toISOString() });
+      assert.equal(await count(), '1');
+    }
+    await admin(`installations/${browser.installationId}/revoke`, { method: 'POST', expect: 204 });
+    await admin(path, { expect: 404 });
+    await report(currentScope, 401);
+    if (postgres) {
+      assert.equal(await retentionFixture(`SELECT count(*) FROM extension_inventory_snapshots WHERE installation_id = '${browser.installationId}'`), '0');
+    }
   });
 });

@@ -59,7 +59,7 @@ internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId
 }
 internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode = null, bool? DiscoveryEnabled = null,
     DomainRules? DomainRules = null, int? ExpectedVersion = null, string? PaymentCardMode = null, UploadModes? UploadModes = null,
-    PathRules? PathRules = null);
+    PathRules? PathRules = null, bool? ExtensionInventoryEnabled = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null)
 {
     public bool HasSettings() => Chatgpt is not null || Gemini is not null;
@@ -78,6 +78,7 @@ internal sealed record PolicyEvent(Guid EventId, string AppId, DateTimeOffset Ti
 
 internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, int? RestoredFrom, string GithubPatMode,
     bool DiscoveryEnabled, DomainRules DomainRules, string PaymentCardMode, UploadModes UploadModes, PathRules PathRules,
+    bool ExtensionInventoryEnabled = false,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int AssignmentVersion = 0)
 {
     public string AppId => FixtureContract.AppId;
