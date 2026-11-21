@@ -115,10 +115,11 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     const managedPolicy = installationId && enabled(control) ? policy : undefined;
     const github = managedPolicy?.githubPatMode;
     const card = managedPolicy?.paymentCardMode;
-    const upload = managedPolicy?.uploadModes?.[adapter.appId];
+    const targetedUpload = managedPolicy?.targetedUploads?.[adapter.appId];
+    const upload = targetedUpload?.mode ?? managedPolicy?.uploadModes?.[adapter.appId];
     if (upload !== 'block') ui.uploadNotice.textContent = '';
     const detectors = (isMode(github) ? ` · GitHub PAT ${github}` : '') + (isMode(card) ? ` · Payment card ${card}` : '') +
-      (upload && upload !== 'off' ? ` · File uploads ${upload}` : '');
+      (upload && upload !== 'off' ? ` · File uploads ${upload}${targetedUpload ? ' (selected types)' : ''}` : '');
     const label = !managedPolicy ? `Zekvar · ${appName} policy unavailable` : coverage === 'unsupported' ?
       `Zekvar · Unsupported composer (${inspection.gap ?? 'Send control missing'})` : !coverage && !waiting ? 'Zekvar · Checking composer…' :
         `Zekvar · ${managedPolicy.mode.toUpperCase()} v${managedPolicy.version}${detectors}${control?.status === 'offline' ? ' · Offline policy' : ''}${current?.button ? '' : ' · Waiting for Send control'}`;
@@ -144,7 +145,10 @@ export function bindPromptGuard(adapter: PromptAdapter) {
       if (!reply.summary) return;
       if (control?.installationId !== reply.summary.installationId || control?.policy?.version !== reply.summary.policy?.version ||
           control?.policy?.assignmentVersion !== reply.summary.policy?.assignmentVersion ||
-          control?.policy?.mode !== reply.summary.policy?.mode || enabled(control) !== enabled(reply.summary)) clearInterruption();
+          control?.policy?.mode !== reply.summary.policy?.mode || enabled(control) !== enabled(reply.summary)) {
+        clearInterruption();
+        ui.uploadNotice.textContent = '';
+      }
       control = reply.summary;
     } catch {
       // Preserve any policy already received in this tab while storage is temporarily unavailable.
@@ -282,11 +286,14 @@ export function bindPromptGuard(adapter: PromptAdapter) {
   }
 
   bindUploadGuard(() => {
-    if (!supported() || !enabled(control) || !control?.installationId) return;
+    if (!supported() || !enabled(control) || !control?.installationId || !control.policy) return;
+    const targeted = control.policy.targetedUploads?.[adapter.appId];
+    if (targeted) return targeted;
     const mode = control.policy?.uploadModes?.[adapter.appId];
-    if (mode === 'monitor' || mode === 'block') return mode;
+    if (mode === 'monitor' || mode === 'block') return { mode, types: [] };
   }, (decision, method) => {
-    if (!control?.policy || !control.installationId) return;
+    if (decision !== 'block') ui.uploadNotice.textContent = '';
+    if (!decision || !control?.policy || !control.installationId) return;
     recordUploadDecision(adapter.appId, control.policy, control.installationId, decision, method);
     if (decision === 'block') ui.uploadNotice.textContent = `File upload blocked by your organization’s ${appName} policy.`;
   });

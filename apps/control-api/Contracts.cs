@@ -59,7 +59,7 @@ internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId
 }
 internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode = null, bool? DiscoveryEnabled = null,
     DomainRules? DomainRules = null, int? ExpectedVersion = null, string? PaymentCardMode = null, UploadModes? UploadModes = null,
-    PathRules? PathRules = null, bool? ExtensionInventoryEnabled = null);
+    PathRules? PathRules = null, bool? ExtensionInventoryEnabled = null, UploadTypes? UploadTypes = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null)
 {
     public bool HasSettings() => Chatgpt is not null || Gemini is not null;
@@ -68,7 +68,7 @@ internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null
 internal sealed record RedeemGrant(string Grant);
 internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = null, bool DomainRulesApplied = false,
     int AssignmentVersion = 0, string? GeminiCoverage = null, bool PaymentCardModeApplied = false, bool UploadControlsApplied = false,
-    bool PathRulesApplied = false)
+    bool PathRulesApplied = false, bool UploadTypesApplied = false)
 {
     public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported") &&
         (GeminiCoverage is null or "ready" or "unsupported");
@@ -79,12 +79,28 @@ internal sealed record PolicyEvent(Guid EventId, string AppId, DateTimeOffset Ti
 internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, int? RestoredFrom, string GithubPatMode,
     bool DiscoveryEnabled, DomainRules DomainRules, string PaymentCardMode, UploadModes UploadModes, PathRules PathRules,
     bool ExtensionInventoryEnabled = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] UploadTypes? UploadTypes = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] TargetedUploads? TargetedUploads = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int AssignmentVersion = 0)
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => [FixtureContract.AppId, FixtureContract.ChatGpt, FixtureContract.Gemini];
     public string RuleId => FixtureContract.RuleId;
     public string DetectorCategory => FixtureContract.DetectorCategory;
+
+    public Policy ForBrowser()
+    {
+        var chatgpt = UploadFilter.From(UploadModes.Chatgpt, UploadTypes?.Chatgpt);
+        var gemini = UploadFilter.From(UploadModes.Gemini, UploadTypes?.Gemini);
+        if (chatgpt is null && gemini is null) return this;
+        // Older clients receive Off for the scoped destinations and keep their other controls.
+        return this with
+        {
+            UploadTypes = null,
+            UploadModes = new(chatgpt is null ? UploadModes.Chatgpt : "off", gemini is null ? UploadModes.Gemini : "off"),
+            TargetedUploads = new(chatgpt, gemini)
+        };
+    }
 }
 
 internal sealed record AppObservation(string AppId, DateTimeOffset ObservedAt, int PolicyVersion, int AssignmentVersion = 0);

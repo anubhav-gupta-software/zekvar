@@ -11,6 +11,8 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     ['Extension inventory', toggle(reference.extensionInventoryEnabled), toggle(candidate.extensionInventoryEnabled)],
     ...aiPromptApps.map((app) => [`${promptAppLabels[app]} file uploads`, detectorModeLabels[reference.uploadModes[app]],
       detectorModeLabels[candidate.uploadModes[app]]]),
+    ...aiPromptApps.map((app) => [`${promptAppLabels[app]} file types`, reference.uploadTypes[app].join(', ') || 'All files',
+      candidate.uploadTypes[app].join(', ') || 'All files']),
   ];
   return <ul className="preview-changes" aria-label="Policy setting changes">
     {fields.filter(([, before, after]) => before !== after).map(([field, before, after]) =>

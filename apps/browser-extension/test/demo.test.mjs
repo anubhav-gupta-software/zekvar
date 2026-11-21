@@ -622,13 +622,15 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
     });
   }
 
-  await t.test('holds native file drops on live signed-out ChatGPT and Gemini and reports their methods', {
+  await t.test('holds matching native file drops on live signed-out ChatGPT and Gemini and reports their methods', {
     skip: process.env.ZEKVAR_DEMO_LIVE !== '1',
   }, async (live) => {
     await dashboard.reload();
     const version = await policyVersion() + 1;
     await dashboard.getByLabel('ChatGPT file uploads', { exact: true }).selectOption('block');
     await dashboard.getByLabel('Gemini file uploads', { exact: true }).selectOption('block');
+    await dashboard.getByLabel('ChatGPT file types', { exact: true }).fill('.TXT');
+    await dashboard.getByLabel('Gemini file types', { exact: true }).fill('text/*');
     await dashboard.getByRole('button', { name: 'Publish policy' }).click();
     await dashboard.getByText(`Version ${version} published in block mode.`, { exact: true }).waitFor();
     await sync();
@@ -653,7 +655,7 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
           if (!response?.ok()) return site.skip(`The public ${app} route was unavailable.`);
           const editor = page.locator(editorSelector).first();
           if (!await editor.waitFor({ timeout: 6000 }).then(() => true, () => false)) return site.skip('The tested editor was unavailable.');
-          await page.getByText(/File uploads block/).first().waitFor();
+          await page.getByText(/File uploads block \(selected types\)/).first().waitFor();
           const cdp = await browser.newCDPSession(page);
           try {
             const box = await editor.boundingBox();

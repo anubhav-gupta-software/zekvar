@@ -892,6 +892,81 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual((await admin(`events/export?${query}`, { token: second })).entries, []);
   });
 
+  await t.test('versions scoped file types, preserves prior upload events, and distinguishes legacy acknowledgments', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: first, ...options });
+    const publish = (body, expect = 200) => admin('policies', { method: 'POST', body, expect });
+    const [before] = await admin('policies');
+    const previousEvents = await admin('events');
+    assert.deepEqual(before.uploadTypes, { chatgpt: [], gemini: [] });
+    if (postgres) {
+      await stop();
+      await retentionFixture(`
+        DELETE FROM schema_migrations WHERE version = 17;
+        ALTER TABLE policy_versions DROP COLUMN chatgpt_upload_types, DROP COLUMN gemini_upload_types;
+      `);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 17'), '1');
+      assert.deepEqual((await admin('policies'))[0], before);
+      assert.deepEqual(await admin('events'), previousEvents);
+    }
+    for (const uploadTypes of [
+      {}, { claude: ['.pdf'] }, { chatgpt: [null] }, { chatgpt: '.pdf' }, { chatgpt: ['   '] },
+      { chatgpt: ['*.pdf'] }, { chatgpt: ['foo/bar*'] }, { chatgpt: ['.foo/bar'] },
+      { chatgpt: ['.' + 'x'.repeat(64)] }, { gemini: Array.from({ length: 26 }, (_, index) => `.ext${index}`) },
+    ]) await publish({ uploadTypes }, 400);
+    const { grant } = await admin('enrollment-grants', { method: 'POST' });
+    const client = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const browser = (path, options) => call(`/v1/browser/${path}`, { token: client.token, ...options });
+    const applied = async () => (await admin('installations')).find(({ installationId }) => installationId === client.installationId).appliedPolicyVersion;
+    const heartbeat = (version, flags) => browser('heartbeat', { method: 'POST', expect: 204, body: {
+      policyVersion: version, domainRulesApplied: true, pathRulesApplied: true, paymentCardModeApplied: true, ...flags,
+    } });
+    const scoped = await publish({
+      uploadModes: { chatgpt: 'block', gemini: 'monitor' },
+      uploadTypes: { chatgpt: ['Image/*', ' .PDF ', '.archive.TAR.GZ', '.pdf'] },
+      expectedVersion: before.version,
+    });
+    assert.deepEqual(scoped.uploadTypes, { chatgpt: ['.archive.tar.gz', '.pdf', 'image/*'], gemini: [] });
+    const revised = await publish({ uploadTypes: { gemini: ['TEXT/CSV'] }, expectedVersion: scoped.version });
+    await publish({ uploadTypes: { chatgpt: [] }, expectedVersion: scoped.version }, 409);
+    assert.deepEqual(revised.uploadTypes, { ...scoped.uploadTypes, gemini: ['text/csv'] });
+    const delivered = await browser('policy');
+    assert.deepEqual(delivered.uploadModes, { chatgpt: 'off', gemini: 'off' });
+    assert.deepEqual(delivered.targetedUploads, {
+      chatgpt: { mode: 'block', types: scoped.uploadTypes.chatgpt }, gemini: { mode: 'monitor', types: ['text/csv'] },
+    });
+    assert.equal(delivered.uploadTypes, undefined);
+    await heartbeat(revised.version, { uploadControlsApplied: true });
+    assert.equal(await applied(), null);
+    await heartbeat(revised.version, { uploadControlsApplied: true, uploadTypesApplied: true });
+    assert.equal(await applied(), revised.version);
+    const modes = await publish({ uploadModes: { gemini: 'off' }, uploadTypes: { chatgpt: [] } });
+    assert.deepEqual(modes.uploadTypes, { chatgpt: [], gemini: ['text/csv'] });
+    assert.equal((await browser('policy')).targetedUploads, undefined);
+    await heartbeat(modes.version, { uploadControlsApplied: true });
+    assert.equal(await applied(), modes.version);
+    const restored = await admin(`policies/${revised.version}/restore`, { method: 'POST' });
+    assert.deepEqual(restored.uploadTypes, revised.uploadTypes);
+    assert.deepEqual((await browser('policy')).targetedUploads, delivered.targetedUploads);
+    const attempt = { ...event, eventId: randomUUID(), timestamp: new Date().toISOString(), policyVersion: revised.version,
+      appId: 'chatgpt', decision: 'block', ruleId: 'ai-file-upload', detectorCategory: 'file-upload', uploadMethod: 'drop' };
+    await browser('events', { method: 'POST', body: { ...attempt, fileType: 'application/pdf' }, expect: 400 });
+    await browser('events', { method: 'POST', body: attempt, expect: 204 });
+    await browser('events', { method: 'POST', body: attempt, expect: 204 });
+    const query = `events/export?installationId=${client.installationId}`;
+    const { entries } = await admin(query);
+    assert.deepEqual(entries.map(({ eventId }) => eventId), [attempt.eventId]);
+    assert.deepEqual((await admin(query, { token: second })).entries, []);
+    await publish({
+      domainRules: { allow: [], block: [] },
+      pathRules: { allow: [], block: Array.from({ length: 50 }, (_, index) =>
+        `${'x'.repeat(61)}${String(index).padStart(2, '0')}.${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(61)}/${'x'.repeat(63)}`) },
+      uploadTypes: Object.fromEntries(['chatgpt', 'gemini'].map((app) => [app,
+        Array.from({ length: 25 }, (_, index) => `.${'x'.repeat(61)}${String(index).padStart(2, '0')}`)])),
+    });
+    await admin(`policies/${before.version}/restore`, { method: 'POST' });
+  });
+
   await t.test('validates and versions path policies without falsely acknowledging legacy browsers', async () => {
     const admin = (path, options) => call(`/v1/admin/${path}`, { token: first, ...options });
     const publish = (body, expect = 200) => admin('policies', { method: 'POST', body, expect });
@@ -1146,12 +1221,14 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await post(promote, first, { expectedVersion: settings.version }, 403);
     const candidate = { mode: 'block', githubPatMode: 'warn', extensionInventoryEnabled: true,
       pathRules: { allow: [], block: ['private-fixture.test/review'] },
+      uploadModes: { chatgpt: 'block' }, uploadTypes: { chatgpt: ['.archive'] },
       expectedVersion: settings.version };
     const initial = await post('policies', proposer.token, candidate, 202, true);
     const pending = await status(initial.reviewId);
     assert.equal(pending.status, 'pending');
     assert.deepEqual(pending.snapshots.before, settings);
     assert.deepEqual(pending.snapshots.candidate.pathRules, candidate.pathRules);
+    assert.deepEqual(pending.snapshots.candidate.uploadTypes, { ...settings.uploadTypes, ...candidate.uploadTypes });
     assert.equal(pending.snapshots.candidate.extensionInventoryEnabled, true);
     assert.equal(Date.parse(pending.expiresAt) - Date.parse(pending.requestedAt), 86_400_000);
     assert.equal(pending.requester.id, proposer.access.id);
@@ -1174,6 +1251,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const firstVersion = await baseline();
     assert.equal(firstVersion.version, settings.version + 1);
     assert.deepEqual(firstVersion.pathRules, candidate.pathRules);
+    assert.deepEqual(firstVersion.uploadTypes, pending.snapshots.candidate.uploadTypes);
     assert.equal(firstVersion.githubPatMode, 'warn');
     assert.equal(firstVersion.extensionInventoryEnabled, true);
     assert.equal((await status(initial.reviewId)).publishedVersion, firstVersion.version);
@@ -1185,13 +1263,17 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const scoped = await post(groupPolicies, proposer.token, { mode: 'warn', expectedVersion: firstVersion.version }, 202);
     const scopedFirst = await decide(scoped.reviewId, reviewer.token, true);
     const olderPromotion = await post(promote, proposer.token, { expectedVersion: scopedFirst.version }, 202);
-    const groupEdit = await post(groupPolicies, proposer.token, { mode: 'monitor', expectedVersion: scopedFirst.version }, 202);
+    const groupEdit = await post(groupPolicies, proposer.token, {
+      mode: 'monitor', uploadTypes: { chatgpt: ['.group'] }, expectedVersion: scopedFirst.version,
+    }, 202);
     const scopedSecond = await decide(groupEdit.reviewId, reviewer.token, true);
+    assert.deepEqual((await baseline()).uploadTypes.chatgpt, ['.archive']);
     assert.equal((await decide(olderPromotion.reviewId, reviewer.token, true, 409)).code, 'review_stale');
     const promotion = await post(promote, proposer.token, { expectedVersion: scopedSecond.version }, 202);
     assert.equal((await status(promotion.reviewId)).sourceVersion, scopedSecond.version);
     const promoted = await decide(promotion.reviewId, reviewer.token, true);
     assert.equal(promoted.mode, scopedSecond.mode);
+    assert.deepEqual(promoted.uploadTypes.chatgpt, ['.group']);
     assert.deepEqual(await baseline(), promoted);
     const scopedRestore = await post(`${groupPolicies}/${scopedFirst.version}/restore`, proposer.token, undefined, 202);
     assert.equal((await decide(scopedRestore.reviewId, reviewer.token, true)).restoredFrom, scopedFirst.version);
@@ -1199,6 +1281,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const restored = await decide(restoration.reviewId, reviewer.token, true);
     assert.equal(restored.restoredFrom, settings.version);
     assert.deepEqual(restored.pathRules, settings.pathRules);
+    assert.deepEqual(restored.uploadTypes, settings.uploadTypes);
 
     const rejected = await post('policies', proposer.token, { mode: 'warn' }, 202);
     await decide(rejected.reviewId, reviewer.token, false, 204);

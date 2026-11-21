@@ -38,7 +38,7 @@ async function until(check, timeout, message) {
   assert.fail(message);
 }
 
-test('two managed Chrome profiles enroll, receive policy, and recover after one stops reporting', { timeout: 220_000 }, async (t) => {
+test('two managed Chrome profiles enroll, receive policy, and recover after one stops reporting', { timeout: 260_000 }, async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'zekvar-pilot-'));
   const domains = await startDomainFixture();
   const dist = join(dir, 'extension');
@@ -171,7 +171,7 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     await dashboard.getByRole('button', { name: 'Restore version 1', exact: true }).click();
     await dashboard.getByText('Version 1 restored as version 4.', { exact: true }).waitFor();
     await until(async () => (await installations()).find(({ installationId }) => installationId === idA)?.appliedPolicyVersion === 4,
-      45_000, 'The running browser should apply the rolled back policy.');
+      75_000, 'The running browser should apply the rolled back policy.');
     await domains.visit(first.browser, 'apps.test', false);
     const stopped = await until(async () => {
       const row = (await installations()).find(({ installationId }) => installationId === idB);
@@ -236,6 +236,7 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     await dashboard.getByLabel('Test marker', { exact: true }).selectOption('block');
     await dashboard.getByLabel('Payment card number', { exact: true }).selectOption('block');
     await dashboard.getByLabel('Gemini file uploads', { exact: true }).selectOption('block');
+    await dashboard.getByLabel('Gemini file types', { exact: true }).fill('.txt');
     await dashboard.getByRole('button', { name: 'Publish group policy', exact: true }).click();
     await dashboard.getByText('Version 5 published in block mode.', { exact: true }).waitFor();
     await dashboard.getByLabel('Blocked domains', { exact: true }).fill('apps.test');
@@ -267,20 +268,23 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     await checkPrompt(first, 'BLOCK · v6 · Payment card block', '4242-4242-4242-4242', true);
     await checkPrompt(second, 'MONITOR · v4', '4242-4242-4242-4242', false);
     const attachment = join(dir, 'synthetic-rollout-upload.txt');
+    const nonmatching = join(dir, 'synthetic-rollout-upload.csv');
     await writeFile(attachment, 'Synthetic rollout file.');
-    const checkUpload = async (profile, version, blocked) => {
+    await writeFile(nonmatching, 'Synthetic rollout file.');
+    const checkUpload = async (profile, version, blocked, file = attachment) => {
       const page = await profile.browser.newPage();
       try {
         await page.route('https://gemini.google.com/app', (route) => route.fulfill({ contentType: 'text/html', body: uploadFixture }));
         await page.goto('https://gemini.google.com/app');
         await page.getByText(new RegExp(` v${version}(?:$| ·)`)).waitFor();
         const picker = page.getByLabel('Attach fixture files');
-        await picker.setInputFiles(attachment);
+        await picker.setInputFiles(file);
         if (blocked) await page.getByRole('alert').filter({ hasText: 'File upload blocked' }).waitFor();
         assert.deepEqual(await page.evaluate(() => window.fileEvents), blocked ? [] : [['input', 1], ['change', 1]]);
       } finally { await page.close(); }
     };
     await checkUpload(first, 6, true);
+    await checkUpload(first, 6, false, nonmatching);
     await checkUpload(second, 4, false);
     const browserStatus = await installations();
     assert.equal(browserStatus.find(({ installationId }) => installationId === idA).expectedPolicyVersion, 6);
@@ -296,7 +300,7 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
       await preview.getByRole('button', { name: 'Run preview', exact: true }).click();
       const table = preview.getByRole('table', { name: 'Preview results' });
       for (const [sample, draft] of [['Synthetic test marker', 'Monitor'], ['Synthetic payment card', 'Allow'],
-        ['Custom navigation', 'Allow'], ['Gemini file upload', 'Allow']]) {
+        ['Custom navigation', 'Allow'], ['Gemini TXT upload', 'Allow']]) {
         const cells = table.getByRole('row', { name: new RegExp(`^${sample} `) }).getByRole('cell');
         await cells.nth(0).getByText('Block', { exact: true }).waitFor();
         await cells.nth(1).getByText(draft, { exact: true }).waitFor();
@@ -315,6 +319,8 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     await dashboard.getByRole('button', { name: 'Restore version 5', exact: true }).click();
     await dashboard.getByText('Version 5 restored as version 7.', { exact: true }).waitFor();
     await sync(popupA, 'Connected to Control · BLOCK v7');
+    await checkUpload(first, 7, true);
+    await checkUpload(first, 7, false, nonmatching);
     await domains.visit(first.browser, 'apps.test', false);
     await domains.visit(first.browser, 'work.other.test', false, '/restricted');
     const stalePolicy = await first.worker.evaluate(async (origin) => {

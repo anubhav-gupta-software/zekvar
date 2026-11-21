@@ -6,7 +6,7 @@ import {
 } from './protocol';
 import { domainRuleLimit, emptyDomainRules, emptyPathRules, installDomainRules, readDomainRules, readPathRules,
   ruleCount, sameDomainRules, type DomainRules, type PathRules } from './domain-rules';
-import { isUploadModes, uploadsOff } from '../../../contracts/policy/uploads';
+import { isUploadModes, readTargetedUpload, sameUploadTypes, uploadsOff, type TargetedUploads } from '../../../contracts/policy/uploads';
 import { collectExtensionInventory } from './extension-inventory';
 import type { InventoryStatus } from '../../../contracts/policy/extension-inventory';
 
@@ -170,6 +170,25 @@ async function deliverObservations(state: State) {
   state.observations = undefined;
 }
 
+function readTargetedUploads(value: unknown): TargetedUploads {
+  if (value === undefined) return {};
+  if (!isRecord(value) || Array.isArray(value)) throw new Error('Invalid scoped file upload rules');
+  const filters: TargetedUploads = {};
+  for (const app of aiPromptApps) {
+    if (!Object.hasOwn(value, app)) continue;
+    const filter = readTargetedUpload(value[app]);
+    if (!filter) throw new Error('Invalid scoped file upload rule');
+    filters[app] = filter;
+  }
+  if (Object.keys(value).length !== Object.keys(filters).length) throw new Error('Unknown scoped file upload destination');
+  return filters;
+}
+
+function sameTargetedUploads(before: TargetedUploads, after: TargetedUploads) {
+  return aiPromptApps.every((app) => before[app]?.mode === after[app]?.mode &&
+    sameUploadTypes(before[app]?.types ?? [], after[app]?.types ?? []));
+}
+
 async function sync(state: State) {
   if (!state.enrollment) return;
   const { token } = state.enrollment;
@@ -189,6 +208,11 @@ async function sync(state: State) {
     const paymentCardMode = policy.paymentCardMode ?? 'off';
     const uploads = policy.uploadModes ?? uploadsOff;
     const previousUploads = state.policy?.uploadModes;
+    const targetedUploads = readTargetedUploads(policy.targetedUploads);
+    const previousTargets = state.policy?.targetedUploads;
+    if (aiPromptApps.some((app) => targetedUploads[app] && uploads[app] !== 'off')) {
+      throw new Error('Invalid combination of file upload rules');
+    }
     const discoveryEnabled = policy.discoveryEnabled ?? false;
     const extensionInventoryEnabled = policy.extensionInventoryEnabled ?? false;
     const domainRules = readDomainRules(policy.domainRules);
@@ -204,13 +228,14 @@ async function sync(state: State) {
         policy.mode === state.policy.mode && githubPatMode === (state.policy.githubPatMode ?? 'off') &&
         (state.policy.paymentCardMode === undefined || paymentCardMode === state.policy.paymentCardMode) &&
         (!previousUploads || uploads.chatgpt === previousUploads.chatgpt && uploads.gemini === previousUploads.gemini) &&
+        (!previousTargets || sameTargetedUploads(previousTargets, targetedUploads)) &&
         discoveryEnabled === (state.policy.discoveryEnabled ?? false) &&
         (state.policy.extensionInventoryEnabled === undefined || extensionInventoryEnabled === state.policy.extensionInventoryEnabled) &&
         sameDomainRules(domainRules, state.domainRules ?? emptyDomainRules) &&
         (!state.pathRules || sameDomainRules(pathRules, state.pathRules)))))) {
       await applyDomainRules(state, domainRules, pathRules);
       state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, discoveryEnabled, extensionInventoryEnabled,
-        assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini } };
+        assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini }, targetedUploads };
       if (!discoveryEnabled || assignment !== previousAssignment) state.observations = undefined;
       if (assignment !== previousAssignment) clearCoverage(state);
       state.chatGptEnabled = Array.isArray(policy.appIds) && policy.appIds.includes(chatGptApp);
@@ -262,14 +287,16 @@ async function reportExtensionInventory(state: State) {
 
 async function heartbeat(state: State) {
   if (!state.enrollment || !state.policy) return;
+  const scopedUploads = aiPromptApps.some((app) => state.policy?.targetedUploads?.[app]);
   await request('browser/heartbeat', state.enrollment.token, {
     policyVersion: state.policy.version,
     assignmentVersion: state.policy.assignmentVersion,
     chatGptCoverage: state.chatGptEnabled ? state.coveragePending : undefined,
     geminiCoverage: state.geminiEnabled ? state.geminiCoveragePending : undefined,
     paymentCardModeApplied: isMode(state.policy.paymentCardMode) ? true : undefined,
-    uploadControlsApplied: state.policy.uploadModes &&
-      (state.policy.uploadModes.chatgpt !== 'off' || state.policy.uploadModes.gemini !== 'off') ? true : undefined,
+    uploadControlsApplied: scopedUploads || (state.policy.uploadModes &&
+      aiPromptApps.some((app) => state.policy?.uploadModes?.[app] !== 'off')) ? true : undefined,
+    uploadTypesApplied: scopedUploads ? true : undefined,
     domainRulesApplied: state.domainRules && ruleCount(state.domainRules) ? true : undefined,
     pathRulesApplied: state.pathRules && ruleCount(state.pathRules) ? true : undefined,
   });

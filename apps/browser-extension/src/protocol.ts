@@ -1,7 +1,7 @@
 import { credentialDetector, fixtureDetector, fixtureRule, githubPatRule, isMode, paymentCardRule, paymentDetector, type PolicyMode,
   type PromptPolicy, type RuleMetadata } from '../../../contracts/policy/prompt';
 import { chatGptApp, fixtureApp, geminiApp, isPromptApp, type AiPromptApp, type AppId } from '../../../contracts/policy/apps';
-import { isUploadMethod, uploadCategory, uploadRule, type UploadMetadata, type UploadModes } from '../../../contracts/policy/uploads';
+import { isUploadMethod, uploadCategory, uploadRule, type TargetedUploads, type UploadMetadata, type UploadModes } from '../../../contracts/policy/uploads';
 import type { InventoryStatus } from '../../../contracts/policy/extension-inventory';
 
 export { fixtureRule, fixtureDetector, githubPatRule, credentialDetector, isMode, isDetectorMode } from '../../../contracts/policy/prompt';
@@ -24,7 +24,8 @@ export function discoveredApp(url: string | undefined): DiscoveryApp | undefined
 }
 export type Coverage = 'ready' | 'unsupported';
 export type Policy = PromptPolicy & {
-  version: number; discoveryEnabled?: boolean; assignmentVersion?: number; uploadModes?: UploadModes; extensionInventoryEnabled?: boolean;
+  version: number; discoveryEnabled?: boolean; assignmentVersion?: number; uploadModes?: UploadModes;
+  targetedUploads?: TargetedUploads; extensionInventoryEnabled?: boolean;
 };
 export type PolicyEvent = {
   eventId: string;

@@ -2,13 +2,14 @@ import { evaluateNavigation, parseWebAddress, sameDomainRules, emptyDomainRules,
   type DomainRules, type PathRules } from '../../../contracts/policy/domains';
 import { evaluatePrompt, fixtureRule, ruleLabels, testMarker, type DetectorMode, type PolicyMode } from '../../../contracts/policy/prompt';
 import { aiPromptApps, promptAppLabels } from '../../../contracts/policy/apps';
-import { uploadsOff, type UploadMode, type UploadModes } from '../../../contracts/policy/uploads';
+import { allUploadTypes, matchesUploadType, sameUploadTypes, uploadsOff, type UploadFile, type UploadMode,
+  type UploadModes, type UploadTypes } from '../../../contracts/policy/uploads';
 import type { Policy } from './control';
 
 export type PreviewPolicy = {
   mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; discoveryEnabled: boolean;
   extensionInventoryEnabled: boolean;
-  domainRules: DomainRules; pathRules: PathRules; uploadModes: UploadModes;
+  domainRules: DomainRules; pathRules: PathRules; uploadModes: UploadModes; uploadTypes: UploadTypes;
 };
 export type PreviewSnapshot = PreviewPolicy & { version: number; label: string };
 export type PreviewDecision = { action: 'allow' | PolicyMode; rule?: string };
@@ -24,13 +25,14 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     domainRules: policy.domainRules ?? emptyDomainRules,
     pathRules: policy.pathRules ?? emptyPathRules,
     uploadModes: policy.uploadModes ?? uploadsOff,
+    uploadTypes: policy.uploadTypes ?? allUploadTypes,
   };
 }
 
 export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
   return a.mode === b.mode && a.githubPatMode === b.githubPatMode && a.paymentCardMode === b.paymentCardMode &&
     a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
-    aiPromptApps.every((app) => a.uploadModes[app] === b.uploadModes[app]) &&
+    aiPromptApps.every((app) => a.uploadModes[app] === b.uploadModes[app] && sameUploadTypes(a.uploadTypes[app], b.uploadTypes[app])) &&
     sameDomainRules(a.domainRules, b.domainRules) && sameDomainRules(a.pathRules, b.pathRules);
 }
 
@@ -65,11 +67,12 @@ function navigationOutcome(url: URL, policy: PreviewPolicy): PreviewDecision {
   return { action: outcome.action, rule: outcome.pathRule ?? outcome.domain };
 }
 
-function uploadOutcome(mode: UploadMode): PreviewDecision {
-  return mode === 'off' ? { action: 'allow' } : { action: mode, rule: 'File upload policy' };
+function uploadOutcome(mode: UploadMode, types: string[], file: UploadFile): PreviewDecision {
+  if (mode === 'off' || (types.length && !matchesUploadType(file, types))) return { action: 'allow' };
+  return { action: mode, rule: 'File upload policy' };
 }
 
-export function runComparison(reference: PreviewSnapshot, candidate: PreviewPolicy, prompt: string, address?: URL): PreviewResult {
+export function runComparison(reference: PreviewSnapshot, candidate: PreviewPolicy, prompt: string, address?: URL, file?: UploadFile): PreviewResult {
   const rows: PreviewRow[] = prompts.map(({ name, content }) => ({
     name, current: promptOutcome(content, reference), draft: promptOutcome(content, candidate),
   }));
@@ -80,8 +83,16 @@ export function runComparison(reference: PreviewSnapshot, candidate: PreviewPoli
   }
   if (address) rows.push({ name: 'Custom navigation', current: navigationOutcome(address, reference), draft: navigationOutcome(address, candidate) });
   for (const app of aiPromptApps) {
-    rows.push({ name: `${promptAppLabels[app]} file upload`, current: uploadOutcome(reference.uploadModes[app]),
-      draft: uploadOutcome(candidate.uploadModes[app]) });
+    for (const [name, sample] of [
+      ['TXT upload', { name: 'example.txt', type: 'text/plain' }],
+      ['PNG upload', { name: 'example.png', type: 'image/png' }],
+      ['custom file upload', file],
+    ] as const) {
+      if (!sample) continue;
+      rows.push({ name: `${promptAppLabels[app]} ${name}`,
+        current: uploadOutcome(reference.uploadModes[app], reference.uploadTypes[app], sample),
+        draft: uploadOutcome(candidate.uploadModes[app], candidate.uploadTypes[app], sample) });
+    }
   }
   return { reference, candidate, rows };
 }

@@ -37,6 +37,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 14, "014_named_control_access.sql", ct);
         await ApplyMigration(connection, 15, "015_policy_reviews.sql", ct);
         await ApplyMigration(connection, 16, "016_extension_inventory.sql", ct);
+        await ApplyMigration(connection, 17, "017_upload_types.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -119,7 +120,7 @@ internal sealed partial class ControlStore
         await using var command = Command("""
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
                 p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
-                p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled
+                p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.policy_group_id IS NOT DISTINCT FROM $2::uuid ORDER BY p.version DESC LIMIT 100
             """, organizationId, (object?)groupId ?? DBNull.Value);
@@ -147,12 +148,13 @@ internal sealed partial class ControlStore
             )
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
                 p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
-                p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, e.assignment_version
+                p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
+                e.assignment_version
             FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
             LEFT JOIN policy_audit a ON a.organization_id = p.organization_id AND a.version = p.version
             """, installationId, assignmentAware);
         await using var rows = await command.ExecuteReaderAsync(ct);
-        return await rows.ReadAsync(ct) ? ReadPolicy(rows) with { AssignmentVersion = rows.GetInt32(14) } : null;
+        return await rows.ReadAsync(ct) ? ReadPolicy(rows) with { AssignmentVersion = rows.GetInt32(16) } : null;
     }
 
     public async Task<bool> RecordHeartbeat(Guid installationId, Heartbeat request, CancellationToken ct)
@@ -162,6 +164,8 @@ internal sealed partial class ControlStore
                 applied_policy_version = CASE WHEN (p.payment_card_mode = 'off' OR $7)
                     AND (p.chatgpt_upload_mode = 'off' AND p.gemini_upload_mode = 'off' OR $8)
                     AND (cardinality(p.allowed_paths) + cardinality(p.blocked_paths) = 0 OR $9)
+                    AND ($10 OR (p.chatgpt_upload_mode = 'off' OR cardinality(p.chatgpt_upload_types) = 0)
+                        AND (p.gemini_upload_mode = 'off' OR cardinality(p.gemini_upload_types) = 0))
                     THEN GREATEST(i.applied_policy_version, $2)
                     WHEN i.applied_policy_version = $2 THEN NULL ELSE i.applied_policy_version END,
                 chatgpt_coverage = COALESCE($3::text, i.chatgpt_coverage),
@@ -176,7 +180,7 @@ internal sealed partial class ControlStore
                     WHERE d.installation_id = i.id AND d.assignment_version = $5 AND d.policy_version = $2))
             """, installationId, request.PolicyVersion, (object?)request.ChatGptCoverage ?? DBNull.Value,
             request.DomainRulesApplied, request.AssignmentVersion, (object?)request.GeminiCoverage ?? DBNull.Value,
-            request.PaymentCardModeApplied, request.UploadControlsApplied, request.PathRulesApplied);
+            request.PaymentCardModeApplied, request.UploadControlsApplied, request.PathRulesApplied, request.UploadTypesApplied);
         return await command.ExecuteNonQueryAsync(ct) == 1;
     }
 
@@ -398,5 +402,6 @@ internal sealed partial class ControlStore
     private static Policy ReadPolicy(NpgsqlDataReader rows) => new(rows.GetInt32(0), rows.GetString(1),
         rows.GetDateTime(2), rows.IsDBNull(3) ? null : rows.GetInt32(3), rows.GetString(4), rows.GetBoolean(5),
         new(rows.GetFieldValue<string[]>(6), rows.GetFieldValue<string[]>(7)), rows.GetString(8), new(rows.GetString(9), rows.GetString(10)),
-        new(rows.GetFieldValue<string[]>(11), rows.GetFieldValue<string[]>(12)), rows.GetBoolean(13));
+        new(rows.GetFieldValue<string[]>(11), rows.GetFieldValue<string[]>(12)), rows.GetBoolean(13),
+        new(rows.GetFieldValue<string[]>(14), rows.GetFieldValue<string[]>(15)));
 }

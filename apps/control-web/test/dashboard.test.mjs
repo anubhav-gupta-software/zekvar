@@ -238,6 +238,9 @@ test('Control dashboard signs in and manages a real browser installation and eve
     const blockedPaths = page.getByLabel('Draft blocked paths');
     const prompt = page.getByLabel('Custom prompt', { exact: true });
     const url = page.getByLabel('Custom navigation URL');
+    const geminiTypes = page.getByLabel('Draft Gemini file types', { exact: true });
+    const file = page.getByLabel('Custom file name', { exact: true });
+    const mime = page.getByLabel('Custom media type', { exact: true });
     const run = page.getByRole('button', { name: 'Run preview', exact: true });
     const publish = page.getByRole('button', { name: 'Publish previewed policy', exact: true });
     const results = page.getByRole('table', { name: 'Preview results' });
@@ -258,6 +261,8 @@ test('Control dashboard signs in and manages a real browser installation and eve
       await page.getByLabel('Draft payment card number').selectOption('warn');
       await page.getByLabel('Draft ChatGPT file uploads').selectOption('block');
       await page.getByLabel('Draft Gemini file uploads').selectOption('monitor');
+      await page.getByLabel('Draft ChatGPT file types', { exact: true }).fill('IMAGE/*, .PDF');
+      await geminiTypes.fill('application/x-zekvar-private-type');
       await page.getByLabel('Draft AI app discovery').selectOption('on');
       await allowed.fill('work.pilot.example.test');
       await blocked.fill('Pilot.Example.Test.');
@@ -268,6 +273,12 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await url.fill('file:///synthetic-preview');
     await run.click();
     await page.getByRole('alert').filter({ hasText: 'Enter a complete HTTP or HTTPS address' }).waitFor();
+    await url.clear();
+    await geminiTypes.fill('image/*/*');
+    await run.click();
+    await page.getByRole('alert').filter({ hasText: 'Enter up to 25 valid file extensions or media types' }).waitFor();
+    assert.equal(await publish.count(), 0);
+    await prepareDraft();
 
     const privatePrompt = 'ZEKVAR_TEST_SECRET preview-private-prompt';
     const privateUrl = 'https://pilot.example.test/preview-private-path?sample=1';
@@ -277,6 +288,8 @@ test('Control dashboard signs in and manages a real browser installation and eve
     try {
       await prompt.fill(privatePrompt);
       await url.fill(privateUrl);
+      await file.fill('preview-private-file.PDF');
+      await mime.fill('application/x-zekvar-private-type; charset=utf-8');
       await run.click();
       const decisions = [
         ['Clean prompt', 'Allow', 'Allow'],
@@ -286,8 +299,11 @@ test('Control dashboard signs in and manages a real browser installation and eve
         ['Token embedded in a longer string', 'Allow', 'Allow'],
         ['Synthetic payment card', 'Allow', 'Warn'],
         ['Payment card with invalid checksum', 'Allow', 'Allow'],
-        ['ChatGPT file upload', 'Allow', 'Block'],
-        ['Gemini file upload', 'Allow', 'Monitor'],
+        ['ChatGPT TXT upload', 'Allow', 'Allow'],
+        ['ChatGPT PNG upload', 'Allow', 'Block'],
+        ['ChatGPT custom file upload', 'Allow', 'Block'],
+        ['Gemini TXT upload', 'Allow', 'Allow'],
+        ['Gemini custom file upload', 'Allow', 'Monitor'],
         ['Custom prompt', 'Monitor', 'Block'],
         ['Sample domain', 'Allow', 'Allow'],
         ['Sample subdomain', 'Allow', 'Allow'],
@@ -322,9 +338,13 @@ test('Control dashboard signs in and manages a real browser installation and eve
       await page.reload();
       assert.equal(await prompt.inputValue(), '');
       assert.equal(await url.inputValue(), '');
+      assert.equal(await file.inputValue(), '');
+      assert.equal(await mime.inputValue(), '');
       await prepareDraft();
       await prompt.fill(privatePrompt);
       await url.fill(privateUrl);
+      await file.fill('preview-private-file.pdf');
+      await mime.fill('application/x-zekvar-private-type; charset=utf-8');
       await run.click();
       page.once('dialog', (dialog) => dialog.accept());
       await publish.click();
@@ -334,15 +354,34 @@ test('Control dashboard signs in and manages a real browser installation and eve
       assert.equal(published.githubPatMode, 'warn');
       assert.equal(published.paymentCardMode, 'warn');
       assert.deepEqual(published.uploadModes, { chatgpt: 'block', gemini: 'monitor' });
+      assert.deepEqual(published.uploadTypes, { chatgpt: ['.pdf', 'image/*'], gemini: ['application/x-zekvar-private-type'] });
       assert.equal(published.discoveryEnabled, true);
       assert.deepEqual(published.domainRules, { allow: ['work.pilot.example.test'], block: ['pilot.example.test'] });
       assert.deepEqual(published.pathRules, { allow: ['pilot.example.test/start'], block: ['work.pilot.example.test/settings'] });
-      assert.equal(requests.some((request) => /preview-private-(prompt|path)/.test(request)), false);
+      assert.equal(requests.some((request) => /preview-private-(prompt|path|file)|charset=utf-8/.test(request)), false);
     } finally {
       page.off('request', captureRequest);
     }
     await page.getByRole('link', { name: 'Overview', exact: true }).click();
     await page.getByRole('heading', { name: 'Security overview', exact: true }).waitFor();
+    const directTypes = page.getByLabel('ChatGPT file types', { exact: true });
+    const directPublish = page.getByRole('button', { name: 'Publish policy', exact: true });
+    const current = await currentPolicy();
+    await directTypes.fill('*.pdf');
+    await directPublish.click();
+    await page.getByRole('alert').filter({ hasText: 'Enter up to 25 valid file extensions or media types' }).waitFor();
+    assert.equal((await currentPolicy()).version, current.version);
+    const concurrent = await post('/admin/policies', { uploadTypes: { chatgpt: ['.zip'] } }, token);
+    await directTypes.fill('.pdf image/*');
+    await directPublish.click();
+    await page.getByRole('alert').filter({ hasText: 'The policy changed. Reload and review the policy' }).waitFor();
+    assert.deepEqual((await currentPolicy()).uploadTypes.chatgpt, ['.zip']);
+    await page.reload();
+    assert.equal(await directTypes.inputValue(), '.zip');
+    await directTypes.fill('.pdf image/*');
+    await directPublish.click();
+    await page.getByText(`Version ${concurrent.version + 1} published in block mode.`, { exact: true }).waitFor();
+    assert.deepEqual((await currentPolicy()).uploadTypes.chatgpt, ['.pdf', 'image/*']);
   });
 
   await t.test('investigates older events and exports the complete applied view from Chrome', async () => {
@@ -555,6 +594,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       await author.getByRole('link', { name: 'Policy preview', exact: true }).click();
       await author.getByLabel('Draft test marker', { exact: true }).selectOption('block');
       await author.getByLabel('Draft extension inventory', { exact: true }).selectOption('on');
+      await author.getByLabel('Draft ChatGPT file types', { exact: true }).fill('.csv');
       await author.getByLabel('Draft blocked paths', { exact: true }).fill('work.review.test/private');
       await author.getByRole('button', { name: 'Run preview', exact: true }).click();
       author.once('dialog', (dialog) => dialog.accept());
@@ -574,6 +614,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       const reviewed = approver.locator(hash);
       await reviewed.getByText('work.review.test/private', { exact: true }).waitFor();
       await reviewed.getByText('Extension inventory · Off → On', { exact: true }).waitFor();
+      await reviewed.getByText(/ChatGPT file types .* → \.csv$/).waitFor();
       await reviewed.getByText(`Reference v${prior.version}`, { exact: true }).waitFor();
       const screenshot = process.env.ZEKVAR_TEST_REVIEW_SCREENSHOT;
       if (screenshot) await approver.screenshot({ path: screenshot, fullPage: true });
@@ -587,6 +628,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       assert.equal(current.version, prior.version + 1);
       assert.equal(current.mode, 'block');
       assert.equal(current.extensionInventoryEnabled, true);
+      assert.deepEqual(current.uploadTypes.chatgpt, ['.csv']);
       assert.deepEqual(current.pathRules.block, ['work.review.test/private']);
       await approver.getByRole('link', { name: 'Audit log', exact: true }).click();
       const audit = approver.getByRole('table', { name: 'Control activity' });

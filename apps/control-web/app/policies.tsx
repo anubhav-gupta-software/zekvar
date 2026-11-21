@@ -1,5 +1,5 @@
 import { aiPromptApps, decisionLabels, detectorModeLabels, detectorModes, modes, promptAppLabels, utc, type Policy } from '../lib/control';
-import { uploadModes } from '../../../contracts/policy/uploads';
+import { uploadModes, uploadTypesHint } from '../../../contracts/policy/uploads';
 import { publishPolicy, restorePolicy } from './actions';
 import { MutationForm } from './forms';
 
@@ -7,8 +7,8 @@ export function PublishPolicyForm({ policy, groupId, review }: { policy?: Policy
   return <MutationForm action={publishPolicy}
     label={review ? 'Request policy review' : groupId ? 'Publish group policy' : 'Publish policy'} appearance="primary">
     {groupId && <input type="hidden" name="groupId" value={groupId} />}
-    {review && <><input type="hidden" name="expectReview" value="on" />
-      <input type="hidden" name="expectedVersion" value={policy?.version ?? ''} /></>}
+    {review && <input type="hidden" name="expectReview" value="on" />}
+    <input type="hidden" name="expectedVersion" value={policy?.version ?? ''} />
     <div className="grid gap-1">
       <label htmlFor="publish-mode">Test marker</label>
       <select key={policy?.version} id="publish-mode" name="mode" defaultValue={policy?.mode ?? 'monitor'}>
@@ -45,7 +45,12 @@ export function PublishPolicyForm({ policy, groupId, review }: { policy?: Policy
       <select key={policy?.version} id={`upload-${app}`} name={`upload-${app}`} defaultValue={policy?.uploadModes?.[app] ?? 'off'}>
         {uploadModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
       </select>
+      <label htmlFor={`upload-types-${app}`}>{promptAppLabels[app]} file types</label>
+      <textarea key={`types-${policy?.version}`} id={`upload-types-${app}`} name={`upload-types-${app}`}
+        rows={2} maxLength={1700} spellCheck={false} autoCapitalize="none" autoComplete="off"
+        aria-describedby="upload-types-hint" defaultValue={policy?.uploadTypes?.[app]?.join(', ') ?? ''} />
     </div>)}
+    <p className="muted" id="upload-types-hint">{uploadTypesHint}</p>
   </MutationForm>;
 }
 
@@ -78,7 +83,13 @@ function PolicyRow({ policy, current, groupId, writable, review }: {
     <td>{detectorModeLabels[policy.paymentCardMode ?? 'off']}</td>
     <td>{policy.discoveryEnabled ? 'On' : 'Off'}</td>
     <td>{policy.extensionInventoryEnabled ? 'On' : 'Off'}</td>
-    <td>{aiPromptApps.map((app) => <div key={app}>{promptAppLabels[app]} · {detectorModeLabels[policy.uploadModes?.[app] ?? 'off']}</div>)}</td>
+    <td>{aiPromptApps.map((app) => {
+      const types = policy.uploadTypes?.[app] ?? [];
+      return <div key={app}>{promptAppLabels[app]} · {detectorModeLabels[policy.uploadModes?.[app] ?? 'off']}
+        {types.length > 0 && <details className="domain-rule-history"><summary>{types.length} selected types</summary>
+          <code>{types.join(', ')}</code></details>}
+      </div>;
+    })}</td>
     <td>
       {allow.length + block.length + allowPaths.length + blockPaths.length === 0 && '—'}
       <NavigationHistory allow={allow} block={block} label="domains" />

@@ -61,10 +61,10 @@ Control records group creation, assignment, publication, rollback, and promotion
 ## Preview a policy
 
 1. Open **Policy preview** for the organization baseline, or select **Preview group policy** from a rollout group. Use **Load draft from** to start with a version from the available history.
-2. Edit the detector settings, domain rules, or path rules. Choose **Run preview** to see how the current policy and the draft handle the same built-in and optional custom samples. Custom prompts and navigation URLs stay in the browser tab.
+2. Edit detector settings, file upload modes and types, or navigation rules. Choose **Run preview** to see how the current policy and the draft handle the same built-in and optional custom samples. Custom prompts, navigation URLs, and sample file names and media types stay in the browser tab.
 3. Review the outcomes and setting changes. Choose **Publish previewed policy** and confirm to publish the draft to the selected scope. If the current version changed while you were editing, reload the page and run the comparison again.
 
-The preview evaluates the supported text detectors and individual top-level HTTP and HTTPS URLs. Test live app coverage, redirect chains, and the installed Chrome rules in a pilot group before promoting a policy.
+The preview evaluates the supported text detectors, file metadata, and individual top-level HTTP and HTTPS URLs. For each AI app, a blank **File types** field applies its upload mode to all files. Enter types such as `.pdf` or `image/*` for selected files. Use a pilot group to test native browser actions before promotion. [File upload test guide](../browser-extension/README.md#test-file-upload-policies)
 
 ## Investigate and export security events
 

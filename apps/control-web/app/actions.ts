@@ -9,7 +9,7 @@ import { endSession, sessionToken, startSession } from '../lib/session';
 import { cleanupCounts, retentionFields, type RetentionField, type RetentionPolicy } from '../lib/retention';
 import { readNavigationRules } from '../lib/navigation';
 import { isDetectorMode, isMode } from '../../../contracts/policy/prompt';
-import { isUploadMode } from '../../../contracts/policy/uploads';
+import { isUploadMode, parseUploadTypes, uploadTypesError } from '../../../contracts/policy/uploads';
 
 export async function signIn(_previous: Feedback, form: FormData): Promise<Feedback> {
   const token = form.get('token');
@@ -63,6 +63,12 @@ function readUploadSettings(form: FormData) {
   if (isUploadMode(chatgpt) && isUploadMode(gemini)) return { chatgpt, gemini };
 }
 
+function readUploadTypes(form: FormData) {
+  const chatgpt = parseUploadTypes(String(form.get('upload-types-chatgpt') ?? ''));
+  const gemini = parseUploadTypes(String(form.get('upload-types-gemini') ?? ''));
+  if (chatgpt && gemini) return { chatgpt, gemini };
+}
+
 export async function issueControlAccess(_previous: Feedback, form: FormData): Promise<Feedback> {
   const input = form.get('name');
   const name = typeof input === 'string' ? input.trim() : '';
@@ -91,28 +97,37 @@ export async function revokeControlAccess(_previous: Feedback, form: FormData): 
 
 export async function publishPolicy(_previous: Feedback, form: FormData): Promise<Feedback> {
   const review = form.get('expectReview') === 'on';
-  const expectedVersion = review ? Number(form.get('expectedVersion')) : undefined;
+  const expectedVersion = Number(form.get('expectedVersion'));
   const mode = form.get('mode') as Mode;
   const githubPatMode = form.get('githubPatMode') as DetectorMode;
   const paymentCardMode = form.get('paymentCardMode');
   const uploadModes = readUploadSettings(form);
+  const uploadTypes = readUploadTypes(form);
   const discovery = form.get('discoveryEnabled');
   const inventory = form.get('extensionInventoryEnabled');
   const groupId = form.get('groupId');
   if (groupId !== null && !isId(groupId)) return { error: 'Choose a valid rollout group.' };
-  if (expectedVersion !== undefined && (!Number.isInteger(expectedVersion) || expectedVersion < 1 || expectedVersion > 2147483647)) {
-    return { error: 'Reload the current policy before requesting review.' };
+  if (!Number.isInteger(expectedVersion) || expectedVersion < 1 || expectedVersion > 2147483647) {
+    return { error: 'Reload the current policy before saving changes.' };
   }
   if (!modes.includes(mode) || !detectorModes.includes(githubPatMode) || !isDetectorMode(paymentCardMode) || !uploadModes ||
       (discovery !== 'on' && discovery !== 'off') || (inventory !== 'on' && inventory !== 'off')) {
     return { error: 'Choose a setting for each policy control.' };
   }
+  if (!uploadTypes) return { error: uploadTypesError };
   return perform(async (token) => {
-    const policy = await controlApi.publish(token, { mode, githubPatMode, paymentCardMode, uploadModes,
-      discoveryEnabled: discovery === 'on', extensionInventoryEnabled: inventory === 'on', expectedVersion }, review, groupId ?? undefined);
-    if ('reviewId' in policy) return queued(policy.reviewId);
-    refreshPolicyViews();
-    return { message: `Version ${policy.version} published in ${decisionLabels[mode].toLowerCase()} mode.` };
+    try {
+      const policy = await controlApi.publish(token, { mode, githubPatMode, paymentCardMode, uploadModes, uploadTypes,
+        discoveryEnabled: discovery === 'on', extensionInventoryEnabled: inventory === 'on', expectedVersion }, review, groupId ?? undefined);
+      if ('reviewId' in policy) return queued(policy.reviewId);
+      refreshPolicyViews();
+      return { message: `Version ${policy.version} published in ${decisionLabels[mode].toLowerCase()} mode.` };
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409 && !error.code) {
+        return { error: 'The policy changed. Reload and review the policy before saving changes.' };
+      }
+      throw error;
+    }
   });
 }
 
@@ -167,6 +182,7 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   const githubPatMode = form.get('githubPatMode');
   const paymentCardMode = form.get('paymentCardMode');
   const uploadModes = readUploadSettings(form);
+  const uploadTypes = readUploadTypes(form);
   const discovery = form.get('discoveryEnabled');
   const inventory = form.get('extensionInventoryEnabled');
   const groupId = form.get('groupId');
@@ -179,9 +195,10 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   }
   const { domainRules, pathRules, error } = navigationDraft(form);
   if (!domainRules || !pathRules) return { error };
+  if (!uploadTypes) return { error: uploadTypesError };
   return perform(async (token) => {
     try {
-      const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, uploadModes,
+      const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, uploadModes, uploadTypes,
         discoveryEnabled: discovery === 'on', extensionInventoryEnabled: inventory === 'on', domainRules, pathRules },
         expectedVersion, form.get('expectReview') === 'on', groupId ?? undefined);
       if ('reviewId' in published) return queued(published.reviewId);

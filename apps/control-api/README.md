@@ -74,7 +74,11 @@ The independent `paymentCardMode` setting accepts `off`, `monitor`, `warn`, or `
 
 The `uploadModes` policy object accepts `chatgpt` and `gemini` settings with `off`, `monitor`, or `block`. An upload-only publish may supply either destination and preserves omitted settings. Older snapshots default to Off for both. Restoring or promoting a policy copies both settings. A heartbeat must supply `uploadControlsApplied: true` to acknowledge a version that enables either destination.
 
-Upload attempt events use `ai-file-upload` and category `file-upload`. They require an `uploadMethod` of `picker`, `drop`, or `paste` and a decision matching the app's setting on the named policy version. The method appears on retained history and exports. Prompt decision contracts retain their existing shape.
+The optional `uploadTypes` object accepts an array of up to 25 selectors per destination. Each selector can be a filename suffix, a media type, or a media type group, such as `[".tar.gz", "application/pdf", "image/*"]`. An empty array applies that mode to every file. An omitted array preserves the previous setting. Off retains the selectors for later use. Control trims, lowercases, deduplicates, and sorts selectors before storing them in the snapshot. Restore, group promotion, and approval preserve the snapshot.
+
+For each active scoped destination, browser policy delivery sets its legacy `uploadModes` entry to `off` and returns its actual mode and selectors in `targetedUploads`. Scoped policies need both `uploadControlsApplied: true` and `uploadTypesApplied: true` in heartbeats to count as applied. Administrative policy responses include the configured modes and selectors.
+
+Upload attempt events use `ai-file-upload` and category `file-upload`. They require an `uploadMethod` of `picker`, `drop`, or `paste` and a decision matching the app's setting on the named policy version. The method appears on retained history and exports. Chrome evaluates the match locally and submits the same event metadata for scoped and unscoped matches.
 
 ## Policy reviews
 

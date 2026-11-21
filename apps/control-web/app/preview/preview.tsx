@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { readNavigationRules } from '../../lib/navigation';
 import { detectorModes, modes, type DetectorMode, type PolicyMode } from '../../../../contracts/policy/prompt';
-import { uploadModes, type UploadMode } from '../../../../contracts/policy/uploads';
+import { parseUploadTypes, uploadModes, uploadTypesError, uploadTypesHint, type UploadMode } from '../../../../contracts/policy/uploads';
 import { aiPromptApps, decisionLabels, detectorModeLabels, promptAppLabels } from '../../lib/control';
 import { changedDecision, parseWebAddress, runComparison, samePolicy,
   type PreviewDecision, type PreviewPolicy, type PreviewResult, type PreviewSnapshot } from '../../lib/preview';
@@ -15,7 +15,8 @@ const navigationFields = [
   ['allow', 'Draft allowed domains'], ['block', 'Draft blocked domains'],
   ['allowPaths', 'Draft allowed paths'], ['blockPaths', 'Draft blocked paths'],
 ] as const;
-type Editor = Omit<PreviewPolicy, 'domainRules' | 'pathRules'> & Record<typeof navigationFields[number][0], string>;
+type Editor = Omit<PreviewPolicy, 'domainRules' | 'pathRules' | 'uploadTypes'> &
+  Record<typeof navigationFields[number][0], string> & { uploadTypeText: Record<typeof aiPromptApps[number], string> };
 
 function editorFor(snapshot: PreviewSnapshot): Editor {
   return {
@@ -23,6 +24,7 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
     discoveryEnabled: snapshot.discoveryEnabled,
     extensionInventoryEnabled: snapshot.extensionInventoryEnabled,
     uploadModes: snapshot.uploadModes,
+    uploadTypeText: { chatgpt: snapshot.uploadTypes.chatgpt.join(', '), gemini: snapshot.uploadTypes.gemini.join(', ') },
     allow: snapshot.domainRules.allow.join('\n'), block: snapshot.domainRules.block.join('\n'),
     allowPaths: snapshot.pathRules.allow.join('\n'), blockPaths: snapshot.pathRules.block.join('\n'),
   };
@@ -35,6 +37,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
   const [editor, setEditor] = useState(() => editorFor(reference));
   const [customPrompt, setCustomPrompt] = useState('');
   const [customUrl, setCustomUrl] = useState('');
+  const [customFile, setCustomFile] = useState({ name: '', type: '' });
   const [result, setResult] = useState<PreviewResult>();
   const [error, setError] = useState('');
 
@@ -67,12 +70,19 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
       setError('Enter a complete HTTP or HTTPS address for custom navigation.');
       return;
     }
+    const chatgpt = parseUploadTypes(editor.uploadTypeText.chatgpt);
+    const gemini = parseUploadTypes(editor.uploadTypeText.gemini);
+    if (!chatgpt || !gemini) {
+      setError(uploadTypesError);
+      return;
+    }
+    const file = customFile.name || customFile.type.trim() ? customFile : undefined;
     setError('');
     setResult(runComparison(reference, {
       mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode,
       discoveryEnabled: editor.discoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled, domainRules, pathRules,
-      uploadModes: editor.uploadModes,
-    }, customPrompt, address));
+      uploadModes: editor.uploadModes, uploadTypes: { chatgpt, gemini },
+    }, customPrompt, address, file));
   }
 
   return <>
@@ -124,8 +134,13 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
             onChange={(event) => edit('uploadModes', { ...editor.uploadModes, [app]: event.target.value as UploadMode })}>
             {uploadModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
           </select>
+          <label htmlFor={`draft-upload-types-${app}`}>Draft {promptAppLabels[app]} file types</label>
+          <textarea id={`draft-upload-types-${app}`} rows={2} value={editor.uploadTypeText[app]}
+            onChange={(event) => edit('uploadTypeText', { ...editor.uploadTypeText, [app]: event.target.value })}
+            maxLength={1700} spellCheck={false} autoCapitalize="none" autoComplete="off" aria-describedby="draft-upload-types-hint" />
         </div>)}
       </div>
+      <p className="muted" id="draft-upload-types-hint">{uploadTypesHint}</p>
       <div className="policy-fields">
         {navigationFields.map(([field, label]) => <div key={field} className="grid gap-1">
           <label htmlFor={`draft-${field}`}>{label}</label>
@@ -142,6 +157,16 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
           <label htmlFor="preview-prompt">Custom prompt</label>
           <textarea id="preview-prompt" rows={3} maxLength={16000} autoComplete="off" spellCheck={false} value={customPrompt}
             onChange={(event) => { setCustomPrompt(event.target.value); invalidate(); }} />
+        </div>
+        <div className="grid gap-1">
+          <label htmlFor="preview-file-name">Custom file name</label>
+          <input id="preview-file-name" value={customFile.name} maxLength={255} autoComplete="off" spellCheck={false}
+            placeholder="example.pdf" onChange={(event) => { setCustomFile({ ...customFile, name: event.target.value }); invalidate(); }} />
+        </div>
+        <div className="grid gap-1">
+          <label htmlFor="preview-file-type">Custom media type</label>
+          <input id="preview-file-type" value={customFile.type} maxLength={128} autoComplete="off" spellCheck={false}
+            placeholder="application/pdf" onChange={(event) => { setCustomFile({ ...customFile, type: event.target.value }); invalidate(); }} />
         </div>
         <div className="grid gap-1">
           <label htmlFor="preview-url">Custom navigation URL</label>
@@ -192,6 +217,7 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         <input type="hidden" name="discoveryEnabled" value={candidate.discoveryEnabled ? 'on' : 'off'} />
         <input type="hidden" name="extensionInventoryEnabled" value={candidate.extensionInventoryEnabled ? 'on' : 'off'} />
         {aiPromptApps.map((app) => <input key={app} type="hidden" name={`upload-${app}`} value={candidate.uploadModes[app]} />)}
+        {aiPromptApps.map((app) => <input key={app} type="hidden" name={`upload-types-${app}`} value={candidate.uploadTypes[app].join(', ')} />)}
         <input type="hidden" name="allow" value={candidate.domainRules.allow.join('\n')} />
         <input type="hidden" name="block" value={candidate.domainRules.block.join('\n')} />
         <input type="hidden" name="allowPaths" value={candidate.pathRules.allow.join('\n')} />

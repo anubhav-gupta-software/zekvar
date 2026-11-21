@@ -211,7 +211,7 @@ internal sealed partial class ControlStore
         await using var command = new NpgsqlCommand("""
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
                 p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
-                p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled
+                p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.version = $2 AND (NOT $3 OR p.policy_group_id IS NOT DISTINCT FROM $4::uuid)
             """, transaction.Connection, transaction);
@@ -228,6 +228,7 @@ internal sealed partial class ControlStore
         DomainRules = request.DomainRules ?? current.DomainRules,
         PaymentCardMode = request.PaymentCardMode ?? current.PaymentCardMode,
         UploadModes = new(request.UploadModes?.Chatgpt ?? current.UploadModes.Chatgpt, request.UploadModes?.Gemini ?? current.UploadModes.Gemini),
+        UploadTypes = new(request.UploadTypes?.Chatgpt ?? current.UploadTypes?.Chatgpt, request.UploadTypes?.Gemini ?? current.UploadTypes?.Gemini),
         PathRules = request.PathRules ?? current.PathRules,
         ExtensionInventoryEnabled = request.ExtensionInventoryEnabled ?? current.ExtensionInventoryEnabled
     };
@@ -243,8 +244,8 @@ internal sealed partial class ControlStore
             ), published AS (
                 INSERT INTO policy_versions (organization_id, version, policy_group_id, mode, github_pat_mode, discovery_enabled,
                     allowed_domains, blocked_domains, payment_card_mode, chatgpt_upload_mode, gemini_upload_mode, allowed_paths, blocked_paths,
-                    extension_inventory_enabled)
-                SELECT id, policy_sequence, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $16 FROM next_version
+                    extension_inventory_enabled, chatgpt_upload_types, gemini_upload_types)
+                SELECT id, policy_sequence, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $16, $17, $18 FROM next_version
                 RETURNING organization_id, version, published_at
             ), group_pointer AS (
                 UPDATE policy_groups g SET policy_version = p.version FROM published p WHERE g.organization_id = p.organization_id AND g.id = $2
@@ -262,10 +263,12 @@ internal sealed partial class ControlStore
             policy.DiscoveryEnabled, policy.DomainRules.Allow, policy.DomainRules.Block, policy.PaymentCardMode, policy.UploadModes.Chatgpt!,
             policy.UploadModes.Gemini!, policy.PathRules.Allow, policy.PathRules.Block, (object?)restoredFrom ?? DBNull.Value,
             groupAudit is null ? DBNull.Value : JsonSerializer.Serialize(groupAudit, JsonSerializerOptions.Web),
-            (object?)identity.Access?.Id ?? DBNull.Value, policy.ExtensionInventoryEnabled);
+            (object?)identity.Access?.Id ?? DBNull.Value, policy.ExtensionInventoryEnabled,
+            policy.UploadTypes?.Chatgpt ?? Array.Empty<string>(), policy.UploadTypes?.Gemini ?? Array.Empty<string>());
         await using var rows = await command.ExecuteReaderAsync(ct);
         await rows.ReadAsync(ct);
-        return policy with { Version = rows.GetInt32(0), PublishedAt = rows.GetDateTime(1), RestoredFrom = restoredFrom };
+        return policy with { Version = rows.GetInt32(0), PublishedAt = rows.GetDateTime(1), RestoredFrom = restoredFrom,
+            UploadTypes = new(policy.UploadTypes?.Chatgpt ?? [], policy.UploadTypes?.Gemini ?? []) };
     }
 
     private static async Task AuditPolicyReview(NpgsqlTransaction transaction, RequestIdentity identity, string action,

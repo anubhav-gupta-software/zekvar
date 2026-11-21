@@ -1,15 +1,16 @@
-import type { UploadDecision, UploadMethod } from '../../../contracts/policy/uploads';
+import { matchesUploadType, type UploadDecision, type UploadFilter, type UploadMethod } from '../../../contracts/policy/uploads';
 
 function hold(event: Event) {
   event.preventDefault();
   event.stopImmediatePropagation();
 }
 
-function hasFileTransfer(data: DataTransfer | null): boolean {
-  return Boolean(data && (data.files.length > 0 || Array.from(data.items).some(({ kind }) => kind === 'file')));
+function pickerDecision(filter: UploadFilter, files: FileList) {
+  if (!filter.types.length || Array.from(files).some((file) => matchesUploadType(file, filter.types))) return filter.mode;
 }
 
-export function bindUploadGuard(mode: () => UploadDecision | undefined, report: (decision: UploadDecision, method: UploadMethod) => void) {
+export function bindUploadGuard(policy: () => UploadFilter | undefined,
+  report: (decision: UploadDecision | undefined, method: UploadMethod) => void) {
   // Chrome dispatches input and change for one file picker selection.
   const pendingChange = new WeakMap<HTMLInputElement, UploadDecision>();
   const nativeDrops = new WeakSet<HTMLInputElement>();
@@ -24,9 +25,10 @@ export function bindUploadGuard(mode: () => UploadDecision | undefined, report: 
       if (pending === 'block') hold(event);
       return;
     }
-    const decision = mode();
-    if (!decision || !input.files?.length) return;
-    if (event.type === 'input') pendingChange.set(input, decision);
+    const filter = policy();
+    if (!filter || !input.files?.length) return;
+    const decision = pickerDecision(filter, input.files);
+    if (event.type === 'input' && decision) pendingChange.set(input, decision);
     if (decision === 'block') {
       hold(event);
       input.value = '';
@@ -38,13 +40,19 @@ export function bindUploadGuard(mode: () => UploadDecision | undefined, report: 
   window.addEventListener('change', picker, true);
   window.addEventListener('cancel', picker, true);
   window.addEventListener('dragover', (event) => {
-    if (event.isTrusted && mode() === 'block' && event.dataTransfer?.types.includes('Files')) event.preventDefault();
+    if (event.isTrusted && policy()?.mode === 'block' && event.dataTransfer?.types.includes('Files')) event.preventDefault();
   }, true);
-  window.addEventListener('drop', (event) => {
-    const decision = mode();
-    if (!event.isTrusted || !decision || !hasFileTransfer(event.dataTransfer)) return;
+  function transfer(event: Event, data: DataTransfer | null, method: 'drop' | 'paste') {
+    if (!event.isTrusted || !data) return;
+    const filter = policy();
+    if (!filter) return;
+    const files = data.files.length ? Array.from(data.files) :
+      Array.from(data.items).filter(({ kind }) => kind === 'file')
+        .map((item) => item.getAsFile() ?? { name: '', type: item.type });
+    if (!files.length) return;
+    const decision = !filter.types.length || files.some((file) => matchesUploadType(file, filter.types)) ? filter.mode : undefined;
     if (decision === 'block') hold(event);
-    else {
+    else if (decision && method === 'drop') {
       const target = event.composedPath()[0];
       if (target instanceof HTMLInputElement && target.type === 'file') {
         // A native drop onto a file input can also produce input and change in the same task.
@@ -52,12 +60,10 @@ export function bindUploadGuard(mode: () => UploadDecision | undefined, report: 
         window.setTimeout(() => nativeDrops.delete(target), 0);
       }
     }
-    report(decision, 'drop');
-  }, true);
+    report(decision, method);
+  }
+  window.addEventListener('drop', (event) => transfer(event, event.dataTransfer, 'drop'), true);
   window.addEventListener('paste', (event) => {
-    const decision = mode();
-    if (!event.isTrusted || !decision || !hasFileTransfer(event.clipboardData)) return;
-    if (decision === 'block') hold(event);
-    report(decision, 'paste');
+    transfer(event, event.clipboardData, 'paste');
   }, true);
 }

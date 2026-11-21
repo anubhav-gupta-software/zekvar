@@ -52,6 +52,10 @@ app.Use(async (context, next) =>
         context.Request.Path.Value?.TrimEnd('/').Equals("/v1/browser/extension-inventory", StringComparison.OrdinalIgnoreCase) == true &&
         context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } inventoryLimit)
         inventoryLimit.MaxRequestBodySize = ReportExtensionInventory.MaxBodySize;
+    if (HttpMethods.IsPost(context.Request.Method) && context.Request.Path.StartsWithSegments("/v1/admin") &&
+        context.Request.Path.Value?.TrimEnd('/').EndsWith("/policies", StringComparison.OrdinalIgnoreCase) == true &&
+        context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } policyLimit)
+        policyLimit.MaxRequestBodySize = 24 * 1024;
     await next(context);
 });
 
@@ -197,7 +201,7 @@ var browser = app.MapGroup("/v1/browser").AddEndpointFilter(Authenticate(browser
 browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
 {
     var aware = http.Request.Headers["X-Zekvar-Assignment-Aware"] == "1";
-    if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, ct) is { } policy) return Results.Ok(policy);
+    if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, ct) is { } policy) return Results.Ok(policy.ForBrowser());
     return aware ? Results.Unauthorized() : Results.Conflict(new { error = "Update the browser to receive the assigned policy." });
 });
 browser.MapPost("/heartbeat", async (Heartbeat request, HttpContext http, CancellationToken ct) =>
@@ -225,16 +229,19 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
     if (request.ExpectedVersion is <= 0) return Results.BadRequest(new { error = "Choose a valid expected policy version." });
     if (!(FixtureContract.IsMode(request.Mode) ||
           request.Mode is null && (request.DomainRules is not null || request.PaymentCardMode is not null ||
-              request.PathRules is not null || request.UploadModes?.HasSettings() == true || request.ExtensionInventoryEnabled.HasValue)) ||
+              request.PathRules is not null || request.UploadModes?.HasSettings() == true ||
+              request.UploadTypes?.HasSettings() == true || request.ExtensionInventoryEnabled.HasValue)) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode))
         return Results.BadRequest(new { error = "Choose a valid rule mode." });
     if (request.UploadModes?.IsValid() == false)
         return Results.BadRequest(new { error = "Choose Off, Monitor, or Block for each upload destination." });
+    if (!UploadTypes.TryNormalize(request.UploadTypes, out var uploadTypes))
+        return Results.BadRequest(new { error = "Enter up to 25 valid file extensions or media types per app, with at most 64 characters per type." });
     if (!DomainRules.TryNormalize(request.DomainRules, out var domainRules))
         return Results.BadRequest(new { error = "Enter up to 50 domains with no domain in both lists." });
     if (!PathRules.TryNormalize(request.PathRules, out var pathRules))
         return Results.BadRequest(new { error = "Use distinct hostname/path prefixes with paths up to 64 characters long." });
-    var normalized = request with { DomainRules = domainRules, PathRules = pathRules };
+    var normalized = request with { DomainRules = domainRules, PathRules = pathRules, UploadTypes = uploadTypes };
     var result = await store.ChangePolicy(Identity(http), normalized, null, ExpectsReview(http), ct, groupId);
     return PolicyOutcome(result, request.ExpectedVersion.HasValue
         ? Results.Conflict(new { error = "The policy changed after preview or is unavailable." }) : Results.NotFound());

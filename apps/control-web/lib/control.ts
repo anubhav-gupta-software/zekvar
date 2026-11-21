@@ -4,7 +4,7 @@ export { ruleLabels } from '../../../contracts/policy/prompt';
 export type { DetectorMode } from '../../../contracts/policy/prompt';
 export type { DomainRules, PathRules } from '../../../contracts/policy/domains';
 import type { DomainRules, PathRules } from '../../../contracts/policy/domains';
-import type { UploadMethod, UploadModes } from '../../../contracts/policy/uploads';
+import type { UploadMethod, UploadModes, UploadTypes } from '../../../contracts/policy/uploads';
 
 export const decisions = [...modes, 'warn_override'] as const;
 export type Mode = PolicyMode;
@@ -37,6 +37,7 @@ export type Policy = {
   githubPatMode?: DetectorMode;
   paymentCardMode?: DetectorMode;
   uploadModes?: UploadModes;
+  uploadTypes?: UploadTypes;
   discoveryEnabled?: boolean;
   extensionInventoryEnabled?: boolean;
   domainRules?: DomainRules;
