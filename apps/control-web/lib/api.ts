@@ -4,13 +4,14 @@ import type { EventPage } from './events';
 import type { RetentionCleanup, RetentionPolicy } from './retention';
 import type { PreviewPolicy } from './preview';
 import type { ControlAccess, ControlSession, DelegatedRole, IssuedControlAccess } from './access';
+import type { PolicyChange, PolicyReviewQueue } from './reviews';
 
 const port = Number(process.env.ZEKVAR_CONTROL_PORT ?? 5187);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid Control loopback port.');
 const api = `http://127.0.0.1:${port}/v1/admin`;
 
 export class ApiError extends Error {
-  constructor(readonly status: number) {
+  constructor(readonly status: number, readonly code?: string) {
     super(`Control API returned HTTP ${status}`);
   }
 }
@@ -28,14 +29,20 @@ async function apiResponse(path: string, token: string, options: RequestInit = {
   } catch {
     throw new ApiError(503);
   }
-  if (!response.ok) throw new ApiError(response.status);
+  if (!response.ok) {
+    const detail = response.status === 409 || response.status === 403 ? await response.json().catch(() => null) : null;
+    throw new ApiError(response.status, typeof detail?.code === 'string' ? detail.code : undefined);
+  }
   return response;
 }
 
-async function request<T>(path: string, token: string, method = 'GET', body?: unknown): Promise<T> {
+async function request<T>(path: string, token: string, method = 'GET', body?: unknown, expectReview = false): Promise<T> {
   const response = await apiResponse(path, token, {
     method,
-    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    headers: {
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      ...(expectReview ? { 'X-Zekvar-Expect-Review': '1' } : {}),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return response.status === 204 ? undefined as T : await response.json() as T;
@@ -54,8 +61,12 @@ export const controlApi = {
   createGroup: (token: string, name: string) => request<PolicyGroup>('/policy-groups', token, 'POST', { name }),
   assignGroup: (token: string, installationId: string, groupId: string | null) =>
     request<void>(`/installations/${installationId}/policy-group`, token, 'POST', { groupId }),
-  promoteGroup: (token: string, groupId: string, expectedVersion: number) =>
-    request<Policy>(`/policy-groups/${groupId}/promote`, token, 'POST', { expectedVersion }),
+  promoteGroup: (token: string, groupId: string, expectedVersion: number, review: boolean) =>
+    request<PolicyChange>(`/policy-groups/${groupId}/promote`, token, 'POST', { expectedVersion }, review),
+  policyReviews: (token: string) => request<PolicyReviewQueue>('/policy-reviews', token),
+  setPolicyReview: (token: string, required: boolean) => request<void>('/policy-reviews/setting', token, 'POST', { required }),
+  decidePolicyReview: (token: string, id: string, approve: boolean) =>
+    request<Policy | undefined>(`/policy-reviews/${id}/decision`, token, 'POST', { approve }),
   installations: (token: string) => request<Installation[]>('/installations', token),
   events: (token: string, filters: URLSearchParams) => request<EventPage>(`/events/history?${filters}`, token),
   exportEvents: (token: string, filters: URLSearchParams, signal: AbortSignal) =>
@@ -67,13 +78,14 @@ export const controlApi = {
   aiApps: (token: string) => request<DiscoveredApp[]>('/ai-apps', token),
   classifyApp: (token: string, appId: AiAppId, status: AppClassification) =>
     request<void>(`/ai-apps/${appId}/classification`, token, 'POST', { status }),
-  publish: (token: string, policy: Omit<PreviewPolicy, 'domainRules' | 'pathRules'>, groupId?: string) =>
-    request<Policy>(policiesPath(groupId), token, 'POST', policy),
-  publishNavigation: (token: string, rules: Pick<PreviewPolicy, 'domainRules' | 'pathRules'>, expectedVersion: number, groupId?: string) =>
-    request<Policy>(policiesPath(groupId), token, 'POST', { ...rules, expectedVersion }),
-  publishPreview: (token: string, policy: PreviewPolicy, expectedVersion: number, groupId?: string) =>
-    request<Policy>(policiesPath(groupId), token, 'POST', { ...policy, expectedVersion }),
-  restore: (token: string, version: number, groupId?: string) => request<Policy>(`${policiesPath(groupId)}/${version}/restore`, token, 'POST'),
+  publish: (token: string, policy: Omit<PreviewPolicy, 'domainRules' | 'pathRules'> & { expectedVersion?: number }, review: boolean, groupId?: string) =>
+    request<PolicyChange>(policiesPath(groupId), token, 'POST', policy, review),
+  publishNavigation: (token: string, rules: Pick<PreviewPolicy, 'domainRules' | 'pathRules'>, expectedVersion: number, review: boolean, groupId?: string) =>
+    request<PolicyChange>(policiesPath(groupId), token, 'POST', { ...rules, expectedVersion }, review),
+  publishPreview: (token: string, policy: PreviewPolicy, expectedVersion: number, review: boolean, groupId?: string) =>
+    request<PolicyChange>(policiesPath(groupId), token, 'POST', { ...policy, expectedVersion }, review),
+  restore: (token: string, version: number, review: boolean, groupId?: string) =>
+    request<PolicyChange>(`${policiesPath(groupId)}/${version}/restore`, token, 'POST', undefined, review),
   issueGrant: (token: string) => request<Grant>('/enrollment-grants', token, 'POST'),
   revoke: (token: string, installationId: string) => request<void>(`/installations/${installationId}/revoke`, token, 'POST'),
 };

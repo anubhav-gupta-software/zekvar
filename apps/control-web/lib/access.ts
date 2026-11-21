@@ -8,9 +8,10 @@ export const roleLabels: Record<ControlRole, string> = {
 };
 
 export type AccessIdentity = { id: string; name: string; role: DelegatedRole };
-export type ControlSession = { organization: string; role: ControlRole; access: AccessIdentity | null };
+export type ControlSession = { organization: string; role: ControlRole; access: AccessIdentity | null; reviewRequired: boolean };
 export type ControlAccess = AccessIdentity & {
   issuedAt: string; expiresAt: string; status: 'active' | 'expired' | 'revoked';
 };
 export type IssuedControlAccess = { access: ControlAccess; token: string };
 export const canWrite = (session?: ControlSession) => session?.role === 'owner' || session?.role === 'administrator';
+export const canChangePolicy = (session?: ControlSession) => canWrite(session) && (!session?.reviewRequired || session.role === 'administrator');

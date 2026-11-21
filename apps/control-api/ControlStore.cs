@@ -35,6 +35,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 12, "012_upload_controls.sql", ct);
         await ApplyMigration(connection, 13, "013_path_rules.sql", ct);
         await ApplyMigration(connection, 14, "014_named_control_access.sql", ct);
+        await ApplyMigration(connection, 15, "015_policy_reviews.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -110,82 +111,6 @@ internal sealed partial class ControlStore
             SELECT organization_id, enrolled_at, 'browser_enrolled', id FROM enrolled
             """, Tokens.Hash(grant), installationId, Tokens.Hash(token));
         return await command.ExecuteNonQueryAsync(ct) == 1 ? new(installationId, token) : null;
-    }
-
-    public async Task<Policy?> Publish(RequestIdentity identity, PublishPolicy? request, int? restoredFrom, CancellationToken ct,
-        Guid? groupId = null, Guid? sourceGroupId = null, int? expectedSourceVersion = null)
-    {
-        var organizationId = identity.OrganizationId;
-        await using var connection = await dataSource.OpenConnectionAsync(ct);
-        await using var transaction = await connection.BeginTransactionAsync(ct);
-        // Read the source version after locking the organization so concurrent publishes cannot lose a rule.
-        await using var gate = new NpgsqlCommand("SELECT id FROM organizations WHERE id = $1 FOR UPDATE", connection, transaction);
-        gate.Parameters.AddWithValue(organizationId);
-        if (await gate.ExecuteScalarAsync(ct) is null) return null;
-
-        await using var command = new NpgsqlCommand("""
-            WITH selection AS (
-                SELECT COALESCE($2::text, p.mode) AS mode, COALESCE($4::text, p.github_pat_mode) AS github_pat_mode,
-                    COALESCE($5::boolean, p.discovery_enabled) AS discovery_enabled,
-                    COALESCE($6::text[], p.allowed_domains) AS allowed_domains,
-                    COALESCE($7::text[], p.blocked_domains) AS blocked_domains,
-                    COALESCE($12::text, p.payment_card_mode) AS payment_card_mode,
-                    COALESCE($13::text, p.chatgpt_upload_mode) AS chatgpt_upload_mode,
-                    COALESCE($14::text, p.gemini_upload_mode) AS gemini_upload_mode,
-                    COALESCE($15::text[], p.allowed_paths) AS allowed_paths,
-                    COALESCE($16::text[], p.blocked_paths) AS blocked_paths,
-                    COALESCE(source.name, g.name) AS group_name, source.policy_version AS promoted_version
-                FROM organizations o
-                LEFT JOIN policy_groups g ON g.organization_id = o.id AND g.id = $8::uuid
-                LEFT JOIN policy_groups source ON source.organization_id = o.id AND source.id = $9::uuid
-                JOIN policy_versions p ON p.organization_id = o.id
-                  AND p.version = COALESCE($3::integer, source.policy_version, g.policy_version, o.policy_version)
-                WHERE o.id = $1
-                  AND ($8 IS NULL OR g.id IS NOT NULL) AND ($9 IS NULL OR source.policy_version = $10::integer)
-                  AND ($3 IS NULL OR p.policy_group_id IS NOT DISTINCT FROM $8)
-                  AND ($11::integer IS NULL OR p.version = $11)
-            ), next_version AS (
-                UPDATE organizations SET policy_sequence = policy_sequence + 1,
-                    policy_version = CASE WHEN $8 IS NULL THEN policy_sequence + 1 ELSE policy_version END
-                WHERE id = $1 AND EXISTS (SELECT 1 FROM selection)
-                RETURNING id, policy_sequence
-            ), published AS (
-                INSERT INTO policy_versions (organization_id, version, mode, github_pat_mode, discovery_enabled, allowed_domains,
-                    blocked_domains, policy_group_id, payment_card_mode, chatgpt_upload_mode, gemini_upload_mode, allowed_paths, blocked_paths)
-                SELECT id, policy_sequence, mode, github_pat_mode, discovery_enabled, allowed_domains, blocked_domains, $8,
-                    payment_card_mode, chatgpt_upload_mode, gemini_upload_mode, allowed_paths, blocked_paths
-                FROM next_version CROSS JOIN selection
-                RETURNING organization_id, version, mode, published_at, github_pat_mode, discovery_enabled, allowed_domains,
-                    blocked_domains, payment_card_mode, chatgpt_upload_mode, gemini_upload_mode, allowed_paths, blocked_paths
-            ), group_pointer AS (
-                UPDATE policy_groups g SET policy_version = p.version FROM published p WHERE g.organization_id = p.organization_id AND g.id = $8
-            ), history AS (
-                INSERT INTO policy_audit (organization_id, version, restored_from)
-                SELECT organization_id, version, $3 FROM published
-            ), audit AS (
-                INSERT INTO control_audit (organization_id, occurred_at, action, policy_version, restored_from, group_change, actor_access_id)
-                SELECT organization_id, published_at, CASE WHEN $3 IS NULL THEN 'policy_published' ELSE 'policy_restored' END,
-                    version, $3, CASE WHEN COALESCE($8, $9) IS NOT NULL THEN jsonb_build_object(
-                        'groupId', COALESCE($8, $9), 'groupName', group_name, 'sourceVersion', promoted_version) END, $17
-                FROM published CROSS JOIN selection
-            )
-            SELECT version, mode, published_at, $3, github_pat_mode, discovery_enabled, allowed_domains, blocked_domains,
-                payment_card_mode, chatgpt_upload_mode, gemini_upload_mode, allowed_paths, blocked_paths
-            FROM published
-            """, connection, transaction);
-        AddParameters(command, organizationId, (object?)request?.Mode ?? DBNull.Value, (object?)restoredFrom ?? DBNull.Value,
-            (object?)request?.GithubPatMode ?? DBNull.Value, (object?)request?.DiscoveryEnabled ?? DBNull.Value,
-            (object?)request?.DomainRules?.Allow ?? DBNull.Value, (object?)request?.DomainRules?.Block ?? DBNull.Value,
-            (object?)groupId ?? DBNull.Value, (object?)sourceGroupId ?? DBNull.Value, (object?)expectedSourceVersion ?? DBNull.Value,
-            (object?)request?.ExpectedVersion ?? DBNull.Value, (object?)request?.PaymentCardMode ?? DBNull.Value,
-            (object?)request?.UploadModes?.Chatgpt ?? DBNull.Value, (object?)request?.UploadModes?.Gemini ?? DBNull.Value,
-            (object?)request?.PathRules?.Allow ?? DBNull.Value, (object?)request?.PathRules?.Block ?? DBNull.Value,
-            (object?)identity.Access?.Id ?? DBNull.Value);
-        Policy? policy;
-        await using (var rows = await command.ExecuteReaderAsync(ct))
-            policy = await rows.ReadAsync(ct) ? ReadPolicy(rows) : null;
-        await transaction.CommitAsync(ct);
-        return policy;
     }
 
     public async Task<IReadOnlyList<Policy>> PolicyHistory(Guid organizationId, CancellationToken ct, Guid? groupId = null)
@@ -424,7 +349,7 @@ internal sealed partial class ControlStore
     {
         await using var command = Command("""
             SELECT a.id, occurred_at, action, policy_version, restored_from, installation_id, app_id, classification, retention, cleanup, group_change,
-                actor.id, actor.display_name, actor.role, subject.id, subject.display_name, subject.role
+                actor.id, actor.display_name, actor.role, subject.id, subject.display_name, subject.role, a.review_change
             FROM control_audit a LEFT JOIN retention_cutoffs r ON a.organization_id = r.organization_id
             LEFT JOIN control_access actor ON actor.organization_id = a.organization_id AND actor.id = a.actor_access_id
             LEFT JOIN control_access subject ON subject.organization_id = a.organization_id AND subject.id = a.subject_access_id
@@ -447,7 +372,8 @@ internal sealed partial class ControlStore
                 rows.IsDBNull(8) ? null : JsonSerializer.Deserialize<RetentionPolicy>(rows.GetString(8), JsonSerializerOptions.Web),
                 rows.IsDBNull(9) ? null : JsonSerializer.Deserialize<RetentionCleanup>(rows.GetString(9), JsonSerializerOptions.Web),
                 rows.IsDBNull(10) ? null : JsonSerializer.Deserialize<PolicyGroupChange>(rows.GetString(10), JsonSerializerOptions.Web),
-                ReadAccessIdentity(rows, 11), ReadAccessIdentity(rows, 14)));
+                ReadAccessIdentity(rows, 11), ReadAccessIdentity(rows, 14),
+                rows.IsDBNull(17) ? null : JsonSerializer.Deserialize<PolicyReviewAudit>(rows.GetString(17), JsonSerializerOptions.Web)));
         if (entries.Count <= filters.Limit) return new(entries, null);
         entries.RemoveAt(filters.Limit);
         var last = entries[^1];

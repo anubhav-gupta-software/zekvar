@@ -53,10 +53,11 @@ app.Use(async (context, next) =>
 app.MapGet("/health", () => Results.Ok(new { status = "ready" }));
 
 var admin = app.MapGroup("/v1/admin").AddEndpointFilter(Authenticate(browser: false));
-admin.MapGet("/session", (HttpContext http) =>
+admin.MapGet("/session", async (HttpContext http, CancellationToken ct) =>
 {
     var identity = Identity(http);
-    return Results.Ok(new { organization = identity.OrganizationSlug, role = identity.Role, access = identity.Access });
+    var reviewRequired = await store.PolicyReviewRequired(identity.OrganizationId, ct);
+    return Results.Ok(new { organization = identity.OrganizationSlug, role = identity.Role, access = identity.Access, reviewRequired });
 });
 var access = admin.MapGroup("/access").AddEndpointFilter((context, next) =>
     Identity(context.HttpContext).Role == AccessRoles.Owner ? next(context) : ValueTask.FromResult<object?>(Results.StatusCode(403)));
@@ -83,8 +84,23 @@ admin.MapGet("/policies", async (HttpContext http, CancellationToken ct) =>
 admin.MapPost("/policies", async (PublishPolicy request, HttpContext http, CancellationToken ct) =>
     await PublishSettings(request, http, ct));
 admin.MapPost("/policies/{version:int}/restore", async (int version, HttpContext http, CancellationToken ct) =>
-    await store.Publish(Identity(http), null, version, ct) is { } published
-        ? Results.Ok(published) : Results.NotFound());
+    PolicyOutcome(await store.ChangePolicy(Identity(http), null, version, ExpectsReview(http), ct), Results.NotFound()));
+var reviews = admin.MapGroup("/policy-reviews");
+reviews.MapGet("", async (HttpContext http, CancellationToken ct) =>
+    Results.Ok(await store.PolicyReviews(Identity(http).OrganizationId, ct)));
+reviews.MapPost("/setting", async (SetPolicyReview request, HttpContext http, CancellationToken ct) =>
+{
+    var identity = Identity(http);
+    if (identity.Role != AccessRoles.Owner) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (request.Required is not { } required) return Results.BadRequest();
+    await store.SetPolicyReviewRequired(identity, required, ct);
+    return Results.NoContent();
+});
+reviews.MapPost("/{id:guid}/decision", async (Guid id, ChoosePolicyReview request, HttpContext http, CancellationToken ct) =>
+{
+    if (request.Approve is not { } approve) return Results.BadRequest();
+    return PolicyOutcome(await store.DecidePolicyReview(Identity(http), id, approve, ct), Results.NoContent());
+});
 var groups = admin.MapGroup("/policy-groups");
 groups.MapGet("", async (HttpContext http, CancellationToken ct) => Results.Ok(await store.Groups(Identity(http).OrganizationId, ct)));
 groups.MapPost("", async (CreatePolicyGroup request, HttpContext http, CancellationToken ct) =>
@@ -100,14 +116,12 @@ groups.MapGet("/{groupId:guid}/policies", async (Guid groupId, HttpContext http,
 groups.MapPost("/{groupId:guid}/policies", async (Guid groupId, PublishPolicy request, HttpContext http, CancellationToken ct) =>
     await PublishSettings(request, http, ct, groupId));
 groups.MapPost("/{groupId:guid}/policies/{version:int}/restore", async (Guid groupId, int version, HttpContext http, CancellationToken ct) =>
-    await store.Publish(Identity(http), null, version, ct, groupId) is { } published
-        ? Results.Ok(published) : Results.NotFound());
+    PolicyOutcome(await store.ChangePolicy(Identity(http), null, version, ExpectsReview(http), ct, groupId), Results.NotFound()));
 groups.MapPost("/{groupId:guid}/promote", async (Guid groupId, PromotePolicyGroup request, HttpContext http, CancellationToken ct) =>
 {
     if (request.ExpectedVersion <= 0) return Results.BadRequest(new { error = "Choose the group version you reviewed." });
-    return await store.Publish(Identity(http), null, null, ct, sourceGroupId: groupId,
-            expectedSourceVersion: request.ExpectedVersion) is { } published
-        ? Results.Ok(published) : Results.Conflict(new { error = "The reviewed group version is no longer current or available." });
+    return PolicyOutcome(await store.ChangePolicy(Identity(http), null, null, ExpectsReview(http), ct, sourceGroupId: groupId,
+        expectedSourceVersion: request.ExpectedVersion), Results.Conflict(new { error = "The reviewed group version is no longer current or available." }));
 });
 admin.MapPost("/installations/{id:guid}/policy-group", async (Guid id, AssignPolicyGroup request, HttpContext http, CancellationToken ct) =>
     await store.AssignGroup(Identity(http), id, request.GroupId, ct) switch
@@ -204,18 +218,27 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
         return Results.BadRequest(new { error = "Enter up to 50 domains with no domain in both lists." });
     if (!PathRules.TryNormalize(request.PathRules, out var pathRules))
         return Results.BadRequest(new { error = "Use distinct hostname/path prefixes with paths up to 64 characters long." });
-    try
+    var normalized = request with { DomainRules = domainRules, PathRules = pathRules };
+    var result = await store.ChangePolicy(Identity(http), normalized, null, ExpectsReview(http), ct, groupId);
+    return PolicyOutcome(result, request.ExpectedVersion.HasValue
+        ? Results.Conflict(new { error = "The policy changed after preview or is unavailable." }) : Results.NotFound());
+}
+
+static bool ExpectsReview(HttpContext http) => http.Request.Headers["X-Zekvar-Expect-Review"] == "1";
+
+static IResult PolicyOutcome(PolicyChangeResult result, IResult fallback)
+{
+    if (result.Policy is { } policy) return Results.Ok(policy);
+    if (result.ReviewId is { } id) return Results.Accepted(value: new { reviewId = id });
+    var code = result.Error;
+    return code switch
     {
-        var normalized = request with { DomainRules = domainRules, PathRules = pathRules };
-        if (await store.Publish(Identity(http), normalized, null, ct, groupId) is { } policy)
-            return Results.Ok(policy);
-    }
-    catch (PostgresException error) when (error.SqlState == PostgresErrorCodes.CheckViolation && error.ConstraintName == "navigation_rule_limit")
-    {
-        return Results.BadRequest(new { error = "A policy can contain up to 50 domain and path rules combined." });
-    }
-    return request.ExpectedVersion.HasValue
-        ? Results.Conflict(new { error = "The policy changed after preview or is unavailable." }) : Results.NotFound();
+        "navigation_rule_limit" => Results.BadRequest(new { error = "A policy can contain up to 50 domain and path rules combined." }),
+        "review_unavailable" => Results.NotFound(),
+        "named_administrator_required" or "self_approval" => Results.Json(new { code }, statusCode: StatusCodes.Status403Forbidden),
+        "review_mode_changed" or "review_closed" or "review_stale" => Results.Conflict(new { code }),
+        _ => fallback
+    };
 }
 
 Func<EndpointFilterInvocationContext, EndpointFilterDelegate, ValueTask<object?>> Authenticate(bool browser) =>

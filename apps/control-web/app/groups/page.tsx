@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../../lib/api';
-import { canWrite } from '../../lib/access';
+import { canChangePolicy, canWrite } from '../../lib/access';
 import type { Installation, PolicyGroup } from '../../lib/control';
 import { sessionToken } from '../../lib/session';
 import { assignPolicyGroup, createPolicyGroup, promotePolicyGroup } from '../actions';
@@ -18,6 +18,8 @@ export default async function Groups({ searchParams }: { searchParams: Promise<{
     throw error;
   });
   const writable = canWrite(result?.session);
+  const policyWritable = canChangePolicy(result?.session);
+  const review = result?.session.reviewRequired ?? false;
   return <div className="workspace">
     <Sidebar active="groups" session={result?.session} />
     <main className="dashboard">
@@ -48,27 +50,29 @@ export default async function Groups({ searchParams }: { searchParams: Promise<{
             <section className="panel" aria-labelledby="group-settings-heading">
               <div className="panel-heading"><h2 id="group-settings-heading">{result.selected.name}</h2>
                 <span className="badge">{result.selected.publishedVersion ? 'Group policy' : 'Follows baseline'} · v{result.selected.effectiveVersion}</span></div>
-              {writable && <><p className="muted">Publish changes for the browsers assigned to this group.</p>
-                <PublishPolicyForm policy={result.current} groupId={result.selected.id} /></>}
+              {policyWritable && <><p className="muted">Manage policy for the browsers assigned to this group.</p>
+                <PublishPolicyForm policy={result.current} groupId={result.selected.id} review={review} /></>}
               <a className="button small mt-3" href={`/preview?group=${result.selected.id}`}>Preview group policy</a>
             </section>
-            {writable && <section className="panel" aria-labelledby="promotion-heading">
+            {policyWritable && <section className="panel" aria-labelledby="promotion-heading">
               <h2 id="promotion-heading">Promote to organization baseline</h2>
               <p className="muted">{result.history[0] ? `Publish reviewed group version v${result.history[0].version} as a new baseline version.` :
                 'Publish a group policy before promoting it.'}</p>
-              {result.history[0] && <MutationForm action={promotePolicyGroup} label="Promote group policy"
-                confirmation={`Publish group version v${result.history[0].version} as the organization baseline?`}>
+              {result.history[0] && <MutationForm action={promotePolicyGroup} label={review ? 'Request promotion review' : 'Promote group policy'}
+                confirmation={review ? `Request promotion of group version v${result.history[0].version}?` :
+                  `Publish group version v${result.history[0].version} as the organization baseline?`}>
                 <input type="hidden" name="groupId" value={result.selected.id} />
                 <input type="hidden" name="expectedVersion" value={result.history[0].version} />
+                {review && <input type="hidden" name="expectReview" value="on" />}
               </MutationForm>}
             </section>}
           </div>
-          {writable && <section className="panel" aria-labelledby="group-domains-heading">
+          {policyWritable && <section className="panel" aria-labelledby="group-domains-heading">
             <h2 id="group-domains-heading">Group navigation rules</h2>
             <DomainRulesForm rules={result.current?.domainRules} paths={result.current?.pathRules}
-              version={result.current?.version} groupId={result.selected.id} />
+              version={result.current?.version} groupId={result.selected.id} review={review} />
           </section>}
-          <PolicyVersionTable policies={result.history} groupId={result.selected.id} writable={writable} />
+          <PolicyVersionTable policies={result.history} groupId={result.selected.id} writable={policyWritable} review={review} />
         </div>}
         {result.groups.length > 0 && <section className="panel table-panel" aria-labelledby="assignments-heading">
           <div className="panel-heading"><h2 id="assignments-heading">Browser assignments</h2><span className="table-note">Recent active installations</span></div>

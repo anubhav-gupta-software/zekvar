@@ -76,6 +76,18 @@ The `uploadModes` policy object accepts `chatgpt` and `gemini` settings with `of
 
 Upload attempt events use `ai-file-upload` and category `file-upload`. They require an `uploadMethod` of `picker`, `drop`, or `paste` and a decision matching the app's setting on the named policy version. The method appears on retained history and exports. Prompt decision contracts retain their existing shape.
 
+## Policy reviews
+
+Policy reviews are optional by default. The owner can enable the requirement with `POST /v1/admin/policy-reviews/setting` and `{ "required": true }`. `GET /v1/admin/session` includes `reviewRequired`. When required, a publish, restore, or promotion submitted by a named administrator returns HTTP 202 and `{ "reviewId": "…" }`. A request queues the exact candidate policy and its current reference version. It does not advance the policy version. Owners and auditors cannot submit or approve requests while review is required.
+
+- `GET /v1/admin/policy-reviews` returns the tenant requirement, pending reviews, and the latest 100 closed or expired reviews. Each record includes the policy snapshots to compare.
+- `POST /v1/admin/policy-reviews/{id}/decision` accepts `{ "approve": true }` from a different administrator with a distinct credential and name. Success returns HTTP 200 and the published policy. An approval checks that both credentials are active, the reference and promotion source versions still match, and the request is within 24 hours of submission.
+- A named administrator can send `{ "approve": false }` to close the request. The requester's decision is recorded as a withdrawal. A different administrator's decision is recorded as a rejection. A successful close returns HTTP 204.
+- An expired or already decided request returns HTTP 409. If the reference policy, promotion source, or requesting credential changed, Control records a stale decision without publishing.
+- Send `X-Zekvar-Expect-Review: 1` when a caller intends to request review. If the owner disabled the requirement while the caller was editing, the server returns HTTP 409. Disabling also cancels active pending requests.
+
+Approved publication and its review decision commit in the same transaction. Audit records include reviewer identity, request ID, status, reference version, and the version published when applicable. Audit payloads exclude the before and candidate policy snapshots.
+
 ## Security event history and export
 
 - `GET /v1/admin/events` returns an array of up to 100 events for existing clients.
@@ -86,7 +98,7 @@ History and export accept `appId`, `decision`, `installationId`, and occurrence 
 
 ## Audit log
 
-`GET /v1/admin/audit` returns the authenticated organization's activity as `{ entries, next }`. Use `action` to filter by `policy_published`, `policy_restored`, `grant_issued`, `browser_enrolled`, `browser_revoked`, `app_classified`, `retention_changed`, `retention_cleanup`, `policy_group_created`, `policy_group_assigned`, `access_issued`, or `access_revoked`. `since` is inclusive and `until` is exclusive. `limit` defaults to 100 and accepts up to 1,000. When `next` is present, send its `occurredAt` as `beforeAt` and its `id` as `beforeId` with the same filters to get older entries.
+`GET /v1/admin/audit` returns the authenticated organization's activity as `{ entries, next }`. Use `action` to filter by `policy_published`, `policy_restored`, `grant_issued`, `browser_enrolled`, `browser_revoked`, `app_classified`, `retention_changed`, `retention_cleanup`, `policy_group_created`, `policy_group_assigned`, `access_issued`, `access_revoked`, `policy_review_setting_changed`, `policy_review_requested`, or `policy_review_decided`. `since` is inclusive and `until` is exclusive. `limit` defaults to 100 and accepts up to 1,000. When `next` is present, send its `occurredAt` as `beforeAt` and its `id` as `beforeId` with the same filters to get older entries.
 
 Audited changes and their records are written together. Repeating a revocation or saving the same classification preserves one entry for the change. Migration 006 backfills policy and installation history. Migration 014 adds `actorAccess` for named administrator activity and `subjectAccess` for issuance and revocation. Both objects contain an ID, name, and role. Earlier records keep their original actor category. Credential values, hashes, prompts, grant values, and policy content stay out of the audit payload.
 

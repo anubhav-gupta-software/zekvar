@@ -27,14 +27,17 @@ async function retentionFixture(query) {
   return stdout.trim();
 }
 
-async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false } = {}) {
+async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (assignmentAware) headers['X-Zekvar-Assignment-Aware'] = '1';
+  if (expectReview) headers['X-Zekvar-Expect-Review'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
+  }).catch((error) => {
+    throw new Error(`${method} ${path} failed: ${error.message}`, { cause: error });
   });
   const text = await response.text();
   assert.equal(response.status, expect, `${method} ${path}: ${text.slice(0, 500)}`);
@@ -85,7 +88,7 @@ async function stop() {
   processHandle = undefined;
 }
 
-test('Control persists tenant-scoped policies, enrollment and metadata in PostgreSQL', { timeout: 30_000 }, async (t) => {
+test('Control persists tenant-scoped policies, enrollment and metadata in PostgreSQL', { timeout: 60_000 }, async (t) => {
   t.after(stop);
   await start();
   let client;
@@ -94,7 +97,9 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
 
   await t.test('only an admin can issue a short-lived grant, and only one redemption succeeds', async () => {
     await call('/v1/admin/session', { expect: 401 });
-    assert.deepEqual(await call('/v1/admin/session', { token: first }), { organization: `first-${suffix}`, role: 'owner', access: null });
+    assert.deepEqual(await call('/v1/admin/session', { token: first }), {
+      organization: `first-${suffix}`, role: 'owner', access: null, reviewRequired: false,
+    });
     await call('/v1/admin/enrollment-grants', { method: 'POST', expect: 401 });
     const { grant, expiresAt } = await call('/v1/admin/enrollment-grants', { method: 'POST', token: first });
     assert.ok(Date.parse(expiresAt) > Date.now());
@@ -966,8 +971,10 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     if (postgres) {
       await stop();
       await retentionFixture(`
-        DELETE FROM schema_migrations WHERE version = 14;
-        ALTER TABLE control_audit DROP COLUMN actor_access_id, DROP COLUMN subject_access_id;
+        DELETE FROM schema_migrations WHERE version IN (14, 15);
+        DROP TABLE policy_reviews;
+        ALTER TABLE organizations DROP COLUMN require_policy_review;
+        ALTER TABLE control_audit DROP COLUMN review_change, DROP COLUMN actor_access_id, DROP COLUMN subject_access_id;
         DROP TABLE control_access;
       `);
       await start();
@@ -993,7 +1000,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       assert.match(issued.token, /^[a-f0-9]{64}$/);
       assert.equal(issued.access.status, 'active');
       assert.deepEqual(await session(issued.token), {
-        organization: `first-${suffix}`, role: issued.access.role, access: named(issued),
+        organization: `first-${suffix}`, role: issued.access.role, access: named(issued), reviewRequired: false,
       });
       await admin('access', { token: issued.token, expect: 403 });
       await issue('Escalation attempt', 'administrator', 24, 403, issued.token);
@@ -1087,5 +1094,144 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal((await session(first)).role, 'owner');
     assert.deepEqual((await session(replacement.token)).access, named(replacement));
     assert.ok((await audit()).entries.some(({ actorAccess }) => actorAccess?.id === operator.access.id));
+  });
+
+  await t.test('requires an independent decision for exact policy changes and serializes review with publication', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: first, ...options });
+    const post = (path, token, body, expect = 200, expectReview = false) => admin(path, { method: 'POST', token, body, expect,
+      expectReview });
+    const issue = (name, role = 'administrator', token = first) => post('access', token, { name, role, hours: 24 });
+    const requirement = (token, required, expect = 204) => post('policy-reviews/setting', token, { required }, expect);
+    const decide = (id, token, approve, expect = 200) => post(`policy-reviews/${id}/decision`, token, { approve }, expect);
+    const baseline = async () => (await admin('policies'))[0];
+    const queue = (token = first) => admin('policy-reviews', { token });
+    const status = async (id) => (await queue()).entries.find((entry) => entry.id === id);
+    const settings = await baseline();
+    const priorAudit = await admin('audit');
+    assert.deepEqual(await queue(), { required: false, entries: [] });
+    if (postgres) {
+      await stop();
+      await retentionFixture(`
+        DELETE FROM schema_migrations WHERE version = 15;
+        DROP TABLE policy_reviews;
+        ALTER TABLE organizations DROP COLUMN require_policy_review;
+        ALTER TABLE control_audit DROP COLUMN review_change;
+      `);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 15'), '1');
+      assert.deepEqual(await baseline(), settings);
+      assert.deepEqual(await admin('audit'), priorAudit);
+      assert.deepEqual(await queue(), { required: false, entries: [] });
+    }
+    const proposer = await issue('Policy Author');
+    const reviewer = await issue('Independent Reviewer');
+    const sameName = await issue('policy author');
+    const auditor = await issue('Policy Auditor', 'auditor');
+    const other = await issue('Other Tenant', 'administrator', second);
+    await requirement(proposer.token, true, 403);
+    await requirement(auditor.token, true, 403);
+    await requirement(first, true);
+    await requirement(first, true);
+    assert.equal((await admin('session')).reviewRequired, true);
+    assert.deepEqual(await queue(second), { required: false, entries: [] });
+    await requirement(second, true);
+
+    const group = await post('policy-groups', proposer.token, { name: 'Review-controlled group' });
+    const groupPolicies = `policy-groups/${group.id}/policies`;
+    const promote = `policy-groups/${group.id}/promote`;
+    const restoreBaseline = `policies/${settings.version}/restore`;
+    await post('policies', first, { mode: 'warn' }, 403);
+    await post(restoreBaseline, first, undefined, 403);
+    await post(groupPolicies, first, { mode: 'warn' }, 403);
+    await post(promote, first, { expectedVersion: settings.version }, 403);
+    const candidate = { mode: 'block', githubPatMode: 'warn', pathRules: { allow: [], block: ['private-fixture.test/review'] },
+      expectedVersion: settings.version };
+    const initial = await post('policies', proposer.token, candidate, 202, true);
+    const pending = await status(initial.reviewId);
+    assert.equal(pending.status, 'pending');
+    assert.deepEqual(pending.snapshots.before, settings);
+    assert.deepEqual(pending.snapshots.candidate.pathRules, candidate.pathRules);
+    assert.equal(Date.parse(pending.expiresAt) - Date.parse(pending.requestedAt), 86_400_000);
+    assert.equal(pending.requester.id, proposer.access.id);
+    assert.deepEqual(await baseline(), settings);
+    assert.deepEqual((await queue(auditor.token)).entries, (await queue()).entries);
+    assert.deepEqual((await queue(second)).entries, []);
+    await decide(initial.reviewId, other.token, true, 404);
+    await decide(initial.reviewId, auditor.token, true, 403);
+    await decide(initial.reviewId, first, true, 403);
+    assert.equal((await decide(initial.reviewId, proposer.token, true, 403)).code, 'self_approval');
+    assert.equal((await decide(initial.reviewId, sameName.token, true, 403)).code, 'self_approval');
+    const competing = await post('policies', proposer.token, { mode: 'monitor', expectedVersion: settings.version }, 202);
+
+    const race = () => fetch(`${baseUrl}/v1/admin/policy-reviews/${initial.reviewId}/decision`, {
+      method: 'POST', headers: { Authorization: `Bearer ${reviewer.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approve: true }), signal: AbortSignal.timeout(5000),
+    });
+    const responses = await Promise.all([race(), race()]);
+    assert.deepEqual(responses.map(({ status }) => status).sort(), [200, 409]);
+    const firstVersion = await baseline();
+    assert.equal(firstVersion.version, settings.version + 1);
+    assert.deepEqual(firstVersion.pathRules, candidate.pathRules);
+    assert.equal(firstVersion.githubPatMode, 'warn');
+    assert.equal((await status(initial.reviewId)).publishedVersion, firstVersion.version);
+    assert.equal((await status(initial.reviewId)).reviewer.id, reviewer.access.id);
+    assert.equal((await decide(competing.reviewId, reviewer.token, true, 409)).code, 'review_stale');
+    assert.equal((await status(competing.reviewId)).status, 'stale');
+    await post('policies', proposer.token, { mode: 'monitor', expectedVersion: settings.version }, 409);
+
+    const scoped = await post(groupPolicies, proposer.token, { mode: 'warn', expectedVersion: firstVersion.version }, 202);
+    const scopedFirst = await decide(scoped.reviewId, reviewer.token, true);
+    const olderPromotion = await post(promote, proposer.token, { expectedVersion: scopedFirst.version }, 202);
+    const groupEdit = await post(groupPolicies, proposer.token, { mode: 'monitor', expectedVersion: scopedFirst.version }, 202);
+    const scopedSecond = await decide(groupEdit.reviewId, reviewer.token, true);
+    assert.equal((await decide(olderPromotion.reviewId, reviewer.token, true, 409)).code, 'review_stale');
+    const promotion = await post(promote, proposer.token, { expectedVersion: scopedSecond.version }, 202);
+    assert.equal((await status(promotion.reviewId)).sourceVersion, scopedSecond.version);
+    const promoted = await decide(promotion.reviewId, reviewer.token, true);
+    assert.equal(promoted.mode, scopedSecond.mode);
+    assert.deepEqual(await baseline(), promoted);
+    const scopedRestore = await post(`${groupPolicies}/${scopedFirst.version}/restore`, proposer.token, undefined, 202);
+    assert.equal((await decide(scopedRestore.reviewId, reviewer.token, true)).restoredFrom, scopedFirst.version);
+    const restoration = await post(restoreBaseline, proposer.token, undefined, 202);
+    const restored = await decide(restoration.reviewId, reviewer.token, true);
+    assert.equal(restored.restoredFrom, settings.version);
+    assert.deepEqual(restored.pathRules, settings.pathRules);
+
+    const rejected = await post('policies', proposer.token, { mode: 'warn' }, 202);
+    await decide(rejected.reviewId, reviewer.token, false, 204);
+    assert.equal((await status(rejected.reviewId)).status, 'rejected');
+    const withdrawn = await post('policies', proposer.token, { mode: 'warn' }, 202);
+    await decide(withdrawn.reviewId, proposer.token, false, 204);
+    assert.equal((await status(withdrawn.reviewId)).status, 'withdrawn');
+    if (postgres) {
+      const expiring = await post('policies', proposer.token, { mode: 'warn' }, 202);
+      await retentionFixture(`UPDATE policy_reviews SET expires_at = now() - interval '1 second' WHERE id = '${expiring.reviewId}'`);
+      assert.equal((await status(expiring.reviewId)).status, 'expired');
+      assert.equal((await decide(expiring.reviewId, reviewer.token, true, 409)).code, 'review_closed');
+    }
+    const cancelled = await post('policies', proposer.token, { mode: 'warn' }, 202);
+    const revokedAuthor = await post('policies', sameName.token, { mode: 'block' }, 202);
+    await post(`access/${sameName.access.id}/revoke`, first, undefined, 204);
+    assert.equal((await decide(revokedAuthor.reviewId, reviewer.token, true, 409)).code, 'review_stale');
+    await requirement(first, false);
+    assert.equal((await status(cancelled.reviewId)).status, 'cancelled');
+    assert.equal((await post('policies', proposer.token, { mode: 'warn' }, 409, true)).code, 'review_mode_changed');
+    assert.deepEqual(await baseline(), restored);
+    if (postgres) {
+      await stop();
+      await start();
+      assert.equal((await status(initial.reviewId)).status, 'approved');
+      assert.equal((await queue()).required, false);
+    }
+    const audit = await admin('audit?limit=1000');
+    const requested = audit.entries.find(({ action, reviewChange }) => action === 'policy_review_requested' && reviewChange.reviewId === initial.reviewId);
+    const decided = audit.entries.filter(({ action, reviewChange }) => action === 'policy_review_decided' && reviewChange.reviewId === initial.reviewId);
+    assert.equal(requested.actorAccess.id, proposer.access.id);
+    assert.equal(decided.length, 1);
+    assert.equal(decided[0].actorAccess.id, reviewer.access.id);
+    assert.equal(decided[0].reviewChange.publishedVersion, firstVersion.version);
+    assert.equal(audit.entries.filter(({ action }) => action === 'policy_review_setting_changed').length, 2);
+    assert.ok(!JSON.stringify(audit).includes('private-fixture.test/review'));
+    assert.ok(!JSON.stringify(await queue()).includes(proposer.token));
   });
 });

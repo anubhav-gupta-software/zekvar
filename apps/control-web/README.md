@@ -32,6 +32,15 @@ The organization baseline applies to unassigned browsers and groups that follow 
 
 **Audit log** records issuance, revocation, and changes made with a named administrator credential. Use a distinct token per recipient for attribution.
 
+## Require policy reviews
+
+1. Issue named administrator credentials to two reviewers, then sign in as the owner and choose **Require policy reviews** under **Policy reviews**. The requirement applies to the organization baseline and rollout groups.
+2. Sign in as a named administrator. Submit a policy, navigation rule change, previewed draft, restore, or group promotion for review. Enrolled browsers keep their current policies while the request is pending.
+3. Sign in as a different named administrator, open **Policy reviews**, and compare the proposed settings with the reference version. Choose **Approve and publish** or **Reject request**. The requesting administrator can withdraw the request.
+4. Check **Policy history** and **Browser health** after approval. **Audit log** records the request, decision, and published version.
+
+Requests expire after 24 hours. A change to the reference policy, promotion source, or requesting credential can make a request stale. Submit a fresh request in that case. Owners can disable the requirement, which cancels pending requests. The requirement covers policy publication, restoration, and promotion. Browser assignments continue to use the rollout-group controls. [Policy reviews API](../control-api/README.md#policy-reviews)
+
 ## Roll out policies to a pilot group
 
 1. Update enrolled browsers to Zekvar Browser v0.8.0 or later and let them sync. Open **Rollout groups** and create a group.

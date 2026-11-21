@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../../lib/api';
 import { roleLabels } from '../../lib/access';
+import { reviewOperations, reviewStatuses } from '../../lib/reviews';
 import { auditActions, auditFilters, type AuditEntry } from '../../lib/audit';
 import { aiApps, classificationLabels, utc } from '../../lib/control';
 import { cleanupCounts, retentionFields, type RetentionField } from '../../lib/retention';
@@ -82,6 +83,11 @@ const actorLabels = { organization_admin: 'Organization admin', named_administra
   browser_enrollment: 'Browser enrollment', system: 'Scheduled cleanup' };
 
 function auditDetails(entry: AuditEntry) {
+  const review = entry.reviewChange;
+  if (review?.reviewId) return <>{review.operation && reviewOperations[review.operation]} · {review.status && reviewStatuses[review.status]}
+    {review.publishedVersion && <> · v{review.publishedVersion}</>} · <code title={review.reviewId}>{review.reviewId.slice(0, 13)}</code></>;
+  if (review) return <>{review.required ? 'Reviews required' : 'Reviews optional'}
+    {!!review.cancelled && <> · {review.cancelled} cancelled</>}</>;
   const credential = entry.subjectAccess;
   if (credential) return <span title={credential.id}>{credential.name} · {roleLabels[credential.role]}</span>;
   const group = entry.groupChange;

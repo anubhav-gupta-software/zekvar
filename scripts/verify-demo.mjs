@@ -138,6 +138,7 @@ try {
   const dashboardAdmin = randomBytes(32).toString('hex');
   const extensionAdmin = randomBytes(32).toString('hex');
   const pilotAdmin = randomBytes(32).toString('hex');
+  const reviewAdmin = randomBytes(32).toString('hex');
   const apiServer = startService('dotnet', ['bin/Debug/net10.0/Control.Api.dll'], api, {
     DOTNET_ENVIRONMENT: 'Development', ASPNETCORE_ENVIRONMENT: 'Development', Control__Port: String(apiPort), ConnectionStrings__Control: db,
     Control__Organizations__0__Slug: 'demo', Control__Organizations__0__AdminToken: token,
@@ -145,6 +146,7 @@ try {
     Control__Organizations__2__Slug: 'extension-regression', Control__Organizations__2__AdminToken: extensionAdmin,
     ...(flags.has('--pilot') ? {
       Control__Organizations__3__Slug: 'managed-pilot', Control__Organizations__3__AdminToken: pilotAdmin,
+      Control__Organizations__4__Slug: 'review-pilot', Control__Organizations__4__AdminToken: reviewAdmin,
     } : {}),
   });
   await ready(`${apiOrigin}/health`, apiServer, apiServer.log);
@@ -166,11 +168,16 @@ try {
     ZEKVAR_TEST_PREVIEW_SCREENSHOT: artifacts ? join(artifacts, '16-control-policy-preview.png') : '',
     ZEKVAR_TEST_EVENTS_SCREENSHOT: artifacts ? join(artifacts, '17-control-event-history.png') : '',
     ZEKVAR_TEST_ACCESS_SCREENSHOT: artifacts ? join(artifacts, '22-control-access.png') : '',
+    ZEKVAR_TEST_REVIEW_SCREENSHOT: artifacts ? join(artifacts, '23-control-policy-review.png') : '',
   });
   await run('npm', ['run', 'test:control'], extension, {
     ZEKVAR_EXTENSION_TEST_API: apiOrigin, ZEKVAR_EXTENSION_TEST_ADMIN_TOKEN: extensionAdmin,
   });
   if (flags.has('--pilot')) {
+    await run(process.execPath, ['--test', 'test/review-pilot.test.mjs'], extension, {
+      ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: reviewAdmin,
+      ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0',
+    });
     console.log('Running the two-profile managed pilot. The stale-browser check takes about 90 seconds.');
     await run(process.execPath, ['--test', 'test/pilot.test.mjs'], extension, {
       ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: pilotAdmin,

@@ -12,11 +12,12 @@ export function RefreshSection({ label }: { label: string }) {
     onClick={() => startTransition(() => router.refresh())}>{pending ? 'Refreshing…' : 'Refresh'}</button>;
 }
 
-export function DomainRulesForm({ rules, paths, version, groupId }: {
-  rules?: DomainRules; paths?: PathRules; version?: number; groupId?: string;
+export function DomainRulesForm({ rules, paths, version, groupId, review }: {
+  rules?: DomainRules; paths?: PathRules; version?: number; groupId?: string; review: boolean;
 }) {
-  return <MutationForm action={publishDomainRules} label="Publish navigation rules" appearance="primary">
+  return <MutationForm action={publishDomainRules} label={review ? 'Request navigation review' : 'Publish navigation rules'} appearance="primary">
     {groupId && <input type="hidden" name="groupId" value={groupId} />}
+    {review && <input type="hidden" name="expectReview" value="on" />}
     <input type="hidden" name="expectedVersion" value={version ?? ''} />
     <p className="muted" id="domain-policy-scope">
       Enter one hostname or hostname/path per line, such as <code>example.com/work</code>. Rules cover top-level
@@ -42,7 +43,8 @@ function DomainList({ name, label, initial }: { name: string; label: string; ini
 
 function Notice({ state }: { state: Feedback }) {
   if (state.error) return <p className="feedback error" role="alert">{state.error}</p>;
-  if (state.message) return <p className="feedback" role="status">{state.message}</p>;
+  if (state.message) return <p className="feedback" role="status">{state.message}
+    {state.reviewId && <> <a className="underline" href={`/reviews#review-${state.reviewId}`}>Open review request</a></>}</p>;
   return null;
 }
 

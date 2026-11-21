@@ -1,6 +1,7 @@
 import type { AiAppId, AppClassification, PolicyGroupChange } from './control';
 import type { RetentionCleanup, RetentionPolicy } from './retention';
 import type { AccessIdentity } from './access';
+import type { PolicyReviewAudit } from './reviews';
 
 export const auditActions = {
   policy_published: 'Policy published',
@@ -15,6 +16,9 @@ export const auditActions = {
   policy_group_assigned: 'Browser assignment changed',
   access_issued: 'Control token issued',
   access_revoked: 'Control token revoked',
+  policy_review_setting_changed: 'Policy review requirement changed',
+  policy_review_requested: 'Policy review requested',
+  policy_review_decided: 'Policy review decided',
 } as const;
 
 export type AuditAction = keyof typeof auditActions;
@@ -24,6 +28,7 @@ export type AuditEntry = AuditCursor & {
   actor: 'organization_admin' | 'named_administrator' | 'browser_enrollment' | 'system';
   actorAccess?: AccessIdentity;
   subjectAccess?: AccessIdentity;
+  reviewChange?: PolicyReviewAudit;
   policyVersion: number | null;
   restoredFrom: number | null;
   installationId: string | null;

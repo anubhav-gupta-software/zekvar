@@ -43,7 +43,12 @@ async function perform(change: (token: string) => Promise<Feedback>): Promise<Fe
       redirect('/?session=ended');
     }
     if (error instanceof ApiError && error.status === 403) {
+      if (error.code === 'self_approval') return { error: 'A different named administrator must approve this request.' };
+      if (error.code === 'named_administrator_required') return { error: 'Sign in as a named administrator to continue.' };
       return { error: 'Your Control role cannot make this change.' };
+    }
+    if (error instanceof ApiError && error.code === 'review_mode_changed') {
+      return { error: 'The review requirement changed. Reload and review the policy before continuing.' };
     }
     if (error instanceof ApiError && error.status === 404) {
       return { error: 'That record is no longer available. Refresh the dashboard.' };
@@ -85,6 +90,8 @@ export async function revokeControlAccess(_previous: Feedback, form: FormData): 
 }
 
 export async function publishPolicy(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const review = form.get('expectReview') === 'on';
+  const expectedVersion = review ? Number(form.get('expectedVersion')) : undefined;
   const mode = form.get('mode') as Mode;
   const githubPatMode = form.get('githubPatMode') as DetectorMode;
   const paymentCardMode = form.get('paymentCardMode');
@@ -92,13 +99,17 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
   const discovery = form.get('discoveryEnabled');
   const groupId = form.get('groupId');
   if (groupId !== null && !isId(groupId)) return { error: 'Choose a valid rollout group.' };
+  if (expectedVersion !== undefined && (!Number.isInteger(expectedVersion) || expectedVersion < 1 || expectedVersion > 2147483647)) {
+    return { error: 'Reload the current policy before requesting review.' };
+  }
   if (!modes.includes(mode) || !detectorModes.includes(githubPatMode) || !isDetectorMode(paymentCardMode) || !uploadModes ||
       (discovery !== 'on' && discovery !== 'off')) {
     return { error: 'Choose a setting for each policy control.' };
   }
   return perform(async (token) => {
-    const policy = await controlApi.publish(token, { mode, githubPatMode, paymentCardMode, uploadModes, discoveryEnabled: discovery === 'on' },
-      groupId ?? undefined);
+    const policy = await controlApi.publish(token, { mode, githubPatMode, paymentCardMode, uploadModes,
+      discoveryEnabled: discovery === 'on', expectedVersion }, review, groupId ?? undefined);
+    if ('reviewId' in policy) return queued(policy.reviewId);
     refreshPolicyViews();
     return { message: `Version ${policy.version} published in ${decisionLabels[mode].toLowerCase()} mode.` };
   });
@@ -139,11 +150,12 @@ export async function publishDomainRules(_previous: Feedback, form: FormData): P
   if (!rules.domainRules || !rules.pathRules) return { error: rules.error };
   return perform(async (token) => {
     try {
-      const policy = await controlApi.publishNavigation(token, rules, expectedVersion, groupId ?? undefined);
+      const policy = await controlApi.publishNavigation(token, rules, expectedVersion, form.get('expectReview') === 'on', groupId ?? undefined);
+      if ('reviewId' in policy) return queued(policy.reviewId);
       refreshPolicyViews();
       return { message: `Navigation rules published as version ${policy.version}.` };
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409) return { error: 'The policy changed. Reload and review the navigation rules again.' };
+      if (error instanceof ApiError && error.status === 409 && !error.code) return { error: 'The policy changed. Reload and review the navigation rules again.' };
       throw error;
     }
   });
@@ -169,11 +181,12 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
     try {
       const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, uploadModes,
         discoveryEnabled: discovery === 'on', domainRules, pathRules },
-        expectedVersion, groupId ?? undefined);
+        expectedVersion, form.get('expectReview') === 'on', groupId ?? undefined);
+      if ('reviewId' in published) return queued(published.reviewId);
       refreshPolicyViews();
       return { message: `Previewed policy published as version ${published.version}.` };
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409) return { error: 'The policy changed after this preview. Reload and run the comparison again.' };
+      if (error instanceof ApiError && error.status === 409 && !error.code) return { error: 'The policy changed after this preview. Reload and run the comparison again.' };
       throw error;
     }
   });
@@ -185,7 +198,8 @@ export async function restorePolicy(_previous: Feedback, form: FormData): Promis
   if (groupId !== null && !isId(groupId)) return { error: 'Choose a valid rollout group.' };
   if (!Number.isInteger(version) || version < 1 || version > 2147483647) return { error: 'Choose a policy version.' };
   return perform(async (token) => {
-    const policy = await controlApi.restore(token, version, groupId ?? undefined);
+    const policy = await controlApi.restore(token, version, form.get('expectReview') === 'on', groupId ?? undefined);
+    if ('reviewId' in policy) return queued(policy.reviewId);
     refreshPolicyViews();
     return { message: `Version ${version} restored as version ${policy.version}.` };
   });
@@ -194,6 +208,43 @@ export async function restorePolicy(_previous: Feedback, form: FormData): Promis
 function refreshPolicyViews() {
   revalidatePath('/');
   revalidatePath('/groups');
+  revalidatePath('/preview');
+  revalidatePath('/reviews');
+}
+
+function queued(reviewId: string) {
+  revalidatePath('/reviews');
+  return { message: 'Review requested.', reviewId };
+}
+
+export async function setPolicyReview(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const value = form.get('required');
+  if (value !== 'on' && value !== 'off') return { error: 'Choose a policy review setting.' };
+  return perform(async (token) => {
+    await controlApi.setPolicyReview(token, value === 'on');
+    refreshPolicyViews();
+    return { message: value === 'on' ? 'Policy reviews are required.' : 'Policy reviews are optional.' };
+  });
+}
+
+export async function decidePolicyReview(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const id = form.get('id');
+  const decision = form.get('decision');
+  if (!isId(id) || (decision !== 'approve' && decision !== 'close')) return { error: 'Choose a policy review decision.' };
+  return perform(async (token) => {
+    try {
+      const policy = await controlApi.decidePolicyReview(token, id, decision === 'approve');
+      refreshPolicyViews();
+      return { message: policy ? `Review approved and version ${policy.version} published.` : 'Review closed.' };
+    } catch (error) {
+      if (error instanceof ApiError && (error.code === 'review_stale' || error.code === 'review_closed')) {
+        revalidatePath('/reviews');
+        return { error: error.code === 'review_stale' ?
+          'The policy or requester changed. Submit a new request from the current policy.' : 'This review is already closed or expired.' };
+      }
+      throw error;
+    }
+  });
 }
 
 export async function createPolicyGroup(_previous: Feedback, form: FormData): Promise<Feedback> {
@@ -236,11 +287,12 @@ export async function promotePolicyGroup(_previous: Feedback, form: FormData): P
   }
   return perform(async (token) => {
     try {
-      const policy = await controlApi.promoteGroup(token, groupId, expectedVersion);
+      const policy = await controlApi.promoteGroup(token, groupId, expectedVersion, form.get('expectReview') === 'on');
+      if ('reviewId' in policy) return queued(policy.reviewId);
       refreshPolicyViews();
       return { message: `Group policy promoted as organization version ${policy.version}.` };
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409) return { error: 'The reviewed group version changed. Reload and review the current policy.' };
+      if (error instanceof ApiError && error.status === 409 && !error.code) return { error: 'The reviewed group version changed. Reload and review the current policy.' };
       throw error;
     }
   });

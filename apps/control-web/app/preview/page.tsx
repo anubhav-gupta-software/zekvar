@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../../lib/api';
-import { canWrite } from '../../lib/access';
+import { canChangePolicy } from '../../lib/access';
 import { previewSnapshot } from '../../lib/preview';
 import { sessionToken } from '../../lib/session';
 import { Sidebar } from '../workspace';
@@ -39,7 +39,7 @@ export default async function PreviewPage({ searchParams }: { searchParams: Prom
         </section>}
         {data.reference ? <PolicyPreview key={data.selected?.id ?? 'baseline'} reference={data.reference}
           snapshots={data.snapshots} groupId={data.selected?.id} scopeName={data.selected?.name ?? 'Organization baseline'}
-          writable={canWrite(data.session)} /> :
+          writable={canChangePolicy(data.session)} review={data.session.reviewRequired} /> :
           <section className="panel" role="alert">This policy scope is unavailable. <a className="underline" href="/preview">Open the organization baseline</a></section>}
       </> : <section className="panel" role="alert">Control could not load policy snapshots. Try reloading this page.</section>}
     </main>

@@ -4,7 +4,7 @@ import {
   type Decision, type DiscoveredApp, type Installation, type SecurityEvent,
 } from '../lib/control';
 import { eventFilters, setEventCursor } from '../lib/events';
-import { canWrite } from '../lib/access';
+import { canChangePolicy, canWrite } from '../lib/access';
 import { sessionToken } from '../lib/session';
 import { classifyAiApp, revokeInstallation, signOut } from './actions';
 import { DomainRulesForm, EnrollmentForm, MutationForm, RefreshSection, SignInForm } from './forms';
@@ -34,6 +34,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
     if (history?.next) setEventCursor(older, history.next);
     const current = policies[0];
     const writable = canWrite(session);
+    const policyWritable = canChangePolicy(session);
     const active = installations.filter(({ revokedAt }) => !revokedAt).length;
     return <div className="workspace" id="overview">
       <Sidebar session={session} />
@@ -61,9 +62,11 @@ export default async function Control({ searchParams }: { searchParams: Promise<
 
         {writable && <><div className="controls-grid">
           <section className="panel" id="policies" aria-labelledby="policies-heading">
-            <div className="panel-heading"><h2 id="policies-heading">Publish a policy</h2><span className="badge">Organization-wide</span></div>
-            <p className="muted">Set prompt protection and app discovery for enrolled browsers.</p>
-            <PublishPolicyForm policy={current} />
+            <div className="panel-heading"><h2 id="policies-heading">{session.reviewRequired ? 'Policy changes' : 'Publish a policy'}</h2>
+              <span className="badge">Organization-wide</span></div>
+            {policyWritable ? <><p className="muted">Set prompt protection and app discovery for enrolled browsers.</p>
+              <PublishPolicyForm policy={current} review={session.reviewRequired} /></> :
+              <p className="muted">Sign in as a named administrator to request policy changes.</p>}
           </section>
           <section className="panel" aria-labelledby="enrollment-heading">
             <div className="panel-heading"><h2 id="enrollment-heading">Browser enrollment</h2></div>
@@ -72,12 +75,12 @@ export default async function Control({ searchParams }: { searchParams: Promise<
           </section>
         </div>
 
-        <section className="panel" id="domain-rules" aria-labelledby="domain-rules-heading">
+        {policyWritable && <section className="panel" id="domain-rules" aria-labelledby="domain-rules-heading">
           <div className="panel-heading"><h2 id="domain-rules-heading">Navigation rules</h2><span className="badge">Organization-wide</span></div>
-          <DomainRulesForm rules={current?.domainRules} paths={current?.pathRules} version={current?.version} />
-        </section></>}
+          <DomainRulesForm rules={current?.domainRules} paths={current?.pathRules} version={current?.version} review={session.reviewRequired} />
+        </section>}</>}
 
-        <PolicyVersionTable policies={policies} writable={writable} />
+        <PolicyVersionTable policies={policies} writable={policyWritable} review={session.reviewRequired} />
 
         <section className="panel table-panel" id="ai-apps" aria-labelledby="ai-apps-heading">
           <div className="panel-heading"><h2 id="ai-apps-heading">AI apps</h2><RefreshSection label="Refresh AI apps" /></div>

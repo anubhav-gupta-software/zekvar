@@ -3,9 +3,12 @@ import { uploadModes } from '../../../contracts/policy/uploads';
 import { publishPolicy, restorePolicy } from './actions';
 import { MutationForm } from './forms';
 
-export function PublishPolicyForm({ policy, groupId }: { policy?: Policy; groupId?: string }) {
-  return <MutationForm action={publishPolicy} label={groupId ? 'Publish group policy' : 'Publish policy'} appearance="primary">
+export function PublishPolicyForm({ policy, groupId, review }: { policy?: Policy; groupId?: string; review: boolean }) {
+  return <MutationForm action={publishPolicy}
+    label={review ? 'Request policy review' : groupId ? 'Publish group policy' : 'Publish policy'} appearance="primary">
     {groupId && <input type="hidden" name="groupId" value={groupId} />}
+    {review && <><input type="hidden" name="expectReview" value="on" />
+      <input type="hidden" name="expectedVersion" value={policy?.version ?? ''} /></>}
     <div className="grid gap-1">
       <label htmlFor="publish-mode">Test marker</label>
       <select key={policy?.version} id="publish-mode" name="mode" defaultValue={policy?.mode ?? 'monitor'}>
@@ -39,7 +42,9 @@ export function PublishPolicyForm({ policy, groupId }: { policy?: Policy; groupI
   </MutationForm>;
 }
 
-export function PolicyVersionTable({ policies, groupId, writable }: { policies: Policy[]; groupId?: string; writable: boolean }) {
+export function PolicyVersionTable({ policies, groupId, writable, review }: {
+  policies: Policy[]; groupId?: string; writable: boolean; review: boolean;
+}) {
   return <section className="panel table-panel" id="policy-history" aria-labelledby="history-heading">
     <div className="panel-heading"><h2 id="history-heading">{groupId ? 'Group policy history' : 'Policy history'}</h2>
       <span className="table-note">Latest 100 versions</span></div>
@@ -48,14 +53,16 @@ export function PolicyVersionTable({ policies, groupId, writable }: { policies: 
         <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>Payment card number</th><th>AI app discovery</th>
           <th>File uploads</th><th>Navigation rules</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
         <tbody>{policies.map((policy, index) => <PolicyRow key={policy.version} policy={policy} current={index === 0}
-          groupId={groupId} writable={writable} />)}</tbody>
+          groupId={groupId} writable={writable} review={review} />)}</tbody>
       </table>
       {policies.length === 0 && <p className="empty">No policy versions have been published in this scope.</p>}
     </div>
   </section>;
 }
 
-function PolicyRow({ policy, current, groupId, writable }: { policy: Policy; current: boolean; groupId?: string; writable: boolean }) {
+function PolicyRow({ policy, current, groupId, writable, review }: {
+  policy: Policy; current: boolean; groupId?: string; writable: boolean; review: boolean;
+}) {
   const { allow = [], block = [] } = policy.domainRules ?? {};
   const { allow: allowPaths = [], block: blockPaths = [] } = policy.pathRules ?? {};
   return <tr>
@@ -73,9 +80,11 @@ function PolicyRow({ policy, current, groupId, writable }: { policy: Policy; cur
     <td>{policy.restoredFrom ? `v${policy.restoredFrom}` : '—'}</td>
     <td>{current && <span className="badge current">Current</span>}
       {!current && !writable && '—'}
-      {!current && writable && <MutationForm action={restorePolicy} label="Restore" appearance="small" accessibleLabel={`Restore version ${policy.version}`}>
+      {!current && writable && <MutationForm action={restorePolicy} label={review ? 'Request restore' : 'Restore'} appearance="small"
+        accessibleLabel={`${review ? 'Request restore of' : 'Restore'} version ${policy.version}`}>
         <input type="hidden" name="version" value={policy.version} />
         {groupId && <input type="hidden" name="groupId" value={groupId} />}
+        {review && <input type="hidden" name="expectReview" value="on" />}
       </MutationForm>}
     </td>
   </tr>;

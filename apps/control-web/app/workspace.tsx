@@ -1,5 +1,5 @@
 import { signOut } from './actions';
-import { canWrite, roleLabels, type ControlSession } from '../lib/access';
+import { canChangePolicy, canWrite, roleLabels, type ControlSession } from '../lib/access';
 
 export function Brand() {
   return <div className="brand"><span className="brand-mark" aria-hidden="true">Z</span>
@@ -7,7 +7,9 @@ export function Brand() {
   </div>;
 }
 
-export function Sidebar({ active, session }: { active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access'; session?: ControlSession }) {
+export function Sidebar({ active, session }: {
+  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews'; session?: ControlSession;
+}) {
   const root = active ? '/' : '';
   const writable = canWrite(session);
   return <aside className="sidebar">
@@ -16,8 +18,9 @@ export function Sidebar({ active, session }: { active?: 'audit' | 'retention' | 
       <a href={`${root}#overview`}>Overview</a>
       <a href={`${root}#${writable ? 'policies' : 'policy-history'}`}>Policies</a>
       <a href="/preview" aria-current={active === 'preview' ? 'page' : undefined}>Policy preview</a>
+      <a href="/reviews" aria-current={active === 'reviews' ? 'page' : undefined}>Policy reviews</a>
       <a href="/groups" aria-current={active === 'groups' ? 'page' : undefined}>Rollout groups</a>
-      {writable && <a href={`${root}#domain-rules`}>Navigation rules</a>}
+      {canChangePolicy(session) && <a href={`${root}#domain-rules`}>Navigation rules</a>}
       <a href={`${root}#ai-apps`}>AI apps</a>
       <a href={`${root}#browsers`}>Browsers</a>
       <a href={`${root}#events`}>Events</a>

@@ -524,6 +524,80 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await page.goto(dashboard);
   });
 
+  await t.test('a different administrator must approve the exact previewed policy in Control', async () => {
+    const credentials = await Promise.all(['Review author', 'Review approver'].map((name) =>
+      post('/admin/access', { name, role: 'administrator', hours: 1 }, token)));
+    const history = async () => {
+      const response = await context.request.get(`${api}/admin/policies`, { headers: { Authorization: `Bearer ${token}` } });
+      assert.equal(response.status(), 200);
+      return response.json();
+    };
+    const [prior] = await history();
+    await page.getByRole('link', { name: 'Policy reviews', exact: true }).click();
+    await page.getByRole('heading', { name: 'Policy reviews', exact: true }).waitFor();
+    page.once('dialog', (dialog) => dialog.accept());
+    await page.getByRole('button', { name: 'Require policy reviews', exact: true }).click();
+    await page.getByText('Required', { exact: true }).waitFor();
+    await page.goto(dashboard);
+    assert.equal(await page.getByRole('button', { name: 'Publish policy', exact: true }).count(), 0);
+
+    const contexts = await Promise.all([browser.newContext(), browser.newContext()]);
+    try {
+      const [author, approver] = await Promise.all(contexts.map(async (profile, index) => {
+        const tab = await profile.newPage();
+        tab.setDefaultTimeout(5000);
+        await tab.goto(dashboard);
+        await tab.getByLabel('Control token', { exact: true }).fill(credentials[index].token);
+        await tab.getByRole('button', { name: 'Sign in', exact: true }).click();
+        await tab.getByRole('heading', { name: 'Security overview', exact: true }).waitFor();
+        return tab;
+      }));
+      await author.getByRole('link', { name: 'Policy preview', exact: true }).click();
+      await author.getByLabel('Draft test marker', { exact: true }).selectOption('block');
+      await author.getByLabel('Draft blocked paths', { exact: true }).fill('work.review.test/private');
+      await author.getByRole('button', { name: 'Run preview', exact: true }).click();
+      author.once('dialog', (dialog) => dialog.accept());
+      await author.getByRole('button', { name: 'Request review of previewed policy', exact: true }).click();
+      const requestLink = author.getByRole('link', { name: 'Open review request', exact: true });
+      await requestLink.waitFor();
+      assert.deepEqual((await history())[0], prior);
+      const href = await requestLink.getAttribute('href');
+      const hash = new URL(href, dashboard).hash;
+      await requestLink.click();
+      const submitted = author.locator(hash);
+      await submitted.getByText('Pending', { exact: true }).waitFor();
+      assert.equal(await submitted.getByRole('button', { name: 'Approve and publish', exact: true }).count(), 0);
+      await submitted.getByRole('button', { name: 'Withdraw request', exact: true }).waitFor();
+
+      await approver.goto(new URL(href, dashboard).href);
+      const reviewed = approver.locator(hash);
+      await reviewed.getByText('work.review.test/private', { exact: true }).waitFor();
+      await reviewed.getByText(`Reference v${prior.version}`, { exact: true }).waitFor();
+      const screenshot = process.env.ZEKVAR_TEST_REVIEW_SCREENSHOT;
+      if (screenshot) await approver.screenshot({ path: screenshot, fullPage: true });
+      await approver.setViewportSize({ width: 390, height: 844 });
+      assert.equal(await approver.evaluate(() => document.documentElement.scrollWidth), 390);
+      approver.once('dialog', (dialog) => dialog.accept());
+      await reviewed.getByRole('button', { name: 'Approve and publish', exact: true }).click();
+      await reviewed.getByText('Approved', { exact: true }).waitFor();
+      await reviewed.getByText('Approved by Review approver', { exact: true }).waitFor();
+      const [current] = await history();
+      assert.equal(current.version, prior.version + 1);
+      assert.equal(current.mode, 'block');
+      assert.deepEqual(current.pathRules.block, ['work.review.test/private']);
+      await approver.getByRole('link', { name: 'Audit log', exact: true }).click();
+      const audit = approver.getByRole('table', { name: 'Control activity' });
+      await audit.getByRole('row').filter({ hasText: 'Policy review decided' }).getByText('Review approver', { exact: true }).waitFor();
+    } finally {
+      await Promise.all(contexts.map((profile) => profile.close()));
+    }
+    await page.goto(`${dashboard}/reviews`);
+    page.once('dialog', (dialog) => dialog.accept());
+    await page.getByRole('button', { name: 'Disable required reviews', exact: true }).click();
+    await page.getByText('Optional', { exact: true }).waitFor();
+    await page.goto(dashboard);
+  });
+
   await t.test('fits a mobile viewport and clears the session on sign-out', async () => {
     const screenshot = process.env.ZEKVAR_TEST_SCREENSHOT;
     if (screenshot) await page.screenshot({ path: screenshot, fullPage: true });

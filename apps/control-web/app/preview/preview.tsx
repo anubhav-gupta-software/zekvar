@@ -9,6 +9,7 @@ import { changedDecision, parseWebAddress, runComparison, samePolicy,
   type PreviewDecision, type PreviewPolicy, type PreviewResult, type PreviewSnapshot } from '../../lib/preview';
 import { publishPreview } from '../actions';
 import { MutationForm } from '../forms';
+import { PolicyChanges } from '../policy-changes';
 
 const navigationFields = [
   ['allow', 'Draft allowed domains'], ['block', 'Draft blocked domains'],
@@ -26,8 +27,8 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
   };
 }
 
-export function PolicyPreview({ reference, snapshots, groupId, scopeName, writable }: {
-  reference: PreviewSnapshot; snapshots: PreviewSnapshot[]; groupId?: string; scopeName: string; writable: boolean;
+export function PolicyPreview({ reference, snapshots, groupId, scopeName, writable, review }: {
+  reference: PreviewSnapshot; snapshots: PreviewSnapshot[]; groupId?: string; scopeName: string; writable: boolean; review: boolean;
 }) {
   const [source, setSource] = useState(reference.version);
   const [editor, setEditor] = useState(() => editorFor(reference));
@@ -143,12 +144,12 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
       <button type="button" className="button primary" onClick={run}>Run preview</button>
       {error && <p className="feedback error" role="alert">{error}</p>}
     </section>
-    {result && <PreviewResults result={result} groupId={groupId} scopeName={scopeName} writable={writable} />}
+    {result && <PreviewResults result={result} groupId={groupId} scopeName={scopeName} writable={writable} review={review} />}
   </>;
 }
 
-function PreviewResults({ result, groupId, scopeName, writable }: {
-  result: PreviewResult; groupId?: string; scopeName: string; writable: boolean;
+function PreviewResults({ result, groupId, scopeName, writable, review }: {
+  result: PreviewResult; groupId?: string; scopeName: string; writable: boolean; review: boolean;
 }) {
   const { reference, candidate, rows } = result;
   const changes = rows.filter(changedDecision).length;
@@ -167,12 +168,14 @@ function PreviewResults({ result, groupId, scopeName, writable }: {
       </div>
     </section>
     {!samePolicy(reference, candidate) && <section className="panel" aria-labelledby="preview-publish-heading">
-      <h2 id="preview-publish-heading">{writable ? 'Publish tested draft' : 'Draft setting changes'}</h2>
-      {writable && <p className="muted">Publish the draft settings to {scopeName} after reviewing these results.</p>}
+      <h2 id="preview-publish-heading">{writable ? (review ? 'Request review of tested draft' : 'Publish tested draft') : 'Draft setting changes'}</h2>
+      {writable && <p className="muted">{review ? 'Submit the tested settings for approval.' :
+        `Publish the draft settings to ${scopeName} after reviewing these results.`}</p>}
       <PolicyChanges reference={reference} candidate={candidate} />
-      {writable && <MutationForm action={publishPreview} label="Publish previewed policy" appearance="primary"
-        confirmation={`Publish the previewed settings to ${scopeName}?`}>
+      {writable && <MutationForm action={publishPreview} label={review ? 'Request review of previewed policy' : 'Publish previewed policy'}
+        appearance="primary" confirmation={review ? `Request review of these settings for ${scopeName}?` : `Publish the previewed settings to ${scopeName}?`}>
         {groupId && <input type="hidden" name="groupId" value={groupId} />}
+        {review && <input type="hidden" name="expectReview" value="on" />}
         <input type="hidden" name="expectedVersion" value={reference.version} />
         <input type="hidden" name="mode" value={candidate.mode} />
         <input type="hidden" name="githubPatMode" value={candidate.githubPatMode} />
@@ -186,31 +189,6 @@ function PreviewResults({ result, groupId, scopeName, writable }: {
       </MutationForm>}
     </section>}
   </>;
-}
-
-function PolicyChanges({ reference, candidate }: { reference: PreviewPolicy; candidate: PreviewPolicy }) {
-  const toggle = (value: boolean) => value ? 'On' : 'Off';
-  const fields = [
-    ['Test marker', decisionLabels[reference.mode], decisionLabels[candidate.mode]],
-    ['GitHub classic PAT', detectorModeLabels[reference.githubPatMode], detectorModeLabels[candidate.githubPatMode]],
-    ['Payment card number', detectorModeLabels[reference.paymentCardMode], detectorModeLabels[candidate.paymentCardMode]],
-    ['AI app discovery', toggle(reference.discoveryEnabled), toggle(candidate.discoveryEnabled)],
-    ...aiPromptApps.map((app) => [`${promptAppLabels[app]} file uploads`, detectorModeLabels[reference.uploadModes[app]],
-      detectorModeLabels[candidate.uploadModes[app]]]),
-  ];
-  return <ul className="preview-changes" aria-label="Policy setting changes">
-    {fields.filter(([, before, after]) => before !== after).map(([field, before, after]) =>
-      <li key={field}>{field} · {before} → {after}</li>)}
-    {(['domainRules', 'pathRules'] as const).flatMap((field) => (['allow', 'block'] as const).flatMap((action) => {
-      const before = reference[field][action];
-      const after = candidate[field][action];
-      const added = after.filter((entry) => !before.includes(entry));
-      const removed = before.filter((entry) => !after.includes(entry));
-      const label = `${field === 'domainRules' ? 'domain' : 'path'} ${action} list`;
-      return [added.length > 0 && <li key={`${field}-${action}-add`}>Add to {label} <code>{added.join(', ')}</code></li>,
-        removed.length > 0 && <li key={`${field}-${action}-remove`}>Remove from {label} <code>{removed.join(', ')}</code></li>];
-    }))}
-  </ul>;
 }
 
 function Outcome({ outcome }: { outcome: PreviewDecision }) {
