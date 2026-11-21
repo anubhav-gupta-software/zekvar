@@ -74,6 +74,7 @@ async function request(path: string, token?: string, body?: object): Promise<unk
     signal: AbortSignal.timeout(3500),
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(path === 'browser/policy' ? { 'X-Zekvar-Assignment-Aware': '1' } : {}),
       ...(body ? { 'Content-Type': 'application/json' } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -149,6 +150,7 @@ async function sync(state: State) {
   try {
     const policy = await request('browser/policy', token);
     if (!isRecord(policy) || !isVersion(policy.version) || !isMode(policy.mode) ||
+        (policy.assignmentVersion !== undefined && !isVersion(policy.assignmentVersion)) ||
         (policy.githubPatMode !== undefined && !isDetectorMode(policy.githubPatMode)) ||
         (policy.discoveryEnabled !== undefined && typeof policy.discoveryEnabled !== 'boolean') ||
         policy.appId !== fixtureApp || policy.ruleId !== fixtureRule || policy.detectorCategory !== fixtureDetector) {
@@ -158,13 +160,17 @@ async function sync(state: State) {
     const discoveryEnabled = policy.discoveryEnabled ?? false;
     const domainRules = readDomainRules(policy.domainRules);
     if (!domainRules) throw new Error('Unknown domain rule format');
-    if (!state.policy || policy.version > state.policy.version || (policy.version === state.policy.version &&
+    const assignment = policy.assignmentVersion ?? 0;
+    const previousAssignment = state.policy?.assignmentVersion ?? 0;
+    if (!state.policy || assignment > previousAssignment || (assignment === previousAssignment &&
+      (policy.version > state.policy.version || (policy.version === state.policy.version &&
         policy.mode === state.policy.mode && githubPatMode === (state.policy.githubPatMode ?? 'off') &&
         discoveryEnabled === (state.policy.discoveryEnabled ?? false) &&
-        sameDomainRules(domainRules, state.domainRules ?? emptyDomainRules))) {
+        sameDomainRules(domainRules, state.domainRules ?? emptyDomainRules))))) {
       await applyDomainRules(state, domainRules);
-      state.policy = { version: policy.version, mode: policy.mode, githubPatMode, discoveryEnabled };
-      if (!discoveryEnabled) state.observations = undefined;
+      state.policy = { version: policy.version, mode: policy.mode, githubPatMode, discoveryEnabled, assignmentVersion: policy.assignmentVersion };
+      if (!discoveryEnabled || assignment !== previousAssignment) state.observations = undefined;
+      if (assignment !== previousAssignment) state.coveragePending = undefined;
       state.chatGptEnabled = Array.isArray(policy.appIds) && policy.appIds.includes(chatGptApp);
       await save(state);
     }
@@ -182,6 +188,7 @@ async function heartbeat(state: State) {
   if (!state.enrollment || !state.policy) return;
   await request('browser/heartbeat', state.enrollment.token, {
     policyVersion: state.policy.version,
+    assignmentVersion: state.policy.assignmentVersion,
     chatGptCoverage: state.chatGptEnabled ? state.coveragePending : undefined,
     domainRulesApplied: state.domainRules && (state.domainRules.allow.length || state.domainRules.block.length) ? true : undefined,
   });
@@ -294,7 +301,7 @@ async function observeApp(appId: DiscoveryApp, observedAt: string) {
   state.observations ??= {};
   const previous = state.observations[appId];
   if (!previous || observedAt > previous.observedAt) {
-    state.observations[appId] = { appId, observedAt, policyVersion: state.policy.version };
+    state.observations[appId] = { appId, observedAt, policyVersion: state.policy.version, assignmentVersion: state.policy.assignmentVersion };
     await save(state);
   }
   if (state.status === 'connected') scheduleDelivery();

@@ -6,7 +6,7 @@ export function standalonePolicy(mode: PolicyMode): Policy {
   return { mode, version: standaloneVersions[mode] };
 }
 
-export type MatchedDecision = { action: PolicyMode; policyVersion: number; reason: string } & RuleMetadata;
+export type MatchedDecision = { action: PolicyMode; policyVersion: number; assignmentVersion?: number; reason: string } & RuleMetadata;
 type PolicyDecision = { action: 'allow' } | MatchedDecision;
 const severity: Record<PolicyMode, number> = { monitor: 1, warn: 2, block: 3 };
 const classicGithubPat = /(?<![A-Za-z0-9_])ghp_[A-Za-z0-9]{36}(?![A-Za-z0-9_])/;
@@ -17,7 +17,8 @@ export function evaluatePrompt(prompt: string, policy: Policy): PolicyDecision {
       classicGithubPat.test(prompt)) {
     return {
       action: policy.githubPatMode, ruleId: githubPatRule, detectorCategory: credentialDetector,
-      policyVersion: policy.version, reason: 'This prompt contains text that looks like a GitHub classic personal access token.',
+      policyVersion: policy.version, assignmentVersion: policy.assignmentVersion,
+      reason: 'This prompt contains text that looks like a GitHub classic personal access token.',
     };
   }
   if (!fixtureMatch) return { action: 'allow' };
@@ -27,6 +28,7 @@ export function evaluatePrompt(prompt: string, policy: Policy): PolicyDecision {
     ruleId: fixtureRule,
     detectorCategory: fixtureDetector,
     policyVersion: policy.version,
+    assignmentVersion: policy.assignmentVersion,
     reason: 'This prompt contains a test secret.',
   };
 }

@@ -21,7 +21,16 @@ Control is a local dashboard for publishing browser policies, issuing enrollment
 
 In **Browser health**, **Reporting** indicates Control heard from the installation within the last 90 seconds. **Stale** indicates the reporting window elapsed. **Policy status** shows whether the browser’s last applied version matches the current policy. Use **Refresh** to update the table. The [two-profile pilot lab](../browser-extension/README.md#run-the-two-profile-chrome-pilot-lab) demonstrates both states.
 
-The demo applies one policy per organization. The dashboard keeps admin tokens in server memory and gives the browser a short-lived HTTP-only session cookie. Restarting the dashboard clears those sessions. Keep both services on loopback and use synthetic demo data.
+The organization baseline applies to unassigned browsers and groups that follow it. The dashboard keeps admin tokens in server memory and gives the browser a short-lived HTTP-only session cookie. Restarting the dashboard clears those sessions. Keep both services on loopback and use synthetic demo data.
+
+## Roll out policies to a pilot group
+
+1. Update enrolled browsers to Zekvar Browser v0.8.0 or later and let them sync. Open **Rollout groups** and create a group.
+2. In **Browser assignments**, select the group for a recent active installation and save. Each browser belongs to at most one rollout group. A new group follows the organization baseline.
+3. Publish the group's prompt, discovery, or domain settings. Its first publish copies the current baseline and applies the changes to that copy. Subsequent publishes update the group's own policy. Use **Browser health** to check the policy status against the browser's assigned version.
+4. Restore a version from **Group policy history** to roll back that group. Assign the browser to **Organization baseline** to return it to the current baseline. After validating the group, **Promote group policy** copies the reviewed version into a new baseline version. If the group policy changes before confirmation, reload and review the new version. Other groups with their own policies continue to use their group settings.
+
+Control records group creation, assignment, publication, rollback, and promotion in the audit log. [Policy groups API](../control-api/README.md#policy-groups)
 
 ## Review and export the audit log
 

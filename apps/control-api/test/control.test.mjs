@@ -27,10 +27,11 @@ async function retentionFixture(query) {
   return stdout.trim();
 }
 
-async function call(path, { token, method = 'GET', body, expect = 200 } = {}) {
+async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (assignmentAware) headers['X-Zekvar-Assignment-Aware'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
@@ -468,5 +469,95 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const scheduled = (await admin('audit?action=retention_cleanup')).entries.filter(({ actor }) => actor === 'system');
     assert.deepEqual(scheduled.map(({ cleanup: { securityEvents, source } }) => [securityEvents, source]).sort((a, b) => a[0] - b[0]),
       [[1, 'scheduled'], [1000, 'scheduled']]);
+  });
+
+  await t.test('rollout groups isolate policies, validate deliveries, and survive assignment and publication changes', async () => {
+    const enroll = async () => {
+      const { grant } = await call('/v1/admin/enrollment-grants', { token: first, method: 'POST' });
+      return call('/v1/enroll', { method: 'POST', body: { grant } });
+    };
+    const [canary, control] = await Promise.all([enroll(), enroll()]);
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: first, ...options });
+    const groups = (options = {}) => admin('policy-groups', options);
+    const create = (name, expect = 200, token = first) => groups({ method: 'POST', body: { name }, expect, token });
+    const assign = (installation, groupId, expect = 204) => admin(`installations/${installation.installationId}/policy-group`,
+      { method: 'POST', body: { groupId }, expect });
+    const fetchPolicy = (installation, assignmentAware = true, expect = 200) =>
+      call('/v1/browser/policy', { token: installation.token, assignmentAware, expect });
+    const browserPost = (path, installation, body, expect = 204) => call(`/v1/browser/${path}`,
+      { token: installation.token, method: 'POST', body, expect });
+    const before = await fetchPolicy(canary, false);
+    await groups({ token: canary.token, expect: 401 });
+    await create(' ', 400);
+    const pilot = await create('  Browser Pilot  ');
+    const foreign = await create('Browser Pilot', 200, second);
+    await create('browser pilot', 409);
+    assert.equal(pilot.name, 'Browser Pilot');
+    assert.equal(pilot.effectiveVersion, before.version);
+    assert.equal(pilot.publishedVersion, null);
+    assert.deepEqual((await groups()).map(({ id }) => id), [pilot.id]);
+    const groupPath = `policy-groups/${pilot.id}`;
+    const scoped = (path = '', options = {}) => admin(`${groupPath}/policies${path}`, options);
+    await admin(`${groupPath}/promote`, { method: 'POST', body: { expectedVersion: before.version }, expect: 409 });
+    await assign(canary, foreign.id, 404);
+    await assign(canary, pilot.id, 409);
+    await fetchPolicy(canary);
+    await fetchPolicy(canary, false);
+    await assign(canary, pilot.id, 409);
+    await fetchPolicy(canary);
+    await assign(canary, pilot.id);
+    await assign(canary, pilot.id);
+    await fetchPolicy(canary, false, 409);
+    assert.deepEqual(await fetchPolicy(canary), { ...before, assignmentVersion: 1 });
+    assert.equal((await groups())[0].browsers, 1);
+
+    const domainRules = { allow: ['work.pilot.test'], block: ['pilot.test'] };
+    const candidate = await scoped('', { method: 'POST', body: { mode: 'block', githubPatMode: 'warn', discoveryEnabled: true, domainRules } });
+    assert.deepEqual(await scoped('', { token: second }), []);
+    await scoped('', { method: 'POST', body: { mode: 'monitor' }, token: second, expect: 404 });
+    await admin(`policies/${candidate.version}/restore`, { method: 'POST', expect: 404 });
+    await scoped(`/${before.version}/restore`, { method: 'POST', expect: 404 });
+    const acknowledgment = { policyVersion: candidate.version, assignmentVersion: 1, domainRulesApplied: true };
+    await browserPost('heartbeat', canary, acknowledgment, 400);
+    assert.deepEqual(await fetchPolicy(canary), { ...candidate, assignmentVersion: 1 });
+    assert.deepEqual(await fetchPolicy(control), before);
+    await browserPost('heartbeat', canary, { ...acknowledgment, assignmentVersion: 0 }, 400);
+    await browserPost('heartbeat', canary, acknowledgment);
+    const scopedEvent = { ...event, eventId: randomUUID(), policyVersion: candidate.version, decision: 'block', assignmentVersion: 1 };
+    await browserPost('events', control, scopedEvent, 400);
+    const observation = { appId: 'gemini', observedAt: new Date().toISOString(), policyVersion: candidate.version, assignmentVersion: 1 };
+    const newBaseline = await admin('policies', { method: 'POST', body: { mode: 'monitor', discoveryEnabled: false } });
+    await browserPost('ai-app-observations', canary, observation);
+    const warn = await scoped('', { method: 'POST', body: { mode: 'warn', discoveryEnabled: false } });
+    await browserPost('ai-app-observations', canary, observation, 400);
+    const restored = await scoped(`/${candidate.version}/restore`, { method: 'POST' });
+    assert.ok(restored.version > warn.version && restored.version > newBaseline.version);
+    assert.deepEqual(restored.domainRules, domainRules);
+    const active = await fetchPolicy(canary);
+    assert.equal(active.version, restored.version);
+    assert.equal(active.assignmentVersion, 1);
+    await assign(canary, null);
+    assert.deepEqual(await fetchPolicy(canary), { ...newBaseline, assignmentVersion: 2 });
+    await browserPost('heartbeat', canary, { ...acknowledgment, policyVersion: restored.version }, 400);
+    await browserPost('heartbeat', canary, { policyVersion: newBaseline.version, assignmentVersion: 2 });
+    await browserPost('events', canary, scopedEvent);
+    await browserPost('ai-app-observations', canary, observation, 400);
+    assert.equal((await admin('events')).find(({ eventId }) => eventId === scopedEvent.eventId).policyVersion, candidate.version);
+    await admin(`${groupPath}/promote`, { method: 'POST', body: { expectedVersion: candidate.version }, expect: 409 });
+    assert.deepEqual(await fetchPolicy(control), newBaseline);
+    const promoted = await admin(`${groupPath}/promote`, { method: 'POST', body: { expectedVersion: restored.version } });
+    assert.equal(promoted.mode, restored.mode);
+    assert.equal(promoted.githubPatMode, restored.githubPatMode);
+    assert.equal(promoted.discoveryEnabled, restored.discoveryEnabled);
+    assert.deepEqual(promoted.domainRules, restored.domainRules);
+    assert.deepEqual(await fetchPolicy(control), promoted);
+    const actions = await admin('audit?action=policy_group_assigned');
+    assert.deepEqual(actions.entries.map(({ groupChange }) => groupChange.groupId), [null, pilot.id]);
+    assert.ok((await admin('audit?action=policy_published')).entries.some(({ policyVersion, groupChange }) =>
+      policyVersion === promoted.version && groupChange.groupId === pilot.id && groupChange.sourceVersion === restored.version));
+    await stop();
+    await start();
+    assert.deepEqual(await fetchPolicy(canary), { ...promoted, assignmentVersion: 2 });
+    assert.deepEqual((await scoped()).map(({ version }) => version), [restored.version, warn.version, candidate.version]);
   });
 });

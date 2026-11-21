@@ -1,4 +1,4 @@
-import type { AiAppId, AppClassification, DetectorMode, DiscoveredApp, DomainRules, Grant, Installation, Mode, Policy, SecurityEvent } from './control';
+import type { AiAppId, AppClassification, DetectorMode, DiscoveredApp, DomainRules, Grant, Installation, Mode, Policy, PolicyGroup, SecurityEvent } from './control';
 import type { AuditPage } from './audit';
 import type { RetentionCleanup, RetentionPolicy } from './retention';
 
@@ -33,9 +33,17 @@ async function request<T>(path: string, token: string, method = 'GET', body?: un
   return response.status === 204 ? undefined as T : await response.json() as T;
 }
 
+const policiesPath = (groupId?: string) => groupId ? `/policy-groups/${groupId}/policies` : '/policies';
+
 export const controlApi = {
   session: (token: string) => request<{ organization: string }>('/session', token),
-  policies: (token: string) => request<Policy[]>('/policies', token),
+  policies: (token: string, groupId?: string) => request<Policy[]>(policiesPath(groupId), token),
+  groups: (token: string) => request<PolicyGroup[]>('/policy-groups', token),
+  createGroup: (token: string, name: string) => request<PolicyGroup>('/policy-groups', token, 'POST', { name }),
+  assignGroup: (token: string, installationId: string, groupId: string | null) =>
+    request<void>(`/installations/${installationId}/policy-group`, token, 'POST', { groupId }),
+  promoteGroup: (token: string, groupId: string, expectedVersion: number) =>
+    request<Policy>(`/policy-groups/${groupId}/promote`, token, 'POST', { expectedVersion }),
   installations: (token: string) => request<Installation[]>('/installations', token),
   events: (token: string, filters: URLSearchParams) => request<SecurityEvent[]>(`/events?${filters}`, token),
   audit: (token: string, filters: URLSearchParams) => request<AuditPage>(`/audit?${filters}`, token),
@@ -45,10 +53,11 @@ export const controlApi = {
   aiApps: (token: string) => request<DiscoveredApp[]>('/ai-apps', token),
   classifyApp: (token: string, appId: AiAppId, status: AppClassification) =>
     request<void>(`/ai-apps/${appId}/classification`, token, 'POST', { status }),
-  publish: (token: string, mode: Mode, githubPatMode: DetectorMode, discoveryEnabled: boolean) =>
-    request<Policy>('/policies', token, 'POST', { mode, githubPatMode, discoveryEnabled }),
-  publishDomains: (token: string, domainRules: DomainRules) => request<Policy>('/policies', token, 'POST', { domainRules }),
-  restore: (token: string, version: number) => request<Policy>(`/policies/${version}/restore`, token, 'POST'),
+  publish: (token: string, mode: Mode, githubPatMode: DetectorMode, discoveryEnabled: boolean, groupId?: string) =>
+    request<Policy>(policiesPath(groupId), token, 'POST', { mode, githubPatMode, discoveryEnabled }),
+  publishDomains: (token: string, domainRules: DomainRules, groupId?: string) =>
+    request<Policy>(policiesPath(groupId), token, 'POST', { domainRules }),
+  restore: (token: string, version: number, groupId?: string) => request<Policy>(`${policiesPath(groupId)}/${version}/restore`, token, 'POST'),
   issueGrant: (token: string) => request<Grant>('/enrollment-grants', token, 'POST'),
   revoke: (token: string, installationId: string) => request<void>(`/installations/${installationId}/revoke`, token, 'POST'),
 };

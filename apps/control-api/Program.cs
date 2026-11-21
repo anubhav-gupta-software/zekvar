@@ -63,18 +63,41 @@ admin.MapPost("/installations/{id:guid}/revoke", async (Guid id, HttpContext htt
 admin.MapGet("/policies", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.PolicyHistory(Identity(http).OrganizationId, ct)));
 admin.MapPost("/policies", async (PublishPolicy request, HttpContext http, CancellationToken ct) =>
-{
-    if (!(FixtureContract.IsMode(request.Mode) || request.Mode is null && request.DomainRules is not null) ||
-        !(request.GithubPatMode is null or "off" || FixtureContract.IsMode(request.GithubPatMode)))
-        return Results.BadRequest(new { error = "Choose a valid rule mode." });
-    if (!DomainRules.TryNormalize(request.DomainRules, out var domainRules))
-        return Results.BadRequest(new { error = "Enter up to 50 domains with no domain in both lists." });
-    var policy = await store.Publish(Identity(http).OrganizationId, request with { DomainRules = domainRules }, null, ct);
-    return Results.Ok(policy);
-});
+    await PublishSettings(request, http, ct));
 admin.MapPost("/policies/{version:int}/restore", async (int version, HttpContext http, CancellationToken ct) =>
     await store.Publish(Identity(http).OrganizationId, null, version, ct) is { } published
         ? Results.Ok(published) : Results.NotFound());
+var groups = admin.MapGroup("/policy-groups");
+groups.MapGet("", async (HttpContext http, CancellationToken ct) => Results.Ok(await store.Groups(Identity(http).OrganizationId, ct)));
+groups.MapPost("", async (CreatePolicyGroup request, HttpContext http, CancellationToken ct) =>
+{
+    var name = request.Name?.Trim();
+    if (name is not { Length: >= 2 and <= 64 } || name.Any(char.IsControl))
+        return Results.BadRequest(new { error = "Enter a group name from 2 to 64 characters." });
+    return await store.CreateGroup(Identity(http).OrganizationId, name, ct) is { } group
+        ? Results.Ok(group) : Results.Conflict(new { error = "A group with this name already exists." });
+});
+groups.MapGet("/{groupId:guid}/policies", async (Guid groupId, HttpContext http, CancellationToken ct) =>
+    Results.Ok(await store.PolicyHistory(Identity(http).OrganizationId, ct, groupId)));
+groups.MapPost("/{groupId:guid}/policies", async (Guid groupId, PublishPolicy request, HttpContext http, CancellationToken ct) =>
+    await PublishSettings(request, http, ct, groupId));
+groups.MapPost("/{groupId:guid}/policies/{version:int}/restore", async (Guid groupId, int version, HttpContext http, CancellationToken ct) =>
+    await store.Publish(Identity(http).OrganizationId, null, version, ct, groupId) is { } published
+        ? Results.Ok(published) : Results.NotFound());
+groups.MapPost("/{groupId:guid}/promote", async (Guid groupId, PromotePolicyGroup request, HttpContext http, CancellationToken ct) =>
+{
+    if (request.ExpectedVersion <= 0) return Results.BadRequest(new { error = "Choose the group version you reviewed." });
+    return await store.Publish(Identity(http).OrganizationId, null, null, ct, sourceGroupId: groupId,
+            expectedSourceVersion: request.ExpectedVersion) is { } published
+        ? Results.Ok(published) : Results.Conflict(new { error = "The reviewed group version is no longer current or available." });
+});
+admin.MapPost("/installations/{id:guid}/policy-group", async (Guid id, AssignPolicyGroup request, HttpContext http, CancellationToken ct) =>
+    await store.AssignGroup(Identity(http).OrganizationId, id, request.GroupId, ct) switch
+    {
+        "assigned" => Results.NoContent(),
+        "upgrade_required" => Results.Conflict(new { error = "Update this browser to Zekvar Browser v0.8.0 before moving it." }),
+        _ => Results.NotFound()
+    });
 admin.MapGet("/events", async (string? appId, string? decision, DateTimeOffset? since, HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.Events(Identity(http).OrganizationId, appId, decision, since, ct)));
 admin.MapGet("/audit", async (string? action, DateTimeOffset? since, DateTimeOffset? until, DateTimeOffset? beforeAt,
@@ -111,8 +134,11 @@ app.MapPost("/v1/enroll", async (RedeemGrant request, CancellationToken ct) =>
 
 var browser = app.MapGroup("/v1/browser").AddEndpointFilter(Authenticate(browser: true));
 browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
-    await store.CurrentPolicy(Identity(http).InstallationId!.Value, ct) is { } policy
-        ? Results.Ok(policy) : Results.Unauthorized());
+{
+    var aware = http.Request.Headers["X-Zekvar-Assignment-Aware"] == "1";
+    if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, ct) is { } policy) return Results.Ok(policy);
+    return aware ? Results.Unauthorized() : Results.Conflict(new { error = "Update the browser to receive the assigned policy." });
+});
 browser.MapPost("/heartbeat", async (Heartbeat request, HttpContext http, CancellationToken ct) =>
     (request.ChatGptCoverage is null or "ready" or "unsupported") &&
     await store.RecordHeartbeat(Identity(http).InstallationId!.Value, request, ct)
@@ -126,6 +152,17 @@ browser.MapPost("/ai-app-observations", async (AppObservation request, HttpConte
         ? Results.NoContent() : Results.BadRequest(new { error = "Invalid app observation or discovery disabled." }));
 
 await app.RunAsync();
+
+async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, CancellationToken ct, Guid? groupId = null)
+{
+    if (!(FixtureContract.IsMode(request.Mode) || request.Mode is null && request.DomainRules is not null) ||
+        !(request.GithubPatMode is null or "off" || FixtureContract.IsMode(request.GithubPatMode)))
+        return Results.BadRequest(new { error = "Choose a valid rule mode." });
+    if (!DomainRules.TryNormalize(request.DomainRules, out var domainRules))
+        return Results.BadRequest(new { error = "Enter up to 50 domains with no domain in both lists." });
+    return await store.Publish(Identity(http).OrganizationId, request with { DomainRules = domainRules }, null, ct, groupId) is { } policy
+        ? Results.Ok(policy) : Results.NotFound();
+}
 
 Func<EndpointFilterInvocationContext, EndpointFilterDelegate, ValueTask<object?>> Authenticate(bool browser) =>
     async (context, next) =>

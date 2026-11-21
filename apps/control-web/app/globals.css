@@ -71,6 +71,11 @@ select { appearance: none; padding-right: 2rem; background-image: linear-gradien
 label { font-size: .9rem; font-weight: 600; }
 .form-row { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
 .form-row:has(#publish-mode) { align-items: end; }
+.form-row:has(#group-name) { align-items: end; }
+.group-menu { margin-bottom: 1rem; }
+.group-menu .button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+#group-settings-heading { overflow-wrap: anywhere; }
+.group-count { margin-inline-start: .45rem; font-variant-numeric: tabular-nums; opacity: .8; }
 .policy-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr)); gap: .75rem; width: 100%; }
 .policy-fields textarea { width: 100%; resize: vertical; font-family: ui-monospace, monospace; }
 .domain-rule-history summary { cursor: pointer; white-space: nowrap; }

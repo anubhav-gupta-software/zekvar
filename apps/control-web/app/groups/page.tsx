@@ -1,0 +1,111 @@
+import { redirect } from 'next/navigation';
+import { ApiError, controlApi } from '../../lib/api';
+import type { Installation, PolicyGroup } from '../../lib/control';
+import { sessionToken } from '../../lib/session';
+import { assignPolicyGroup, createPolicyGroup, promotePolicyGroup } from '../actions';
+import { DomainRulesForm, MutationForm } from '../forms';
+import { PolicyVersionTable, PublishPolicyForm } from '../policies';
+import { Sidebar } from '../workspace';
+
+export default async function Groups({ searchParams }: { searchParams: Promise<{ group?: string | string[] }> }) {
+  const token = await sessionToken();
+  if (!token) redirect('/');
+  const { group: selectedId } = await searchParams;
+  const result = await loadGroups(token, selectedId).catch((error) => {
+    if (error instanceof ApiError && error.status === 401) redirect('/');
+    if (error instanceof ApiError) return undefined;
+    throw error;
+  });
+  return <div className="workspace">
+    <Sidebar active="groups" />
+    <main className="dashboard">
+      <header className="page-heading">
+        <div>{result && <p className="eyebrow">{result.session.organization}</p>}<h1>Rollout groups</h1></div>
+        <span className="badge local"><span aria-hidden="true" />Local demo</span>
+      </header>
+      {result ? <>
+        <section className="panel" aria-labelledby="groups-heading">
+          <div className="panel-heading"><h2 id="groups-heading">Policy groups</h2></div>
+          <p className="muted">A new group follows the organization baseline until you publish a policy for it.</p>
+          {result.groups.length > 0 && <nav className="form-row group-menu" aria-label="Policy groups">
+            {result.groups.map((group) => <a className={`button small ${result.selected?.id === group.id ? 'primary' : ''}`}
+              key={group.id} aria-current={result.selected?.id === group.id ? 'page' : undefined} href={`/groups?group=${group.id}`}>
+              {group.name}<span className="group-count">{group.browsers}</span>
+            </a>)}
+          </nav>}
+          <MutationForm action={createPolicyGroup} label="Create group" appearance="small">
+            <div className="grid gap-1">
+              <label htmlFor="group-name">Group name</label>
+              <input id="group-name" name="name" required minLength={2} maxLength={64} />
+            </div>
+          </MutationForm>
+        </section>
+        {!result.selected && selectedId !== undefined && <section className="panel" role="alert">This rollout group is unavailable. Choose a group from the list.</section>}
+        {result.selected && <div key={result.selected.id}>
+          <div className="controls-grid">
+            <section className="panel" aria-labelledby="group-settings-heading">
+              <div className="panel-heading"><h2 id="group-settings-heading">{result.selected.name}</h2>
+                <span className="badge">{result.selected.publishedVersion ? 'Group policy' : 'Follows baseline'} · v{result.selected.effectiveVersion}</span></div>
+              <p className="muted">Publish changes for the browsers assigned to this group.</p>
+              <PublishPolicyForm policy={result.current} groupId={result.selected.id} />
+            </section>
+            <section className="panel" aria-labelledby="promotion-heading">
+              <h2 id="promotion-heading">Promote to organization baseline</h2>
+              <p className="muted">{result.history[0] ? `Publish reviewed group version v${result.history[0].version} as a new baseline version.` :
+                'Publish a group policy before promoting it.'}</p>
+              {result.history[0] && <MutationForm action={promotePolicyGroup} label="Promote group policy"
+                confirmation={`Publish group version v${result.history[0].version} as the organization baseline?`}>
+                <input type="hidden" name="groupId" value={result.selected.id} />
+                <input type="hidden" name="expectedVersion" value={result.history[0].version} />
+              </MutationForm>}
+            </section>
+          </div>
+          <section className="panel" aria-labelledby="group-domains-heading">
+            <h2 id="group-domains-heading">Group domain rules</h2>
+            <p className="muted" id="domain-policy-scope">Enter one hostname per line. Rules include subdomains, and the most specific rule wins.</p>
+            <DomainRulesForm rules={result.current?.domainRules} version={result.current?.version} groupId={result.selected.id} />
+          </section>
+          <PolicyVersionTable policies={result.history} groupId={result.selected.id} />
+        </div>}
+        {result.groups.length > 0 && <section className="panel table-panel" aria-labelledby="assignments-heading">
+          <div className="panel-heading"><h2 id="assignments-heading">Browser assignments</h2><span className="table-note">Recent active installations</span></div>
+          <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="assignments-heading">
+            <table aria-labelledby="assignments-heading">
+              <thead><tr><th>Installation</th><th>Assigned group</th><th>Expected policy</th><th>Assignment</th></tr></thead>
+              <tbody>{result.installations.filter((installation) => !installation.revokedAt).map((installation) =>
+                <AssignmentRow key={installation.installationId} installation={installation} groups={result.groups} />)}</tbody>
+            </table>
+          </div>
+        </section>}
+      </> : <section className="panel" role="alert">Control could not load rollout groups. Try reloading this page.</section>}
+    </main>
+  </div>;
+}
+
+async function loadGroups(token: string, selectedId: string | string[] | undefined) {
+  const [session, groups, baseline, installations] = await Promise.all([
+    controlApi.session(token), controlApi.groups(token), controlApi.policies(token), controlApi.installations(token),
+  ]);
+  const selected = selectedId === undefined ? groups[0] : groups.find((group) => group.id === selectedId);
+  const history = selected ? await controlApi.policies(token, selected.id) : [];
+  return { session, groups, selected, installations, history, current: history[0] ?? baseline[0] };
+}
+
+function AssignmentRow({ installation, groups }: { installation: Installation; groups: PolicyGroup[] }) {
+  const shortId = installation.installationId.slice(0, 13);
+  return <tr>
+    <td><code title={installation.installationId}>{shortId}</code></td>
+    <td>{installation.policyGroupName ?? 'Organization baseline'}</td>
+    <td>v{installation.expectedPolicyVersion}</td>
+    <td>{installation.assignmentAware ?
+      <MutationForm action={assignPolicyGroup} label="Save" appearance="small" accessibleLabel={`Save assignment for ${shortId}`}>
+        <input type="hidden" name="installationId" value={installation.installationId} />
+        <select name="groupId" key={installation.policyGroupId ?? 'baseline'} defaultValue={installation.policyGroupId ?? ''}
+          aria-label={`Assignment for ${shortId}`}>
+          <option value="">Organization baseline</option>
+          {groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+        </select>
+      </MutationForm> : <span className="muted">Requires Browser v0.8.0 and a sync</span>}
+    </td>
+  </tr>;
+}

@@ -195,4 +195,112 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     await browserRow(idB).getByText('v4', { exact: true }).waitFor();
     await capture('09-pilot-recovered-browser.png');
   });
+
+  await t.test('one managed browser tests a rollout group before its policy is promoted', async () => {
+    await dashboard.getByRole('link', { name: 'Rollout groups', exact: true }).click();
+    await dashboard.getByRole('heading', { name: 'Rollout groups', exact: true }).waitFor();
+    await dashboard.getByLabel('Group name', { exact: true }).fill('Managed browser pilot');
+    await dashboard.getByRole('button', { name: 'Create group', exact: true }).click();
+    await dashboard.getByText('Managed browser pilot created.', { exact: true }).waitFor();
+    const unavailable = await first.browser.newPage();
+    try {
+      await unavailable.goto(`${web}/groups?group=00000000-0000-0000-0000-000000000000`);
+      await unavailable.getByRole('alert').filter({ hasText: 'This rollout group is unavailable.' }).waitFor();
+      assert.equal(await unavailable.getByRole('button', { name: 'Publish group policy', exact: true }).count(), 0);
+    } finally { await unavailable.close(); }
+    const assignments = dashboard.getByRole('table', { name: 'Browser assignments' });
+    const assignmentA = assignments.getByLabel(`Assignment for ${idA.slice(0, 13)}`, { exact: true });
+    const [groupId] = await assignmentA.selectOption({ label: 'Managed browser pilot' });
+    const save = assignments.getByRole('button', { name: `Save assignment for ${idA.slice(0, 13)}`, exact: true });
+    await save.click();
+    await assignments.getByText('Browser assignment saved.', { exact: true }).waitFor();
+
+    const popupA = await popup(first);
+    const popupB = await popup(second);
+    const sync = async (page, name) => {
+      await page.getByRole('button', { name: 'Sync now' }).click();
+      await page.getByText(name, { exact: true }).waitFor();
+    };
+    await sync(popupA, 'Connected to Control · MONITOR v4');
+    await dashboard.getByLabel('Test marker', { exact: true }).selectOption('block');
+    await dashboard.getByRole('button', { name: 'Publish group policy', exact: true }).click();
+    await dashboard.getByText('Version 5 published in block mode.', { exact: true }).waitFor();
+    await dashboard.getByLabel('Blocked domains', { exact: true }).fill('apps.test');
+    await dashboard.getByRole('button', { name: 'Publish domain rules', exact: true }).click();
+    await dashboard.getByText('Domain rules published as version 6.', { exact: true }).waitFor();
+    await sync(popupA, 'Connected to Control · BLOCK v6');
+    await sync(popupB, 'Connected to Control · MONITOR v4');
+    await domains.visit(first.browser, 'apps.test', true);
+    await domains.visit(second.browser, 'apps.test', false);
+
+    const checkPrompt = async (profile, label, blocked) => {
+      const page = await profile.browser.newPage();
+      try {
+        await page.goto(fixtureUrl);
+        await page.getByText(`Control policy: ${label}`, { exact: true }).waitFor();
+        await page.getByLabel('Prompt', { exact: true }).fill('ZEKVAR_TEST_SECRET');
+        await page.getByRole('button', { name: 'Send prompt' }).click();
+        if (blocked) await page.getByText(/Submission blocked/).waitFor();
+        assert.equal(await page.locator('#submission-count').textContent(), blocked ? '0' : '1');
+      } finally { await page.close(); }
+    };
+    await checkPrompt(first, 'BLOCK · v6', true);
+    await checkPrompt(second, 'MONITOR · v4', false);
+    const browserStatus = await installations();
+    assert.equal(browserStatus.find(({ installationId }) => installationId === idA).expectedPolicyVersion, 6);
+    assert.equal(browserStatus.find(({ installationId }) => installationId === idB).expectedPolicyVersion, 4);
+    await capture('15-control-rollout-groups.png');
+
+    await dashboard.getByRole('button', { name: 'Restore version 5', exact: true }).click();
+    await dashboard.getByText('Version 5 restored as version 7.', { exact: true }).waitFor();
+    await sync(popupA, 'Connected to Control · BLOCK v7');
+    await domains.visit(first.browser, 'apps.test', false);
+    const stalePolicy = await first.worker.evaluate(async (origin) => {
+      const { controlState } = await chrome.storage.local.get('controlState');
+      const response = await fetch(`${origin}/v1/browser/policy`, {
+        headers: { Authorization: `Bearer ${controlState.enrollment.token}`, 'X-Zekvar-Assignment-Aware': '1' },
+      });
+      if (!response.ok) throw new Error(`Policy fetch failed with status ${response.status}.`);
+      return response.json();
+    }, api);
+    assert.equal(stalePolicy.version, 7);
+    assert.equal(stalePolicy.assignmentVersion, 1);
+    await assignmentA.selectOption('');
+    await save.click();
+    await assignments.getByRole('row').filter({ hasText: idA.slice(0, 13) }).getByText('v4', { exact: true }).waitFor();
+    await sync(popupA, 'Connected to Control · MONITOR v4');
+    await first.worker.evaluate((previous) => {
+      const request = globalThis.fetch;
+      globalThis.fetch = (url, options) => {
+        if (String(url).endsWith('/v1/browser/policy')) {
+          globalThis.fetch = request;
+          return Promise.resolve(Response.json(previous));
+        }
+        return request(url, options);
+      };
+    }, stalePolicy);
+    await sync(popupA, 'Connected to Control · MONITOR v4');
+    await popupA.waitForFunction(() => !document.querySelector('#sync').disabled);
+    await popupA.getByText('Connected to Control · MONITOR v4', { exact: true }).waitFor();
+    await checkPrompt(first, 'MONITOR · v4', false);
+
+    const concurrentPublish = await fetch(`${api}/v1/admin/policy-groups/${groupId}/policies`, {
+      method: 'POST', headers: { Authorization: `Bearer ${admin}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'block' }), signal: AbortSignal.timeout(4000),
+    });
+    assert.equal(concurrentPublish.status, 200);
+    assert.equal((await concurrentPublish.json()).version, 8);
+    const promote = dashboard.getByRole('button', { name: 'Promote group policy', exact: true });
+    dashboard.once('dialog', (dialog) => dialog.accept());
+    await promote.click();
+    await dashboard.getByRole('alert').filter({ hasText: 'The reviewed group version changed.' }).waitFor();
+    await sync(popupB, 'Connected to Control · MONITOR v4');
+    await dashboard.reload();
+    dashboard.once('dialog', (dialog) => dialog.accept());
+    await promote.click();
+    await dashboard.getByText('Group policy promoted as organization version 9.', { exact: true }).waitFor();
+    await sync(popupB, 'Connected to Control · BLOCK v9');
+    await checkPrompt(second, 'BLOCK · v9', true);
+    await Promise.all([popupA.close(), popupB.close()]);
+  });
 });

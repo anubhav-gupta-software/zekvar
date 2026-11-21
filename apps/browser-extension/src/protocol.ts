@@ -8,7 +8,7 @@ const discoveryCatalog = {
   'https://gemini.google.com': 'gemini',
 } as const;
 export type DiscoveryApp = typeof discoveryCatalog[keyof typeof discoveryCatalog];
-export type AppObservation = { appId: DiscoveryApp; observedAt: string; policyVersion: number };
+export type AppObservation = { appId: DiscoveryApp; observedAt: string; policyVersion: number; assignmentVersion?: number };
 
 export function discoveredApp(url: string | undefined): DiscoveryApp | undefined {
   const origin = url && new URL(url).origin;
@@ -21,7 +21,7 @@ export const githubPatRule = 'github-classic-pat';
 export const credentialDetector = 'credential';
 export type PolicyMode = 'monitor' | 'warn' | 'block';
 export type DetectorMode = PolicyMode | 'off';
-export type Policy = { version: number; mode: PolicyMode; githubPatMode?: DetectorMode; discoveryEnabled?: boolean };
+export type Policy = { version: number; mode: PolicyMode; githubPatMode?: DetectorMode; discoveryEnabled?: boolean; assignmentVersion?: number };
 export type RuleMetadata = { ruleId: typeof fixtureRule; detectorCategory: typeof fixtureDetector } |
   { ruleId: typeof githubPatRule; detectorCategory: typeof credentialDetector };
 export type PolicyEvent = {
@@ -29,6 +29,7 @@ export type PolicyEvent = {
   appId: AppId;
   timestamp: string;
   policyVersion: number;
+  assignmentVersion?: number;
   decision: PolicyMode | 'warn_override';
 } & RuleMetadata;
 
@@ -95,13 +96,14 @@ export function isId(value: unknown): value is string {
 
 export function readMetadata(value: unknown): PolicyEvent | undefined {
   if (!isRecord(value) || !isId(value.eventId) || !isVersion(value.policyVersion) ||
+      (value.assignmentVersion !== undefined && !isVersion(value.assignmentVersion)) ||
       (value.appId !== fixtureApp && value.appId !== chatGptApp) ||
       !(isMode(value.decision) || value.decision === 'warn_override') ||
       typeof value.timestamp !== 'string' || !Number.isFinite(Date.parse(value.timestamp))) return;
 
   const event = {
     eventId: value.eventId, appId: value.appId, timestamp: new Date(value.timestamp).toISOString(),
-    policyVersion: value.policyVersion, decision: value.decision,
+    policyVersion: value.policyVersion, decision: value.decision, assignmentVersion: value.assignmentVersion,
   } as const;
   if (value.ruleId === fixtureRule && value.detectorCategory === fixtureDetector) {
     return { ...event, ruleId: fixtureRule, detectorCategory: fixtureDetector };

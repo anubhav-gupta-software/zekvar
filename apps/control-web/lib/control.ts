@@ -25,6 +25,8 @@ export const classificationLabels: Record<AppClassification, string> = {
 };
 export type DiscoveredApp = { appId: AiAppId; status: AppClassification; browsersSeen: number; lastObservedAt: string | null };
 export type DomainRules = { allow: string[]; block: string[] };
+export type PolicyGroup = { id: string; name: string; effectiveVersion: number; publishedVersion: number | null; browsers: number };
+export type PolicyGroupChange = { groupId: string | null; groupName: string | null; installationId: string | null; sourceVersion: number | null };
 
 export type Policy = {
   version: number;
@@ -44,6 +46,10 @@ export type Installation = {
   revokedAt: string | null;
   chatGptCoverage?: 'ready' | 'unsupported' | null;
   chatGptCheckedAt?: string | null;
+  policyGroupId?: string | null;
+  policyGroupName?: string | null;
+  expectedPolicyVersion?: number;
+  assignmentAware?: boolean;
 };
 
 export type SecurityEvent = {
@@ -63,3 +69,7 @@ export type Feedback = { error?: string; message?: string; grant?: Grant };
 export const utc = new Intl.DateTimeFormat('en-US', {
   dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC',
 });
+
+export function isId(value: unknown): value is string {
+  return typeof value === 'string' && /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(value);
+}

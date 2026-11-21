@@ -67,6 +67,14 @@ Windows use 24-hour periods. Security events age from the earlier of occurrence 
 
 `POST /v1/admin/retention/cleanup` deletes up to 1,000 expired rows per dataset for the authenticated organization. The service also runs at startup and on a timer set by `Control__RetentionSweepSeconds`, which defaults to 3,600. It drains expired rows in batches. Successful removal produces an audit entry with counts and a manual or scheduled source. Database backup expiry, previously downloaded files, and customer deletion requests follow their own lifecycle.
 
+## Policy groups
+
+`GET /v1/admin/policy-groups` lists the organization's groups and their effective versions. `POST /v1/admin/policy-groups` creates a group from a `name`. The group follows the baseline until its first scoped publish. Use `POST /v1/admin/installations/{id}/policy-group` with `groupId` to assign a browser. Send `null` to return it to the organization baseline.
+
+`GET` and `POST /v1/admin/policy-groups/{groupId}/policies` read and publish scoped versions. `POST /v1/admin/policy-groups/{groupId}/policies/{version}/restore` restores a version from the same group. `POST /v1/admin/policy-groups/{groupId}/promote` takes `expectedVersion` and copies that snapshot into a new organization baseline version if it is still the group's current version. Versions remain unique within the organization. The baseline and each group have separate history and current pointers.
+
+Browser v0.8.0 advertises assignment support with `X-Zekvar-Assignment-Aware: 1` when it requests policy. Control enables assignment after that capability is observed. After a move, the response includes `assignmentVersion`. Browsers send it with heartbeats, decisions, and AI observations. Heartbeats require the current assignment and a delivered version. Queued decisions preserve the assignment that produced them and can arrive after a move. AI observations use the current assignment. The audit log includes `policy_group_created` and `policy_group_assigned`, with group context on publishes, restores, and promotion.
+
 For isolated API or browser tests, `Control__Port` selects a different loopback port. The default dashboard and extension use `5187`.
 
 ## Verify the workflow

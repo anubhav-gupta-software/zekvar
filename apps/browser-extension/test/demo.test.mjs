@@ -78,6 +78,7 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
         method: request.method, signal: AbortSignal.timeout(5000),
         headers: {
           ...(request.headers.authorization ? { Authorization: request.headers.authorization } : {}),
+          ...(request.headers['x-zekvar-assignment-aware'] ? { 'X-Zekvar-Assignment-Aware': request.headers['x-zekvar-assignment-aware'] } : {}),
           ...(body.length ? { 'Content-Type': 'application/json' } : {}),
         },
         body: body.length ? body : undefined,

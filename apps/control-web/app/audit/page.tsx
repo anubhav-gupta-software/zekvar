@@ -80,6 +80,10 @@ export default async function Audit({ searchParams }: { searchParams: Promise<Re
 const actorLabels = { organization_admin: 'Organization admin', browser_enrollment: 'Browser enrollment', system: 'Scheduled cleanup' };
 
 function auditDetails(entry: AuditEntry) {
+  const group = entry.groupChange;
+  if (group?.sourceVersion) return `v${entry.policyVersion} promoted from ${group.groupName} v${group.sourceVersion}`;
+  if (group?.installationId) return <><code title={group.installationId}>{group.installationId.slice(0, 13)}</code> · {group.groupName ?? 'Organization baseline'}</>;
+  if (group?.groupName) return `${group.groupName}${entry.policyVersion ? ` · v${entry.policyVersion}${entry.restoredFrom ? ` from v${entry.restoredFrom}` : ''}` : ''}`;
   if (entry.policyVersion) return `v${entry.policyVersion}${entry.restoredFrom ? ` from v${entry.restoredFrom}` : ''}`;
   if (entry.installationId) return <code title={entry.installationId}>{entry.installationId.slice(0, 13)}</code>;
   if (entry.appId && entry.classification) return `${aiApps[entry.appId]} · ${classificationLabels[entry.classification]}`;

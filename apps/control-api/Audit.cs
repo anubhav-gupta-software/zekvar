@@ -5,13 +5,14 @@ internal sealed record AuditFilters(string? Action, DateTimeOffset? Since, DateT
 {
     public bool IsValid =>
         (Action is null or "policy_published" or "policy_restored" or "grant_issued" or "browser_enrolled" or "browser_revoked"
-            or "app_classified" or "retention_changed" or "retention_cleanup") &&
+            or "app_classified" or "retention_changed" or "retention_cleanup" or "policy_group_created" or "policy_group_assigned") &&
         (Since is null || Until is null || Since < Until) &&
         (BeforeAt is null) == (BeforeId is null) && BeforeId != Guid.Empty && Limit is >= 1 and <= 1000;
 }
 
 internal sealed record AuditEntry(Guid Id, DateTime OccurredAt, string Action, int? PolicyVersion, int? RestoredFrom,
-    Guid? InstallationId, string? AppId, string? Classification, RetentionPolicy? Retention, RetentionCleanup? Cleanup)
+    Guid? InstallationId, string? AppId, string? Classification, RetentionPolicy? Retention, RetentionCleanup? Cleanup,
+    PolicyGroupChange? GroupChange)
 {
     public string Actor => Action switch
     {

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Zekvar Browser",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "minimum_chrome_version": "120",
   "description": "Applies Zekvar domain and prompt protection policies and reports cataloged AI app discovery when enabled.",
   "permissions": ["storage", "alarms", "declarativeNetRequest"],

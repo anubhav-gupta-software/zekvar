@@ -1,4 +1,4 @@
-import type { AiAppId, AppClassification } from './control';
+import type { AiAppId, AppClassification, PolicyGroupChange } from './control';
 import type { RetentionCleanup, RetentionPolicy } from './retention';
 
 export const auditActions = {
@@ -10,6 +10,8 @@ export const auditActions = {
   app_classified: 'AI app classified',
   retention_changed: 'Retention settings changed',
   retention_cleanup: 'Expired records deleted',
+  policy_group_created: 'Rollout group created',
+  policy_group_assigned: 'Browser assignment changed',
 } as const;
 
 export type AuditAction = keyof typeof auditActions;
@@ -24,6 +26,7 @@ export type AuditEntry = AuditCursor & {
   classification: AppClassification | null;
   retention: RetentionPolicy | null;
   cleanup: RetentionCleanup | null;
+  groupChange: PolicyGroupChange | null;
 };
 export type AuditPage = { entries: AuditEntry[]; next: AuditCursor | null };
 type Search = Record<string, string | string[] | undefined>;

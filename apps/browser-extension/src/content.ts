@@ -50,7 +50,8 @@ function attachFixture() {
       const previousId = control?.installationId;
       control = summary;
       const policy = currentPolicy();
-      if (previous?.version !== policy?.version || previous?.mode !== policy?.mode || previousId !== control.installationId) {
+      if (previous?.version !== policy?.version || previous?.assignmentVersion !== policy?.assignmentVersion ||
+          previous?.mode !== policy?.mode || previousId !== control.installationId) {
         clearFeedback();
       }
       mode.disabled = control.status !== 'standalone';
@@ -94,7 +95,7 @@ function attachFixture() {
     const policy = currentPolicy();
     const match = policy && evaluatePrompt(prompt.value, policy);
     if (warning.value === prompt.value && match?.action === 'warn' && match.ruleId === warning.match.ruleId &&
-        match.policyVersion === warning.match.policyVersion) {
+        match.policyVersion === warning.match.policyVersion && match.assignmentVersion === warning.match.assignmentVersion) {
       approved = warning.match;
     }
     try {

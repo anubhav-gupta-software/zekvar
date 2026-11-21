@@ -46,13 +46,17 @@ Discovery records new document loads on the three cataloged origins. The browser
 
 ## Domain rules
 
-1. Load Browser v0.7.0, start Control, and enroll the Chrome profile you want to test. In Control, open **Domain rules**.
+1. Load Browser v0.7.0 or later, start Control, and enroll the Chrome profile you want to test. In Control, open **Domain rules**.
 2. Enter a hostname such as `example.com` in **Blocked domains** and click **Publish domain rules**. Use **Sync now** in the extension popup or wait for the next sync. The popup shows the active rule count. Open the hostname in a new tab and Chrome should block the navigation.
 3. For a more specific exception, enter a hostname such as `docs.example.com` in **Allowed domains** in the same policy. Restore the previous version in **Policy history**, or clear both fields and publish, to remove the rules.
 
 Enter one hostname per line. Control accepts up to 50 entries, normalizes hostname case and a trailing dot, and accepts internationalized hostnames in Punycode. The same hostname can belong to one list. Rules cover new top-level page requests and subdomains. The most specific match wins, and unmatched domains remain accessible. Chrome applies the rules locally without sending domain-filtering events. AI app discovery has its own policy and reporting. The current release covers Chrome page navigation. Host-based filtering for other apps and URL-path or category rules are roadmap items. [Chrome declarative network rules](https://developer.chrome.com/docs/extensions/reference/api/declarativeNetRequest)
 
 Chrome keeps the last applied domain rules during connection interruptions. Control shows a version as applied after the browser acknowledges the Chrome rule update. Revoking the installation removes its domain rules when the browser next reaches Control and receives the revocation.
+
+## Test rollout groups
+
+With Browser v0.8.0, use the two-profile lab to enroll two managed Chrome profiles. Assign one to a rollout group in Control, publish its prompt or domain policy, and sync both browsers. The assigned browser uses the group policy while the other follows the baseline. Return the browser to the baseline through **Browser assignments**, or promote the verified group policy to the entire baseline. [Rollout group workflow](../control-web/README.md#roll-out-policies-to-a-pilot-group)
 
 ## Verify the scenarios
 

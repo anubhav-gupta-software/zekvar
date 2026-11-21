@@ -12,8 +12,9 @@ export function RefreshSection({ label }: { label: string }) {
     onClick={() => startTransition(() => router.refresh())}>{pending ? 'Refreshing…' : 'Refresh'}</button>;
 }
 
-export function DomainRulesForm({ rules, version }: { rules?: DomainRules; version?: number }) {
+export function DomainRulesForm({ rules, version, groupId }: { rules?: DomainRules; version?: number; groupId?: string }) {
   return <MutationForm action={publishDomainRules} label="Publish domain rules" appearance="primary">
+    {groupId && <input type="hidden" name="groupId" value={groupId} />}
     <div className="policy-fields" key={version}>
       <DomainList name="allow" label="Allowed domains" initial={rules?.allow} />
       <DomainList name="block" label="Blocked domains" initial={rules?.block} />

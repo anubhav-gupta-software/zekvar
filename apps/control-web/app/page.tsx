@@ -1,12 +1,12 @@
 import { ApiError, controlApi } from '../lib/api';
 import {
-  aiApps, chatGptApp, classifications, classificationLabels, decisionLabels, decisions, detectorModeLabels,
-  detectorModes, fixtureApp, modes, utc,
-  type Decision, type DiscoveredApp, type Installation, type Policy, type SecurityEvent,
+  aiApps, chatGptApp, classifications, classificationLabels, decisionLabels, decisions, fixtureApp, utc,
+  type Decision, type DiscoveredApp, type Installation, type SecurityEvent,
 } from '../lib/control';
 import { sessionToken } from '../lib/session';
-import { classifyAiApp, publishPolicy, restorePolicy, revokeInstallation, signOut } from './actions';
+import { classifyAiApp, revokeInstallation, signOut } from './actions';
 import { DomainRulesForm, EnrollmentForm, MutationForm, RefreshSection, SignInForm } from './forms';
+import { PolicyVersionTable, PublishPolicyForm } from './policies';
 import { Brand, Sidebar } from './workspace';
 
 type Search = Record<string, string | string[] | undefined>;
@@ -62,26 +62,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
           <section className="panel" id="policies" aria-labelledby="policies-heading">
             <div className="panel-heading"><h2 id="policies-heading">Publish a policy</h2><span className="badge">Organization-wide</span></div>
             <p className="muted">Set prompt protection and app discovery for enrolled browsers.</p>
-            <MutationForm action={publishPolicy} label="Publish policy" appearance="primary">
-              <div className="grid gap-1">
-                <label htmlFor="publish-mode">Test marker</label>
-                <select key={current?.version} id="publish-mode" name="mode" defaultValue={current?.mode ?? 'monitor'}>
-                  {modes.map((mode) => <option key={mode} value={mode}>{decisionLabels[mode]}</option>)}
-                </select>
-              </div>
-              <div className="grid gap-1">
-                <label htmlFor="github-pat-mode">GitHub classic PAT</label>
-                <select key={current?.version} id="github-pat-mode" name="githubPatMode" defaultValue={current?.githubPatMode ?? 'off'}>
-                  {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
-                </select>
-              </div>
-              <div className="grid gap-1">
-                <label htmlFor="discovery-mode">AI app discovery</label>
-                <select key={current?.version} id="discovery-mode" name="discoveryEnabled" defaultValue={current?.discoveryEnabled ? 'on' : 'off'}>
-                  <option value="off">Off</option><option value="on">On</option>
-                </select>
-              </div>
-            </MutationForm>
+            <PublishPolicyForm policy={current} />
           </section>
           <section className="panel" aria-labelledby="enrollment-heading">
             <div className="panel-heading"><h2 id="enrollment-heading">Browser enrollment</h2></div>
@@ -96,16 +77,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
           <DomainRulesForm rules={current?.domainRules} version={current?.version} />
         </section>
 
-        <section className="panel table-panel" aria-labelledby="history-heading">
-          <div className="panel-heading"><h2 id="history-heading">Policy history</h2><span className="table-note">Latest 100 versions</span></div>
-          <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="history-heading">
-            <table aria-labelledby="history-heading">
-              <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>AI app discovery</th><th>Domain rules</th><th>Published (UTC)</th><th>Restore source</th><th>Action</th></tr></thead>
-              <tbody>{policies.map((policy) => <PolicyRow key={policy.version} policy={policy} current={policy.version === current?.version} />)}</tbody>
-            </table>
-            {policies.length === 0 && <p className="empty">Publish a policy to start the version history.</p>}
-          </div>
-        </section>
+        <PolicyVersionTable policies={policies} />
 
         <section className="panel table-panel" id="ai-apps" aria-labelledby="ai-apps-heading">
           <div className="panel-heading"><h2 id="ai-apps-heading">AI apps</h2><RefreshSection label="Refresh AI apps" /></div>
@@ -122,7 +94,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
           <div className="panel-heading"><h2 id="browsers-heading">Browser health</h2><RefreshSection label="Refresh browser health" /></div>
           <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="browsers-heading">
             <table aria-labelledby="browsers-heading">
-              <thead><tr><th>Installation</th><th>Reporting</th><th>Policy status</th><th>Applied version</th><th>ChatGPT composer</th><th>Last seen (UTC)</th><th>Action</th></tr></thead>
+              <thead><tr><th>Installation</th><th>Rollout group</th><th>Reporting</th><th>Policy status</th><th>Applied version</th><th>ChatGPT composer</th><th>Last seen (UTC)</th><th>Action</th></tr></thead>
               <tbody>{installations.map((installation) => <BrowserRow key={installation.installationId}
                 installation={installation} latestVersion={current?.version} />)}</tbody>
             </table>
@@ -201,27 +173,6 @@ function InstallationId({ value }: { value: string }) {
   return <code title={value}>{value.slice(0, 13)}</code>;
 }
 
-function PolicyRow({ policy, current }: { policy: Policy; current: boolean }) {
-  const { allow = [], block = [] } = policy.domainRules ?? {};
-  return <tr>
-    <td className="emphasis">v{policy.version}</td><td><DecisionBadge decision={policy.mode} /></td>
-    <td>{detectorModeLabels[policy.githubPatMode ?? 'off']}</td>
-    <td>{policy.discoveryEnabled ? 'On' : 'Off'}</td>
-    <td>{allow.length || block.length ? <details className="domain-rule-history">
-      <summary>{allow.length} allow · {block.length} block</summary>
-      {allow.length > 0 && <p>Allow <code>{allow.join(', ')}</code></p>}
-      {block.length > 0 && <p>Block <code>{block.join(', ')}</code></p>}
-    </details> : '—'}</td>
-    <td><Timestamp value={policy.publishedAt} /></td>
-    <td>{policy.restoredFrom ? `v${policy.restoredFrom}` : '—'}</td>
-    <td>{current ? <span className="badge current">Current</span> :
-      <MutationForm action={restorePolicy} label="Restore" appearance="small" accessibleLabel={`Restore version ${policy.version}`}>
-        <input type="hidden" name="version" value={policy.version} />
-      </MutationForm>}
-    </td>
-  </tr>;
-}
-
 function DiscoveredAppRow({ app }: { app: DiscoveredApp }) {
   const name = aiApps[app.appId];
   return <tr>
@@ -241,10 +192,11 @@ function DiscoveredAppRow({ app }: { app: DiscoveredApp }) {
 
 function BrowserRow({ installation, latestVersion }: { installation: Installation; latestVersion?: number }) {
   const status = installation.revokedAt ? 'Revoked' : installation.appliedPolicyVersion === null ? 'Awaiting policy' :
-    installation.appliedPolicyVersion === latestVersion ? 'Current' : 'Update pending';
+    installation.appliedPolicyVersion === (installation.expectedPolicyVersion ?? latestVersion) ? 'Current' : 'Update pending';
   const stale = Date.now() - Date.parse(installation.lastSeenAt) >= 90_000;
   return <tr>
     <td><InstallationId value={installation.installationId} /></td>
+    <td>{installation.policyGroupName ?? 'Organization baseline'}</td>
     <td>{installation.revokedAt ? '—' : <span className={`badge ${stale ? 'warn' : 'current'}`}>{stale ? 'Stale' : 'Reporting'}</span>}</td>
     <td><span className={`badge ${status === 'Current' ? 'current' : ''}`}>{status}</span></td>
     <td>{installation.appliedPolicyVersion ? `v${installation.appliedPolicyVersion}` : '—'}</td>

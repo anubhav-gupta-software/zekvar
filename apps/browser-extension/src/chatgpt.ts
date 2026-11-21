@@ -116,6 +116,7 @@ async function refresh(type: 'sync' | 'status') {
     const reply = await send({ type });
     if (!reply.summary) return;
     if (control?.installationId !== reply.summary.installationId || control?.policy?.version !== reply.summary.policy?.version ||
+        control?.policy?.assignmentVersion !== reply.summary.policy?.assignmentVersion ||
         control?.policy?.mode !== reply.summary.policy?.mode || control?.chatGptEnabled !== reply.summary.chatGptEnabled) clearWarning();
     control = reply.summary;
   } catch {
@@ -141,7 +142,7 @@ function check(event: Event, current: Composer) {
     event.stopImmediatePropagation();
   }
   if (match.action === 'warn' && warning?.input === current.input && warning.value === value &&
-      warning.match.policyVersion === match.policyVersion) return;
+      warning.match.policyVersion === match.policyVersion && warning.match.assignmentVersion === match.assignmentVersion) return;
 
   clearWarning();
   recordDecision(chatGptApp, match, installationId);
@@ -194,7 +195,8 @@ ui.proceed.addEventListener('click', () => {
       promptText(current.input) !== pending.value || !isChatGptPage(location.href) || !control?.chatGptEnabled ||
       control.installationId !== pending.installationId || !control.policy) return;
   const match = evaluatePrompt(pending.value, control.policy);
-  if (match.action !== 'warn' || match.ruleId !== pending.match.ruleId || match.policyVersion !== pending.match.policyVersion) return;
+  if (match.action !== 'warn' || match.ruleId !== pending.match.ruleId || match.policyVersion !== pending.match.policyVersion ||
+      match.assignmentVersion !== pending.match.assignmentVersion) return;
   recordDecision(chatGptApp, pending.match, pending.installationId, 'warn_override');
   current.button.click();
 });

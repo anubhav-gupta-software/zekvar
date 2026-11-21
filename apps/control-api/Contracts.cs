@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Serialization;
 
 namespace Control;
 
@@ -45,12 +46,14 @@ internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId
 internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode = null, bool? DiscoveryEnabled = null,
     DomainRules? DomainRules = null);
 internal sealed record RedeemGrant(string Grant);
-internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = null, bool DomainRulesApplied = false);
+internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = null, bool DomainRulesApplied = false,
+    int AssignmentVersion = 0);
 internal sealed record PolicyEvent(Guid EventId, string AppId, DateTimeOffset Timestamp, string RuleId,
-    string DetectorCategory, int PolicyVersion, string Decision);
+    string DetectorCategory, int PolicyVersion, string Decision, int AssignmentVersion = 0);
 
 internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, int? RestoredFrom, string GithubPatMode,
-    bool DiscoveryEnabled, DomainRules DomainRules)
+    bool DiscoveryEnabled, DomainRules DomainRules,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int AssignmentVersion = 0)
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => [FixtureContract.AppId, FixtureContract.ChatGpt];
@@ -58,14 +61,15 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     public string DetectorCategory => FixtureContract.DetectorCategory;
 }
 
-internal sealed record AppObservation(string AppId, DateTimeOffset ObservedAt, int PolicyVersion);
+internal sealed record AppObservation(string AppId, DateTimeOffset ObservedAt, int PolicyVersion, int AssignmentVersion = 0);
 internal sealed record ClassifyApp(string Status);
 internal sealed record DiscoveredApp(string AppId, string Status, long BrowsersSeen, DateTime? LastObservedAt);
 
 internal sealed record EnrollmentGrant(string Grant, DateTime ExpiresAt);
 internal sealed record Enrollment(Guid InstallationId, string Token);
 internal sealed record Installation(Guid InstallationId, DateTime EnrolledAt, DateTime LastSeenAt,
-    int? AppliedPolicyVersion, DateTime? RevokedAt, string? ChatGptCoverage, DateTime? ChatGptCheckedAt);
+    int? AppliedPolicyVersion, DateTime? RevokedAt, string? ChatGptCoverage, DateTime? ChatGptCheckedAt,
+    Guid? PolicyGroupId, string? PolicyGroupName, int ExpectedPolicyVersion, bool AssignmentAware);
 
 internal sealed record StoredEvent(Guid EventId, Guid InstallationId, DateTime Timestamp, DateTime ReceivedAt,
     int PolicyVersion, string Decision, string AppId, string RuleId)
