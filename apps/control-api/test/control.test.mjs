@@ -560,4 +560,40 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual(await fetchPolicy(canary), { ...promoted, assignmentVersion: 2 });
     assert.deepEqual((await scoped()).map(({ version }) => version), [restored.version, warn.version, candidate.version]);
   });
+
+  await t.test('previewed publishes apply exactly one snapshot against the effective reference version', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: first, ...options });
+    const baseline = async () => (await admin('policies'))[0];
+    const reference = await baseline();
+    const proposal = { mode: 'warn', githubPatMode: 'block', discoveryEnabled: true,
+      domainRules: { allow: ['WORK.PREVIEW.TEST.'], block: ['preview.test'] } };
+    const publish = (path, body, expect = 200) => admin(path, { method: 'POST', body, expect });
+    await publish('policies', { ...proposal, expectedVersion: 0 }, 400);
+    const priorAudit = (await admin('audit?action=policy_published')).entries.length;
+    const copies = await Promise.all([1, 2].map(() => fetch(`${baseUrl}/v1/admin/policies`, {
+      method: 'POST', headers: { Authorization: `Bearer ${first}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...proposal, expectedVersion: reference.version }), signal: AbortSignal.timeout(5000),
+    })));
+    assert.deepEqual(copies.map(({ status }) => status).sort(), [200, 409]);
+    const current = await copies.find((response) => response.ok).json();
+    assert.equal(current.mode, proposal.mode);
+    assert.equal(current.githubPatMode, proposal.githubPatMode);
+    assert.equal(current.discoveryEnabled, proposal.discoveryEnabled);
+    assert.deepEqual(current.domainRules, { allow: ['work.preview.test'], block: ['preview.test'] });
+    assert.deepEqual(await baseline(), current);
+    assert.equal((await admin('audit?action=policy_published')).entries.length, priorAudit + 1);
+
+    const group = await publish('policy-groups', { name: 'Preview cohort' });
+    const scopedPath = `policy-groups/${group.id}/policies`;
+    const advanced = await publish('policies', { mode: 'monitor' });
+    await publish(scopedPath, { ...proposal, expectedVersion: current.version }, 409);
+    assert.deepEqual(await admin(scopedPath), []);
+    const scoped = await publish(scopedPath, { ...proposal, expectedVersion: advanced.version });
+    assert.equal(scoped.mode, proposal.mode);
+    assert.deepEqual(await baseline(), advanced);
+    const newerBaseline = await publish('policies', { mode: 'block' });
+    const nextScoped = await publish(scopedPath, { mode: 'monitor', expectedVersion: scoped.version });
+    assert.deepEqual(nextScoped.domainRules, scoped.domainRules);
+    assert.deepEqual(await baseline(), newerBaseline);
+  });
 });

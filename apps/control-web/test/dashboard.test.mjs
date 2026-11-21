@@ -221,6 +221,114 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await page.getByRole('heading', { name: 'Security overview', exact: true }).waitFor();
   });
 
+  await t.test('compares draft policy locally and rejects a stale publish before committing the exact changes', async () => {
+    async function currentPolicy() {
+      const response = await context.request.get(`${api}/admin/policies`, { headers: { Authorization: `Bearer ${token}` } });
+      assert.equal(response.status(), 200);
+      return (await response.json())[0];
+    }
+    const reference = await currentPolicy();
+    await page.getByRole('link', { name: 'Policy preview', exact: true }).click();
+    await page.getByRole('heading', { name: 'Policy preview', exact: true }).waitFor();
+    const marker = page.getByLabel('Draft test marker');
+    const allowed = page.getByLabel('Draft allowed domains');
+    const blocked = page.getByLabel('Draft blocked domains');
+    const prompt = page.getByLabel('Custom prompt', { exact: true });
+    const url = page.getByLabel('Custom navigation URL');
+    const run = page.getByRole('button', { name: 'Run preview', exact: true });
+    const publish = page.getByRole('button', { name: 'Publish previewed policy', exact: true });
+    const results = page.getByRole('table', { name: 'Preview results' });
+    await run.click();
+    await results.waitFor();
+    assert.equal(await publish.count(), 0);
+    await page.getByLabel('Load draft from').selectOption(String(policyVersion));
+    assert.equal(await marker.inputValue(), 'warn');
+    await allowed.fill('example.test');
+    await blocked.fill('EXAMPLE.TEST.');
+    await run.click();
+    await page.getByRole('alert').filter({ hasText: 'A hostname can appear in only one list.' }).waitFor();
+    assert.equal(await publish.count(), 0);
+
+    async function prepareDraft() {
+      await marker.selectOption('block');
+      await page.getByLabel('Draft GitHub classic PAT').selectOption('warn');
+      await page.getByLabel('Draft AI app discovery').selectOption('on');
+      await allowed.fill('work.pilot.example.test');
+      await blocked.fill('Pilot.Example.Test.');
+    }
+    await prepareDraft();
+    await url.fill('file:///synthetic-preview');
+    await run.click();
+    await page.getByRole('alert').filter({ hasText: 'Enter a complete HTTP or HTTPS address' }).waitFor();
+
+    const privatePrompt = 'ZEKVAR_TEST_SECRET preview-private-prompt';
+    const privateUrl = 'https://pilot.example.test/preview-private-path?sample=1';
+    const requests = [];
+    const captureRequest = (request) => requests.push(`${request.url()} ${request.postData() ?? ''}`);
+    page.on('request', captureRequest);
+    try {
+      await prompt.fill(privatePrompt);
+      await url.fill(privateUrl);
+      await run.click();
+      const decisions = [
+        ['Clean prompt', 'Allow', 'Allow'],
+        ['Synthetic test marker', 'Monitor', 'Block'],
+        ['Synthetic GitHub token', 'Allow', 'Warn'],
+        ['Both detectors match', 'Monitor', 'Block'],
+        ['Token embedded in a longer string', 'Allow', 'Allow'],
+        ['Custom prompt', 'Monitor', 'Block'],
+        ['Sample domain', 'Allow', 'Block'],
+        ['Sample subdomain', 'Allow', 'Allow'],
+        ['Similar domain', 'Allow', 'Allow'],
+        ['Custom navigation', 'Allow', 'Block'],
+      ];
+      for (const [sample, before, after] of decisions) {
+        const cells = results.getByRole('row', { name: new RegExp(`^${sample} `) }).getByRole('cell');
+        await cells.nth(0).getByText(before, { exact: true }).waitFor();
+        await cells.nth(1).getByText(after, { exact: true }).waitFor();
+      }
+      await results.getByRole('row', { name: /^Sample subdomain / }).getByText('work.pilot.example.test', { exact: true }).waitFor();
+      await results.getByRole('row', { name: /^Both detectors match / }).getByRole('cell').nth(1)
+        .getByText('Test marker', { exact: true }).waitFor();
+      const screenshot = process.env.ZEKVAR_TEST_PREVIEW_SCREENSHOT;
+      if (screenshot) await page.screenshot({ path: screenshot, fullPage: true });
+      await page.setViewportSize({ width: 390, height: 844 });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      assert.deepEqual(requests, []);
+      assert.deepEqual(await currentPolicy(), reference);
+      page.once('dialog', (dialog) => dialog.dismiss());
+      await publish.click();
+      assert.deepEqual(requests, []);
+
+      const advanced = await post('/admin/policies', { mode: 'warn' }, token);
+      page.once('dialog', (dialog) => dialog.accept());
+      await publish.click();
+      await page.getByRole('alert').filter({ hasText: 'The policy changed after this preview.' }).waitFor();
+      assert.equal((await currentPolicy()).version, advanced.version);
+      await page.reload();
+      assert.equal(await prompt.inputValue(), '');
+      assert.equal(await url.inputValue(), '');
+      await prepareDraft();
+      await prompt.fill(privatePrompt);
+      await url.fill(privateUrl);
+      await run.click();
+      page.once('dialog', (dialog) => dialog.accept());
+      await publish.click();
+      await page.getByText(`Previewed policy published as version ${advanced.version + 1}.`, { exact: true }).waitFor();
+      const published = await currentPolicy();
+      assert.equal(published.mode, 'block');
+      assert.equal(published.githubPatMode, 'warn');
+      assert.equal(published.discoveryEnabled, true);
+      assert.deepEqual(published.domainRules, { allow: ['work.pilot.example.test'], block: ['pilot.example.test'] });
+      assert.equal(requests.some((request) => /preview-private-(prompt|path)/.test(request)), false);
+    } finally {
+      page.off('request', captureRequest);
+    }
+    await page.getByRole('link', { name: 'Overview', exact: true }).click();
+    await page.getByRole('heading', { name: 'Security overview', exact: true }).waitFor();
+  });
+
   await t.test('fits a mobile viewport and clears the session on sign-out', async () => {
     const screenshot = process.env.ZEKVAR_TEST_SCREENSHOT;
     if (screenshot) await page.screenshot({ path: screenshot, fullPage: true });

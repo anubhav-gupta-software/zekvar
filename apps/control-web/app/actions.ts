@@ -7,6 +7,8 @@ import { aiApps, classifications, decisionLabels, detectorModes, isId, modes,
   type AiAppId, type AppClassification, type DetectorMode, type Feedback, type Mode } from '../lib/control';
 import { endSession, sessionToken, startSession } from '../lib/session';
 import { cleanupCounts, retentionFields, type RetentionField, type RetentionPolicy } from '../lib/retention';
+import { canonicalizeDomainRules, domainLines } from '../../../contracts/policy/domains';
+import { isDetectorMode, isMode } from '../../../contracts/policy/prompt';
 
 export async function signIn(_previous: Feedback, form: FormData): Promise<Feedback> {
   const token = form.get('token');
@@ -81,16 +83,43 @@ export async function publishDomainRules(_previous: Feedback, form: FormData): P
   const groupId = form.get('groupId');
   if (groupId !== null && !isId(groupId)) return { error: 'Choose a valid rollout group.' };
   if (typeof allow !== 'string' || typeof block !== 'string') return { error: 'Enter both domain lists.' };
-  const lines = (value: string) => value.split('\n').map((line) => line.trim()).filter(Boolean);
   return perform(async (token) => {
     try {
-      const policy = await controlApi.publishDomains(token, { allow: lines(allow), block: lines(block) }, groupId ?? undefined);
+      const policy = await controlApi.publishDomains(token, { allow: domainLines(allow), block: domainLines(block) }, groupId ?? undefined);
       refreshPolicyViews();
       return { message: `Domain rules published as version ${policy.version}.` };
     } catch (error) {
       if (error instanceof ApiError && (error.status === 400 || error.status === 413)) {
         return { error: 'Enter up to 50 hostnames, one per line. A hostname can appear in only one list.' };
       }
+      throw error;
+    }
+  });
+}
+
+export async function publishPreview(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const mode = form.get('mode');
+  const githubPatMode = form.get('githubPatMode');
+  const discovery = form.get('discoveryEnabled');
+  const groupId = form.get('groupId');
+  const expectedVersion = Number(form.get('expectedVersion'));
+  const allow = form.get('allow');
+  const block = form.get('block');
+  if (!isMode(mode) || !isDetectorMode(githubPatMode) || (discovery !== 'on' && discovery !== 'off') ||
+      (groupId !== null && !isId(groupId)) || !Number.isInteger(expectedVersion) || expectedVersion < 1 ||
+      expectedVersion > 2147483647 || typeof allow !== 'string' || typeof block !== 'string') {
+    return { error: 'Run the preview again before publishing.' };
+  }
+  const domainRules = canonicalizeDomainRules({ allow: domainLines(allow), block: domainLines(block) });
+  if (!domainRules) return { error: 'Enter valid, non-conflicting hostnames before publishing.' };
+  return perform(async (token) => {
+    try {
+      const published = await controlApi.publishPreview(token, { mode, githubPatMode, discoveryEnabled: discovery === 'on', domainRules },
+        expectedVersion, groupId ?? undefined);
+      refreshPolicyViews();
+      return { message: `Previewed policy published as version ${published.version}.` };
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) return { error: 'The policy changed after this preview. Reload and run the comparison again.' };
       throw error;
     }
   });

@@ -1,3 +1,9 @@
+import { credentialDetector, fixtureDetector, fixtureRule, githubPatRule, isMode, type PolicyMode,
+  type PromptPolicy, type RuleMetadata } from '../../../contracts/policy/prompt';
+
+export { fixtureRule, fixtureDetector, githubPatRule, credentialDetector, isMode, isDetectorMode } from '../../../contracts/policy/prompt';
+export type { PolicyMode, DetectorMode, RuleMetadata } from '../../../contracts/policy/prompt';
+
 export const fixtureUrl = 'http://127.0.0.1:4173/zekvar-fixture/';
 export const fixtureApp = 'local-prompt-fixture';
 export const chatGptApp = 'chatgpt';
@@ -15,15 +21,7 @@ export function discoveredApp(url: string | undefined): DiscoveryApp | undefined
   if (origin && Object.hasOwn(discoveryCatalog, origin)) return discoveryCatalog[origin as keyof typeof discoveryCatalog];
 }
 export type Coverage = 'ready' | 'unsupported';
-export const fixtureRule = 'fixture-secret';
-export const fixtureDetector = 'synthetic-secret';
-export const githubPatRule = 'github-classic-pat';
-export const credentialDetector = 'credential';
-export type PolicyMode = 'monitor' | 'warn' | 'block';
-export type DetectorMode = PolicyMode | 'off';
-export type Policy = { version: number; mode: PolicyMode; githubPatMode?: DetectorMode; discoveryEnabled?: boolean; assignmentVersion?: number };
-export type RuleMetadata = { ruleId: typeof fixtureRule; detectorCategory: typeof fixtureDetector } |
-  { ruleId: typeof githubPatRule; detectorCategory: typeof credentialDetector };
+export type Policy = PromptPolicy & { version: number; discoveryEnabled?: boolean; assignmentVersion?: number };
 export type PolicyEvent = {
   eventId: string;
   appId: AppId;
@@ -80,14 +78,6 @@ export function isToken(value: unknown): value is string {
 
 export function isVersion(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= 2147483647;
-}
-
-export function isMode(value: unknown): value is PolicyMode {
-  return value === 'monitor' || value === 'warn' || value === 'block';
-}
-
-export function isDetectorMode(value: unknown): value is DetectorMode {
-  return value === 'off' || isMode(value);
 }
 
 export function isId(value: unknown): value is string {

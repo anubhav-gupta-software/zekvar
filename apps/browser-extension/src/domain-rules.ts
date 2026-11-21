@@ -1,40 +1,35 @@
 import { isRecord } from './protocol';
+import { domainActions, domainRuleLimit, domainRulePriority, emptyDomainRules, isCanonicalDomain,
+  type DomainRules } from '../../../contracts/policy/domains';
 
-export type DomainRules = { allow: string[]; block: string[] };
-export const emptyDomainRules: DomainRules = { allow: [], block: [] };
+export { emptyDomainRules, sameDomainRules } from '../../../contracts/policy/domains';
+export type { DomainRules } from '../../../contracts/policy/domains';
 
-const ruleLimit = 50;
 const firstDomainRuleId = 1;
-const hostname = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 export function readDomainRules(value: unknown): DomainRules | undefined {
   if (value === undefined) return emptyDomainRules;
   if (!isRecord(value) || !Array.isArray(value.allow) || !Array.isArray(value.block) ||
-      value.allow.length + value.block.length > ruleLimit) return;
+      value.allow.length + value.block.length > domainRuleLimit) return;
   const entries: unknown[] = [...value.allow, ...value.block];
-  if (new Set(entries).size !== entries.length || entries.some((entry) =>
-    typeof entry !== 'string' || entry.length > 253 || entry.trim() !== entry || !hostname.test(entry))) return;
+  if (new Set(entries).size !== entries.length || !entries.every(isCanonicalDomain)) return;
   return { allow: [...value.allow].sort(), block: [...value.block].sort() };
-}
-
-export function sameDomainRules(a: DomainRules, b: DomainRules): boolean {
-  return a.allow.join(',') === b.allow.join(',') && a.block.join(',') === b.block.join(',');
 }
 
 export async function installDomainRules(rules: DomainRules) {
   const dnr = chrome.declarativeNetRequest;
   const addRules: chrome.declarativeNetRequest.Rule[] = [];
-  for (const action of [dnr.RuleActionType.ALLOW, dnr.RuleActionType.BLOCK] as const) {
+  for (const action of domainActions) {
     for (const domain of rules[action]) {
       addRules.push({
         id: firstDomainRuleId + addRules.length,
-        priority: domain.split('.').length,
-        action: { type: action },
+        priority: domainRulePriority(domain),
+        action: { type: action === 'allow' ? dnr.RuleActionType.ALLOW : dnr.RuleActionType.BLOCK },
         condition: { requestDomains: [domain], resourceTypes: [dnr.ResourceType.MAIN_FRAME] },
       });
     }
   }
-  const ruleIds = Array.from({ length: ruleLimit }, (_, index) => firstDomainRuleId + index);
+  const ruleIds = Array.from({ length: domainRuleLimit }, (_, index) => firstDomainRuleId + index);
   const current = await dnr.getDynamicRules({ ruleIds });
   const byId = new Map(current.map((rule) => [rule.id, rule]));
   if (current.length === addRules.length && addRules.every((rule) => {

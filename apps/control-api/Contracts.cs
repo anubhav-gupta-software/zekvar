@@ -44,7 +44,7 @@ internal static class Tokens
 internal sealed record DemoOrganization(string Slug, string AdminToken);
 internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId, string? OrganizationSlug);
 internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode = null, bool? DiscoveryEnabled = null,
-    DomainRules? DomainRules = null);
+    DomainRules? DomainRules = null, int? ExpectedVersion = null);
 internal sealed record RedeemGrant(string Grant);
 internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = null, bool DomainRulesApplied = false,
     int AssignmentVersion = 0);

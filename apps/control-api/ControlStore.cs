@@ -141,6 +141,7 @@ internal sealed partial class ControlStore
                 WHERE o.id = $1
                   AND ($8 IS NULL OR g.id IS NOT NULL) AND ($9 IS NULL OR source.policy_version = $10::integer)
                   AND ($3 IS NULL OR p.policy_group_id IS NOT DISTINCT FROM $8)
+                  AND ($11::integer IS NULL OR p.version = $11)
             ), next_version AS (
                 UPDATE organizations SET policy_sequence = policy_sequence + 1,
                     policy_version = CASE WHEN $8 IS NULL THEN policy_sequence + 1 ELSE policy_version END
@@ -168,7 +169,8 @@ internal sealed partial class ControlStore
         AddParameters(command, organizationId, (object?)request?.Mode ?? DBNull.Value, (object?)restoredFrom ?? DBNull.Value,
             (object?)request?.GithubPatMode ?? DBNull.Value, (object?)request?.DiscoveryEnabled ?? DBNull.Value,
             (object?)request?.DomainRules?.Allow ?? DBNull.Value, (object?)request?.DomainRules?.Block ?? DBNull.Value,
-            (object?)groupId ?? DBNull.Value, (object?)sourceGroupId ?? DBNull.Value, (object?)expectedSourceVersion ?? DBNull.Value);
+            (object?)groupId ?? DBNull.Value, (object?)sourceGroupId ?? DBNull.Value, (object?)expectedSourceVersion ?? DBNull.Value,
+            (object?)request?.ExpectedVersion ?? DBNull.Value);
         Policy? policy;
         await using (var rows = await command.ExecuteReaderAsync(ct))
             policy = await rows.ReadAsync(ct) ? ReadPolicy(rows) : null;

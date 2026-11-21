@@ -250,6 +250,24 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     assert.equal(browserStatus.find(({ installationId }) => installationId === idA).expectedPolicyVersion, 6);
     assert.equal(browserStatus.find(({ installationId }) => installationId === idB).expectedPolicyVersion, 4);
     await capture('15-control-rollout-groups.png');
+    const preview = await dashboard.context().newPage();
+    try {
+      const href = await dashboard.getByRole('link', { name: 'Preview group policy', exact: true }).getAttribute('href');
+      await preview.goto(new URL(href, web).href);
+      await preview.getByText('Current Managed browser pilot v6', { exact: true }).waitFor();
+      await preview.getByLabel('Load draft from').selectOption({ label: 'Baseline v4' });
+      await preview.getByLabel('Custom navigation URL').fill('http://apps.test/');
+      await preview.getByRole('button', { name: 'Run preview', exact: true }).click();
+      const table = preview.getByRole('table', { name: 'Preview results' });
+      for (const [sample, draft] of [['Synthetic test marker', 'Monitor'], ['Custom navigation', 'Allow']]) {
+        const cells = table.getByRole('row', { name: new RegExp(`^${sample} `) }).getByRole('cell');
+        await cells.nth(0).getByText('Block', { exact: true }).waitFor();
+        await cells.nth(1).getByText(draft, { exact: true }).waitFor();
+      }
+      await preview.goto(`${web}/preview?group=00000000-0000-0000-0000-000000000000`);
+      await preview.getByRole('alert').filter({ hasText: 'This policy scope is unavailable.' }).waitFor();
+      assert.equal(await preview.getByRole('button', { name: 'Run preview', exact: true }).count(), 0);
+    } finally { await preview.close(); }
 
     await dashboard.getByRole('button', { name: 'Restore version 5', exact: true }).click();
     await dashboard.getByText('Version 5 restored as version 7.', { exact: true }).waitFor();

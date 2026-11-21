@@ -1,6 +1,7 @@
 import type { AiAppId, AppClassification, DetectorMode, DiscoveredApp, DomainRules, Grant, Installation, Mode, Policy, PolicyGroup, SecurityEvent } from './control';
 import type { AuditPage } from './audit';
 import type { RetentionCleanup, RetentionPolicy } from './retention';
+import type { PreviewPolicy } from './preview';
 
 const port = Number(process.env.ZEKVAR_CONTROL_PORT ?? 5187);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid Control loopback port.');
@@ -57,6 +58,8 @@ export const controlApi = {
     request<Policy>(policiesPath(groupId), token, 'POST', { mode, githubPatMode, discoveryEnabled }),
   publishDomains: (token: string, domainRules: DomainRules, groupId?: string) =>
     request<Policy>(policiesPath(groupId), token, 'POST', { domainRules }),
+  publishPreview: (token: string, policy: PreviewPolicy, expectedVersion: number, groupId?: string) =>
+    request<Policy>(policiesPath(groupId), token, 'POST', { ...policy, expectedVersion }),
   restore: (token: string, version: number, groupId?: string) => request<Policy>(`${policiesPath(groupId)}/${version}/restore`, token, 'POST'),
   issueGrant: (token: string) => request<Grant>('/enrollment-grants', token, 'POST'),
   revoke: (token: string, installationId: string) => request<void>(`/installations/${installationId}/revoke`, token, 'POST'),

@@ -32,6 +32,14 @@ The organization baseline applies to unassigned browsers and groups that follow 
 
 Control records group creation, assignment, publication, rollback, and promotion in the audit log. [Policy groups API](../control-api/README.md#policy-groups)
 
+## Preview a policy
+
+1. Open **Policy preview** for the organization baseline, or select **Preview group policy** from a rollout group. Use **Load draft from** to start with a version from the available history.
+2. Edit the detector settings and domain rules. Choose **Run preview** to see how the current policy and the draft handle the same built-in and optional custom samples. Custom prompts and navigation URLs stay in the browser tab.
+3. Review the outcomes and setting changes. Choose **Publish previewed policy** and confirm to publish the draft to the selected scope. If the current version changed while you were editing, reload the page and run the comparison again.
+
+The preview evaluates the supported text detectors and individual top-level HTTP and HTTPS URLs. Test live app coverage, redirect chains, and the installed Chrome rules in a pilot group before promoting a policy.
+
 ## Review and export the audit log
 
 Open **Audit log** from the Control sidebar. The log shows policy publishes and restores, enrollment grant issuance, browser enrollment and revocation, and changes to AI app classifications. Filter by action and UTC date range, or select **Older entries** to see more history.

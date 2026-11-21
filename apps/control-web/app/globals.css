@@ -78,6 +78,12 @@ label { font-size: .9rem; font-weight: 600; }
 .group-count { margin-inline-start: .45rem; font-variant-numeric: tabular-nums; opacity: .8; }
 .policy-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr)); gap: .75rem; width: 100%; }
 .policy-fields textarea { width: 100%; resize: vertical; font-family: ui-monospace, monospace; }
+.preview-inputs { margin-bottom: 1rem; }
+.preview-inputs input { align-self: start; }
+.preview-scope { align-items: end; margin-top: .75rem; }
+.preview-changed td:last-child { background: #19312f; }
+.preview-rule { overflow-wrap: anywhere; }
+.preview-changes { margin: 0 0 1rem; padding-inline-start: 1.25rem; list-style: disc; font-size: .875rem; overflow-wrap: anywhere; }
 .domain-rule-history summary { cursor: pointer; white-space: nowrap; }
 .domain-rule-history code { white-space: normal; overflow-wrap: anywhere; }
 .feedback { margin-top: .5rem; color: #a3edcf; font-size: .875rem; }

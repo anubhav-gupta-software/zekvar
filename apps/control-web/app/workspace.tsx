@@ -6,13 +6,14 @@ export function Brand() {
   </div>;
 }
 
-export function Sidebar({ active }: { active?: 'audit' | 'retention' | 'groups' }) {
+export function Sidebar({ active }: { active?: 'audit' | 'retention' | 'groups' | 'preview' }) {
   const root = active ? '/' : '';
   return <aside className="sidebar">
     <Brand />
     <nav aria-label="Dashboard sections">
       <a href={`${root}#overview`}>Overview</a>
       <a href={`${root}#policies`}>Policies</a>
+      <a href="/preview" aria-current={active === 'preview' ? 'page' : undefined}>Policy preview</a>
       <a href="/groups" aria-current={active === 'groups' ? 'page' : undefined}>Rollout groups</a>
       <a href={`${root}#domain-rules`}>Domain rules</a>
       <a href={`${root}#ai-apps`}>AI apps</a>

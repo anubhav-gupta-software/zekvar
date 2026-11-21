@@ -155,13 +155,16 @@ await app.RunAsync();
 
 async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, CancellationToken ct, Guid? groupId = null)
 {
+    if (request.ExpectedVersion is <= 0) return Results.BadRequest(new { error = "Choose a valid expected policy version." });
     if (!(FixtureContract.IsMode(request.Mode) || request.Mode is null && request.DomainRules is not null) ||
         !(request.GithubPatMode is null or "off" || FixtureContract.IsMode(request.GithubPatMode)))
         return Results.BadRequest(new { error = "Choose a valid rule mode." });
     if (!DomainRules.TryNormalize(request.DomainRules, out var domainRules))
         return Results.BadRequest(new { error = "Enter up to 50 domains with no domain in both lists." });
-    return await store.Publish(Identity(http).OrganizationId, request with { DomainRules = domainRules }, null, ct, groupId) is { } policy
-        ? Results.Ok(policy) : Results.NotFound();
+    if (await store.Publish(Identity(http).OrganizationId, request with { DomainRules = domainRules }, null, ct, groupId) is { } policy)
+        return Results.Ok(policy);
+    return request.ExpectedVersion.HasValue
+        ? Results.Conflict(new { error = "The policy changed after preview or is unavailable." }) : Results.NotFound();
 }
 
 Func<EndpointFilterInvocationContext, EndpointFilterDelegate, ValueTask<object?>> Authenticate(bool browser) =>

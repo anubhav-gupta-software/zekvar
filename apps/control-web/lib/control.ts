@@ -1,8 +1,11 @@
-export const modes = ['monitor', 'warn', 'block'] as const;
+import { modes, type DetectorMode, type PolicyMode } from '../../../contracts/policy/prompt';
+export { modes, detectorModes } from '../../../contracts/policy/prompt';
+export type { DetectorMode } from '../../../contracts/policy/prompt';
+export type { DomainRules } from '../../../contracts/policy/domains';
+import type { DomainRules } from '../../../contracts/policy/domains';
+
 export const decisions = [...modes, 'warn_override'] as const;
-export type Mode = typeof modes[number];
-export const detectorModes = ['off', ...modes] as const;
-export type DetectorMode = typeof detectorModes[number];
+export type Mode = PolicyMode;
 export type Decision = typeof decisions[number];
 
 export const decisionLabels: Record<Decision, string> = {
@@ -24,7 +27,6 @@ export const classificationLabels: Record<AppClassification, string> = {
   unreviewed: 'Unreviewed', approved: 'Approved', unapproved: 'Unapproved',
 };
 export type DiscoveredApp = { appId: AiAppId; status: AppClassification; browsersSeen: number; lastObservedAt: string | null };
-export type DomainRules = { allow: string[]; block: string[] };
 export type PolicyGroup = { id: string; name: string; effectiveVersion: number; publishedVersion: number | null; browsers: number };
 export type PolicyGroupChange = { groupId: string | null; groupName: string | null; installationId: string | null; sourceVersion: number | null };
 

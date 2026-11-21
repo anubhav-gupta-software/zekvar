@@ -51,6 +51,8 @@ Publish requests also accept an optional `discoveryEnabled` boolean. Discovery i
 
 Publish requests can also supply `domainRules` with `allow` and `block` hostname arrays. A domain-only publish can omit `mode` and preserve the current prompt and discovery settings. Omitting `domainRules` preserves the lists. Sending two empty lists clears them. Control normalizes accepted names and rejects paths, ports, IPs, wildcards, and entries that appear in both lists. Restore applies the earlier lists as part of a new policy version.
 
+Baseline and group publishes accept an optional positive integer `expectedVersion`. Control compares it with the effective current version for that scope in the same transaction as the publish. A group following the baseline uses the current baseline version. A mismatch returns HTTP 409.
+
 For a version with domain rules, the heartbeat must include `domainRulesApplied: true`. Browser v0.7.0 acknowledges this after Chrome applies the list. Earlier browsers stay at their last acknowledged version in Browser health.
 
 ## Audit log

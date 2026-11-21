@@ -48,6 +48,7 @@ export default async function Groups({ searchParams }: { searchParams: Promise<{
                 <span className="badge">{result.selected.publishedVersion ? 'Group policy' : 'Follows baseline'} · v{result.selected.effectiveVersion}</span></div>
               <p className="muted">Publish changes for the browsers assigned to this group.</p>
               <PublishPolicyForm policy={result.current} groupId={result.selected.id} />
+              <a className="button small mt-3" href={`/preview?group=${result.selected.id}`}>Preview group policy</a>
             </section>
             <section className="panel" aria-labelledby="promotion-heading">
               <h2 id="promotion-heading">Promote to organization baseline</h2>
