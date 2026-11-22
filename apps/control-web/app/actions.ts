@@ -52,6 +52,7 @@ async function perform(change: (token: string) => Promise<Feedback>): Promise<Fe
     if (error instanceof ApiError && error.code === 'review_mode_changed') {
       return { error: 'The review requirement changed. Reload and review the policy before continuing.' };
     }
+    if (error instanceof ApiError && error.code === 'sso_subject_exists') return { error: 'That identity already has Control access.' };
     if (error instanceof ApiError && error.status === 404) {
       return { error: 'That record is no longer available. Refresh the dashboard.' };
     }
@@ -94,6 +95,22 @@ export async function revokeControlAccess(_previous: Feedback, form: FormData): 
     await controlApi.revokeAccess(token, id);
     revalidatePath('/access');
     return { message: 'Control access revoked.' };
+  });
+}
+
+export async function addSsoIdentity(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const input = form.get('name');
+  const name = typeof input === 'string' ? input.trim() : '';
+  const role = form.get('role');
+  const subject = form.get('subject');
+  if (name.length < 2 || name.length > 64 || /[\x00-\x1f\x7f-\x9f]/.test(name) ||
+      (role !== 'administrator' && role !== 'auditor') || typeof subject !== 'string' || !/^[!-~]{1,255}$/.test(subject)) {
+    return { error: 'Enter a name, delegated role, and exact OIDC subject.' };
+  }
+  return perform(async (token) => {
+    await controlApi.addSsoIdentity(token, name, role, subject);
+    revalidatePath('/access');
+    return { message: `Single sign-on access granted to ${name}.` };
   });
 }
 

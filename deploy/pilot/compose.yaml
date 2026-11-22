@@ -34,6 +34,9 @@ services:
       Control__HostedPilot: "true"
       Control__Organizations__0__Slug: ${ZEKVAR_ORGANIZATION_SLUG:?set the organization slug}
       Control__Organizations__0__AdminToken: ${ZEKVAR_OWNER_TOKEN:?generate an owner token}
+      Control__Oidc__Issuer: ${ZEKVAR_OIDC_ISSUER:-}
+      Control__Oidc__OrganizationSlug: ${ZEKVAR_ORGANIZATION_SLUG:?set the organization slug}
+      Control__Oidc__ExchangeToken: ${ZEKVAR_OIDC_EXCHANGE_TOKEN:-}
       ConnectionStrings__Control: "Host=postgres;Database=zekvar;Username=zekvar_app;Password=${ZEKVAR_POSTGRES_APP_PASSWORD:?generate an app database password}"
 
   web:
@@ -52,6 +55,12 @@ services:
       HOSTNAME: 127.0.0.1
       PORT: 3000
       ZEKVAR_HOSTED_PILOT: "1"
+      ZEKVAR_OIDC_DASHBOARD_ORIGIN: "https://${ZEKVAR_DASHBOARD_HOST:?set the dashboard DNS hostname}"
+      ZEKVAR_OIDC_ISSUER: ${ZEKVAR_OIDC_ISSUER:-}
+      ZEKVAR_OIDC_CLIENT_ID: ${ZEKVAR_OIDC_CLIENT_ID:-}
+      ZEKVAR_OIDC_CLIENT_SECRET: ${ZEKVAR_OIDC_CLIENT_SECRET:-}
+      ZEKVAR_OIDC_CLIENT_AUTH: ${ZEKVAR_OIDC_CLIENT_AUTH:-basic}
+      ZEKVAR_OIDC_EXCHANGE_TOKEN: ${ZEKVAR_OIDC_EXCHANGE_TOKEN:-}
 
   postgres:
     image: postgres:18

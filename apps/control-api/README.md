@@ -46,6 +46,12 @@ The configured organization token has the `owner` role. Owners can issue and rev
 
 Control evaluates expiry and revocation on each request. Invalid, expired, or revoked tokens receive HTTP 401. Authenticated requests outside the caller’s role receive HTTP 403. Use a new credential for rotation and revoke the previous credential when replacement is complete. Requests already authorized may finish after revocation. Credential names are assigned by the owner and should correspond to individual recipients.
 
+## Hosted OpenID Connect access
+
+In the configured organization, `GET /v1/admin/access/sso` returns the issuer to the owner. `POST /v1/admin/access/sso` accepts `name`, an `administrator` or `auditor` role, and the provider's exact `subject`. An active duplicate returns HTTP 409. The existing access revocation route ends the identity's sessions and future Control sign-ins. Successful SSO sign-ins are recorded as `control_sso_signed_in` with named Control identity metadata.
+
+The dashboard verifies the provider response and uses a separate configured loopback credential to exchange the verified subject for an opaque Control token. The API caps the resulting session to one hour and evaluates live role, expiry, and revocation on each request. Caddy keeps the exchange route and administrative API private. [Hosted setup and verification](../../deploy/pilot/README.md#configure-control-single-sign-on)
+
 | Order | Request | Result |
 | --- | --- | --- |
 | 1 | `POST /v1/admin/enrollment-grants` | An enrollment grant that expires in 10 minutes |

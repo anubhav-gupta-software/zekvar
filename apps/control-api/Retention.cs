@@ -47,6 +47,7 @@ internal sealed class RetentionSweep(ControlStore store, ILogger<RetentionSweep>
                     }
                 } while (deleted);
                 await store.ExpireExtensionInventory(stoppingToken);
+                await store.ExpireSsoSessions(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

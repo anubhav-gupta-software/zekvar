@@ -3,7 +3,7 @@ import { ApiError, controlApi } from '../../lib/api';
 import { roleLabels, type ControlAccess } from '../../lib/access';
 import { utc } from '../../lib/control';
 import { sessionToken } from '../../lib/session';
-import { revokeControlAccess } from '../actions';
+import { addSsoIdentity, revokeControlAccess } from '../actions';
 import { MutationForm, RefreshSection } from '../forms';
 import { DeploymentBadge, Sidebar } from '../workspace';
 import { IssueAccessForm } from './issue-form';
@@ -30,6 +30,24 @@ export default async function AccessPage() {
           <p className="muted">Administrators manage policies, enrollment, and retention. Auditors can review and export records.</p>
           <IssueAccessForm activeIds={credentials.filter(({ status }) => status === 'active').map(({ id }) => id)} />
         </section>
+        {result?.sso && <section className="panel" aria-labelledby="sso-heading">
+          <h2 id="sso-heading">Single sign-on access</h2>
+          <p className="muted">Use the exact OIDC subject for the account in this application’s identity provider. Issuer <code>{result.sso.issuer}</code></p>
+          <MutationForm action={addSsoIdentity} label="Add SSO identity" appearance="primary">
+            <div className="grid gap-1">
+              <label htmlFor="sso-name">SSO name</label>
+              <input id="sso-name" name="name" required minLength={2} maxLength={64} />
+            </div>
+            <div className="grid gap-1">
+              <label htmlFor="sso-subject">OIDC subject</label>
+              <input id="sso-subject" name="subject" required maxLength={255} autoComplete="off" spellCheck={false} />
+            </div>
+            <div className="grid gap-1">
+              <label htmlFor="sso-role">SSO role</label>
+              <select id="sso-role" name="role"><option value="auditor">Auditor</option><option value="administrator">Administrator</option></select>
+            </div>
+          </MutationForm>
+        </section>}
         <section className="panel table-panel" aria-labelledby="access-heading">
           <div className="panel-heading"><h2 id="access-heading">Delegated credentials</h2><RefreshSection label="Refresh credentials" /></div>
           <div className="table-scroll" role="region" tabIndex={0} aria-labelledby="access-heading">
@@ -49,22 +67,24 @@ export default async function AccessPage() {
 async function loadAccess(token: string) {
   const session = await controlApi.session(token);
   const credentials = session.role === 'owner' ? await controlApi.access(token) : undefined;
-  return { session, credentials };
+  const sso = session.role === 'owner' ? await controlApi.ssoSettings(token) : undefined;
+  return { session, credentials, sso };
 }
 
 const statuses = { active: 'Active', expired: 'Expired', revoked: 'Revoked' };
 
 function CredentialRow({ credential }: { credential: ControlAccess }) {
+  const sso = credential.subject !== undefined;
   return <tr>
-    <th scope="row" className="emphasis">{credential.name}</th>
+    <th scope="row" className="emphasis">{credential.name}{sso && <div className="muted">Single sign-on <code>{credential.subject}</code></div>}</th>
     <td><code title={credential.id}>{credential.id.slice(0, 13)}</code></td>
     <td>{roleLabels[credential.role]}</td>
     <td><span className={`badge ${credential.status === 'active' ? 'current' : ''}`}>{statuses[credential.status]}</span></td>
     <td><time dateTime={credential.issuedAt}>{utc.format(new Date(credential.issuedAt))}</time></td>
-    <td><time dateTime={credential.expiresAt}>{utc.format(new Date(credential.expiresAt))}</time></td>
+    <td>{credential.expiresAt ? <time dateTime={credential.expiresAt}>{utc.format(new Date(credential.expiresAt))}</time> : 'Until revoked'}</td>
     <td>{credential.status === 'active' ? <MutationForm action={revokeControlAccess} label="Revoke" appearance="small danger"
-      accessibleLabel={`Revoke token for ${credential.name}`}
-      confirmation={`Revoke the token for ${credential.name} (${credential.id.slice(0, 13)})?`}>
+      accessibleLabel={`Revoke ${sso ? 'SSO access' : 'token'} for ${credential.name}`}
+      confirmation={`Revoke ${sso ? 'SSO access' : 'the token'} for ${credential.name} (${credential.id.slice(0, 13)})?`}>
       <input type="hidden" name="id" value={credential.id} />
     </MutationForm> : '—'}</td>
   </tr>;

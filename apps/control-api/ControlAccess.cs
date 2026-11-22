@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Control;
 
 internal static class AccessRoles
@@ -11,5 +13,7 @@ internal static class AccessRoles
 
 internal sealed record IssueControlAccess(string? Name, string? Role, int Hours);
 internal sealed record AccessIdentity(Guid Id, string Name, string Role);
-internal sealed record ControlAccess(Guid Id, string Name, string Role, DateTime IssuedAt, DateTime ExpiresAt, string Status);
+internal sealed record ControlAccess(Guid Id, string Name, string Role, DateTime IssuedAt, DateTime? ExpiresAt, string Status,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Issuer = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Subject = null);
 internal sealed record IssuedControlAccess(ControlAccess Access, string Token);

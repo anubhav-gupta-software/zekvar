@@ -184,14 +184,15 @@ internal sealed partial class ControlStore
         return (bool)(await command.ExecuteScalarAsync(ct))!;
     }
 
-    private static async Task<bool> ActiveAdministrators(NpgsqlTransaction transaction, Guid org, Guid[] ids, CancellationToken ct)
+    private async Task<bool> ActiveAdministrators(NpgsqlTransaction transaction, Guid org, Guid[] ids, CancellationToken ct)
     {
         await using var command = new NpgsqlCommand("""
             SELECT id FROM control_access WHERE organization_id = $1 AND id = ANY($2) AND role = 'administrator'
-                AND revoked_at IS NULL AND expires_at > clock_timestamp()
+                AND revoked_at IS NULL AND (expires_at > clock_timestamp() OR (oidc_issuer = $3::text AND
+                    organization_id = (SELECT id FROM organizations WHERE slug = $4::text)))
             ORDER BY id FOR SHARE
             """, transaction.Connection, transaction);
-        AddParameters(command, org, ids);
+        AddParameters(command, org, ids, (object?)sso?.Issuer ?? DBNull.Value, (object?)sso?.OrganizationSlug ?? DBNull.Value);
         var count = 0;
         await using var rows = await command.ExecuteReaderAsync(ct);
         while (await rows.ReadAsync(ct)) count++;

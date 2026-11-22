@@ -12,6 +12,14 @@ WITH revoked AS (
 INSERT INTO public.control_audit (organization_id, occurred_at, action, subject_access_id)
 SELECT organization_id, revoked_at, 'access_revoked', id FROM revoked;
 
+DO $$
+BEGIN
+    IF to_regclass('public.control_sso_sessions') IS NOT NULL THEN
+        DELETE FROM public.control_sso_sessions;
+    END IF;
+END;
+$$;
+
 WITH revoked AS (
     UPDATE public.installations SET revoked_at = CURRENT_TIMESTAMP
     WHERE revoked_at IS NULL RETURNING organization_id, id, revoked_at

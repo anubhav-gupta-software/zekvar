@@ -7,8 +7,9 @@ namespace Control;
 internal sealed partial class ControlStore
 {
     private readonly NpgsqlDataSource dataSource;
+    private readonly ControlSso? sso;
 
-    public ControlStore(NpgsqlDataSource dataSource) => this.dataSource = dataSource;
+    public ControlStore(NpgsqlDataSource dataSource, ControlSso? sso) => (this.dataSource, this.sso) = (dataSource, sso);
 
     public async Task Initialize(DemoOrganization[] organizations, CancellationToken ct)
     {
@@ -41,6 +42,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 18, "018_custom_app_catalog.sql", ct);
         await ApplyMigration(connection, 19, "019_prompt_exceptions.sql", ct);
         await ApplyMigration(connection, 20, "020_claude_prompt_protection.sql", ct);
+        await ApplyMigration(connection, 21, "021_control_sso.sql", ct);
 
         foreach (var organization in organizations)
         {

@@ -80,7 +80,7 @@ export default async function Audit({ searchParams }: { searchParams: Promise<Re
 }
 
 const actorLabels = { organization_admin: 'Organization admin', named_administrator: 'Named administrator',
-  browser_enrollment: 'Browser enrollment', system: 'Scheduled cleanup' };
+  sso_identity: 'Single sign-on identity', browser_enrollment: 'Browser enrollment', system: 'Scheduled cleanup' };
 
 function auditDetails(entry: AuditEntry) {
   const review = entry.reviewChange;

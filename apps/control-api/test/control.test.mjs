@@ -21,6 +21,14 @@ const retentionAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
+const undoSsoSchema = `
+  DELETE FROM schema_migrations WHERE version = 21;
+  DROP TABLE control_sso_sessions;
+  ALTER TABLE control_access DROP CONSTRAINT control_access_type_check,
+      DROP COLUMN oidc_issuer, DROP COLUMN oidc_subject, ALTER COLUMN expires_at SET NOT NULL,
+      ADD CONSTRAINT control_access_check1 CHECK ((revoked_at IS NULL) = (token_hash IS NOT NULL));
+`;
+
 async function retentionFixture(query) {
   assert.match(postgres ?? '', /^zekvar-demo-[a-f0-9]{10}$/);
   const { stdout } = await sql('docker', ['exec', postgres, 'psql', '-XAtq', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'zekvar', '-c', query]);
@@ -1047,7 +1055,8 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     if (postgres) {
       await stop();
       await retentionFixture(`
-        DELETE FROM schema_migrations WHERE version IN (14, 15);
+        DELETE FROM schema_migrations WHERE version IN (14, 15, 21);
+        DROP TABLE control_sso_sessions;
         DROP TABLE policy_reviews;
         ALTER TABLE organizations DROP COLUMN require_policy_review;
         ALTER TABLE control_audit DROP COLUMN review_change, DROP COLUMN actor_access_id, DROP COLUMN subject_access_id;
@@ -1188,6 +1197,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     if (postgres) {
       await stop();
       await retentionFixture(`
+        ${undoSsoSchema}
         DELETE FROM schema_migrations WHERE version = 15;
         DROP TABLE policy_reviews;
         ALTER TABLE organizations DROP COLUMN require_policy_review;
@@ -1727,5 +1737,24 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await heartbeat(active.version, { claudeCoverage: 'unsupported', claudePromptApplied: true });
     assert.equal((await installed()).claudeCoverage, null);
     await post('policy-reviews/setting', { required: false }, 204);
+  });
+
+  await t.test('migrates existing Control tokens and leaves optional single sign-on disabled', async () => {
+    const access = () => call('/v1/admin/access', { token: first });
+    const { token, access: named } = await call('/v1/admin/access', { token: first, method: 'POST',
+      body: { name: 'Migration Auditor', role: 'auditor', hours: 1 } });
+    const previous = await access();
+    if (postgres) {
+      await stop();
+      await retentionFixture(undoSsoSchema);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 21'), '1');
+      assert.deepEqual(await access(), previous);
+    }
+    const session = await call('/v1/admin/session', { token });
+    assert.equal(session.role, 'auditor');
+    assert.equal(session.access.id, named.id);
+    await call('/v1/admin/access/sso', { token: first, expect: 204 });
+    await call('/v1/internal/sso/session', { token: first, method: 'POST', body: {}, expect: 404 });
   });
 });

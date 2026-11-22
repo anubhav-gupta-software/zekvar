@@ -23,6 +23,7 @@ if (organizations is not { Length: > 0 } || organizations.Any(org => !ValidOrgan
     organizations.Select(org => org.Slug).Distinct().Count() != organizations.Length ||
     organizations.Select(org => org.AdminToken).Distinct().Count() != organizations.Length)
     throw new InvalidOperationException("Configure distinct organization slugs and 32-byte hex admin tokens.");
+var sso = ControlSso.Read(builder.Configuration, hostedPilot, organizations);
 
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -33,7 +34,7 @@ builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadReq
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow);
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
-builder.Services.AddSingleton<ControlStore>();
+builder.Services.AddSingleton(services => new ControlStore(services.GetRequiredService<NpgsqlDataSource>(), sso));
 builder.Services.AddHostedService<RetentionSweep>(services => new(services.GetRequiredService<ControlStore>(),
     services.GetRequiredService<ILogger<RetentionSweep>>(), TimeSpan.FromSeconds(sweepSeconds)));
 
@@ -98,6 +99,36 @@ access.MapPost("", async (IssueControlAccess request, HttpContext http, Cancella
 });
 access.MapPost("/{id:guid}/revoke", async (Guid id, HttpContext http, CancellationToken ct) =>
     await store.RevokeAccess(Identity(http).OrganizationId, id, ct) ? Results.NoContent() : Results.NotFound());
+access.MapGet("/sso", (HttpContext http) => sso is not null && Identity(http).OrganizationSlug == sso.OrganizationSlug
+    ? Results.Ok(new { sso.Issuer }) : Results.NoContent());
+access.MapPost("/sso", async (AddSsoIdentity request, HttpContext http, CancellationToken ct) =>
+{
+    var identity = Identity(http);
+    if (sso is null || identity.OrganizationSlug != sso.OrganizationSlug) return Results.NotFound();
+    var name = request.Name?.Trim();
+    if (name is not { Length: >= 2 and <= 64 } || name.Any(char.IsControl) ||
+        !AccessRoles.IsDelegated(request.Role) || !ControlSso.ValidSubject(request.Subject))
+        return Results.BadRequest(new { error = "Enter a name, delegated role, and exact OIDC subject." });
+    var added = await store.AddSsoIdentity(identity.OrganizationId, sso.Issuer, request.Subject!, name, request.Role!, ct);
+    return added is not null ? Results.Ok(added) : Results.Conflict(new { code = "sso_subject_exists" });
+});
+
+app.MapPost("/v1/internal/sso/session", async (ExchangeSsoIdentity request, HttpContext http, CancellationToken ct) =>
+{
+    if (sso is null) return Results.NotFound();
+    if (BearerToken(http) is not { } token || !sso.Authorizes(token)) return Results.Unauthorized();
+    if (request.Issuer != sso.Issuer || !ControlSso.ValidSubject(request.Subject) || request.ExpiresAt <= DateTimeOffset.UtcNow)
+        return Results.Unauthorized();
+    return await store.ExchangeSsoIdentity(sso, request.Subject!, request.ExpiresAt, ct) is { } session
+        ? Results.Ok(session) : Results.Unauthorized();
+});
+app.MapDelete("/v1/internal/sso/session", async (HttpContext http, CancellationToken ct) =>
+{
+    if (sso is null) return Results.NotFound();
+    if (BearerToken(http) is not { } token) return Results.Unauthorized();
+    await store.EndSsoSession(token, sso.BridgeHash, ct);
+    return Results.NoContent();
+});
 admin.MapPost("/enrollment-grants", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.CreateGrant(Identity(http), ct)));
 admin.MapGet("/installations", async (HttpContext http, CancellationToken ct) =>
@@ -291,9 +322,7 @@ Func<EndpointFilterInvocationContext, EndpointFilterDelegate, ValueTask<object?>
     async (context, next) =>
 {
     var http = context.HttpContext;
-    if (!AuthenticationHeaderValue.TryParse(http.Request.Headers.Authorization, out var auth) ||
-        !auth.Scheme.Equals("Bearer", StringComparison.OrdinalIgnoreCase) || !Tokens.IsValid(auth.Parameter) ||
-        await store.Authenticate(auth.Parameter!, browser, http.RequestAborted) is not { } identity)
+    if (BearerToken(http) is not { } token || await store.Authenticate(token, browser, http.RequestAborted) is not { } identity)
     {
         http.Response.Headers.WWWAuthenticate = "Bearer";
         return Results.Unauthorized();
@@ -303,6 +332,9 @@ Func<EndpointFilterInvocationContext, EndpointFilterDelegate, ValueTask<object?>
     http.Items[typeof(RequestIdentity)] = identity;
     return await next(context);
 };
+
+static string? BearerToken(HttpContext http) => AuthenticationHeaderValue.TryParse(http.Request.Headers.Authorization, out var auth) &&
+    auth.Scheme.Equals("Bearer", StringComparison.OrdinalIgnoreCase) && Tokens.IsValid(auth.Parameter) ? auth.Parameter : null;
 
 static RequestIdentity Identity(HttpContext http) => (RequestIdentity)http.Items[typeof(RequestIdentity)]!;
 

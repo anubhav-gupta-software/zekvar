@@ -14,8 +14,9 @@ export const auditActions = {
   retention_cleanup: 'Expired records deleted',
   policy_group_created: 'Rollout group created',
   policy_group_assigned: 'Browser assignment changed',
-  access_issued: 'Control token issued',
-  access_revoked: 'Control token revoked',
+  access_issued: 'Control access granted',
+  access_revoked: 'Control access revoked',
+  control_sso_signed_in: 'Single sign-on completed',
   policy_review_setting_changed: 'Policy review requirement changed',
   policy_review_requested: 'Policy review requested',
   policy_review_decided: 'Policy review decided',
@@ -25,7 +26,7 @@ export type AuditAction = keyof typeof auditActions;
 export type AuditCursor = { occurredAt: string; id: string };
 export type AuditEntry = AuditCursor & {
   action: AuditAction;
-  actor: 'organization_admin' | 'named_administrator' | 'browser_enrollment' | 'system';
+  actor: 'organization_admin' | 'named_administrator' | 'sso_identity' | 'browser_enrollment' | 'system';
   actorAccess?: AccessIdentity;
   subjectAccess?: AccessIdentity;
   reviewChange?: PolicyReviewAudit;

@@ -6,6 +6,7 @@ import {
 import { eventFilters, setEventCursor } from '../lib/events';
 import { canChangePolicy, canWrite } from '../lib/access';
 import { sessionToken } from '../lib/session';
+import { ssoOptions } from '../lib/sso';
 import { classifyAiApp, revokeInstallation, signOut } from './actions';
 import { DomainRulesForm, EnrollmentForm, MutationForm, RefreshSection, SignInForm } from './forms';
 import { PolicyVersionTable, PublishPolicyForm } from './policies';
@@ -17,7 +18,7 @@ type Search = Record<string, string | string[] | undefined>;
 export default async function Control({ searchParams }: { searchParams: Promise<Search> }) {
   const token = await sessionToken();
   const search = await searchParams;
-  if (!token) return <SignIn invalid={search.session === 'ended'} />;
+  if (!token) return <SignIn invalid={search.session === 'ended'} ssoError={search.signIn === 'sso-error'} />;
   const filters = eventFilters(search);
   const historyQuery = new URLSearchParams(filters.query);
   if (filters.cursor) setEventCursor(historyQuery, filters.cursor);
@@ -173,12 +174,16 @@ export default async function Control({ searchParams }: { searchParams: Promise<
   }
 }
 
-function SignIn({ invalid }: { invalid?: boolean }) {
+function SignIn({ invalid, ssoError }: { invalid?: boolean; ssoError?: boolean }) {
+  const sso = Boolean(ssoOptions());
   return <main className="auth-shell">
     <section className="auth-card" aria-labelledby="sign-in-heading">
       <Brand />
       <div><h1 id="sign-in-heading">Sign in to Control</h1>
-        <p className="muted">Use your delegated token or the owner token configured for this deployment.</p></div>
+        <p className="muted">{sso ? 'Use your organization’s identity provider or a Control token.' :
+          'Use your delegated token or the owner token configured for this deployment.'}</p></div>
+      {ssoError && <p className="feedback error" role="alert">Single sign-on could not complete. Try again or contact your Control administrator.</p>}
+      {sso && <a className="button primary" href="/auth/sso/start">Sign in with single sign-on</a>}
       <SignInForm invalid={invalid} />
     </section>
   </main>;

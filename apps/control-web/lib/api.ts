@@ -9,7 +9,7 @@ import type { InventoryInstallation } from './extension-inventory';
 
 const port = Number(process.env.ZEKVAR_CONTROL_PORT ?? 5187);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid Control loopback port.');
-const api = `http://127.0.0.1:${port}/v1/admin`;
+const api = `http://127.0.0.1:${port}/v1`;
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code?: string) {
@@ -17,10 +17,10 @@ export class ApiError extends Error {
   }
 }
 
-async function apiResponse(path: string, token: string, options: RequestInit = {}): Promise<Response> {
+async function apiResponse(path: string, token: string, options: RequestInit = {}, namespace = 'admin'): Promise<Response> {
   let response: Response;
   try {
-    response = await fetch(`${api}${path}`, {
+    response = await fetch(`${api}/${namespace}${path}`, {
       ...options,
       cache: 'no-store',
       redirect: 'error',
@@ -54,6 +54,9 @@ const policiesPath = (groupId?: string) => groupId ? `/policy-groups/${groupId}/
 export const controlApi = {
   session: (token: string) => request<ControlSession>('/session', token),
   access: (token: string) => request<ControlAccess[]>('/access', token),
+  ssoSettings: (token: string) => request<{ issuer: string } | undefined>('/access/sso', token),
+  addSsoIdentity: (token: string, name: string, role: DelegatedRole, subject: string) =>
+    request<ControlAccess>('/access/sso', token, 'POST', { name, role, subject }),
   issueAccess: (token: string, name: string, role: DelegatedRole, hours: number) =>
     request<IssuedControlAccess>('/access', token, 'POST', { name, role, hours }),
   revokeAccess: (token: string, id: string) => request<void>(`/access/${id}/revoke`, token, 'POST'),
@@ -91,4 +94,14 @@ export const controlApi = {
     request<PolicyChange>(`${policiesPath(groupId)}/${version}/restore`, token, 'POST', undefined, review),
   issueGrant: (token: string) => request<Grant>('/enrollment-grants', token, 'POST'),
   revoke: (token: string, installationId: string) => request<void>(`/installations/${installationId}/revoke`, token, 'POST'),
+};
+
+export const ssoApi = {
+  async exchange(key: string, issuer: string, subject: string, expiresAt: string) {
+    const response = await apiResponse('/sso/session', key, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ issuer, subject, expiresAt }),
+    }, 'internal');
+    return response.json() as Promise<{ token: string; expiresAt: string }>;
+  },
+  end: (token: string) => apiResponse('/sso/session', token, { method: 'DELETE', signal: AbortSignal.timeout(1500) }, 'internal'),
 };

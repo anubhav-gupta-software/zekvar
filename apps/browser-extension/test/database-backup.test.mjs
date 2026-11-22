@@ -36,6 +36,7 @@ test('Control recovers from an encrypted PostgreSQL backup and re-enrolls Chrome
   const id = randomBytes(5).toString('hex');
   const source = { name: `zekvar-backup-${id}`, password: secret(), owner: secret(), otherOwner: secret() };
   const target = { name: `zekvar-restore-${id}`, password: secret(), owner: secret(), otherOwner: secret() };
+  const sso = { issuer: 'https://recovery-issuer.example.test', subject: 'recovery-auditor', bridge: secret() };
   const path = (name) => join(work, name);
   const runHere = (file, args, options) => run(file, args, { cwd: root, timeout: 90_000, ...options });
   const compose = (db, ...args) => runHere('docker', [
@@ -114,6 +115,7 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
         Control__Port: String(port), ConnectionStrings__Control: `Host=127.0.0.1;Port=${db.port};Database=zekvar;Username=zekvar_app;Password=${db.password}`,
         Control__Organizations__0__Slug: 'recovery-drill', Control__Organizations__0__AdminToken: db.owner,
         Control__Organizations__1__Slug: 'other-recovery-tenant', Control__Organizations__1__AdminToken: db.otherOwner,
+        Control__Oidc__Issuer: sso.issuer, Control__Oidc__OrganizationSlug: 'recovery-drill', Control__Oidc__ExchangeToken: sso.bridge,
       },
     });
     let log = '';
@@ -137,6 +139,10 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
   const admin = (owner, route, body, expected) => call(`admin/${route}`, { token: owner, body, expected });
 
   await startApi(source);
+  await admin(source.owner, 'access/sso', { name: 'Recovery SSO auditor', role: 'auditor', subject: sso.subject });
+  const ssoExchange = (expected = 200) => call('internal/sso/session', { token: sso.bridge, expected,
+    body: { issuer: sso.issuer, subject: sso.subject, expiresAt: new Date(Date.now() + 600_000).toISOString() } });
+  const ssoSession = await ssoExchange();
   const retention = { securityEventDays: 30, aiObservationDays: 30, auditDays: 90 };
   await admin(source.owner, 'retention', retention, 204);
   const policy = await admin(source.owner, 'policies', { mode: 'block' });
@@ -232,10 +238,13 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
   assert.match(restores.find((result) => result.status === 'rejected').reason.stderr, /already contains application objects/);
   assert.equal(await hasSchema(target), 't');
   assert.equal(await sql(target, 'SELECT count(*) FROM admin_memberships'), '0');
+  assert.equal(await sql(target, 'SELECT count(*) FROM control_sso_sessions'), '0');
   await assert.rejects(restore(), /already contains application objects/);
   await startApi(target);
 
   await admin(source.owner, 'session', undefined, 401);
+  await admin(ssoSession.token, 'session', undefined, 401);
+  await ssoExchange(401);
   await admin(access.token, 'session', undefined, 401);
   await call('browser/policy', { token: previous.token, expected: 401 });
   for (const grant of [pendingGrant, usedGrant]) await call('enroll', { body: { grant }, expected: 401 });
@@ -245,7 +254,9 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
   assert.deepEqual(await admin(target.otherOwner, 'events'), []);
   assert.equal((await admin(target.owner, 'policy-reviews')).entries[0].status, 'cancelled');
   const { entries } = await admin(target.owner, 'audit');
-  for (const action of ['access_revoked', 'browser_revoked', 'policy_review_decided']) {
+  const revoked = entries.filter((row) => row.action === 'access_revoked').map((row) => row.subjectAccess.name).sort();
+  assert.deepEqual(revoked, ['Recovery SSO auditor', 'Recovery reviewer']);
+  for (const action of ['browser_revoked', 'policy_review_decided']) {
     assert.equal(entries.filter((row) => row.action === action).length, 1, action);
   }
 

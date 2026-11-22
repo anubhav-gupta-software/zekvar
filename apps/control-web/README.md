@@ -40,6 +40,8 @@ Control keeps the latest snapshot per browser and labels counts when Chrome repo
 
 **Audit log** records issuance, revocation, and changes made with a named administrator credential. Use a distinct token per recipient for attribution.
 
+Hosted pilots can also use **Single sign-on access** on this page. Add an identity by its exact OIDC subject and assign the Administrator or Auditor role. Revoke it from the same list to end active Control sessions. [Configure hosted single sign-on](../../deploy/pilot/README.md#configure-control-single-sign-on)
+
 ## Require policy reviews
 
 1. Issue named administrator credentials to two reviewers, then sign in as the owner and choose **Require policy reviews** under **Policy reviews**. The requirement applies to the organization baseline and rollout groups.
