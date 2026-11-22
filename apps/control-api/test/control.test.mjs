@@ -21,6 +21,7 @@ const retentionAdmin = randomBytes(32).toString('hex');
 const releaseAdmin = randomBytes(32).toString('hex');
 const groupViewAdmin = randomBytes(32).toString('hex');
 const batchAdmin = randomBytes(32).toString('hex');
+const reportAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -84,6 +85,8 @@ async function start(sweepSeconds = 3600) {
       Control__Organizations__4__AdminToken: groupViewAdmin,
       Control__Organizations__5__Slug: `enrollment-batch-${suffix}`,
       Control__Organizations__5__AdminToken: batchAdmin,
+      Control__Organizations__6__Slug: `report-${suffix}`,
+      Control__Organizations__6__AdminToken: reportAdmin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -1643,6 +1646,10 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const query = `events/export?installationId=${client.installationId}&decision=exception_applied`;
     assert.deepEqual((await admin(query)).entries.map((entry) => entry.eventId), [submitted.eventId]);
     assert.deepEqual((await admin(query, { token: second })).entries, []);
+    const report = await admin('reports/ai-enforcement?appId=chatgpt');
+    assert.equal(report.counts.exception_applied, 1);
+    assert.equal(report.byRule.find(({ id }) => id === 'fixture-secret').counts.exception_applied, 1);
+    assert.ok(!JSON.stringify(report).includes(sample.reason.trim()));
 
     const group = await post('policy-groups', { name: 'Exception scope' });
     await post(`installations/${client.installationId}/policy-group`, { groupId: group.id }, 204);
@@ -2017,6 +2024,120 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       await redeem(expiring.grants[0], true, 401);
       await cancel(expiring.id);
       assert.equal((await batches()).find(({ id }) => id === expiring.id).status, 'expired');
+    }
+  });
+
+  await t.test('aggregates retained AI decisions by UTC day, app, and rule from a single tenant', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: reportAdmin, ...options });
+    const report = (query = '', options) => admin(`reports/ai-enforcement${query && `?${query}`}`, options);
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    async function enroll(token = reportAdmin) {
+      const { grant } = await post('enrollment-grants', {}, { token });
+      return call('/v1/enroll', { method: 'POST', body: { grant } });
+    }
+    const empty = { monitor: 0, warn: 0, block: 0, warn_override: 0, exception_applied: 0 };
+    const initial = await report();
+    assert.equal(initial.days, 7);
+    assert.equal(initial.organization, `report-${suffix}`);
+    assert.equal(initial.appId, null);
+    assert.deepEqual(initial.counts, empty);
+    assert.deepEqual(initial.byApp, []);
+    assert.deepEqual(initial.byRule, []);
+    assert.equal(initial.daily.length, 7);
+    assert.ok(initial.daily.every(({ counts }) => Object.values(counts).every((count) => count === 0)));
+
+    const [one, two, foreign] = await Promise.all([enroll(), enroll(), enroll(batchAdmin)]);
+    const selected = await post('policies', { mode: 'warn', githubPatMode: 'block', uploadModes: { chatgpt: 'monitor', gemini: 'off' } });
+    const auditor = await post('access', { name: 'Report reviewer', role: 'auditor', hours: 1 });
+    const named = await post('access', { name: 'Report admin', role: 'administrator', hours: 1 });
+    const dayMs = 86_400_000;
+    const weekStart = Date.parse(initial.startOn);
+    const now = Date.now();
+    const warn = { ...event, appId: 'chatgpt', eventId: randomUUID(), timestamp: new Date(now).toISOString(),
+      policyVersion: selected.version, decision: 'warn' };
+    const submit = (browser, patch, expect = 204) => call('/v1/browser/events', { method: 'POST', token: browser.token,
+      body: { ...warn, ...patch }, expect });
+    await Promise.all([submit(one, {}), submit(one, {}), submit(two, {})]);
+    const oldReceipt = randomUUID();
+    await Promise.all([
+      submit(one, { eventId: randomUUID(), decision: 'warn_override' }),
+      submit(one, { eventId: randomUUID(), appId: 'gemini', decision: 'block', ruleId: 'github-classic-pat', detectorCategory: 'credential' }),
+      submit(one, { eventId: randomUUID(), decision: 'monitor', ruleId: 'ai-file-upload', detectorCategory: 'file-upload', uploadMethod: 'paste' }),
+      submit(one, { eventId: randomUUID(), appId: 'local-prompt-fixture' }),
+      submit(one, { eventId: randomUUID(), timestamp: new Date(now + 3_600_000).toISOString() }),
+      submit(one, { eventId: randomUUID(), timestamp: new Date(weekStart - 1).toISOString() }),
+      submit(one, { eventId: randomUUID(), timestamp: new Date(weekStart).toISOString() }),
+      submit(one, { eventId: oldReceipt }),
+      submit(one, { eventId: randomUUID(), prompt: 'synthetic-private-report-test' }, 400),
+      submit(foreign, { eventId: randomUUID(), policyVersion: 1, decision: 'monitor' }),
+    ]);
+
+    if (postgres) {
+      await retentionFixture(`UPDATE security_events SET received_at = now() - interval '4 days' WHERE event_id = '${oldReceipt}';`);
+    }
+    await delay(5);
+    const anchor = Date.now();
+    const week = `asOf=${anchor}`;
+    const month = `days=30&${week}`;
+    const current = await report(week);
+    assert.equal(Date.parse(current.asOf), anchor);
+    assert.equal(current.startOn, initial.startOn);
+    assert.deepEqual(current.counts, { ...empty, monitor: 1, warn: 4, block: 1, warn_override: 1 });
+    assert.deepEqual(current.daily[0].counts, { ...empty, warn: 1 });
+    assert.deepEqual(current.daily.at(-1).counts, { ...empty, monitor: 1, warn: 3, block: 1, warn_override: 1 });
+    assert.deepEqual(current.byApp, [
+      { id: 'chatgpt', counts: { ...empty, monitor: 1, warn: 4, warn_override: 1 } },
+      { id: 'gemini', counts: { ...empty, block: 1 } },
+    ]);
+    assert.deepEqual(current.byRule, [
+      { id: 'ai-file-upload', counts: { ...empty, monitor: 1 } },
+      { id: 'fixture-secret', counts: { ...empty, warn: 4, warn_override: 1 } },
+      { id: 'github-classic-pat', counts: { ...empty, block: 1 } },
+    ]);
+    const scoped = await report(`${month}&appId=chatgpt`);
+    assert.equal(scoped.appId, 'chatgpt');
+    assert.equal(scoped.daily.length, 30);
+    assert.equal(scoped.startOn, new Date(weekStart - 23 * dayMs).toISOString().slice(0, 10));
+    assert.deepEqual(scoped.counts, { ...empty, monitor: 1, warn: 5, warn_override: 1 });
+    assert.deepEqual((await report(`${month}&appId=claude`)).counts, empty);
+    assert.deepEqual(await report(week, { token: auditor.token }), current);
+    assert.deepEqual(await report(week, { token: named.token }), current);
+    assert.deepEqual((await report(week, { token: batchAdmin })).counts, { ...empty, monitor: 1 });
+    await report('', { token: one.token, expect: 401 });
+    await report('', { token: null, expect: 401 });
+    for (const query of ['days=0', 'days=07', 'days=7&days=30', 'appId=', 'appId=local-prompt-fixture',
+      'appId=chatgpt&appId=gemini', 'organization=another', 'asOf=99999999999999999999999', 'asOf=0',
+      `asOf=${anchor + 2 * dayMs}`, `${week}&asOf=${anchor}`]) await report(query, { expect: 400 });
+
+    await submit(one, { eventId: randomUUID(), timestamp: new Date(now - 100).toISOString() });
+    assert.deepEqual(await report(week), current);
+    await delay(5);
+    assert.equal((await report()).counts.warn, 5);
+    await post(`installations/${two.installationId}/revoke`, {}, { expect: 204 });
+    assert.deepEqual(await report(week), current);
+    const raw = (await admin(`events/export?${new URLSearchParams({ since: `${current.startOn}T00:00:00Z`, until: current.asOf })}`)).entries;
+    assert.equal(raw.filter(({ appId, receivedAt }) => appId !== 'local-prompt-fixture' && Date.parse(receivedAt) <= anchor).length, 7);
+    for (const secret of [one.token, two.installationId, warn.eventId, reportAdmin, 'synthetic-private-report-test']) {
+      assert.ok(!JSON.stringify(current).includes(secret));
+    }
+
+    await post('retention', { securityEventDays: 1, aiObservationDays: null, auditDays: null }, { expect: 204 });
+    const retained = { ...empty, monitor: 1, warn: postgres ? 2 : 3, block: 1, warn_override: 1 };
+    assert.deepEqual((await report(week)).counts, retained);
+    await post('retention/cleanup', {});
+    assert.deepEqual((await report(week)).counts, retained);
+    await post(`access/${auditor.access.id}/revoke`, {}, { expect: 204 });
+    await report(week, { token: auditor.token, expect: 401 });
+
+    if (postgres) {
+      const before = await report(week);
+      await stop();
+      await retentionFixture(`DELETE FROM schema_migrations WHERE version = 24;
+        DROP INDEX ai_events_by_organization_time;`);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 24'), '1');
+      assert.equal(await retentionFixture("SELECT to_regclass('public.ai_events_by_organization_time')"), 'ai_events_by_organization_time');
+      assert.deepEqual(await report(week), before);
     }
   });
 });

@@ -185,6 +185,21 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
     await dashboard.waitForURL((url) => url.searchParams.get('app') === 'chatgpt');
     assert.equal(await rows.filter({ hasText: 'Block' }).count(), 2);
     await screenshot(dashboard, '02-control-block-events.png');
+
+    await dashboard.getByRole('link', { name: 'Reports', exact: true }).click();
+    const summary = dashboard.getByRole('region', { name: 'Summary of policy events', exact: true });
+    await summary.getByText('Blocks', { exact: true }).waitFor();
+    assert.deepEqual(await summary.locator('strong').allTextContents(), ['2', '0', '2']);
+    const download = await dashboard.getByRole('link', { name: 'Export report (JSON)', exact: true }).getAttribute('href');
+    const response = await dashboard.request.get(new URL(download, dashboard.url()).href);
+    assert.equal(response.status(), 200);
+    const aggregate = await response.json();
+    assert.equal(aggregate.counts.block, 2);
+    assert.deepEqual(aggregate.byApp.map(({ id }) => id), ['chatgpt']);
+    assert.doesNotMatch(JSON.stringify(aggregate), /ZEKVAR_TEST_SECRET|installationId|eventId/);
+    await screenshot(dashboard, '02a-control-ai-enforcement-report.png');
+    await dashboard.getByRole('link', { name: 'Investigate security events', exact: true }).click();
+    await rows.filter({ hasText: 'Block' }).first().waitFor();
   });
 
   await t.test('restores Monitor and delivers a queued event exactly once after a lost acknowledgment', async () => {

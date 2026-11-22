@@ -131,6 +131,12 @@ Policy publishes accept `extensionInventoryEnabled` as an optional boolean. Exis
 
 History and export accept `appId`, `decision`, `installationId`, and occurrence timestamps `since` (inclusive) and `until` (exclusive). Results are sorted by server receipt time, with event ID and installation ID as tie-breakers. Retention applies immediately, and each history page reads the rows still retained when requested. Both endpoints require a Control credential for the organization.
 
+## AI enforcement report
+
+`GET /v1/admin/reports/ai-enforcement` accepts `days=7` (default) or `days=30` and an optional `appId` of `chatgpt`, `claude`, or `gemini`. The authenticated organization determines the scope. The report covers UTC calendar days including the current partial day. `startOn` is the first date. `asOf` is the inclusive cutoff for both occurrence and server receipt. Pass that value as Unix milliseconds in `asOf` to reuse the cutoff for up to 24 hours. Each request applies current retention and reads all counts from one PostgreSQL statement.
+
+`counts`, `daily`, `byApp`, and `byRule` report policy events per decision. The daily series has one row per date, including empty days. The app and rule breakdowns include categories with matching events. A warning and a later override are separate events. The local prompt fixture is excluded. The response contains aggregate counts and report filters. Use the event export for individual decision records.
+
 ## Audit log
 
 `GET /v1/admin/audit` returns the authenticated organization's activity as `{ entries, next }`. Use `action` to filter by `policy_published`, `policy_restored`, `grant_issued`, `browser_enrolled`, `browser_revoked`, `app_classified`, `retention_changed`, `retention_cleanup`, `policy_group_created`, `policy_group_assigned`, `access_issued`, `access_revoked`, `policy_review_setting_changed`, `policy_review_requested`, or `policy_review_decided`. `since` is inclusive and `until` is exclusive. `limit` defaults to 100 and accepts up to 1,000. When `next` is present, send its `occurredAt` as `beforeAt` and its `id` as `beforeId` with the same filters to get older entries.

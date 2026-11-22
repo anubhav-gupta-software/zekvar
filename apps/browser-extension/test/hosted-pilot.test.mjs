@@ -127,7 +127,8 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   assert.equal(redirect.status, 308);
   assert.equal(redirect.headers.location, `https://${browserHost}/health`);
   for (const origin of [browserOrigin, dashboardOrigin]) {
-    for (const path of ['/v1/admin/session', '/v1/admin/browser-releases', '/v1/admin/browser-health?rolloutGroup=baseline', '/v1/admin/enrollment-batches']) {
+    for (const path of ['/v1/admin/session', '/v1/admin/browser-releases', '/v1/admin/browser-health?rolloutGroup=baseline',
+      '/v1/admin/enrollment-batches', '/v1/admin/reports/ai-enforcement']) {
       const blocked = await call(origin + path, { headers: { Authorization: `Bearer ${owner}` } });
       assert.equal(blocked.status, 404);
       assert.equal(blocked.headers['cache-control'], 'no-store');
@@ -136,6 +137,7 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   }
   assert.equal((await call(dashboardOrigin + '/v1/browser/policy')).status, 404);
   assert.equal((await call(browserOrigin + '/')).status, 404);
+  assert.equal((await call(browserOrigin + '/reports/export')).status, 404);
   assert.equal((await call(browserOrigin + '/v1/enroll')).status, 404);
   assert.equal((await call(browserOrigin + '/v1/browser/policy', { headers: { Authorization: `Bearer ${owner}` } })).status, 401);
   assert.equal((await call(browserOrigin + '/v1/enroll', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -352,8 +354,23 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
     'The managed Chrome profile did not report its Claude decision through HTTPS.');
   await dashboard.reload();
   await dashboard.getByRole('table', { name: 'Security events' }).getByText('Claude', { exact: true }).waitFor();
+  await dashboard.getByRole('link', { name: 'Reports', exact: true }).click();
+  const reportApps = dashboard.getByRole('table', { name: 'By AI application', exact: true });
+  await reportApps.getByRole('rowheader', { name: 'Claude', exact: true }).waitFor();
+  assert.equal(await reportApps.locator('tbody tr').count(), 2);
+  const reportLink = dashboard.getByRole('link', { name: 'Export report (JSON)', exact: true });
+  const href = await reportLink.getAttribute('href');
+  const report = await dashboard.evaluate(async (path) => {
+    const response = await fetch(path);
+    return { status: response.status, report: await response.json() };
+  }, href);
+  assert.equal(report.status, 200);
+  assert.equal(report.report.counts.block, 2);
+  assert.deepEqual(report.report.byApp.map(({ id }) => id), ['chatgpt', 'claude']);
+  assert.doesNotMatch(JSON.stringify(report.report), /Synthetic (?:pilot|TLS Claude) draft|ZEKVAR_TEST_SECRET|installationId|eventId/);
   await dashboard.getByRole('button', { name: 'Sign out', exact: true }).click();
   await dashboard.getByRole('heading', { name: 'Sign in to Control', exact: true }).waitFor();
   assert.equal((await browser.cookies(dashboardOrigin)).some(({ name }) => name === session.name), false);
   assert.equal(await dashboard.evaluate(async () => (await fetch('/events/export')).status), 401);
+  assert.equal(await dashboard.evaluate(async () => (await fetch('/reports/export')).status), 401);
 });

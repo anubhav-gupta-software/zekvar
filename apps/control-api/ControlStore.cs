@@ -46,6 +46,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 21, "021_control_sso.sql", ct);
         await ApplyMigration(connection, 22, "022_browser_release.sql", ct);
         await ApplyMigration(connection, 23, "023_enrollment_batches.sql", ct);
+        await ApplyMigration(connection, 24, "024_ai_enforcement_report.sql", ct);
 
         foreach (var organization in organizations)
         {

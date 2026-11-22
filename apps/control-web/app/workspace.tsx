@@ -14,7 +14,7 @@ export function DeploymentBadge() {
 }
 
 export function Sidebar({ active, session }: {
-  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews' | 'extensions' | 'enrollment'; session?: ControlSession;
+  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews' | 'extensions' | 'enrollment' | 'reports'; session?: ControlSession;
 }) {
   const root = active ? '/' : '';
   const writable = canWrite(session);
@@ -32,6 +32,7 @@ export function Sidebar({ active, session }: {
       <a href="/enrollment" aria-current={active === 'enrollment' ? 'page' : undefined}>Enrollment batches</a>
       <a href="/extensions" aria-current={active === 'extensions' ? 'page' : undefined}>Browser extensions</a>
       <a href={`${root}#events`}>Events</a>
+      <a href="/reports" aria-current={active === 'reports' ? 'page' : undefined}>Reports</a>
       <a href="/audit" aria-current={active === 'audit' ? 'page' : undefined}>Audit log</a>
       <a href="/retention" aria-current={active === 'retention' ? 'page' : undefined}>Data retention</a>
       {session?.role === 'owner' && <a href="/access" aria-current={active === 'access' ? 'page' : undefined}>Control access</a>}

@@ -39,6 +39,10 @@ test('Control dashboard signs in and manages a real browser installation and eve
     assert.equal(denied.status(), 401);
     assert.equal(denied.headers()['cache-control'], 'no-store');
     assert.equal((await context.request.get(`${dashboard}/events/export`)).status(), 401);
+    const report = await context.request.get(`${dashboard}/reports/export`);
+    assert.equal(report.status(), 401);
+    assert.equal(report.headers()['cache-control'], 'no-store');
+    assert.equal(new URL((await context.request.get(`${dashboard}/reports`)).url()).pathname, '/');
     await page.getByLabel('Control token').fill('0'.repeat(64));
     await page.getByRole('button', { name: 'Sign in' }).click();
     await page.getByRole('alert').filter({ hasText: 'This Control token was rejected.' }).waitFor();
@@ -226,6 +230,62 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await page.getByRole('link', { name: 'Overview', exact: true }).click();
     await events.getByText('Synthetic secret', { exact: true }).first().waitFor();
     assert.equal(await events.locator('tbody tr').count(), 2);
+  });
+
+  await t.test('opens the AI enforcement report, filters in Chrome, and downloads the displayed counts', async () => {
+    await page.getByRole('link', { name: 'Reports', exact: true }).click();
+    await page.getByRole('heading', { name: 'AI enforcement report', exact: true }).waitFor();
+    const apps = page.getByRole('table', { name: 'By AI application', exact: true });
+    const rules = page.getByRole('table', { name: 'By policy rule', exact: true });
+    const daily = page.getByRole('table', { name: 'Daily policy events', exact: true });
+    const filter = page.getByRole('button', { name: 'Apply report filters' });
+    const app = page.getByLabel('AI application', { exact: true });
+    const totals = page.getByRole('region', { name: 'Summary of policy events', exact: true });
+    await apps.getByRole('rowheader', { name: 'ChatGPT', exact: true }).waitFor();
+    assert.deepEqual(await totals.locator('strong').allTextContents(), ['1', '1', '0']);
+    assert.equal(await apps.locator('tbody tr').count(), 1);
+    assert.deepEqual(await rules.getByRole('row').filter({ hasText: 'Synthetic secret' }).getByRole('cell').allTextContents(), ['0', '1', '0', '0', '0', '1']);
+    assert.equal(await daily.locator('tbody tr').count(), 7);
+    await app.selectOption('gemini');
+    await filter.click();
+    await page.getByText('No retained policy events match this report.', { exact: true }).waitFor();
+    assert.deepEqual(await totals.locator('strong').allTextContents(), ['0', '0', '0']);
+    await page.getByLabel('Reporting window (UTC)', { exact: true }).selectOption('30');
+    await app.selectOption('chatgpt');
+    await filter.click();
+    await apps.getByRole('rowheader', { name: 'ChatGPT', exact: true }).waitFor();
+    assert.equal(await daily.locator('tbody tr').count(), 30);
+    const link = page.getByRole('link', { name: 'Export report (JSON)', exact: true });
+    const href = await link.getAttribute('href');
+    const anchor = Number(new URL(href, dashboard).searchParams.get('asOf'));
+    const [file] = await Promise.all([page.waitForEvent('download'), link.click()]);
+    assert.equal(file.suggestedFilename(), 'zekvar-ai-enforcement.json');
+    const serialized = await readFile(await file.path(), 'utf8');
+    const downloaded = JSON.parse(serialized);
+    assert.equal(Date.parse(downloaded.asOf), anchor);
+    assert.equal(downloaded.appId, 'chatgpt');
+    assert.equal(downloaded.days, 30);
+    assert.equal(downloaded.daily.length, 30);
+    assert.deepEqual(downloaded.counts, { monitor: 0, warn: 1, block: 0, warn_override: 0, exception_applied: 0 });
+    assert.ok(![installation.installationId, installation.token, token, enrollmentGrant].some((secret) => serialized.includes(secret)));
+    const response = await context.request.get(`${dashboard}${href}`);
+    assert.equal(response.status(), 200);
+    assert.equal(response.headers()['cache-control'], 'no-store');
+    assert.equal(response.headers()['cross-origin-resource-policy'], 'same-origin');
+    assert.deepEqual(await response.json(), downloaded);
+    assert.equal((await context.request.get(`${dashboard}/reports/export?appId=chatgpt&appId=gemini`)).status(), 400);
+    assert.equal((await context.request.get(`${dashboard}/reports/export?asOf=0`)).status(), 400);
+    await page.setViewportSize({ width: 390, height: 820 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    assert.ok(await daily.evaluate((table) => table.scrollWidth > table.parentElement.clientWidth));
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(`${dashboard}/reports?days=7&days=30`);
+    await page.getByRole('alert').filter({ hasText: 'Choose a valid AI application and reporting window.' }).waitFor();
+    assert.equal(await link.count(), 0);
+    await filter.click();
+    await link.waitFor();
+    await page.getByRole('link', { name: 'Investigate security events', exact: true }).click();
+    await events.getByText('ChatGPT', { exact: true }).first().waitFor();
   });
 
   await t.test('restores an earlier policy and revokes the installation', async () => {
@@ -610,6 +670,9 @@ test('Control dashboard signs in and manages a real browser installation and eve
       await auditPage.getByRole('link', { name: 'Data retention', exact: true }).click();
       await auditPage.getByRole('heading', { name: 'Retention windows', exact: true }).waitFor();
       assert.equal(await auditPage.getByRole('button', { name: /^(Save retention|Run cleanup)$/ }).count(), 0);
+      await auditPage.getByRole('link', { name: 'Reports', exact: true }).click();
+      await auditPage.getByRole('heading', { name: 'AI enforcement report', exact: true }).waitFor();
+      assert.equal((await reviewerContext.request.get(`${dashboard}/reports/export`)).status(), 200);
 
       await adminPage.getByLabel('Test marker', { exact: true }).selectOption('warn');
       await adminPage.getByRole('button', { name: 'Publish policy', exact: true }).click();
@@ -634,6 +697,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       await adminPage.getByRole('alert').filter({ hasText: 'Your session ended. Sign in again.' }).waitFor();
       assert.ok(!(await operatorContext.cookies()).some(({ name }) => name === 'zekvar_control_session'));
       assert.equal((await operatorContext.request.get(`${dashboard}/events/export`)).status(), 401);
+      assert.equal((await operatorContext.request.get(`${dashboard}/reports/export`)).status(), 401);
       await revoke('Kai Review');
       assert.equal((await reviewerContext.request.get(`${dashboard}/audit/export`)).status(), 401);
       await auditPage.reload();

@@ -234,6 +234,13 @@ admin.MapGet("/events/export", ([AsParameters] EventFilters filters, HttpContext
     return Results.Ok(new EventExport(identity.OrganizationSlug!, DateTime.UtcNow, filters,
         store.ReadEvents(identity.OrganizationId, filters, null, null, ct)));
 });
+admin.MapGet("/reports/ai-enforcement", async (HttpContext http, CancellationToken ct) =>
+{
+    var query = AiReportQuery.Parse(http.Request.Query, DateTimeOffset.UtcNow);
+    return query is null
+        ? Results.BadRequest(new { error = "Choose a supported AI app and a 7- or 30-day reporting window." })
+        : Results.Ok(await store.ReadAiEnforcement(Identity(http), query, ct));
+});
 admin.MapGet("/audit", async (string? action, DateTimeOffset? since, DateTimeOffset? until, DateTimeOffset? beforeAt,
     Guid? beforeId, int? limit, HttpContext http, CancellationToken ct) =>
 {

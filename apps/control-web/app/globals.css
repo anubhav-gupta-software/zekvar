@@ -113,6 +113,14 @@ td code { color: #d4e5f7; }
 .clear-link { align-self: center; margin-top: 1.5rem; color: var(--mint); font-size: .875rem; text-decoration: underline; }
 .table-footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;
   gap: .55rem; padding: .8rem 1.15rem; border-top: 1px solid var(--line); }
+.report-events-link { margin-top: 0; }
+.report-note { padding-block: .6rem; }
+.report-table :is(th, td):not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+.report-table tbody th { background: transparent; color: var(--text); }
+.report-total { display: flex; align-items: center; justify-content: end; gap: .7rem; }
+.report-total meter { width: clamp(3rem, 8vw, 8rem); accent-color: var(--mint); }
+.report-total meter::-webkit-meter-bar { background: var(--field); border-color: var(--line); }
+.report-total meter::-webkit-meter-optimum-value { background: var(--mint); }
 
 .auth-shell { display: grid; min-height: 100dvh; place-items: center; padding: 1.25rem; }
 .auth-card { display: grid; gap: 1rem; width: min(100%, 28rem); padding: clamp(1.25rem, 6vw, 2rem); }
