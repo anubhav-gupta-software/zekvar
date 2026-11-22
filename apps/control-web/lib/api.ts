@@ -1,4 +1,4 @@
-import type { AppClassification, BrowserReleaseCount, DiscoveredApp, DiscoveredAppId, Grant, Installation, Policy, PolicyGroup } from './control';
+import type { AppClassification, BrowserHealthView, BrowserReleaseCount, DiscoveredApp, DiscoveredAppId, Grant, Installation, Policy, PolicyGroup } from './control';
 import type { AuditPage } from './audit';
 import type { EventPage } from './events';
 import type { RetentionCleanup, RetentionPolicy } from './retention';
@@ -72,6 +72,7 @@ export const controlApi = {
   decidePolicyReview: (token: string, id: string, approve: boolean) =>
     request<Policy | undefined>(`/policy-reviews/${id}/decision`, token, 'POST', { approve }),
   installations: (token: string) => request<Installation[]>('/installations', token),
+  browserHealth: (token: string, filters: URLSearchParams) => request<BrowserHealthView>(`/browser-health?${filters}`, token),
   browserReleases: (token: string) => request<BrowserReleaseCount[]>('/browser-releases', token).catch((error: unknown) => {
     if (error instanceof ApiError && error.status === 404) return undefined;
     throw error;

@@ -135,6 +135,15 @@ admin.MapGet("/installations", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.Installations(Identity(http).OrganizationId, ct)));
 admin.MapGet("/browser-releases", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.BrowserReleases(Identity(http).OrganizationId, ct)));
+admin.MapGet("/browser-health", async (HttpContext http, CancellationToken ct) =>
+{
+    var group = http.Request.Query["rolloutGroup"];
+    var version = http.Request.Query["browserVersion"];
+    if (group.Count > 1 || version.Count > 1 || !BrowserHealthFilter.TryParse(group.FirstOrDefault(), version.FirstOrDefault(), out var filter))
+        return Results.BadRequest(new { error = "Choose a rollout group and enter an exact extension version or unreported." });
+    return await store.BrowserHealth(Identity(http).OrganizationId, filter, ct) is { } health
+        ? Results.Ok(health) : Results.NotFound();
+});
 admin.MapGet("/extension-inventory", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.ExtensionInventory(Identity(http).OrganizationId, null, ct)));
 admin.MapGet("/extension-inventory/{id:guid}", async (Guid id, HttpContext http, CancellationToken ct) =>

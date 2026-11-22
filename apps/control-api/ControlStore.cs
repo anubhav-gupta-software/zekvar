@@ -1,3 +1,4 @@
+using System.Data;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Npgsql;
@@ -219,9 +220,34 @@ internal sealed partial class ControlStore
         return await command.ExecuteNonQueryAsync(ct) == 1;
     }
 
-    public async Task<IReadOnlyList<Installation>> Installations(Guid organizationId, CancellationToken ct)
+    public async Task<BrowserHealthView?> BrowserHealth(Guid organizationId, BrowserHealthFilter filter, CancellationToken ct)
     {
-        await using var command = Command("""
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await using var snapshot = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
+        if (filter.GroupId is { } groupId)
+        {
+            await using var group = BrowserRead(snapshot,
+                "SELECT EXISTS (SELECT FROM policy_groups WHERE organization_id = $1 AND id = $2)", organizationId, groupId);
+            if (await group.ExecuteScalarAsync(ct) is not true) return null;
+        }
+
+        var releases = await BrowserReleases(organizationId, ct, filter, snapshot);
+        var installations = await Installations(organizationId, ct, filter, snapshot);
+        var active = releases.Sum(row => row.Installations);
+        if (filter.Scoped)
+        {
+            await using var count = BrowserRead(snapshot,
+                "SELECT count(*) FROM installations WHERE organization_id = $1 AND revoked_at IS NULL", organizationId);
+            active = (long)(await count.ExecuteScalarAsync(ct))!;
+        }
+        await snapshot.CommitAsync(ct);
+        return new(active, releases, installations);
+    }
+
+    public async Task<IReadOnlyList<Installation>> Installations(Guid organizationId, CancellationToken ct,
+        BrowserHealthFilter filter = default, NpgsqlTransaction? snapshot = null)
+    {
+        await using var command = BrowserRead(snapshot, """
             SELECT i.id, i.enrolled_at, i.last_seen_at, i.applied_policy_version, i.revoked_at, i.chatgpt_coverage, i.chatgpt_checked_at,
                 i.policy_group_id, g.name, p.version, i.assignment_aware, i.gemini_coverage, i.gemini_checked_at,
                 p.claude_prompt_enabled, CASE WHEN i.claude_coverage_version = p.version AND i.revoked_at IS NULL THEN i.claude_coverage END,
@@ -230,8 +256,10 @@ internal sealed partial class ControlStore
             FROM installations i JOIN organizations o ON o.id = i.organization_id
             LEFT JOIN policy_groups g ON g.organization_id = o.id AND g.id = i.policy_group_id
             JOIN policy_versions p ON p.organization_id = i.organization_id AND p.version = COALESCE(g.policy_version, o.policy_version)
-            WHERE i.organization_id = $1 ORDER BY i.enrolled_at DESC, i.id LIMIT 100
-            """, organizationId);
+            WHERE i.organization_id = $1 AND (NOT $2 OR i.policy_group_id IS NOT DISTINCT FROM $3::uuid)
+                AND ($4::text IS NULL OR i.extension_version = $4 OR ($4 = 'unreported' AND i.extension_version IS NULL))
+            ORDER BY i.enrolled_at DESC, i.id LIMIT 100
+            """, organizationId, filter.Scoped, (object?)filter.GroupId ?? DBNull.Value, (object?)filter.Version ?? DBNull.Value);
         var installations = new List<Installation>();
         await using var rows = await command.ExecuteReaderAsync(ct);
         while (await rows.ReadAsync(ct))
@@ -245,13 +273,16 @@ internal sealed partial class ControlStore
         return installations;
     }
 
-    public async Task<IReadOnlyList<BrowserReleaseCount>> BrowserReleases(Guid organizationId, CancellationToken ct)
+    public async Task<IReadOnlyList<BrowserReleaseCount>> BrowserReleases(Guid organizationId, CancellationToken ct,
+        BrowserHealthFilter filter = default, NpgsqlTransaction? snapshot = null)
     {
-        await using var command = Command("""
+        await using var command = BrowserRead(snapshot, """
             WITH counts AS (
                 SELECT extension_version, count(*) AS installations, count(*) FILTER (
                     WHERE extension_version_reported_at > now() - interval '90 seconds') AS recent_reports
-                FROM installations WHERE organization_id = $1 AND revoked_at IS NULL GROUP BY extension_version
+                FROM installations WHERE organization_id = $1 AND revoked_at IS NULL
+                    AND (NOT $2 OR policy_group_id IS NOT DISTINCT FROM $3::uuid)
+                GROUP BY extension_version
             ), ranked AS (
                 SELECT *, row_number() OVER (PARTITION BY extension_version IS NULL
                     ORDER BY installations DESC, extension_version) AS position FROM counts
@@ -263,12 +294,20 @@ internal sealed partial class ControlStore
             )
             SELECT version, kind, installations, recent_reports FROM buckets
             ORDER BY CASE kind WHEN 'release' THEN 0 WHEN 'other' THEN 1 ELSE 2 END, installations DESC, version
-            """, organizationId);
+            """, organizationId, filter.Scoped, (object?)filter.GroupId ?? DBNull.Value);
         await using var rows = await command.ExecuteReaderAsync(ct);
         var releases = new List<BrowserReleaseCount>();
         while (await rows.ReadAsync(ct))
             releases.Add(new(rows.GetString(1), rows.IsDBNull(0) ? null : rows.GetString(0), rows.GetInt64(2), rows.GetInt64(3)));
         return releases;
+    }
+
+    private NpgsqlCommand BrowserRead(NpgsqlTransaction? snapshot, string sql, params object[] values)
+    {
+        if (snapshot is null) return Command(sql, values);
+        var command = new NpgsqlCommand(sql, snapshot.Connection, snapshot);
+        AddParameters(command, values);
+        return command;
     }
 
     public async Task<bool> Revoke(RequestIdentity identity, Guid installationId, CancellationToken ct)

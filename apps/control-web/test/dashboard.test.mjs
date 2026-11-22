@@ -116,6 +116,55 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await page.setViewportSize({ width: 1440, height: 1000 });
   });
 
+  await t.test('filters browser health by rollout group and release independently of events', async () => {
+    const group = await post('/admin/policy-groups', { name: 'Release canary' }, token);
+    const { grant } = await post('/admin/enrollment-grants', {}, token);
+    const candidate = await post('/enroll', { grant });
+    const response = await fetch(`${api}/browser/policy`, { headers: { Authorization: `Bearer ${candidate.token}`,
+      'X-Zekvar-Assignment-Aware': '1', 'X-Zekvar-Extension-Version': '0.20.1' }, signal: AbortSignal.timeout(5000) });
+    assert.ok(response.ok);
+    await post(`/admin/installations/${candidate.installationId}/policy-group`, { groupId: group.id }, token);
+    await page.getByRole('link', { name: 'Rollout groups', exact: true }).click();
+    await page.getByRole('link', { name: 'Review browser rollout', exact: true }).click();
+    const browserSection = page.locator('#browsers');
+    const selectedGroup = browserSection.getByLabel('Rollout group', { exact: true });
+    const candidateId = candidate.installationId.slice(0, 13);
+    const baselineId = installation.installationId.slice(0, 13);
+    await browsers.getByText(candidateId, { exact: true }).waitFor();
+    assert.equal(await selectedGroup.inputValue(), group.id);
+    assert.equal(await browsers.getByText(baselineId, { exact: true }).count(), 0);
+    await page.getByRole('table', { name: 'Extension rollout' }).getByRole('link', { name: '0.20.1', exact: true }).click();
+    await page.waitForURL((url) => url.searchParams.get('browserVersion') === '0.20.1');
+    await browsers.getByText(candidateId, { exact: true }).waitFor();
+    await page.getByLabel('Application', { exact: true }).selectOption('chatgpt');
+    await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
+    await page.waitForURL((url) => url.searchParams.get('app') === 'chatgpt' && url.searchParams.get('rolloutGroup') === group.id);
+    await browsers.getByText(candidateId, { exact: true }).waitFor();
+    const screenshot = process.env.ZEKVAR_TEST_BROWSER_GROUP_SCREENSHOT;
+    if (screenshot) await browserSection.screenshot({ path: screenshot });
+
+    await browserSection.getByLabel('Reported extension version', { exact: true }).fill('0.21.0');
+    await browserSection.getByRole('button', { name: 'Apply browser filters', exact: true }).click();
+    await browserSection.getByText('No installations match these browser filters.', { exact: true }).waitFor();
+    await page.getByRole('table', { name: 'Extension rollout' }).getByRole('link', { name: '0.20.1', exact: true }).waitFor();
+    await selectedGroup.selectOption('baseline');
+    await browserSection.getByRole('button', { name: 'Apply browser filters', exact: true }).click();
+    await browsers.getByText(baselineId, { exact: true }).waitFor();
+    assert.equal(await browsers.getByText(candidateId, { exact: true }).count(), 0);
+    assert.equal(new URL(page.url()).searchParams.get('app'), 'chatgpt');
+
+    await page.goto(`${dashboard}/?rolloutGroup=${group.id}&browserVersion=ZEKVAR_TEST_SECRET#browsers`);
+    await browserSection.getByRole('alert').filter({ hasText: 'enter an exact extension' }).waitFor();
+    assert.equal(await browsers.count(), 0);
+    assert.equal(await browserSection.getByLabel('Reported extension version', { exact: true }).inputValue(), '');
+    assert.equal(await page.locator('#events input[name="browserVersion"]').count(), 0);
+    await page.goto(`${dashboard}/?rolloutGroup=${randomUUID()}#browsers`);
+    await browserSection.getByRole('alert').filter({ hasText: 'This browser rollout view is unavailable.' }).waitFor();
+    await browserSection.getByRole('link', { name: 'Clear browser filters' }).click();
+    await browsers.getByText(baselineId, { exact: true }).waitFor();
+    await browsers.getByText(candidateId, { exact: true }).waitFor();
+  });
+
   await t.test('shows and filters metadata from a real policy event', async () => {
     await post('/browser/events', {
       ...event, eventId: randomUUID(), policyVersion, decision: 'warn', timestamp: new Date().toISOString(),

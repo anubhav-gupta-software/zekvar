@@ -4,6 +4,27 @@ using System.Text.RegularExpressions;
 namespace Control;
 
 internal sealed record BrowserReleaseCount(string Kind, string? ExtensionVersion, long Installations, long RecentReports);
+internal sealed record BrowserHealthView(long ActiveInstallations, IReadOnlyList<BrowserReleaseCount> Releases,
+    IReadOnlyList<Installation> Installations);
+
+internal readonly record struct BrowserHealthFilter(bool Scoped, Guid? GroupId, string? Version)
+{
+    public static bool TryParse(string? group, string? version, out BrowserHealthFilter filter)
+    {
+        filter = default;
+        Guid? groupId = null;
+        var scoped = group is not (null or "");
+        if (scoped && group != "baseline")
+        {
+            if (!Guid.TryParseExact(group, "D", out var id) || id == Guid.Empty) return false;
+            groupId = id;
+        }
+        if (version == "") version = null;
+        if (version is not (null or "unreported") && BrowserRelease.ReadVersion(version) is null) return false;
+        filter = new(scoped, groupId, version);
+        return true;
+    }
+}
 
 internal static partial class BrowserRelease
 {

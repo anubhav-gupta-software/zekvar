@@ -176,6 +176,7 @@ try {
   await run('npm', ['run', 'test:browser'], web, {
     ZEKVAR_TEST_WEB_ORIGIN: webOrigin, ZEKVAR_TEST_API_ORIGIN: apiOrigin, ZEKVAR_TEST_ADMIN_TOKEN: dashboardAdmin,
     ZEKVAR_TEST_RELEASE_SCREENSHOT: artifacts ? join(artifacts, '31-control-browser-releases.png') : '',
+    ZEKVAR_TEST_BROWSER_GROUP_SCREENSHOT: artifacts ? join(artifacts, '32-control-browser-rollout-group.png') : '',
     ZEKVAR_TEST_AUDIT_SCREENSHOT: artifacts ? join(artifacts, '13-control-audit-log.png') : '',
     ZEKVAR_TEST_RETENTION_SCREENSHOT: artifacts ? join(artifacts, '14-control-data-retention.png') : '',
     ZEKVAR_TEST_PREVIEW_SCREENSHOT: artifacts ? join(artifacts, '16-control-policy-preview.png') : '',

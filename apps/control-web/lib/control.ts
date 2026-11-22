@@ -83,6 +83,12 @@ export type BrowserReleaseCount = {
   recentReports: number;
 };
 
+export type BrowserHealthView = {
+  activeInstallations: number;
+  releases: BrowserReleaseCount[];
+  installations: Installation[];
+};
+
 export type SecurityEvent = {
   eventId: string;
   installationId: string;

@@ -52,7 +52,10 @@ export default async function Groups({ searchParams }: { searchParams: Promise<{
                 <span className="badge">{result.selected.publishedVersion ? 'Group policy' : 'Follows baseline'} · v{result.selected.effectiveVersion}</span></div>
               {policyWritable && <><p className="muted">Manage policy for the browsers assigned to this group.</p>
                 <PublishPolicyForm policy={result.current} groupId={result.selected.id} review={review} /></>}
-              <a className="button small mt-3" href={`/preview?group=${result.selected.id}`}>Preview group policy</a>
+              <div className="form-row mt-3">
+                <a className="button small" href={`/preview?group=${result.selected.id}`}>Preview group policy</a>
+                <a className="button small" href={`/?rolloutGroup=${result.selected.id}#browsers`}>Review browser rollout</a>
+              </div>
             </section>
             {policyWritable && <section className="panel" aria-labelledby="promotion-heading">
               <h2 id="promotion-heading">Promote to organization baseline</h2>

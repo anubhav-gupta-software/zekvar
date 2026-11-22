@@ -127,7 +127,7 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   assert.equal(redirect.status, 308);
   assert.equal(redirect.headers.location, `https://${browserHost}/health`);
   for (const origin of [browserOrigin, dashboardOrigin]) {
-    for (const path of ['/v1/admin/session', '/v1/admin/browser-releases']) {
+    for (const path of ['/v1/admin/session', '/v1/admin/browser-releases', '/v1/admin/browser-health?rolloutGroup=baseline']) {
       const blocked = await call(origin + path, { headers: { Authorization: `Bearer ${owner}` } });
       assert.equal(blocked.status, 404);
       assert.equal(blocked.headers['cache-control'], 'no-store');

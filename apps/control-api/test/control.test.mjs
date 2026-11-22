@@ -19,6 +19,7 @@ const first = randomBytes(32).toString('hex');
 const second = randomBytes(32).toString('hex');
 const retentionAdmin = randomBytes(32).toString('hex');
 const releaseAdmin = randomBytes(32).toString('hex');
+const groupViewAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -77,6 +78,8 @@ async function start(sweepSeconds = 3600) {
       Control__Organizations__2__AdminToken: retentionAdmin,
       Control__Organizations__3__Slug: `release-${suffix}`,
       Control__Organizations__3__AdminToken: releaseAdmin,
+      Control__Organizations__4__Slug: `group-view-${suffix}`,
+      Control__Organizations__4__AdminToken: groupViewAdmin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -1844,6 +1847,75 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       assert.deepEqual(fleet.at(-1), unreported);
       assert.equal(fleet.reduce((total, row) => total + row.installations, 0), 106);
       assert.equal(fleet.reduce((total, row) => total + row.recentReports, 0), 0);
+    }
+  });
+
+  await t.test('scopes browser health to one rollout group and reads counts and details from one snapshot', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: groupViewAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const health = (filters = '', options) => admin(`browser-health${filters ? `?${filters}` : ''}`, options);
+    const canary = await post('policy-groups', { name: 'Canary rollout' });
+    const broad = await post('policy-groups', { name: 'Broad rollout' });
+    const foreign = await post('policy-groups', { name: 'Canary rollout' }, { token: second });
+    const scope = `rolloutGroup=${canary.id}`;
+    assert.deepEqual(await health(scope), { activeInstallations: 0, releases: [], installations: [] });
+    async function enroll(extensionVersion) {
+      const { grant } = await post('enrollment-grants');
+      const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+      await call('/v1/browser/policy', { token: browser.token, assignmentAware: true, extensionVersion });
+      return browser;
+    }
+    const [candidate, stable, unreported] = await Promise.all([enroll('0.20.1'), enroll('0.20.0'), enroll()]);
+    const assign = (id, groupId, options) => post(`installations/${id}/policy-group`, { groupId }, { expect: 204, ...options });
+    await assign(candidate.installationId, canary.id);
+    await assign(stable.installationId, broad.id);
+    const ids = ({ installations }) => installations.map(({ installationId }) => installationId).sort();
+    const expected = { kind: 'release', extensionVersion: '0.20.1', installations: 1, recentReports: 1 };
+    const cohort = await health(scope);
+    assert.equal(cohort.activeInstallations, 3);
+    assert.deepEqual(cohort.releases, [expected]);
+    assert.deepEqual(ids(cohort), [candidate.installationId]);
+    assert.deepEqual(ids(await health('rolloutGroup=baseline&browserVersion=unreported')), [unreported.installationId]);
+    assert.deepEqual(ids(await health('browserVersion=0.20.0')), [stable.installationId]);
+    assert.deepEqual(await health(`${scope}&browserVersion=0.20.0`), { activeInstallations: 3, releases: [expected], installations: [] });
+    assert.deepEqual(ids(await health('rolloutGroup=&browserVersion=')), [candidate.installationId, stable.installationId, unreported.installationId].sort());
+
+    for (const input of ['rolloutGroup=invalid', 'rolloutGroup=00000000-0000-0000-0000-000000000000',
+      `${scope}&rolloutGroup=baseline`, 'browserVersion=0.020.0', 'browserVersion=ZEKVAR_TEST_SECRET', 'browserVersion=&browserVersion=']) {
+      const rejected = await health(input, { expect: 400 });
+      assert.doesNotMatch(JSON.stringify(rejected), /ZEKVAR_TEST_SECRET/);
+    }
+    await health(`rolloutGroup=${foreign.id}`, { expect: 404 });
+    await health(`rolloutGroup=${randomUUID()}`, { expect: 404 });
+    await health(scope, { token: second, expect: 404 });
+    await health(scope, { token: candidate.token, expect: 401 });
+    await health(scope, { token: undefined, expect: 401 });
+    const auditor = await post('access', { name: 'Group View Auditor', role: 'auditor', hours: 1 });
+    assert.deepEqual(await health(scope, { token: auditor.token }), cohort);
+    await assign(candidate.installationId, broad.id, { token: auditor.token, expect: 403 });
+
+    for (const next of [broad.id, canary.id, null, canary.id]) {
+      const [racing] = await Promise.all([health(scope), assign(candidate.installationId, next)]);
+      assert.equal(racing.activeInstallations, 3);
+      assert.equal(racing.releases.reduce((sum, row) => sum + row.installations, 0), racing.installations.length);
+      assert.ok(racing.installations.every(({ policyGroupId }) => policyGroupId === canary.id));
+    }
+    await post(`installations/${candidate.installationId}/revoke`, {}, { expect: 204 });
+    const after = await health(scope);
+    assert.equal(after.activeInstallations, 2);
+    assert.deepEqual(after.releases, []);
+    assert.ok(after.installations[0].revokedAt);
+
+    if (postgres) {
+      await retentionFixture(`INSERT INTO installations (id, organization_id, token_hash, policy_group_id, extension_version, extension_version_reported_at)
+        SELECT gen_random_uuid(), o.id, encode(sha256(convert_to('group-view-${suffix}-' || n, 'UTF8')), 'hex'),
+            '${canary.id}'::uuid, '0.20.0', now() - interval '2 minutes'
+        FROM organizations o CROSS JOIN generate_series(1, 101) AS fixture(n) WHERE o.slug = 'group-view-${suffix}'`);
+      assert.equal((await health(scope)).installations.length, 100);
+      const older = await health(`${scope}&browserVersion=0.20.1`);
+      assert.deepEqual(ids(older), [candidate.installationId]);
+      assert.deepEqual(older.releases, [{ kind: 'release', extensionVersion: '0.20.0', installations: 101, recentReports: 0 }]);
+      assert.equal(older.activeInstallations, 103);
     }
   });
 });

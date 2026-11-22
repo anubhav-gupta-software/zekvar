@@ -4,6 +4,7 @@ import {
   type BrowserReleaseCount, type Decision, type DiscoveredApp, type Installation, type SecurityEvent,
 } from '../lib/control';
 import { eventFilters, setEventCursor } from '../lib/events';
+import { browserHealthFilters, loadBrowserHealth } from '../lib/browser-health';
 import { canChangePolicy, canWrite } from '../lib/access';
 import { sessionToken } from '../lib/session';
 import { ssoOptions } from '../lib/sso';
@@ -20,24 +21,32 @@ export default async function Control({ searchParams }: { searchParams: Promise<
   const search = await searchParams;
   if (!token) return <SignIn invalid={search.session === 'ended'} ssoError={search.signIn === 'sso-error'} />;
   const filters = eventFilters(search);
+  const browserFilters = browserHealthFilters(search);
+  const eventPage = new URLSearchParams(filters.page);
   const historyQuery = new URLSearchParams(filters.query);
   if (filters.cursor) setEventCursor(historyQuery, filters.cursor);
 
   try {
-    const [session, policies, installations, releases, history, discoveredApps] = await Promise.all([
+    const [session, policies, browserHealth, history, discoveredApps] = await Promise.all([
       controlApi.session(token), controlApi.policies(token),
-      controlApi.installations(token),
-      controlApi.browserReleases(token),
+      loadBrowserHealth(token, browserFilters),
       filters.invalidInstallation || filters.invalidCursor ? undefined : controlApi.events(token, historyQuery),
       controlApi.aiApps(token),
     ]);
     const events = history?.entries ?? [];
-    const older = new URLSearchParams(filters.page);
+    const selectedBrowserFilters = browserHealth.error ? new URLSearchParams() : browserFilters;
+    const overviewPage = new URLSearchParams([...eventPage, ...selectedBrowserFilters]);
+    const older = new URLSearchParams(overviewPage);
     if (history?.next) setEventCursor(older, history.next);
+    if (filters.cursor) setEventCursor(eventPage, filters.cursor);
     const current = policies[0];
     const writable = canWrite(session);
     const policyWritable = canChangePolicy(session);
-    const active = releases?.reduce((total, row) => total + row.installations, 0) ?? installations.filter(({ revokedAt }) => !revokedAt).length;
+    const { activeInstallations, installations, releases, groups } = browserHealth;
+    const groupFilter = browserFilters.get('rolloutGroup')?.toLowerCase() ?? '';
+    const releaseFilter = browserHealth.error ? '' : browserFilters.get('browserVersion') ?? '';
+    const releaseLinks = new URLSearchParams([...eventPage, ...selectedBrowserFilters]);
+    releaseLinks.delete('browserVersion');
     return <div className="workspace" id="overview">
       <Sidebar session={session} />
       <main className="dashboard">
@@ -54,8 +63,8 @@ export default async function Control({ searchParams }: { searchParams: Promise<
             <strong>{current ? decisionLabels[current.mode] : 'None'}</strong>
             <span>{current ? `Version ${current.version}` : 'Publish a policy to get started'}</span>
           </div>
-          <div className="metric"><p>Active installations</p><strong>{active}</strong>
-            <span>{!releases && installations.length === 100 ? 'Among the latest 100' : 'With valid credentials'}</span>
+          <div className="metric"><p>Active installations</p><strong>{activeInstallations ?? '—'}</strong>
+            <span>{browserHealth.cappedTotal ? 'Among the latest 100' : 'Organization-wide'}</span>
           </div>
           <div className="metric"><p>Events shown</p><strong>{events.length}</strong>
             <span>{filters.cursor ? 'Older events' : filters.query.size ? 'Filtered view' : 'Latest 100 events'}</span>
@@ -99,16 +108,36 @@ export default async function Control({ searchParams }: { searchParams: Promise<
 
         <section className="panel table-panel" id="browsers" aria-labelledby="browsers-heading">
           <div className="panel-heading"><h2 id="browsers-heading">Browser health</h2><RefreshSection label="Refresh browser health" /></div>
-          {releases && releases.length > 0 && <BrowserReleases releases={releases} />}
+          {browserHealth.filtersAvailable && <form action="/#browsers" method="get" className="filters">
+            <HiddenQuery query={eventPage} />
+            <div><label htmlFor="browser-group">Rollout group</label>
+              <select id="browser-group" name="rolloutGroup" defaultValue={groupFilter}>
+                <option value="">All groups</option>
+                <option value="baseline">Organization baseline</option>
+                {groups.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
+              </select>
+            </div>
+            <div><label htmlFor="browser-version">Reported extension version</label>
+              <input id="browser-version" name="browserVersion" defaultValue={releaseFilter} maxLength={23}
+                placeholder="All versions" autoComplete="off" spellCheck={false} />
+            </div>
+            <button className="button">Apply browser filters</button>
+            {browserFilters.size > 0 && <a className="clear-link" href={`/?${eventPage}#browsers`}>Clear browser filters</a>}
+          </form>}
+          {browserHealth.error ? <p className="empty" role="alert">{browserHealth.error}</p> : <>
+          {releases && releases.length > 0 && <BrowserReleases releases={releases}
+            links={browserHealth.filtersAvailable ? releaseLinks : undefined} />}
           <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="browsers-heading">
             <table aria-labelledby="browsers-heading">
               <thead><tr><th>Installation</th><th>Rollout group</th><th>Reporting</th><th>Extension version</th><th>Policy status</th><th>Applied policy</th><th>ChatGPT composer</th><th>Gemini composer</th><th>Claude composer</th><th>Last seen (UTC)</th><th>Action</th></tr></thead>
               <tbody>{installations.map((installation) => <BrowserRow key={installation.installationId}
                 installation={installation} latestVersion={current?.version} writable={writable} />)}</tbody>
             </table>
-            {installations.length === 0 && <p className="empty">No browsers enrolled yet. Create an enrollment grant to add one.</p>}
+            {installations.length === 0 && <p className="empty">{browserFilters.size ? 'No installations match these browser filters.'
+              : 'No browsers enrolled yet. Create an enrollment grant to add one.'}</p>}
           </div>
           {installations.length === 100 && <div className="table-footer"><p className="table-note">Latest 100 installations.</p></div>}
+          </>}
         </section>
 
         <section className="panel table-panel" id="events" aria-labelledby="events-heading">
@@ -117,6 +146,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
             {history && <a className="button small" href={`/events/export?${filters.query}`} download>Export security events (JSON)</a>}
           </div>
           <form action="/#events" method="get" className="filters">
+            <HiddenQuery query={selectedBrowserFilters} />
             <div><label htmlFor="event-application">Application</label>
               <select id="event-application" name="app" defaultValue={filters.app}>
                 <option value="">All applications</option>
@@ -139,7 +169,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
                 autoCapitalize="none" autoComplete="off" spellCheck={false} placeholder="All browsers" />
             </div>
             <button className="button">Apply filters</button>
-            {(filters.query.size > 0 || filters.cursor || !history) && <a className="clear-link" href="/#events">Clear filters</a>}
+            {(filters.query.size > 0 || filters.cursor || !history) && <a className="clear-link" href={`/?${selectedBrowserFilters}#events`}>Clear filters</a>}
           </form>
           {!history ? <p className="empty" role="alert">{filters.invalidInstallation
             ? 'Enter a complete browser installation ID.' : 'This event history link is invalid. Clear the filters to open the newest events.'}</p>
@@ -147,14 +177,14 @@ export default async function Control({ searchParams }: { searchParams: Promise<
               <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="events-heading">
                 <table aria-labelledby="events-heading">
                   <thead><tr><th>Occurred (UTC)</th><th>Application</th><th>Decision</th><th>Detector</th><th>Policy</th><th>Installation</th></tr></thead>
-                  <tbody>{events.map((event) => <EventRow key={`${event.installationId}:${event.eventId}`} event={event} filters={filters.page} />)}</tbody>
+                  <tbody>{events.map((event) => <EventRow key={`${event.installationId}:${event.eventId}`} event={event} filters={overviewPage} />)}</tbody>
                 </table>
                 {events.length === 0 && <p className="empty">{filters.query.size ? 'No events match these filters.' : 'No security events recorded yet.'}</p>}
               </div>
               <div className="table-footer">
                 <p className="table-note">Up to 100 per page, newest first by time received. Export includes all matching retained events.</p>
                 <div className="form-row">
-                  {filters.cursor && <a className="button small" href={`/?${filters.page}#events`}>Newest events</a>}
+                  {filters.cursor && <a className="button small" href={`/?${overviewPage}#events`}>Newest events</a>}
                   {history.next && <a className="button small" href={`/?${older}#events`}>Older events</a>}
                 </div>
               </div>
@@ -222,15 +252,23 @@ function DiscoveredAppRow({ app, writable }: { app: DiscoveredApp; writable: boo
   </tr>;
 }
 
-function BrowserReleases({ releases }: { releases: BrowserReleaseCount[] }) {
+function HiddenQuery({ query }: { query: URLSearchParams }) {
+  return [...query].map(([name, value], index) => <input key={`${name}-${index}`} type="hidden" name={name} value={value} />);
+}
+
+function BrowserReleases({ releases, links }: { releases: BrowserReleaseCount[]; links?: URLSearchParams }) {
   return <details className="browser-releases" open>
     <summary id="browser-releases-heading">Extension rollout</summary>
     <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="browser-releases-heading">
       <table aria-labelledby="browser-releases-heading">
         <thead><tr><th scope="col">Extension version</th><th scope="col">Active installations</th><th scope="col">Version reported in last 90 seconds</th></tr></thead>
-        <tbody>{releases.map(({ kind, extensionVersion, installations, recentReports }) =>
-          <tr key={extensionVersion ?? kind}><th scope="row">{kind === 'release' ? extensionVersion : kind === 'other' ? 'Other versions' : 'Unreported'}</th>
-            <td>{installations}</td><td>{recentReports}</td></tr>)}</tbody>
+        <tbody>{releases.map(({ kind, extensionVersion, installations, recentReports }) => {
+          const label = extensionVersion ?? (kind === 'other' ? 'Other versions' : 'Unreported');
+          const query = links && kind !== 'other' ? new URLSearchParams(links) : undefined;
+          query?.set('browserVersion', extensionVersion ?? 'unreported');
+          return <tr key={extensionVersion ?? kind}><th scope="row">{query ? <a className="underline" href={`/?${query}#browsers`}>{label}</a> : label}</th>
+            <td>{installations}</td><td>{recentReports}</td></tr>;
+        })}</tbody>
       </table>
     </div>
   </details>;

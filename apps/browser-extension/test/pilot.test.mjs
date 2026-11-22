@@ -246,6 +246,21 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     await dashboard.getByText('Navigation rules published as version 6.', { exact: true }).waitFor();
     await sync(popupA, 'Connected to Control · BLOCK v6');
     await sync(popupB, 'Connected to Control · MONITOR v4');
+    const groupHealth = await first.browser.newPage();
+    try {
+      await groupHealth.goto(dashboard.url());
+      await groupHealth.getByRole('link', { name: 'Review browser rollout', exact: true }).click();
+      const cohort = groupHealth.getByRole('table', { name: 'Browser health', exact: true });
+      const { version: extensionVersion } = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
+      await cohort.getByText(idA.slice(0, 13), { exact: true }).waitFor();
+      assert.equal(await cohort.getByText(idB.slice(0, 13), { exact: true }).count(), 0);
+      const release = groupHealth.getByRole('table', { name: 'Extension rollout', exact: true })
+        .getByRole('link', { name: extensionVersion, exact: true });
+      await release.waitFor();
+      await release.click();
+      await groupHealth.waitForURL((url) => url.searchParams.get('rolloutGroup') === groupId && url.searchParams.get('browserVersion') === extensionVersion);
+      await cohort.getByText('v6', { exact: true }).waitFor();
+    } finally { await groupHealth.close(); }
     await domains.visit(first.browser, 'apps.test', true);
     await domains.visit(second.browser, 'apps.test', false);
     await domains.visit(first.browser, 'apps.test', false, '/approved');
