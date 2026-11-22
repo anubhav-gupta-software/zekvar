@@ -137,6 +137,7 @@ async function request(path: string, token?: string, body?: object): Promise<unk
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(path === 'browser/policy' ? { 'X-Zekvar-Assignment-Aware': '1', 'X-Zekvar-Claude-Prompt': '1',
         'X-Zekvar-Extension-Version': extensionVersion } : {}),
+      ...(path === 'enroll' ? { 'X-Zekvar-Scoped-Enrollment': '1' } : {}),
       ...(body ? { 'Content-Type': 'application/json' } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,

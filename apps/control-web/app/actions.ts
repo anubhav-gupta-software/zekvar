@@ -1,5 +1,6 @@
 'use server';
 
+import { randomUUID } from 'node:crypto';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../lib/api';
@@ -53,11 +54,39 @@ async function perform(change: (token: string) => Promise<Feedback>): Promise<Fe
       return { error: 'The review requirement changed. Reload and review the policy before continuing.' };
     }
     if (error instanceof ApiError && error.code === 'sso_subject_exists') return { error: 'That identity already has Control access.' };
+    if (error instanceof ApiError && error.code === 'enrollment_batch_exists') {
+      return { error: 'This request already created a batch. Review the batch list and reload before issuing another.' };
+    }
     if (error instanceof ApiError && error.status === 404) {
       return { error: 'That record is no longer available. Refresh the dashboard.' };
     }
     return { error: 'Control could not confirm the change. Refresh before trying again.' };
   }
+}
+
+export async function issueEnrollmentBatch(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const requestId = form.get('requestId');
+  const groupId = form.get('groupId');
+  const count = Number(form.get('count'));
+  if (!isId(requestId) || (groupId !== '' && !isId(groupId)) || !Number.isInteger(count) || count < 1 || count > 25) {
+    return { error: 'Choose a rollout group and a grant count from 1 to 25.' };
+  }
+  const result = await perform(async (token) => {
+    const issuedEnrollmentBatch = await controlApi.issueEnrollmentBatch(token, requestId, groupId || null, count);
+    revalidatePath('/enrollment');
+    return { issuedEnrollmentBatch };
+  });
+  return { ...result, enrollmentRequestId: result.issuedEnrollmentBatch ? randomUUID() : requestId };
+}
+
+export async function cancelEnrollmentBatch(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const id = form.get('batchId');
+  if (!isId(id)) return { error: 'Choose an enrollment batch.' };
+  return perform(async (token) => {
+    await controlApi.cancelEnrollmentBatch(token, id);
+    revalidatePath('/enrollment');
+    return { message: 'Unused grants cancelled.' };
+  });
 }
 
 function readUploadSettings(form: FormData) {

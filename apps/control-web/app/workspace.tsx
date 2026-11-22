@@ -14,7 +14,7 @@ export function DeploymentBadge() {
 }
 
 export function Sidebar({ active, session }: {
-  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews' | 'extensions'; session?: ControlSession;
+  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews' | 'extensions' | 'enrollment'; session?: ControlSession;
 }) {
   const root = active ? '/' : '';
   const writable = canWrite(session);
@@ -29,6 +29,7 @@ export function Sidebar({ active, session }: {
       {canChangePolicy(session) && <a href={`${root}#domain-rules`}>Navigation rules</a>}
       <a href={`${root}#ai-apps`}>App inventory</a>
       <a href={`${root}#browsers`}>Browsers</a>
+      <a href="/enrollment" aria-current={active === 'enrollment' ? 'page' : undefined}>Enrollment batches</a>
       <a href="/extensions" aria-current={active === 'extensions' ? 'page' : undefined}>Browser extensions</a>
       <a href={`${root}#events`}>Events</a>
       <a href="/audit" aria-current={active === 'audit' ? 'page' : undefined}>Audit log</a>

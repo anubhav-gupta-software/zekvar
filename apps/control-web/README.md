@@ -27,6 +27,15 @@ Select a version or **Unreported** in the summary to find matching installations
 
 The organization baseline applies to unassigned browsers and groups that follow it. The dashboard keeps Control tokens in server memory and gives the browser a short-lived HTTP-only session cookie. Restarting the dashboard clears those sessions. Keep both services on loopback and use synthetic demo data.
 
+## Enroll a rollout group
+
+1. Publish or verify the group's policy in **Rollout groups**, then open **Enroll browsers in group**. **Enrollment batches** also lets you choose the group or organization baseline directly.
+2. Issue one grant per profile, up to 25 at a time. Copy the codes as soon as the batch is created. Give each browser its own code through your device manager. Coordinate delivery within the 10-minute lifetime. For a hosted build, set the exact `ControlOrigin` alongside `EnrollmentGrant`.
+3. Use Browser v0.21.0 or later for a group grant. Check **Browser health** after enrollment to confirm the group and its applied policy. Remove each grant from managed settings after redemption.
+4. Use **Cancel unused grants** if a batch was misdelivered or the rollout is delayed. Browsers that already redeemed a grant keep their existing access. Use **Browser health** to revoke an enrolled browser separately.
+
+Recent batches and the audit log show counts and group names. The grant codes appear only in the response that creates the batch. [Distribute signed Browser releases](../../deploy/pilot/README.md#distribute-signed-browser-releases)
+
 ## Review browser extension inventory
 
 Publish **Extension inventory** on the organization baseline or a rollout group. The enrolled profile needs Browser v0.14.0 or later and Chrome’s optional management permission. The setting starts Off. Use policy preview and a policy review when those are part of your rollout.

@@ -20,6 +20,7 @@ const second = randomBytes(32).toString('hex');
 const retentionAdmin = randomBytes(32).toString('hex');
 const releaseAdmin = randomBytes(32).toString('hex');
 const groupViewAdmin = randomBytes(32).toString('hex');
+const batchAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -38,7 +39,7 @@ async function retentionFixture(query) {
 }
 
 async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false,
-  extensionVersion } = {}) {
+  extensionVersion, scopedEnrollment = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -46,6 +47,7 @@ async function call(path, { token, method = 'GET', body, expect = 200, assignmen
   if (assignmentAware) headers['X-Zekvar-Assignment-Aware'] = '1';
   if (expectReview) headers['X-Zekvar-Expect-Review'] = '1';
   if (extensionVersion !== undefined) headers['X-Zekvar-Extension-Version'] = extensionVersion;
+  if (scopedEnrollment) headers['X-Zekvar-Scoped-Enrollment'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
@@ -80,6 +82,8 @@ async function start(sweepSeconds = 3600) {
       Control__Organizations__3__AdminToken: releaseAdmin,
       Control__Organizations__4__Slug: `group-view-${suffix}`,
       Control__Organizations__4__AdminToken: groupViewAdmin,
+      Control__Organizations__5__Slug: `enrollment-batch-${suffix}`,
+      Control__Organizations__5__AdminToken: batchAdmin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -1916,6 +1920,103 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       assert.deepEqual(ids(older), [candidate.installationId]);
       assert.deepEqual(older.releases, [{ kind: 'release', extensionVersion: '0.20.0', installations: 101, recentReports: 0 }]);
       assert.equal(older.activeInstallations, 103);
+    }
+  });
+
+  await t.test('issues guarded enrollment batches and atomically places browsers into their assigned group', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: batchAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const batches = (options) => admin('enrollment-batches', options);
+    const redeem = (grant, scopedEnrollment = true, expect = 200) => call('/v1/enroll', { method: 'POST', body: { grant }, scopedEnrollment, expect });
+    const cancel = (id, options) => post(`enrollment-batches/${id}/cancel`, {}, { expect: 204, ...options });
+    const { grant: legacy } = await post('enrollment-grants');
+    if (postgres) {
+      await stop();
+      await retentionFixture(`DELETE FROM schema_migrations WHERE version = 23;
+          ALTER TABLE enrollment_grants DROP COLUMN batch_id;
+          ALTER TABLE control_audit DROP COLUMN enrollment_batch_change;
+          DROP TABLE enrollment_batches;`);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 23'), '1');
+    }
+    const existing = await redeem(legacy, false);
+    assert.ok(existing.installationId);
+    assert.deepEqual(await batches(), []);
+
+    const group = await post('policy-groups', { name: 'Scoped enrollment group' });
+    const foreign = await post('policy-groups', { name: 'Scoped enrollment group' }, { token: second });
+    const targetPolicy = await post(`policy-groups/${group.id}/policies`, { mode: 'block' });
+    const { token: named } = await post('access', { name: 'Enrollment Admin', role: 'administrator', hours: 1 });
+    const { token: auditor } = await post('access', { name: 'Enrollment Auditor', role: 'auditor', hours: 1 });
+    const request = { requestId: randomUUID(), groupId: group.id, count: 3 };
+    const create = (body, options) => post('enrollment-batches', body, options);
+    for (const invalid of [{ ...request, count: 0 }, { ...request, count: 26 }, { ...request, requestId: null },
+      { ...request, groupId: '00000000-0000-0000-0000-000000000000' }, { ...request, count: 1.5 }, { ...request, extra: 'synthetic' }]) {
+      await create(invalid, { expect: 400 });
+    }
+    await create({ ...request, groupId: foreign.id }, { expect: 404 });
+    await create(request, { token: auditor, expect: 403 });
+    await batches({ token: existing.token, expect: 401 });
+    const simultaneous = await Promise.all([1, 2].map(() => fetch(`${baseUrl}/v1/admin/enrollment-batches`, {
+      method: 'POST', headers: { Authorization: `Bearer ${named}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(request), signal: AbortSignal.timeout(5000),
+    })));
+    assert.deepEqual(simultaneous.map(({ status }) => status).sort(), [200, 409]);
+    const issued = await simultaneous.find(({ status }) => status === 200).json();
+    assert.deepEqual(await simultaneous.find(({ status }) => status === 409).json(), { code: 'enrollment_batch_exists' });
+    assert.equal(issued.id, request.requestId);
+    assert.equal(new Set(issued.grants).size, request.count);
+    for (const grant of issued.grants) assert.match(grant, /^[a-f\d]{64}$/);
+    assert.ok(Date.parse(issued.expiresAt) - Date.now() > 590_000);
+    if (postgres) {
+      const stored = await retentionFixture(`SELECT string_agg(token_hash, ',' ORDER BY token_hash) FROM enrollment_grants WHERE batch_id = '${issued.id}'`);
+      assert.equal(stored, issued.grants.map((grant) => createHash('sha256').update(grant).digest('hex')).sort().join(','));
+    }
+    await redeem(issued.grants[0], false, 401);
+    assert.equal((await batches())[0].available, 3);
+    const redeemed = await redeem(issued.grants[0]);
+    await redeem(issued.grants[0], true, 401);
+    const beforePolicy = (await admin('installations')).find(({ installationId }) => installationId === redeemed.installationId);
+    assert.equal(beforePolicy.policyGroupId, group.id);
+    assert.equal(beforePolicy.expectedPolicyVersion, targetPolicy.version);
+    assert.equal(beforePolicy.appliedPolicyVersion, null);
+    const policy = () => call('/v1/browser/policy', { token: redeemed.token, assignmentAware: true });
+    await call('/v1/browser/policy', { token: redeemed.token, expect: 409 });
+    assert.deepEqual([(await policy()).version, (await policy()).assignmentVersion], [targetPolicy.version, 1]);
+    await cancel(issued.id, { token: auditor, expect: 403 });
+    await cancel(issued.id, { token: second, expect: 404 });
+    assert.deepEqual(await batches({ token: second }), []);
+    const [, race] = await Promise.all([cancel(issued.id, { token: named }), fetch(`${baseUrl}/v1/enroll`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Zekvar-Scoped-Enrollment': '1' },
+      body: JSON.stringify({ grant: issued.grants[1] }), signal: AbortSignal.timeout(5000),
+    })]);
+    assert.ok([200, 401].includes(race.status));
+    const redeemedCount = race.status === 200 ? 2 : 1;
+    if (race.ok) assert.ok((await race.json()).installationId);
+    await cancel(issued.id, { token: named });
+    await redeem(issued.grants[2], true, 401);
+    assert.equal((await policy()).version, targetPolicy.version);
+    const [closed] = await batches({ token: auditor });
+    assert.equal(closed.status, 'cancelled');
+    assert.equal(closed.available, 0);
+    assert.equal(closed.redeemed, redeemedCount);
+    const audit = (await admin('audit')).entries;
+    const change = audit.filter((row) => row.enrollmentBatchChange?.batchId === issued.id);
+    assert.deepEqual(change.filter((row) => row.action === 'enrollment_batch_issued').map((row) => row.actorAccess.name), ['Enrollment Admin']);
+    assert.deepEqual(change.filter((row) => row.action === 'enrollment_batch_cancelled').map((row) => row.enrollmentBatchChange.count), [3 - redeemedCount]);
+    assert.equal(change.filter((row) => row.action === 'browser_enrolled').length, redeemedCount);
+    for (const token of issued.grants) assert.ok(!JSON.stringify({ closed, audit }).includes(token));
+
+    const baseline = await create({ requestId: randomUUID(), groupId: null, count: 1 });
+    await redeem(baseline.grants[0], false);
+    assert.equal((await batches()).find(({ id }) => id === baseline.id).status, 'used');
+    if (postgres) {
+      const expiring = await create({ requestId: randomUUID(), groupId: group.id, count: 1 });
+      await retentionFixture(`UPDATE enrollment_batches SET expires_at = now() - interval '1 second' WHERE id = '${expiring.id}';
+        UPDATE enrollment_grants SET expires_at = now() - interval '1 second' WHERE batch_id = '${expiring.id}';`);
+      await redeem(expiring.grants[0], true, 401);
+      await cancel(expiring.id);
+      assert.equal((await batches()).find(({ id }) => id === expiring.id).status, 'expired');
     }
   });
 });

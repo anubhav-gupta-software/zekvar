@@ -83,6 +83,10 @@ const actorLabels = { organization_admin: 'Organization admin', named_administra
   sso_identity: 'Single sign-on identity', browser_enrollment: 'Browser enrollment', system: 'Scheduled cleanup' };
 
 function auditDetails(entry: AuditEntry) {
+  const batch = entry.enrollmentBatchChange;
+  if (batch) return <>{entry.installationId && <><code title={entry.installationId}>{entry.installationId.slice(0, 13)}</code> · </>}
+    {batch.groupName ?? 'Organization baseline'} · {batch.count} {batch.count === 1 ? 'grant' : 'grants'} ·
+    {' '}<code title={batch.batchId}>{batch.batchId.slice(0, 13)}</code></>;
   const review = entry.reviewChange;
   if (review?.reviewId) return <>{review.operation && reviewOperations[review.operation]} · {review.status && reviewStatuses[review.status]}
     {review.publishedVersion && <> · v{review.publishedVersion}</>} · <code title={review.reviewId}>{review.reviewId.slice(0, 13)}</code></>;

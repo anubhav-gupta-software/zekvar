@@ -45,6 +45,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 20, "020_claude_prompt_protection.sql", ct);
         await ApplyMigration(connection, 21, "021_control_sso.sql", ct);
         await ApplyMigration(connection, 22, "022_browser_release.sql", ct);
+        await ApplyMigration(connection, 23, "023_enrollment_batches.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -103,22 +104,31 @@ internal sealed partial class ControlStore
         return new(grant, (DateTime)(await command.ExecuteScalarAsync(ct))!);
     }
 
-    public async Task<Enrollment?> Enroll(string grant, CancellationToken ct)
+    public async Task<Enrollment?> Enroll(string grant, bool scopedEnrollment, CancellationToken ct)
     {
         var installationId = Guid.NewGuid();
         var token = Tokens.Generate();
         await using var command = Command("""
             WITH redeemed AS (
-                UPDATE enrollment_grants SET redeemed_at = now()
-                WHERE token_hash = $1 AND redeemed_at IS NULL AND expires_at > now()
-                RETURNING organization_id
+                UPDATE enrollment_grants g SET redeemed_at = now()
+                WHERE g.token_hash = $1 AND g.redeemed_at IS NULL AND g.expires_at > now()
+                    AND (g.batch_id IS NULL OR EXISTS (SELECT 1 FROM enrollment_batches b WHERE b.organization_id = g.organization_id
+                        AND b.id = g.batch_id AND b.cancelled_at IS NULL AND (b.policy_group_id IS NULL OR $4)))
+                RETURNING organization_id, batch_id
+            ), scope AS (
+                SELECT r.organization_id, r.batch_id, b.policy_group_id, p.name
+                FROM redeemed r LEFT JOIN enrollment_batches b ON b.organization_id = r.organization_id AND b.id = r.batch_id
+                LEFT JOIN policy_groups p ON p.organization_id = r.organization_id AND p.id = b.policy_group_id
             ), enrolled AS (
-                INSERT INTO installations (id, organization_id, token_hash)
-                SELECT $2, organization_id, $3 FROM redeemed RETURNING organization_id, id, enrolled_at
+                INSERT INTO installations (id, organization_id, token_hash, policy_group_id, assignment_version, assignment_aware)
+                SELECT $2, organization_id, $3, policy_group_id, CASE WHEN policy_group_id IS NULL THEN 0 ELSE 1 END,
+                    policy_group_id IS NOT NULL FROM scope RETURNING organization_id, id, enrolled_at
             )
-            INSERT INTO control_audit (organization_id, occurred_at, action, installation_id)
-            SELECT organization_id, enrolled_at, 'browser_enrolled', id FROM enrolled
-            """, Tokens.Hash(grant), installationId, Tokens.Hash(token));
+            INSERT INTO control_audit (organization_id, occurred_at, action, installation_id, enrollment_batch_change)
+            SELECT e.organization_id, e.enrolled_at, 'browser_enrolled', e.id, CASE WHEN s.batch_id IS NOT NULL THEN
+                jsonb_build_object('batchId', s.batch_id, 'groupId', s.policy_group_id, 'groupName', s.name, 'count', 1) END
+            FROM enrolled e JOIN scope s ON e.organization_id = s.organization_id
+            """, Tokens.Hash(grant), installationId, Tokens.Hash(token), scopedEnrollment);
         return await command.ExecuteNonQueryAsync(ct) == 1 ? new(installationId, token) : null;
     }
 
@@ -494,7 +504,7 @@ internal sealed partial class ControlStore
     {
         await using var command = Command("""
             SELECT a.id, occurred_at, action, policy_version, restored_from, installation_id, app_id, classification, retention, cleanup, group_change,
-                actor.id, actor.display_name, actor.role, subject.id, subject.display_name, subject.role, a.review_change
+                actor.id, actor.display_name, actor.role, subject.id, subject.display_name, subject.role, a.review_change, a.enrollment_batch_change
             FROM control_audit a LEFT JOIN retention_cutoffs r ON a.organization_id = r.organization_id
             LEFT JOIN control_access actor ON actor.organization_id = a.organization_id AND actor.id = a.actor_access_id
             LEFT JOIN control_access subject ON subject.organization_id = a.organization_id AND subject.id = a.subject_access_id
@@ -518,7 +528,8 @@ internal sealed partial class ControlStore
                 rows.IsDBNull(9) ? null : JsonSerializer.Deserialize<RetentionCleanup>(rows.GetString(9), JsonSerializerOptions.Web),
                 rows.IsDBNull(10) ? null : JsonSerializer.Deserialize<PolicyGroupChange>(rows.GetString(10), JsonSerializerOptions.Web),
                 ReadAccessIdentity(rows, 11), ReadAccessIdentity(rows, 14),
-                rows.IsDBNull(17) ? null : JsonSerializer.Deserialize<PolicyReviewAudit>(rows.GetString(17), JsonSerializerOptions.Web)));
+                rows.IsDBNull(17) ? null : JsonSerializer.Deserialize<PolicyReviewAudit>(rows.GetString(17), JsonSerializerOptions.Web),
+                rows.IsDBNull(18) ? null : JsonSerializer.Deserialize<EnrollmentBatchChange>(rows.GetString(18), JsonSerializerOptions.Web)));
         if (entries.Count <= filters.Limit) return new(entries, null);
         entries.RemoveAt(filters.Limit);
         var last = entries[^1];

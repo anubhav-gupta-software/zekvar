@@ -5,6 +5,17 @@ DELETE FROM public.admin_memberships;
 UPDATE public.enrollment_grants SET expires_at = CURRENT_TIMESTAMP
 WHERE redeemed_at IS NULL AND expires_at > CURRENT_TIMESTAMP;
 
+DO $$
+BEGIN
+    IF to_regclass('public.enrollment_batches') IS NOT NULL THEN
+        UPDATE public.enrollment_batches SET cancelled_at = CURRENT_TIMESTAMP
+        WHERE cancelled_at IS NULL AND expires_at > CURRENT_TIMESTAMP AND EXISTS (
+            SELECT 1 FROM public.enrollment_grants g WHERE g.organization_id = enrollment_batches.organization_id
+                AND g.batch_id = enrollment_batches.id AND g.redeemed_at IS NULL);
+    END IF;
+END;
+$$;
+
 WITH revoked AS (
     UPDATE public.control_access SET revoked_at = CURRENT_TIMESTAMP, token_hash = NULL
     WHERE revoked_at IS NULL RETURNING organization_id, id, revoked_at

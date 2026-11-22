@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
@@ -150,6 +150,8 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
   await admin(source.owner, 'retention', retention, 204);
   const policy = await admin(source.owner, 'policies', { mode: 'block' });
   const pendingGrant = (await admin(source.owner, 'enrollment-grants', {})).grant;
+  const group = await admin(source.owner, 'policy-groups', { name: 'Recovery rollout group' });
+  const batch = await admin(source.owner, 'enrollment-batches', { requestId: randomUUID(), groupId: group.id, count: 1 });
   const usedGrant = (await admin(source.owner, 'enrollment-grants', {})).grant;
   const access = await admin(source.owner, 'access', { name: 'Recovery reviewer', role: 'administrator', hours: 1 });
   await admin(source.owner, 'policy-reviews/setting', { required: true }, 204);
@@ -320,6 +322,11 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
   await admin(access.token, 'session', undefined, 401);
   await call('browser/policy', { token: previous.token, expected: 401 });
   for (const grant of [pendingGrant, usedGrant]) await call('enroll', { body: { grant }, expected: 401 });
+  const savedBatch = (await admin(target.owner, 'enrollment-batches')).find(({ id }) => id === batch.id);
+  assert.deepEqual([savedBatch.status, savedBatch.available], ['cancelled', 0]);
+  const scopedRedeem = await fetch(`${origin}/v1/enroll`, { method: 'POST', signal: AbortSignal.timeout(5000),
+    headers: { 'Content-Type': 'application/json', 'X-Zekvar-Scoped-Enrollment': '1' }, body: JSON.stringify({ grant: batch.grants[0] }) });
+  assert.equal(scopedRedeem.status, 401);
   assert.deepEqual((await admin(target.owner, 'policies'))[0], policy);
   assert.deepEqual(await admin(target.owner, 'retention'), retention);
   assert.deepEqual(await admin(target.owner, 'events'), [event]);

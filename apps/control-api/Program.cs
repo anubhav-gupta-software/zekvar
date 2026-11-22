@@ -131,6 +131,17 @@ app.MapDelete("/v1/internal/sso/session", async (HttpContext http, CancellationT
 });
 admin.MapPost("/enrollment-grants", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.CreateGrant(Identity(http), ct)));
+admin.MapGet("/enrollment-batches", async (HttpContext http, CancellationToken ct) =>
+    Results.Ok(await store.EnrollmentBatches(Identity(http).OrganizationId, ct)));
+admin.MapPost("/enrollment-batches", async (CreateEnrollmentBatch request, HttpContext http, CancellationToken ct) =>
+{
+    if (!request.IsValid()) return Results.BadRequest(new { error = "Choose a group and a batch size from 1 to 25." });
+    var (batch, scopeExists) = await store.IssueEnrollmentBatch(Identity(http), request, ct);
+    if (!scopeExists) return Results.NotFound();
+    return batch is null ? Results.Conflict(new { code = "enrollment_batch_exists" }) : Results.Ok(batch);
+});
+admin.MapPost("/enrollment-batches/{id:guid}/cancel", async (Guid id, HttpContext http, CancellationToken ct) =>
+    await store.CancelEnrollmentBatch(Identity(http), id, ct) ? Results.NoContent() : Results.NotFound());
 admin.MapGet("/installations", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.Installations(Identity(http).OrganizationId, ct)));
 admin.MapGet("/browser-releases", async (HttpContext http, CancellationToken ct) =>
@@ -250,8 +261,8 @@ admin.MapPost("/ai-apps/{appId}/classification", async (string appId, ClassifyAp
     return await store.ClassifyApp(Identity(http), appId, request.Status, ct) ? Results.NoContent() : Results.NotFound();
 });
 
-app.MapPost("/v1/enroll", async (RedeemGrant request, CancellationToken ct) =>
-    Tokens.IsValid(request.Grant) && await store.Enroll(request.Grant, ct) is { } enrollment
+app.MapPost("/v1/enroll", async (RedeemGrant request, HttpContext http, CancellationToken ct) =>
+    Tokens.IsValid(request.Grant) && await store.Enroll(request.Grant, http.Request.Headers["X-Zekvar-Scoped-Enrollment"] == "1", ct) is { } enrollment
         ? Results.Ok(enrollment) : Results.Unauthorized());
 
 var browser = app.MapGroup("/v1/browser").AddEndpointFilter(Authenticate(browser: true));

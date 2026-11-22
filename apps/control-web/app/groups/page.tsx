@@ -55,6 +55,7 @@ export default async function Groups({ searchParams }: { searchParams: Promise<{
               <div className="form-row mt-3">
                 <a className="button small" href={`/preview?group=${result.selected.id}`}>Preview group policy</a>
                 <a className="button small" href={`/?rolloutGroup=${result.selected.id}#browsers`}>Review browser rollout</a>
+                {writable && <a className="button small" href={`/enrollment?group=${result.selected.id}`}>Enroll browsers in group</a>}
               </div>
             </section>
             {policyWritable && <section className="panel" aria-labelledby="promotion-heading">

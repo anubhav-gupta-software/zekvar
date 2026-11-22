@@ -105,6 +105,7 @@ export type SecurityEvent = {
 export type Grant = { grant: string; expiresAt: string };
 export type Feedback = {
   error?: string; message?: string; grant?: Grant; issuedAccess?: import('./access').IssuedControlAccess; reviewId?: string;
+  issuedEnrollmentBatch?: import('./enrollment').IssuedEnrollmentBatch; enrollmentRequestId?: string;
 };
 
 export const utc = new Intl.DateTimeFormat('en-US', {

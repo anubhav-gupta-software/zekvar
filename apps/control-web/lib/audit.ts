@@ -2,11 +2,14 @@ import type { DiscoveredAppId, AppClassification, PolicyGroupChange } from './co
 import type { RetentionCleanup, RetentionPolicy } from './retention';
 import type { AccessIdentity } from './access';
 import type { PolicyReviewAudit } from './reviews';
+import type { EnrollmentBatchChange } from './enrollment';
 
 export const auditActions = {
   policy_published: 'Policy published',
   policy_restored: 'Policy restored',
   grant_issued: 'Enrollment grant issued',
+  enrollment_batch_issued: 'Enrollment batch issued',
+  enrollment_batch_cancelled: 'Enrollment batch cancelled',
   browser_enrolled: 'Browser enrolled',
   browser_revoked: 'Browser revoked',
   app_classified: 'AI app classified',
@@ -30,6 +33,7 @@ export type AuditEntry = AuditCursor & {
   actorAccess?: AccessIdentity;
   subjectAccess?: AccessIdentity;
   reviewChange?: PolicyReviewAudit;
+  enrollmentBatchChange?: EnrollmentBatchChange;
   policyVersion: number | null;
   restoredFrom: number | null;
   installationId: string | null;

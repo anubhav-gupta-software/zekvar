@@ -6,6 +6,7 @@ import type { PreviewPolicy } from './preview';
 import type { ControlAccess, ControlSession, DelegatedRole, IssuedControlAccess } from './access';
 import type { PolicyChange, PolicyReviewQueue } from './reviews';
 import type { InventoryInstallation } from './extension-inventory';
+import type { EnrollmentBatch, IssuedEnrollmentBatch } from './enrollment';
 
 const port = Number(process.env.ZEKVAR_CONTROL_PORT ?? 5187);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid Control loopback port.');
@@ -98,6 +99,10 @@ export const controlApi = {
   restore: (token: string, version: number, review: boolean, groupId?: string) =>
     request<PolicyChange>(`${policiesPath(groupId)}/${version}/restore`, token, 'POST', undefined, review),
   issueGrant: (token: string) => request<Grant>('/enrollment-grants', token, 'POST'),
+  enrollmentBatches: (token: string) => request<EnrollmentBatch[]>('/enrollment-batches', token),
+  issueEnrollmentBatch: (token: string, requestId: string, groupId: string | null, count: number) =>
+    request<IssuedEnrollmentBatch>('/enrollment-batches', token, 'POST', { requestId, groupId, count }),
+  cancelEnrollmentBatch: (token: string, id: string) => request<void>(`/enrollment-batches/${id}/cancel`, token, 'POST'),
   revoke: (token: string, installationId: string) => request<void>(`/installations/${installationId}/revoke`, token, 'POST'),
 };
 

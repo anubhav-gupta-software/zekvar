@@ -127,7 +127,7 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   assert.equal(redirect.status, 308);
   assert.equal(redirect.headers.location, `https://${browserHost}/health`);
   for (const origin of [browserOrigin, dashboardOrigin]) {
-    for (const path of ['/v1/admin/session', '/v1/admin/browser-releases', '/v1/admin/browser-health?rolloutGroup=baseline']) {
+    for (const path of ['/v1/admin/session', '/v1/admin/browser-releases', '/v1/admin/browser-health?rolloutGroup=baseline', '/v1/admin/enrollment-batches']) {
       const blocked = await call(origin + path, { headers: { Authorization: `Bearer ${owner}` } });
       assert.equal(blocked.status, 404);
       assert.equal(blocked.headers['cache-control'], 'no-store');
@@ -222,8 +222,35 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   assert.equal((await browser.cookies(browserOrigin)).some(({ name }) => name === session.name), false);
   assert.equal(await dashboard.evaluate(async () => (await fetch('/')).headers.get('cache-control')), 'no-store');
 
-  await dashboard.getByRole('button', { name: 'Create enrollment grant', exact: true }).click();
-  const grant = await dashboard.getByLabel('Enrollment grant', { exact: true }).inputValue();
+  const group = await admin('policy-groups', { name: 'Hosted enrollment pilot' });
+  const groupPath = `policy-groups/${group.id}/policies`;
+  const firstGroupPolicy = await admin(groupPath, { mode: 'block' });
+  await dashboard.goto(`${dashboardOrigin}/groups?group=${group.id}`);
+  const enrollmentLink = await dashboard.getByRole('link', { name: 'Enroll browsers in group', exact: true }).getAttribute('href');
+  const scriptPattern = '**/_next/static/**/*.js';
+  const delayScripts = Promise.withResolvers();
+  await dashboard.route(scriptPattern, async (route) => { await delayScripts.promise; await route.continue(); });
+  const createBatch = dashboard.getByRole('button', { name: 'Create enrollment batch', exact: true });
+  try {
+    await dashboard.goto(new URL(enrollmentLink, dashboardOrigin).href, { waitUntil: 'commit' });
+    await createBatch.waitFor();
+    assert.ok(await createBatch.isDisabled());
+  } finally { delayScripts.resolve(); }
+  await dashboard.getByLabel('Grant count', { exact: true }).fill('2');
+  assert.equal(await dashboard.getByLabel('Rollout group', { exact: true }).inputValue(), group.id);
+  await createBatch.click();
+  await dashboard.unroute(scriptPattern);
+  const codeField = dashboard.getByLabel('Enrollment grant codes', { exact: true });
+  await codeField.waitFor();
+  const grants = (await codeField.inputValue()).split('\n');
+  assert.equal(grants.length, 2);
+  const [grant, unusedGrant] = grants;
+  assert.equal((await call(browserOrigin + '/v1/enroll', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ grant }) })).status, 401);
+  await dashboard.getByRole('button', { name: 'Hide grant codes', exact: true }).click();
+  await codeField.waitFor({ state: 'detached' });
+  await dashboard.reload();
+  assert.equal(await codeField.count(), 0);
   const chromePolicy = await browser.newPage();
   await chromePolicy.goto('chrome://policy/test');
   const row = chromePolicy.locator('policy-test-row').first();
@@ -253,22 +280,40 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   await originRow.locator('input.value').fill(browserOrigin);
   await applyPolicy.click();
   await label(popup, 'Enrolled by Chrome policy.').waitFor();
+  await label(popup, `Connected to Control · BLOCK v${firstGroupPolicy.version}`).waitFor();
   const newId = await installation(worker);
   assert.ok(newId && newId !== oldId);
-  assert.equal((await admin('installations')).find((row) => row.installationId === oldId).lastSeenAt, enrollmentSeen);
+  const installations = await admin('installations');
+  assert.equal(installations.find((row) => row.installationId === oldId).lastSeenAt, enrollmentSeen);
+  assert.equal(installations.find((row) => row.installationId === newId).policyGroupId, group.id);
   assert.equal((await call(browserOrigin + '/v1/enroll', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ grant }) })).status, 401);
   await chromePolicy.close();
 
+  await dashboard.getByRole('button', { name: 'Refresh enrollment batches' }).click();
+  const batchRow = dashboard.getByRole('table', { name: 'Recent batches' }).getByRole('row').filter({ hasText: group.name });
+  await batchRow.getByText('1 of 2', { exact: true }).waitFor();
+  dashboard.once('dialog', (dialog) => dialog.accept());
+  await batchRow.getByRole('button', { name: /^Cancel unused grants for / }).click();
+  await batchRow.getByText('Cancelled', { exact: true }).waitFor();
+  assert.equal((await call(browserOrigin + '/v1/enroll', { method: 'POST', headers: {
+    'Content-Type': 'application/json', 'X-Zekvar-Scoped-Enrollment': '1',
+  }, body: JSON.stringify({ grant: unusedGrant }) })).status, 401);
+  const cleanPage = await dashboard.content();
+  assert.ok(grants.every((value) => !cleanPage.includes(value)));
+  if (artifacts) await dashboard.locator('section').filter({ has: dashboard.getByRole('heading', { name: 'Recent batches', exact: true }) })
+    .screenshot({ path: join(artifacts, '33-enrollment-batch.png') });
+
+  await dashboard.goto(`${dashboardOrigin}/groups?group=${group.id}`);
   await dashboard.getByLabel('Test marker', { exact: true }).selectOption('block');
-  await dashboard.getByRole('button', { name: 'Publish policy', exact: true }).click();
-  const version = initialVersion.version + 1;
+  await dashboard.getByRole('button', { name: 'Publish group policy', exact: true }).click();
+  const version = firstGroupPolicy.version + 1;
   await dashboard.getByText(`Version ${version} published in block mode.`, { exact: true }).waitFor();
   await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
   await label(popup, `Connected to Control · BLOCK v${version}`).waitFor();
   const { version: extensionVersion } = JSON.parse(await readFile(join(extension, 'manifest.json'), 'utf8'));
   assert.equal((await admin('installations')).find(({ installationId }) => installationId === newId).extensionVersion, extensionVersion);
-  await dashboard.reload();
+  await dashboard.goto(dashboardOrigin);
   await dashboard.getByRole('table', { name: 'Browser health', exact: true }).getByRole('row')
     .filter({ hasText: newId.slice(0, 13) }).getByText(extensionVersion, { exact: true }).waitFor();
   const chat = await browser.newPage();
@@ -291,7 +336,7 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   assert.equal(exported.status, 200);
   assert.doesNotMatch(exported.body, /Synthetic pilot draft|ZEKVAR_TEST_SECRET/);
 
-  const claudePolicy = await admin('policies', { claudePromptEnabled: true });
+  const claudePolicy = await admin(groupPath, { claudePromptEnabled: true });
   await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
   await label(popup, `Connected to Control · BLOCK v${claudePolicy.version}`).waitFor();
   const claude = await browser.newPage();
