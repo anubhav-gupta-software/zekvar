@@ -1,4 +1,5 @@
 import { containsPaymentCard, redactPaymentCards } from './payment-card';
+import { containsPrivateKey, redactPrivateKeys } from './private-key';
 
 export const modes = ['monitor', 'warn', 'block'] as const;
 export type PolicyMode = typeof modes[number];
@@ -11,16 +12,19 @@ export const githubPatRule = 'github-classic-pat';
 export const credentialDetector = 'credential';
 export const paymentCardRule = 'payment-card-number';
 export const paymentDetector = 'payment-card';
+export const privateKeyRule = 'pem-private-key';
 export const testMarker = 'ZEKVAR_TEST_SECRET';
 export const ruleLabels = {
   [fixtureRule]: 'Synthetic secret', [githubPatRule]: 'GitHub classic PAT', [paymentCardRule]: 'Payment card number',
+  [privateKeyRule]: 'Private key',
 } as const;
 
 export type RuleMetadata = { ruleId: typeof fixtureRule; detectorCategory: typeof fixtureDetector } |
   { ruleId: typeof githubPatRule; detectorCategory: typeof credentialDetector } |
-  { ruleId: typeof paymentCardRule; detectorCategory: typeof paymentDetector };
+  { ruleId: typeof paymentCardRule; detectorCategory: typeof paymentDetector } |
+  { ruleId: typeof privateKeyRule; detectorCategory: typeof credentialDetector };
 export type PromptRuleId = RuleMetadata['ruleId'];
-export type PromptPolicy = { mode: PolicyMode; githubPatMode?: DetectorMode; paymentCardMode?: DetectorMode };
+export type PromptPolicy = { mode: PolicyMode; githubPatMode?: DetectorMode; paymentCardMode?: DetectorMode; privateKeyMode?: DetectorMode };
 export type PromptMatch = { action: PolicyMode; reason: string } & RuleMetadata;
 
 const severity: Record<PolicyMode, number> = { monitor: 1, warn: 2, block: 3 };
@@ -50,16 +54,24 @@ export function evaluatePrompt(prompt: string, policy: PromptPolicy, except?: Re
   }
   if (!except?.has(paymentCardRule) && isMode(policy.paymentCardMode) && (!match || severity[policy.paymentCardMode] >= severity[match.action]) &&
       containsPaymentCard(prompt)) {
-    return {
+    match = {
       action: policy.paymentCardMode, ruleId: paymentCardRule, detectorCategory: paymentDetector,
       reason: 'This prompt contains a possible payment card number.',
+    };
+  }
+  if (!except?.has(privateKeyRule) && isMode(policy.privateKeyMode) && (!match || severity[policy.privateKeyMode] >= severity[match.action]) &&
+      containsPrivateKey(prompt)) {
+    return {
+      action: policy.privateKeyMode, ruleId: privateKeyRule, detectorCategory: credentialDetector,
+      reason: 'This prompt contains text that looks like a private key.',
     };
   }
   return match ?? { action: 'allow' };
 }
 
 export function redactPrompt(prompt: string, policy: PromptPolicy): string {
-  const withoutMarkers = prompt.replaceAll(testMarker, redacted);
+  const withoutPrivateKeys = isMode(policy.privateKeyMode) ? redactPrivateKeys(prompt, redacted) : prompt;
+  const withoutMarkers = withoutPrivateKeys.replaceAll(testMarker, redacted);
   const withoutCredentials = isMode(policy.githubPatMode) ? withoutMarkers.replaceAll(allClassicGithubPats, redacted) : withoutMarkers;
   return isMode(policy.paymentCardMode) ? redactPaymentCards(withoutCredentials, redacted) : withoutCredentials;
 }

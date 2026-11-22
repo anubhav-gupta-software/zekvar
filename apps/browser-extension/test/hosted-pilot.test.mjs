@@ -352,7 +352,7 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   assert.equal(exported.status, 200);
   assert.doesNotMatch(exported.body, /Synthetic pilot draft|ZEKVAR_TEST_SECRET/);
 
-  const claudePolicy = await admin(groupPath, { claudePromptEnabled: true });
+  const claudePolicy = await admin(groupPath, { claudePromptEnabled: true, privateKeyMode: 'block' });
   await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
   await label(popup, `Connected to Control · BLOCK v${claudePolicy.version}`).waitFor();
   const claude = await browser.newPage();
@@ -366,13 +366,21 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   assert.equal(await claude.locator('#submitted').textContent(), '0');
   await until(async () => (await admin('events?appId=claude')).find(({ installationId }) => installationId === newId),
     'The managed Chrome profile did not report its Claude decision through HTTPS.');
+  const keyBlock = ['-----BEGIN ENCRYPTED PRIVATE KEY-----', 'WnJB'.repeat(16), '-----END ENCRYPTED PRIVATE KEY-----'].join('\\n');
+  await claude.getByRole('textbox', { name: 'Fixture prompt' }).fill(`fixture ${keyBlock}`);
+  await claude.locator('#composer button').click();
+  await claude.getByRole('alert').filter({ hasText: 'looks like a private key' }).waitFor();
+  assert.equal(await claude.locator('#submitted').textContent(), '0');
+  await until(async () => (await admin('events?appId=claude')).find(({ installationId, ruleId }) => installationId === newId && ruleId === 'pem-private-key'),
+    'The managed Chrome profile did not report the private key decision through HTTPS.');
   await until(async () => {
     const health = await admin(`browser-health?rolloutGroup=${group.id}&browserVersion=${extensionVersion}`);
     return health.composerReadiness.activeInstallations === 1 &&
       health.composerReadiness.apps.find(({ appId }) => appId === 'claude').counts.detected === 1;
   }, 'The managed Chrome profile did not report fresh Claude readiness through HTTPS.');
   await dashboard.reload();
-  await dashboard.getByRole('table', { name: 'Security events' }).getByText('Claude', { exact: true }).waitFor();
+  await dashboard.getByRole('table', { name: 'Security events' }).getByRole('row').filter({ hasText: 'Private key' })
+    .getByText('Claude', { exact: true }).waitFor();
   await dashboard.getByRole('link', { name: 'Reports', exact: true }).click();
   const reportApps = dashboard.getByRole('table', { name: 'By AI application', exact: true });
   await reportApps.getByRole('rowheader', { name: 'Claude', exact: true }).waitFor();
@@ -384,9 +392,10 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
     return { status: response.status, report: await response.json() };
   }, href);
   assert.equal(report.status, 200);
-  assert.equal(report.report.counts.block, 2);
+  assert.equal(report.report.counts.block, 3);
+  assert.equal(report.report.byRule.find(({ id }) => id === 'pem-private-key').counts.block, 1);
   assert.deepEqual(report.report.byApp.map(({ id }) => id), ['chatgpt', 'claude']);
-  assert.doesNotMatch(JSON.stringify(report.report), /Synthetic (?:pilot|TLS Claude) draft|ZEKVAR_TEST_SECRET|installationId|eventId/);
+  assert.doesNotMatch(JSON.stringify(report.report), /Synthetic (?:pilot|TLS Claude) draft|ZEKVAR_TEST_SECRET|installationId|eventId|BEGIN ENCRYPTED|WnJBWnJB/);
   await dashboard.getByRole('button', { name: 'Sign out', exact: true }).click();
   await dashboard.getByRole('heading', { name: 'Sign in to Control', exact: true }).waitFor();
   assert.equal((await browser.cookies(dashboardOrigin)).some(({ name }) => name === session.name), false);

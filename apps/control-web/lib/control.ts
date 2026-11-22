@@ -42,6 +42,7 @@ export type Policy = {
   mode: Mode;
   githubPatMode?: DetectorMode;
   paymentCardMode?: DetectorMode;
+  privateKeyMode?: DetectorMode;
   uploadModes?: UploadModes;
   uploadTypes?: UploadTypes;
   discoveryEnabled?: boolean;

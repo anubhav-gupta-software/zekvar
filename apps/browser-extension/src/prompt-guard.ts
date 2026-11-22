@@ -129,10 +129,12 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     const managedPolicy = installationId && enabled(control) ? policy : undefined;
     const github = managedPolicy?.githubPatMode;
     const card = managedPolicy?.paymentCardMode;
+    const privateKey = managedPolicy?.privateKeyMode;
     const targetedUpload = uploadApp && managedPolicy?.targetedUploads?.[uploadApp];
     const upload = targetedUpload?.mode ?? (uploadApp && managedPolicy?.uploadModes?.[uploadApp]);
     if (upload !== 'block') ui.uploadNotice.textContent = '';
     const detectors = (isMode(github) ? ` · GitHub PAT ${github}` : '') + (isMode(card) ? ` · Payment card ${card}` : '') +
+      (isMode(privateKey) ? ` · Private key ${privateKey}` : '') +
       (upload && upload !== 'off' ? ` · File uploads ${upload}${targetedUpload ? ' (selected types)' : ''}` : '');
     const label = !managedPolicy ? `Zekvar · ${appName} policy unavailable` : coverage === 'unsupported' ?
       `Zekvar · Unsupported composer (${inspection.gap ?? 'Send control missing'})` : !coverage && !waiting ? 'Zekvar · Checking composer…' :

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { readNavigationRules } from '../../lib/navigation';
-import { detectorModes, fixtureRule, modes, ruleLabels, type DetectorMode, type PolicyMode, type PromptRuleId } from '../../../../contracts/policy/prompt';
+import { detectorModes, fixtureRule, modes, privateKeyRule, ruleLabels, type DetectorMode, type PolicyMode, type PromptRuleId } from '../../../../contracts/policy/prompt';
 import { parseUploadTypes, uploadApps, uploadModes, uploadTypesError, uploadTypesHint, type UploadApp, type UploadMode } from '../../../../contracts/policy/uploads';
 import { aiPromptApps, decisionLabels, detectorModeLabels, promptAppLabels } from '../../lib/control';
 import { changedDecision, parseWebAddress, runComparison, samePolicy,
@@ -23,7 +23,7 @@ type Editor = Omit<PreviewPolicy, 'domainRules' | 'pathRules' | 'uploadTypes' | 
 
 function editorFor(snapshot: PreviewSnapshot): Editor {
   return {
-    mode: snapshot.mode, githubPatMode: snapshot.githubPatMode, paymentCardMode: snapshot.paymentCardMode,
+    mode: snapshot.mode, githubPatMode: snapshot.githubPatMode, paymentCardMode: snapshot.paymentCardMode, privateKeyMode: snapshot.privateKeyMode,
     discoveryEnabled: snapshot.discoveryEnabled,
     extensionInventoryEnabled: snapshot.extensionInventoryEnabled,
     claudePromptEnabled: snapshot.claudePromptEnabled,
@@ -109,7 +109,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
     const file = customFile.name || customFile.type.trim() ? customFile : undefined;
     setError('');
     setResult(runComparison(reference, {
-      mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode,
+      mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode, privateKeyMode: editor.privateKeyMode,
       discoveryEnabled: editor.discoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled,
       claudePromptEnabled: editor.claudePromptEnabled, domainRules, pathRules,
       uploadModes: editor.uploadModes, uploadTypes: { chatgpt, gemini }, customApps, promptExceptions,
@@ -146,6 +146,13 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
             {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
           </select>
         </div>
+        {editor.privateKeyMode !== undefined && <div className="grid gap-1">
+          <label htmlFor="draft-private-key">Draft private key</label>
+          <select id="draft-private-key" value={editor.privateKeyMode}
+            onChange={(event) => edit('privateKeyMode', event.target.value as DetectorMode)}>
+            {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+          </select>
+        </div>}
         <div className="grid gap-1">
           <label htmlFor="draft-discovery">Draft app discovery</label>
           <select id="draft-discovery" value={editor.discoveryEnabled ? 'on' : 'off'} onChange={(event) => edit('discoveryEnabled', event.target.value === 'on')}>
@@ -211,7 +218,8 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
           <label htmlFor={`exception-rule-${index}`}>Detector</label>
           <select id={`exception-rule-${index}`} value={entry.ruleId}
             onChange={(event) => editException(index, { ruleId: event.target.value as PromptRuleId })}>
-            {Object.entries(ruleLabels).map(([rule, label]) => <option key={rule} value={rule}>{rule === fixtureRule ? 'Test marker' : label}</option>)}
+            {Object.entries(ruleLabels).map(([rule, label]) => rule === privateKeyRule && editor.privateKeyMode === undefined ? null :
+              <option key={rule} value={rule}>{rule === fixtureRule ? 'Test marker' : label}</option>)}
           </select>
         </div>
         <div className="grid gap-1">
@@ -301,6 +309,7 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         <input type="hidden" name="mode" value={candidate.mode} />
         <input type="hidden" name="githubPatMode" value={candidate.githubPatMode} />
         <input type="hidden" name="paymentCardMode" value={candidate.paymentCardMode} />
+        {candidate.privateKeyMode !== undefined && <input type="hidden" name="privateKeyMode" value={candidate.privateKeyMode} />}
         <input type="hidden" name="discoveryEnabled" value={candidate.discoveryEnabled ? 'on' : 'off'} />
         <input type="hidden" name="customApps" value={candidate.customApps.map(({ host, name }) => `${host}, ${name}`).join('\n')} />
         <input type="hidden" name="promptExceptions" value={JSON.stringify(candidate.promptExceptions)} />

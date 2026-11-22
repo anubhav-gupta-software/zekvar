@@ -138,7 +138,7 @@ async function request(path: string, token?: string, body?: object): Promise<unk
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(path === 'browser/policy' ? { 'X-Zekvar-Assignment-Aware': '1', 'X-Zekvar-Claude-Prompt': '1',
-        'X-Zekvar-Extension-Version': extensionVersion } : {}),
+        'X-Zekvar-Private-Key': '1', 'X-Zekvar-Extension-Version': extensionVersion } : {}),
       ...(path === 'browser/heartbeat' ? { 'X-Zekvar-Composer-Coverage': '1' } : {}),
       ...(path === 'enroll' ? { 'X-Zekvar-Scoped-Enrollment': '1' } : {}),
       ...(body ? { 'Content-Type': 'application/json' } : {}),
@@ -249,6 +249,7 @@ async function sync(state: State) {
         (policy.assignmentVersion !== undefined && !isVersion(policy.assignmentVersion)) ||
         (policy.githubPatMode !== undefined && !isDetectorMode(policy.githubPatMode)) ||
         (policy.paymentCardMode !== undefined && !isDetectorMode(policy.paymentCardMode)) ||
+        (policy.privateKeyMode !== undefined && !isDetectorMode(policy.privateKeyMode)) ||
         (policy.uploadModes !== undefined && !isUploadModes(policy.uploadModes)) ||
         (policy.discoveryEnabled !== undefined && typeof policy.discoveryEnabled !== 'boolean') ||
         (policy.extensionInventoryEnabled !== undefined && typeof policy.extensionInventoryEnabled !== 'boolean') ||
@@ -258,6 +259,7 @@ async function sync(state: State) {
     }
     const githubPatMode = policy.githubPatMode ?? 'off';
     const paymentCardMode = policy.paymentCardMode ?? 'off';
+    const privateKeyMode = policy.privateKeyMode;
     const uploads = policy.uploadModes ?? uploadsOff;
     const previousUploads = state.policy?.uploadModes;
     const targetedUploads = readTargetedUploads(policy.targetedUploads);
@@ -285,6 +287,7 @@ async function sync(state: State) {
       (policy.version > state.policy.version || (policy.version === state.policy.version &&
         policy.mode === state.policy.mode && githubPatMode === (state.policy.githubPatMode ?? 'off') &&
         (state.policy.paymentCardMode === undefined || paymentCardMode === state.policy.paymentCardMode) &&
+        (state.policy.privateKeyMode === undefined || privateKeyMode === state.policy.privateKeyMode) &&
         (!previousUploads || uploads.chatgpt === previousUploads.chatgpt && uploads.gemini === previousUploads.gemini) &&
         (!previousTargets || sameTargetedUploads(previousTargets, targetedUploads)) &&
         discoveryEnabled === (state.policy.discoveryEnabled ?? false) &&
@@ -296,7 +299,7 @@ async function sync(state: State) {
         (!state.pathRules || sameDomainRules(pathRules, state.pathRules)))))) {
       await applyDomainRules(state, domainRules, pathRules);
       if (policy.version !== state.policy?.version || assignment !== previousAssignment) clearCoverage(state);
-      state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, discoveryEnabled, customApps, extensionInventoryEnabled, claudePromptEnabled,
+      state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, privateKeyMode, discoveryEnabled, customApps, extensionInventoryEnabled, claudePromptEnabled,
         assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini }, targetedUploads };
       promptLease = lease ? { installationId: state.enrollment.installationId, version: policy.version,
         assignment: policy.assignmentVersion, lease } : undefined;
@@ -369,6 +372,7 @@ async function heartbeat(state: State) {
     claudeCoverage: state.policy.claudePromptEnabled ? recentCoverage(state.claudeCoveragePending, now) : undefined,
     claudePromptApplied: state.policy.claudePromptEnabled || undefined,
     paymentCardModeApplied: isMode(state.policy.paymentCardMode) ? true : undefined,
+    privateKeyModeApplied: isMode(state.policy.privateKeyMode) ? true : undefined,
     uploadControlsApplied: scopedUploads || (state.policy.uploadModes &&
       uploadApps.some((app) => state.policy?.uploadModes?.[app] !== 'off')) ? true : undefined,
     uploadTypesApplied: scopedUploads ? true : undefined,

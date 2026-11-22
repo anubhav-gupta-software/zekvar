@@ -23,6 +23,7 @@ const groupViewAdmin = randomBytes(32).toString('hex');
 const batchAdmin = randomBytes(32).toString('hex');
 const reportAdmin = randomBytes(32).toString('hex');
 const coverageAdmin = randomBytes(32).toString('hex');
+const keyAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -41,7 +42,7 @@ async function retentionFixture(query) {
 }
 
 async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false,
-  extensionVersion, scopedEnrollment = false, composerAware = false } = {}) {
+  extensionVersion, scopedEnrollment = false, composerAware = false, privateKeyAware = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -51,6 +52,7 @@ async function call(path, { token, method = 'GET', body, expect = 200, assignmen
   if (extensionVersion !== undefined) headers['X-Zekvar-Extension-Version'] = extensionVersion;
   if (scopedEnrollment) headers['X-Zekvar-Scoped-Enrollment'] = '1';
   if (composerAware) headers['X-Zekvar-Composer-Coverage'] = '1';
+  if (privateKeyAware) headers['X-Zekvar-Private-Key'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
@@ -91,6 +93,8 @@ async function start(sweepSeconds = 3600) {
       Control__Organizations__6__AdminToken: reportAdmin,
       Control__Organizations__7__Slug: `coverage-${suffix}`,
       Control__Organizations__7__AdminToken: coverageAdmin,
+      Control__Organizations__8__Slug: `private-key-${suffix}`,
+      Control__Organizations__8__AdminToken: keyAdmin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -2255,5 +2259,98 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(appCount(revoked, 'chatgpt', 'detected'), 0);
     assert.equal(revoked.installations.find(({ installationId }) => installationId === current.installationId).composerReadiness, undefined);
     if (postgres) assert.equal(await retentionFixture(`SELECT count(*) FROM composer_observations WHERE installation_id = '${current.installationId}'`), '0');
+  });
+
+  await t.test('versions private key protection and proves browser delivery before accepting enforcement metadata', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: keyAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const current = async () => (await admin('policies'))[0];
+    const before = await current();
+    assert.equal(before.privateKeyMode, 'off');
+    if (postgres) {
+      await stop();
+      await retentionFixture(`DELETE FROM schema_migrations WHERE version = 26;
+        ALTER TABLE policy_versions DROP COLUMN private_key_mode;
+        ALTER TABLE policy_deliveries DROP COLUMN private_key;`);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 26'), '1');
+      assert.deepEqual(await current(), before);
+    }
+    const { grant } = await post('enrollment-grants');
+    const client = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const browser = (path, options) => call(`/v1/browser/${path}`, { token: client.token, assignmentAware: true, ...options });
+    const fetchPolicy = (privateKeyAware = true) => browser('policy', { privateKeyAware });
+    const heartbeat = (policy, fields, expect = 204) => browser('heartbeat', { method: 'POST', expect,
+      body: { policyVersion: policy.version, assignmentVersion: policy.assignmentVersion, ...fields } });
+    const details = async () => (await admin('installations')).find(({ installationId }) => installationId === client.installationId);
+    const decision = (policy, action, extra) => ({ ...event, eventId: randomUUID(), appId: 'chatgpt',
+      policyVersion: policy.version, assignmentVersion: policy.assignmentVersion, timestamp: new Date().toISOString(),
+      decision: action, ruleId: 'pem-private-key', detectorCategory: 'credential', ...extra });
+    const submit = (body, expect = 204) => browser('events', { method: 'POST', body, expect });
+
+    const initial = await fetchPolicy();
+    assert.equal(initial.privateKeyMode, 'off');
+    await heartbeat(initial, {});
+    await submit(decision(initial, 'monitor'), 400);
+    await post('policies', { privateKeyMode: 'allow' }, { expect: 400 });
+    await post('policies', { privateKeyMode: 'block', expectedVersion: initial.version + 1 }, { expect: 409 });
+    assert.equal((await current()).version, initial.version);
+
+    const warn = await post('policies', { privateKeyMode: 'warn' });
+    const legacy = await fetchPolicy(false);
+    assert.equal(legacy.privateKeyMode, 'off');
+    await heartbeat(legacy, {});
+    assert.equal((await details()).appliedPolicyVersion, initial.version);
+    await heartbeat(legacy, { privateKeyModeApplied: true }, 400);
+    await submit(decision(legacy, 'warn'), 400);
+    const supported = await fetchPolicy();
+    assert.equal(supported.privateKeyMode, 'warn');
+    assert.equal(supported.mode, initial.mode);
+    await heartbeat(supported, { privateKeyModeApplied: true });
+    assert.equal((await details()).appliedPolicyVersion, supported.version);
+    const reported = decision(supported, 'warn');
+    await Promise.all([submit(reported), submit(reported)]);
+    await submit(decision(supported, 'warn_override'));
+    await submit(decision(supported, 'block'), 400);
+    await submit(decision(supported, 'warn', { detectorCategory: 'payment-card' }), 400);
+    await submit(decision(supported, 'warn', { privateKey: 'synthetic private key content' }), 400);
+    await heartbeat(supported, {});
+    assert.equal((await details()).appliedPolicyVersion, null);
+    assert.equal((await fetchPolicy(false)).privateKeyMode, 'off');
+    await heartbeat(await fetchPolicy(), { privateKeyModeApplied: true });
+
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    const grants = ['chatgpt', 'gemini', 'claude'].flatMap((appId) => ['fixture-secret', 'github-classic-pat', 'payment-card-number', 'pem-private-key']
+      .map((ruleId) => ({ appId, ruleId, expiresAt, reason: 'Synthetic review ticket' })));
+    const excepted = await post('policies', { promptExceptions: grants });
+    assert.equal(excepted.privateKeyMode, 'warn');
+    assert.equal(excepted.promptExceptions.length, 12);
+    assert.equal((await fetchPolicy(false)).promptExceptionLease.grants.some(({ ruleId }) => ruleId === 'pem-private-key'), false);
+    const leased = await fetchPolicy();
+    assert.ok(leased.promptExceptionLease.grants.some(({ ruleId }) => ruleId === 'pem-private-key'));
+    await heartbeat(leased, { privateKeyModeApplied: true, promptExceptionsApplied: true });
+    await submit(decision(leased, 'exception_applied'));
+
+    const records = (await admin('events/export?appId=chatgpt')).entries;
+    assert.deepEqual(records.map(({ decision, detectorCategory }) => [decision, detectorCategory]),
+      [['exception_applied', 'credential'], ['warn_override', 'credential'], ['warn', 'credential']]);
+    assert.doesNotMatch(JSON.stringify(records), /Synthetic review ticket|synthetic private key content|privateKey/);
+    assert.deepEqual((await admin('events/export?appId=chatgpt', { token: coverageAdmin })).entries, []);
+
+    const group = await post('policy-groups', { name: 'Private key pilot' });
+    const groupPath = `policy-groups/${group.id}`;
+    const previous = await post(`${groupPath}/policies`, { privateKeyMode: 'monitor' });
+    const author = await post('access', { name: 'Key policy author', role: 'administrator', hours: 1 });
+    const reviewer = await post('access', { name: 'Key policy approver', role: 'administrator', hours: 1 });
+    await post('policy-reviews/setting', { required: true }, { expect: 204 });
+    const proposed = await post(`${groupPath}/policies`, { privateKeyMode: 'block' }, { token: author.token, expectReview: true, expect: 202 });
+    await post(`policy-reviews/${proposed.reviewId}/decision`, { approve: true }, { token: author.token, expect: 403 });
+    const approved = await post(`policy-reviews/${proposed.reviewId}/decision`, { approve: true }, { token: reviewer.token });
+    assert.equal(approved.privateKeyMode, 'block');
+    await post('policy-reviews/setting', { required: false }, { expect: 204 });
+    assert.equal((await post(`${groupPath}/promote`, { expectedVersion: approved.version })).privateKeyMode, 'block');
+    assert.equal((await post(`${groupPath}/policies/${previous.version}/restore`)).privateKeyMode, 'monitor');
+    assert.equal((await post(`policies/${warn.version}/restore`)).privateKeyMode, 'warn');
+    assert.equal((await post(`policies/${initial.version}/restore`)).privateKeyMode, 'off');
   });
 });

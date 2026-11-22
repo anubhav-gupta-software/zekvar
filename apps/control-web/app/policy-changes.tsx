@@ -10,6 +10,7 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     ['Test marker', decisionLabels[reference.mode], decisionLabels[candidate.mode]],
     ['GitHub classic PAT', detectorModeLabels[reference.githubPatMode], detectorModeLabels[candidate.githubPatMode]],
     ['Payment card number', detectorModeLabels[reference.paymentCardMode], detectorModeLabels[candidate.paymentCardMode]],
+    ['Private key', detectorModeLabels[reference.privateKeyMode ?? 'off'], detectorModeLabels[candidate.privateKeyMode ?? 'off']],
     ['App discovery', toggle(reference.discoveryEnabled), toggle(candidate.discoveryEnabled)],
     ['Extension inventory', toggle(reference.extensionInventoryEnabled), toggle(candidate.extensionInventoryEnabled)],
     ['Claude prompt protection', toggle(reference.claudePromptEnabled), toggle(candidate.claudePromptEnabled)],

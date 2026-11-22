@@ -68,9 +68,23 @@ Use `ghp_000000000000000000000000000000000000` in the local prompt fixture to te
 2. Click **Sync now**, then open or refresh your test composer. In the local fixture or a supported ChatGPT or Gemini text composer, use the sandbox number `4242-4242-4242-4242`. On supported ChatGPT and Gemini editors, choose **Redact detected values** after a warning or block and review the draft before sending it. [Stripe sandbox cards](https://docs.stripe.com/testing)
 3. Open **Security events** in Control and look for **Payment card number**. Control receives the decision and rule metadata. Inspection and redaction take place in the browser.
 
-The detector combines supported issuer ranges and lengths with the Luhn checksum. It covers standalone ASCII card numbers and common groupings with consistent spaces or hyphens. Supported formats include Visa, Mastercard, American Express, Discover, JCB, and Diners Club. The browser applies the strictest matching mode. On a tie, payment card takes precedence over GitHub PAT, followed by the test marker. [PCI SSC checksum guidance](https://www.pcisecuritystandards.org/faqs/1137/) · [Cybersource card formats](https://developer.cybersource.com/docs/cybs/en-us/test-data/developer/all/so/test-data/best_practices_intro/card_type_id.html)
+The detector combines supported issuer ranges and lengths with the Luhn checksum. It covers standalone ASCII card numbers and common groupings with consistent spaces or hyphens. Supported formats include Visa, Mastercard, American Express, Discover, JCB, and Diners Club. The browser applies the strictest matching mode. On a tie, it prioritizes private keys, then payment cards, then GitHub PATs, then the test marker. [PCI SSC checksum guidance](https://www.pcisecuritystandards.org/faqs/1137/) · [Cybersource card formats](https://developer.cybersource.com/docs/cybs/en-us/test-data/developer/all/so/test-data/best_practices_intro/card_type_id.html)
 
 Use **Monitor** to measure false positives before enforcing the rule. Browser health shows a payment policy as current after an updated browser acknowledges the detector. Coverage of card numbers in files, unsupported separators and issuer formats, CVVs, and expiry dates remains open.
+
+## Test private key protection
+
+1. Start the updated Control services and sync Browser v0.23.0 or later. In **Policy preview**, set **Draft private key** to Monitor, Warn, or Block and run the **Synthetic private key block** sample. Publish the baseline or a rollout group when you are ready to test in a supported composer. The setting starts Off.
+2. Paste the synthetic sample below into a supported ChatGPT, Gemini, or enabled Claude text composer. In Warn or Block, **Redact detected values** replaces the whole recognized block with `[REDACTED]`. Review the updated draft before sending separately.
+3. Review **Security events** and **Reports** for the **Private key** rule. Control receives the decision and policy metadata. The prompt and key stay in the browser during inspection.
+
+```text
+-----BEGIN PRIVATE KEY-----
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+-----END PRIVATE KEY-----
+```
+
+The local format check recognizes complete, base64-shaped PKCS #8, encrypted PKCS #8, RSA, EC, DSA, and OpenSSH blocks. It handles both native line breaks and JSON-escaped line breaks. Public key and certificate labels remain available for ordinary use. The detector checks the block's text format. File content inspection has separate coverage. [PKCS #8 textual encodings](https://www.rfc-editor.org/rfc/rfc7468.html#section-10) · [OpenSSH private key format](https://github.com/openssh/openssh-portable/blob/master/PROTOCOL.key)
 
 ## Test file upload policies
 

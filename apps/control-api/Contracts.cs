@@ -15,6 +15,7 @@ internal static class FixtureContract
     public const string GitHubPatRule = "github-classic-pat";
     public const string CredentialCategory = "credential";
     public const string PaymentCardRule = "payment-card-number";
+    public const string PrivateKeyRule = "pem-private-key";
     public const string PaymentCategory = "payment-card";
     public const string UploadRule = "ai-file-upload";
     public const string UploadCategory = "file-upload";
@@ -25,7 +26,7 @@ internal static class FixtureContract
     public static bool IsAiPromptApp(string? appId) => appId is ChatGpt or Claude or Gemini;
     public static bool IsApp(string? appId) => appId == AppId || IsAiPromptApp(appId);
     public static bool IsDecision(string? decision) => IsMode(decision) || decision is "warn_override" or ExceptionApplied;
-    public static bool IsPromptRule(string? rule) => rule is RuleId or GitHubPatRule or PaymentCardRule;
+    public static bool IsPromptRule(string? rule) => rule is RuleId or GitHubPatRule or PaymentCardRule or PrivateKeyRule;
 
     public static bool IsEvent(PolicyEvent request) =>
         request.EventId != Guid.Empty && request.Timestamp != default && request.PolicyVersion > 0 &&
@@ -35,7 +36,7 @@ internal static class FixtureContract
             : request.UploadMethod is null && IsDecision(request.Decision) &&
               (request.Decision != ExceptionApplied || request.AppId != AppId) &&
               ((request.RuleId == RuleId && request.DetectorCategory == DetectorCategory) ||
-               (request.RuleId == GitHubPatRule && request.DetectorCategory == CredentialCategory) ||
+               ((request.RuleId is GitHubPatRule or PrivateKeyRule) && request.DetectorCategory == CredentialCategory) ||
                (request.RuleId == PaymentCardRule && request.DetectorCategory == PaymentCategory)));
 }
 
@@ -66,7 +67,8 @@ internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId
 internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode = null, bool? DiscoveryEnabled = null,
     DomainRules? DomainRules = null, int? ExpectedVersion = null, string? PaymentCardMode = null, UploadModes? UploadModes = null,
     PathRules? PathRules = null, bool? ExtensionInventoryEnabled = null, UploadTypes? UploadTypes = null,
-    CustomAppSetting?[]? CustomApps = null, PromptException?[]? PromptExceptions = null, bool? ClaudePromptEnabled = null);
+    CustomAppSetting?[]? CustomApps = null, PromptException?[]? PromptExceptions = null, bool? ClaudePromptEnabled = null,
+    string? PrivateKeyMode = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null)
 {
     public bool HasSettings() => Chatgpt is not null || Gemini is not null;
@@ -76,7 +78,7 @@ internal sealed record RedeemGrant(string Grant);
 internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = null, bool DomainRulesApplied = false,
     int AssignmentVersion = 0, string? GeminiCoverage = null, bool PaymentCardModeApplied = false, bool UploadControlsApplied = false,
     bool PathRulesApplied = false, bool UploadTypesApplied = false, bool CustomDiscoveryApplied = false,
-    bool PromptExceptionsApplied = false, string? ClaudeCoverage = null, bool ClaudePromptApplied = false)
+    bool PromptExceptionsApplied = false, string? ClaudeCoverage = null, bool ClaudePromptApplied = false, bool PrivateKeyModeApplied = false)
 {
     public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported") &&
         (GeminiCoverage is null or "ready" or "unsupported") &&
@@ -94,7 +96,8 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] TargetedUploads? TargetedUploads = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PromptExceptionLease? PromptExceptionLease = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int AssignmentVersion = 0,
-    bool ClaudePromptEnabled = false)
+    bool ClaudePromptEnabled = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? PrivateKeyMode = "off")
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => ClaudePromptEnabled
@@ -103,17 +106,19 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     public string RuleId => FixtureContract.RuleId;
     public string DetectorCategory => FixtureContract.DetectorCategory;
 
-    public Policy ForBrowser(bool claudeAware)
+    public Policy ForBrowser(bool claudeAware, bool privateKeyAware)
     {
         var now = DateTimeOffset.UtcNow;
         var nowMs = now.ToUnixTimeMilliseconds();
         var claudeEnabled = claudeAware && ClaudePromptEnabled;
-        var exceptions = PromptExceptions?.Where(entry => entry.AppId != FixtureContract.Claude || claudeEnabled)
+        var exceptions = PromptExceptions?.Where(entry => (entry.AppId != FixtureContract.Claude || claudeEnabled) &&
+            (entry.RuleId != FixtureContract.PrivateKeyRule || privateKeyAware && PrivateKeyMode is "warn" or "block"))
             .Select(entry => new PromptExceptionGrant(entry.AppId, entry.RuleId, entry.ExpiresAt.ToUnixTimeMilliseconds()))
             .Where(entry => entry.ExpiresAtMs > nowMs).ToArray();
         var browser = this with
         {
             ClaudePromptEnabled = claudeEnabled,
+            PrivateKeyMode = privateKeyAware ? PrivateKeyMode : "off",
             PromptExceptions = PromptExceptions is { Length: > 0 } ? null : PromptExceptions,
             PromptExceptionLease = exceptions is { Length: > 0 } ? new(nowMs, exceptions) : null
         };
@@ -151,7 +156,7 @@ internal sealed record StoredEvent(Guid EventId, Guid InstallationId, DateTime T
 {
     public string DetectorCategory => RuleId switch
     {
-        FixtureContract.GitHubPatRule => FixtureContract.CredentialCategory,
+        FixtureContract.GitHubPatRule or FixtureContract.PrivateKeyRule => FixtureContract.CredentialCategory,
         FixtureContract.PaymentCardRule => FixtureContract.PaymentCategory,
         FixtureContract.UploadRule => FixtureContract.UploadCategory,
         _ => FixtureContract.DetectorCategory

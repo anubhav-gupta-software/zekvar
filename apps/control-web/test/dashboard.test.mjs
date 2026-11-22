@@ -25,6 +25,14 @@ async function post(path, body, bearer, headers = {}) {
   return response.status === 204 ? undefined : response.json();
 }
 
+async function assertFitsViewport(page) {
+  const { width, clientWidth, scrollWidth } = await page.evaluate(() => ({
+    width: window.innerWidth, clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth,
+  }));
+  assert.equal(width, page.viewportSize().width);
+  assert.equal(scrollWidth, clientWidth);
+}
+
 test('Control dashboard signs in and manages a real browser installation and event', { timeout: 45_000 }, async (t) => {
   const browser = await chromium.launch({ channel: 'chromium', headless: process.env.ZEKVAR_DEMO_HEADED !== '1' });
   t.after(() => browser.close());
@@ -190,7 +198,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
     const screenshot = process.env.ZEKVAR_TEST_COVERAGE_SCREENSHOT;
     if (screenshot) await readiness.screenshot({ path: screenshot });
     await page.setViewportSize({ width: 390, height: 820 });
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    await assertFitsViewport(page);
     assert.ok(await readiness.evaluate((table) => table.scrollWidth > table.parentElement.clientWidth));
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.getByLabel('Application', { exact: true }).selectOption('chatgpt');
@@ -288,7 +296,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
     assert.equal((await context.request.get(`${dashboard}/reports/export?appId=chatgpt&appId=gemini`)).status(), 400);
     assert.equal((await context.request.get(`${dashboard}/reports/export?asOf=0`)).status(), 400);
     await page.setViewportSize({ width: 390, height: 820 });
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    await assertFitsViewport(page);
     assert.ok(await daily.evaluate((table) => table.scrollWidth > table.parentElement.clientWidth));
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.goto(`${dashboard}/reports?days=7&days=30`);
@@ -413,6 +421,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       await marker.selectOption('block');
       await page.getByLabel('Draft GitHub classic PAT').selectOption('warn');
       await page.getByLabel('Draft payment card number').selectOption('warn');
+      await page.getByLabel('Draft private key', { exact: true }).selectOption('block');
       await page.getByLabel('Draft ChatGPT file uploads').selectOption('block');
       await page.getByLabel('Draft Gemini file uploads').selectOption('monitor');
       await page.getByLabel('Draft ChatGPT file types', { exact: true }).fill('IMAGE/*, .PDF');
@@ -434,7 +443,9 @@ test('Control dashboard signs in and manages a real browser installation and eve
     assert.equal(await publish.count(), 0);
     await prepareDraft();
 
-    const privatePrompt = 'ZEKVAR_TEST_SECRET preview-private-prompt';
+    const keyMaterial = 'V1ZB'.repeat(16);
+    const privatePrompt = ['ZEKVAR_TEST_SECRET preview-private-prompt', '-----BEGIN PRIVATE KEY-----', keyMaterial,
+      '-----END PRIVATE KEY-----'].join('\n');
     const privateUrl = 'https://pilot.example.test/preview-private-path?sample=1';
     const requests = [];
     const captureRequest = (request) => requests.push(`${request.url()} ${request.postData() ?? ''}`);
@@ -453,6 +464,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
         ['Token embedded in a longer string', 'Allow', 'Allow'],
         ['Synthetic payment card', 'Allow', 'Warn'],
         ['Payment card with invalid checksum', 'Allow', 'Allow'],
+        ['Synthetic private key block', 'Allow', 'Block'],
         ['ChatGPT TXT upload', 'Allow', 'Allow'],
         ['ChatGPT PNG upload', 'Allow', 'Block'],
         ['ChatGPT custom file upload', 'Allow', 'Block'],
@@ -473,10 +485,12 @@ test('Control dashboard signs in and manages a real browser installation and eve
       await results.getByRole('row', { name: /^Sample domain / }).getByText('pilot.example.test/start', { exact: true }).waitFor();
       await results.getByRole('row', { name: /^Both detectors match / }).getByRole('cell').nth(1)
         .getByText('Test marker', { exact: true }).waitFor();
+      await results.getByRole('row', { name: /^Custom prompt / }).getByRole('cell').nth(1)
+        .getByText('Private key', { exact: true }).waitFor();
       const screenshot = process.env.ZEKVAR_TEST_PREVIEW_SCREENSHOT;
       if (screenshot) await page.screenshot({ path: screenshot, fullPage: true });
       await page.setViewportSize({ width: 390, height: 844 });
-      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+      await assertFitsViewport(page);
       await page.setViewportSize({ width: 1440, height: 1000 });
       assert.deepEqual(requests, []);
       assert.deepEqual(await currentPolicy(), reference);
@@ -507,12 +521,13 @@ test('Control dashboard signs in and manages a real browser installation and eve
       assert.equal(published.mode, 'block');
       assert.equal(published.githubPatMode, 'warn');
       assert.equal(published.paymentCardMode, 'warn');
+      assert.equal(published.privateKeyMode, 'block');
       assert.deepEqual(published.uploadModes, { chatgpt: 'block', gemini: 'monitor' });
       assert.deepEqual(published.uploadTypes, { chatgpt: ['.pdf', 'image/*'], gemini: ['application/x-zekvar-private-type'] });
       assert.equal(published.discoveryEnabled, true);
       assert.deepEqual(published.domainRules, { allow: ['work.pilot.example.test'], block: ['pilot.example.test'] });
       assert.deepEqual(published.pathRules, { allow: ['pilot.example.test/start'], block: ['work.pilot.example.test/settings'] });
-      assert.equal(requests.some((request) => /preview-private-(prompt|path|file)|charset=utf-8/.test(request)), false);
+      assert.equal(requests.some((request) => request.includes(keyMaterial) || /preview-private-(prompt|path|file)|charset=utf-8/.test(request)), false);
     } finally {
       page.off('request', captureRequest);
     }
@@ -642,7 +657,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
     const screenshot = process.env.ZEKVAR_TEST_ACCESS_SCREENSHOT;
     if (screenshot) await page.screenshot({ path: screenshot, fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    await assertFitsViewport(page);
     await page.setViewportSize({ width: 1440, height: 1000 });
 
     const operatorContext = await browser.newContext();
@@ -783,7 +798,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       const screenshot = process.env.ZEKVAR_TEST_REVIEW_SCREENSHOT;
       if (screenshot) await approver.screenshot({ path: screenshot, fullPage: true });
       await approver.setViewportSize({ width: 390, height: 844 });
-      assert.equal(await approver.evaluate(() => document.documentElement.scrollWidth), 390);
+      await assertFitsViewport(approver);
       approver.once('dialog', (dialog) => dialog.accept());
       await reviewed.getByRole('button', { name: 'Approve and publish', exact: true }).click();
       await reviewed.getByText('Approved', { exact: true }).waitFor();
@@ -813,7 +828,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
     const screenshot = process.env.ZEKVAR_TEST_SCREENSHOT;
     if (screenshot) await page.screenshot({ path: screenshot, fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    await assertFitsViewport(page);
     await page.getByRole('button', { name: 'Sign out' }).click();
     await page.getByRole('heading', { name: 'Sign in to Control' }).waitFor();
     assert.ok(!(await context.cookies()).some(({ name }) => name === 'zekvar_control_session'));

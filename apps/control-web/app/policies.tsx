@@ -29,6 +29,12 @@ export function PublishPolicyForm({ policy, groupId, review }: { policy?: Policy
         {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
       </select>
     </div>
+    {policy?.privateKeyMode !== undefined && <div className="grid gap-1">
+      <label htmlFor="private-key-mode">Private key</label>
+      <select key={policy.version} id="private-key-mode" name="privateKeyMode" defaultValue={policy.privateKeyMode}>
+        {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+      </select>
+    </div>}
     <div className="grid gap-1">
       <label htmlFor="discovery-mode">App discovery</label>
       <select key={policy?.version} id="discovery-mode" name="discoveryEnabled" defaultValue={policy?.discoveryEnabled ? 'on' : 'off'}>
@@ -71,7 +77,7 @@ export function PolicyVersionTable({ policies, groupId, writable, review }: {
       <span className="table-note">Latest 100 versions</span></div>
     <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="history-heading">
       <table aria-labelledby="history-heading">
-        <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>Payment card number</th><th>App discovery</th>
+        <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>Payment card number</th><th>Private key</th><th>App discovery</th>
           <th>Extension inventory</th><th>Claude prompt protection</th><th>File uploads</th><th>Navigation rules</th><th>Published (UTC)</th><th>Restore source</th>
           <th>Prompt exceptions</th><th>Action</th></tr></thead>
         <tbody>{policies.map((policy, index) => <PolicyRow key={policy.version} policy={policy} current={index === 0}
@@ -91,6 +97,7 @@ function PolicyRow({ policy, current, groupId, writable, review }: {
     <td className="emphasis">v{policy.version}</td><td><span className={`badge decision ${policy.mode}`}>{decisionLabels[policy.mode]}</span></td>
     <td>{detectorModeLabels[policy.githubPatMode ?? 'off']}</td>
     <td>{detectorModeLabels[policy.paymentCardMode ?? 'off']}</td>
+    <td>{detectorModeLabels[policy.privateKeyMode ?? 'off']}</td>
     <td>{policy.discoveryEnabled ? 'On' : 'Off'}
       {!!policy.customApps?.length && <details className="domain-rule-history">
         <summary>{policy.customApps.length} custom {policy.customApps.length === 1 ? 'site' : 'sites'}</summary>

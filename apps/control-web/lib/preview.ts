@@ -9,7 +9,7 @@ import { sameCustomApps, type CustomAppSetting } from '../../../contracts/policy
 import { evaluatePromptWithExceptions, exceptionDecision, samePromptExceptions, type PromptException } from '../../../contracts/policy/prompt-exceptions';
 
 export type PreviewPolicy = {
-  mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; discoveryEnabled: boolean;
+  mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; privateKeyMode?: DetectorMode; discoveryEnabled: boolean;
   extensionInventoryEnabled: boolean;
   claudePromptEnabled: boolean;
   domainRules: DomainRules; pathRules: PathRules; uploadModes: UploadModes; uploadTypes: UploadTypes;
@@ -25,6 +25,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
   return {
     version: policy.version, label: `${scope} v${policy.version}`,
     mode: policy.mode, githubPatMode: policy.githubPatMode ?? 'off', paymentCardMode: policy.paymentCardMode ?? 'off',
+    privateKeyMode: policy.privateKeyMode,
     discoveryEnabled: policy.discoveryEnabled ?? false,
     customApps: (policy.customApps ?? []).map(({ host, name }) => ({ host, name })),
     promptExceptions: policy.promptExceptions ?? [],
@@ -39,6 +40,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
 
 export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
   return a.mode === b.mode && a.githubPatMode === b.githubPatMode && a.paymentCardMode === b.paymentCardMode &&
+    a.privateKeyMode === b.privateKeyMode &&
     a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
     a.claudePromptEnabled === b.claudePromptEnabled &&
     uploadApps.every((app) => a.uploadModes[app] === b.uploadModes[app] && sameUploadTypes(a.uploadTypes[app], b.uploadTypes[app])) &&
@@ -59,6 +61,7 @@ const prompts = [
   { name: 'Token embedded in a longer string', content: `prefix_${fakePat}_suffix` },
   { name: 'Synthetic payment card', content: 'Test card 4242 4242 4242 4242' },
   { name: 'Payment card with invalid checksum', content: 'Test card 4242 4242 4242 4243' },
+  { name: 'Synthetic private key block', content: ['-----BEGIN PRIVATE KEY-----', 'A'.repeat(64), '-----END PRIVATE KEY-----'].join('\n') },
 ];
 const navigations = [
   { name: 'Sample domain', content: 'https://pilot.example.test/start' },

@@ -80,6 +80,7 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
           ...(request.headers.authorization ? { Authorization: request.headers.authorization } : {}),
           ...(request.headers['x-zekvar-assignment-aware'] ? { 'X-Zekvar-Assignment-Aware': request.headers['x-zekvar-assignment-aware'] } : {}),
           ...(request.headers['x-zekvar-composer-coverage'] ? { 'X-Zekvar-Composer-Coverage': request.headers['x-zekvar-composer-coverage'] } : {}),
+          ...(request.headers['x-zekvar-private-key'] ? { 'X-Zekvar-Private-Key': request.headers['x-zekvar-private-key'] } : {}),
           ...(body.length ? { 'Content-Type': 'application/json' } : {}),
         },
         body: body.length ? body : undefined,
@@ -586,6 +587,93 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
     await dashboard.getByLabel('Application', { exact: true }).selectOption('chatgpt');
     await dashboard.getByRole('button', { name: 'Apply filters' }).click();
     await rows.getByText('Payment card number', { exact: true }).nth(3).waitFor();
+  });
+
+  await t.test('protects multiline and JSON-escaped private key blocks with reviewed redaction and metadata-only reporting', async () => {
+    const keyRule = 'pem-private-key';
+    const sample = 'ZXxZ'.repeat(16);
+    const privateBlock = ['-----BEGIN OPENSSH PRIVATE KEY-----', sample, '-----END OPENSSH PRIVATE KEY-----'].join('\n');
+    const matches = async () => (await adminGet('events')).filter(({ ruleId }) => ruleId === keyRule);
+    await dashboard.reload();
+    const before = await policyVersion();
+    const mode = dashboard.getByLabel('Private key', { exact: true });
+    assert.equal(await mode.inputValue(), 'off');
+    let sends = Number(await submissions.textContent());
+    await prompt.fill(privateBlock);
+    await prompt.press('Enter');
+    assert.equal(await submissions.textContent(), String(++sends));
+    assert.deepEqual(await matches(), []);
+
+    async function publish(value) {
+      const version = await policyVersion() + 1;
+      await mode.selectOption(value);
+      await dashboard.getByRole('button', { name: 'Publish policy' }).click();
+      await dashboard.getByText(`Version ${version} published in block mode.`, { exact: true }).waitFor();
+      await sync();
+      await chat.getByText(new RegExp(`^Zekvar · BLOCK v${version}.* · Private key ${value}`)).waitFor();
+      return version;
+    }
+
+    const monitor = await publish('monitor');
+    await prompt.fill(privateBlock);
+    loseAcknowledgment = true;
+    await send.click();
+    assert.equal(await submissions.textContent(), String(++sends));
+    await waitUntil(() => !loseAcknowledgment, 'The test proxy did not drop the private key event acknowledgement.');
+    await sync();
+    await waitUntil(() => attempts.filter(({ ruleId }) => ruleId === keyRule).length >= 2, 'A retried key event was not observed.');
+    assert.deepEqual((await matches()).map(({ policyVersion, decision }) => [policyVersion, decision]), [[monitor, 'monitor']]);
+
+    const warn = await publish('warn');
+    await prompt.fill(privateBlock);
+    await prompt.press('Enter');
+    await chat.getByRole('alert').filter({ hasText: 'looks like a private key' }).waitFor();
+    assert.equal(await submissions.textContent(), String(sends));
+    await chat.getByRole('button', { name: 'Continue anyway', exact: true }).click();
+    assert.equal(await submissions.textContent(), String(++sends));
+    await waitUntil(async () => (await matches()).filter(({ policyVersion }) => policyVersion === warn).length === 2,
+      'Expected a private key warning and override.');
+
+    const block = await publish('block');
+    await prompt.fill(`Before\n${privateBlock}\nAfter`);
+    await send.click();
+    await chat.getByRole('alert').filter({ hasText: 'Submission blocked' }).waitFor();
+    assert.equal(await submissions.textContent(), String(sends));
+    await chat.getByRole('button', { name: 'Redact detected values', exact: true }).click();
+    assert.equal(await prompt.inputValue(), 'Before\n[REDACTED]\nAfter');
+    assert.equal(await submissions.textContent(), String(sends));
+    await prompt.press('Enter');
+    assert.equal(await submissions.textContent(), String(++sends));
+
+    const gemini = await browser.newPage();
+    try {
+      const geminiFixture = await readFile(new URL('./gemini-composer.html', import.meta.url), 'utf8');
+      await gemini.route('https://gemini.google.com/**', (route) => route.fulfill({ contentType: 'text/html', body: geminiFixture }));
+      await gemini.goto('https://gemini.google.com/app');
+      const editor = gemini.getByRole('textbox', { name: 'Enter a prompt for Gemini', exact: true });
+      await editor.fill(JSON.stringify({ private_key: privateBlock }));
+      await gemini.getByText(new RegExp(`^Zekvar · BLOCK v${block}.* · Private key block`)).waitFor();
+      await gemini.locator('input-area-v2').getByRole('button', { name: 'Send message' }).click();
+      await gemini.getByRole('alert').filter({ hasText: 'looks like a private key' }).waitFor();
+      assert.equal(await gemini.locator('#fixture-sends').textContent(), '0');
+    } finally {
+      await gemini.close();
+    }
+
+    await waitUntil(async () => (await matches()).length === 5, 'Expected the private key decision records for ChatGPT and Gemini.');
+    const keys = (await matches()).filter(({ policyVersion }) => policyVersion === block);
+    assert.deepEqual(keys.map(({ appId, decision }) => [appId, decision]), [['gemini', 'block'], ['chatgpt', 'block']]);
+    assert.ok(keys.every(({ detectorCategory }) => detectorCategory === 'credential'));
+    assert.doesNotMatch(JSON.stringify([...await matches(), ...attempts]), /ZXxZ{1,4}|BEGIN OPENSSH|REDACTED/);
+    await dashboard.getByRole('link', { name: 'Reports', exact: true }).click();
+    const breakdown = dashboard.getByRole('table', { name: 'By policy rule', exact: true }).getByRole('row', { name: /^Private key / });
+    assert.deepEqual(await breakdown.getByRole('cell').allTextContents(), ['1', '1', '2', '1', '0', '5']);
+    await dashboard.getByRole('link', { name: 'Overview', exact: true }).click();
+    const restore = await policyVersion() + 1;
+    await dashboard.getByRole('button', { name: `Restore version ${before}`, exact: true }).click();
+    await dashboard.getByText(`Version ${before} restored as version ${restore}.`, { exact: true }).waitFor();
+    await sync();
+    assert.equal((await adminGet('policies'))[0].privateKeyMode, 'off');
   });
 
   for (const site of [
