@@ -47,7 +47,7 @@ For the pilot lab, load `dist-pilot` as an unpacked extension. Reload it from `c
 
 Install `age` and `age-keygen` on the appropriate operator machines. Generate a recovery identity in the recovery environment with `age-keygen -o pilot-identity.txt`. Derive its public recipient with `age-keygen -y pilot-identity.txt > pilot-recipients.txt`. Store the private identity separately from the host and backup storage. Copy the public recipient file to the backup host. [age command reference](https://github.com/FiloSottile/age/blob/main/doc/age.1.ronn)
 
-Run a daily backup from a restricted location. The host streams a consistent PostgreSQL snapshot through encryption and publishes the archive only after both commands succeed. It refuses to replace an existing file. Copy the encrypted result to access-controlled off-host storage. Record its creation time, Control release, size, checksum, and recovery key identifier in the backup job record. Check job failures and keep a retention schedule approved for the pilot's data. Store deployment configuration and secrets in the operator's secret store so they can be recovered separately. [PostgreSQL logical backup](https://www.postgresql.org/docs/18/backup-dump.html)
+Run the [scheduled off-host backup](#schedule-off-host-backups) or make a manual snapshot from a restricted location. The host streams a consistent PostgreSQL snapshot through encryption and publishes the archive only after both commands succeed. It refuses to replace an existing file. For manual backups, copy the encrypted result to access-controlled off-host storage and record its creation time, Control release, size, SHA-256 checksum, and recovery key identifier. Store deployment configuration and secrets in the operator's secret store so they can be recovered separately. [PostgreSQL logical backup](https://www.postgresql.org/docs/18/backup-dump.html)
 
 ```sh
 deploy/pilot/database-backup.sh backup zekvar-pilot deploy/pilot/.env \
@@ -73,6 +73,37 @@ Run the disposable recovery drill with Bash, Docker Compose, age, .NET, Node, an
 npm --prefix apps/browser-extension ci
 npm --prefix apps/browser-extension exec -- playwright install chromium --no-shell
 node --test apps/browser-extension/test/database-backup.test.mjs
+```
+
+### Schedule off-host backups
+
+1. Create a private, general purpose Amazon S3 bucket with a name without dots and a dedicated prefix for the pilot. Enable Block Public Access, require TLS and conditionally created objects, and choose a lifecycle policy consistent with your retention agreement. If you enable versioning, set retention for previous versions too. Use a separate backup account where available. Configure the host's writer identity to allow only `s3:PutObject` for the prefix. Give the recovery identity `s3:GetObject` for the same prefix and give independent monitoring `s3:ListBucket` restricted to that prefix. Keep the decryption identity in the recovery environment and use separate access for modifying bucket policy or retention. [S3 bucket policy examples](https://docs.aws.amazon.com/AmazonS3/latest/userguide/amazon-s3-policy-keys.html) · [Enforce conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes-enforce.html) · [S3 lifecycle expiration](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-expire-general-considerations.html)
+2. Install AWS CLI v2 with support for `put-object --if-none-match` on the Linux pilot host, alongside Bash, OpenSSL, age, and Docker Compose. Set up writer credentials for the system service, preferably using the host's workload role. Give the service a root-owned copy of the deployed scripts at `/opt/zekvar` or change `ExecStart` to match your protected install path. Copy [`backup.env.example`](systemd/backup.env.example) to `/etc/zekvar/backup.env` with mode `0600`. Set the bucket, region, owner account ID, prefix, Compose settings, release ID, and public recovery key identifier. Update the release ID on each deploy and the key identifier when rotating recipients. The encrypted scratch archive needs up to 5 GB of free space on the service's temporary filesystem. [AWS CLI configuration](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html) · [S3 upload integrity and single-upload limit](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html)
+3. From the repository root, install the service and timer. Run the first backup and check the journal before relying on the schedule. The timer starts a job daily at 02:00 UTC and catches up a missed run after downtime. The job retries temporary storage errors and fails if S3 cannot confirm the archive's SHA-256 checksum. Forward journal records off-host so the recovery operator can retrieve the object key, checksum, size, release, key identifier, and start time after host loss. [systemd timer reference](https://www.freedesktop.org/software/systemd/man/latest/systemd.timer.html)
+
+```sh
+sudo install -m 0644 deploy/pilot/systemd/zekvar-backup.service \
+  deploy/pilot/systemd/zekvar-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start zekvar-backup.service
+sudo journalctl -u zekvar-backup.service -n 30
+sudo systemctl enable --now zekvar-backup.timer
+sudo systemctl list-timers zekvar-backup.timer
+```
+
+Set `AWS_REGION`, `ZEKVAR_BACKUP_BUCKET`, `ZEKVAR_BACKUP_BUCKET_OWNER`, and `ZEKVAR_BACKUP_PREFIX` on a separate monitor with its list-only credentials. Run `deploy/pilot/s3-backup.sh check 30` hourly and alert the operator on a nonzero exit. This checks for a nonempty archive started and stored within the last 30 hours, including when the Control host is offline. Confirm recoverability with a downloaded restore drill.
+
+Configure the same bucket settings with the recovery identity. Fetch the chosen key and use the Base64 SHA-256 from the trusted off-host job record. The helper writes the local `.age` file only after the cloud checksum and local bytes both match the record. Continue with the isolated [restore commands](#back-up-and-recover-control).
+
+```sh
+deploy/pilot/s3-backup.sh fetch "$BACKUP_OBJECT_KEY" /secure/pilot-snapshot.age "$BACKUP_SHA256"
+```
+
+To include off-host storage in the disposable recovery drill, use AWS CLI v2 and enable the loopback S3 protocol fixture. The test uses synthetic data and makes no requests to an AWS account.
+
+```sh
+ZEKVAR_BACKUP_TEST_OFFSITE=1 ZEKVAR_BACKUP_TEST_HEADED=1 \
+  node --test apps/browser-extension/test/database-backup.test.mjs
 ```
 
 ## Verify the deployment

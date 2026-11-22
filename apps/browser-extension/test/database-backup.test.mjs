@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,6 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright';
+import { startBackupBucket } from './s3-backup-fixture.mjs';
 
 const run = promisify(execFile);
 const root = fileURLToPath(new URL('../../../', import.meta.url));
@@ -19,6 +20,7 @@ const secret = () => randomBytes(32).toString('hex');
 const fixture = await readFile(new URL('./guest-chatgpt-composer.html', import.meta.url), 'utf8');
 const draft = 'Backup recovery fixture ZEKVAR_TEST_SECRET';
 const artifacts = process.env.ZEKVAR_BACKUP_TEST_ARTIFACTS;
+const offsite = process.env.ZEKVAR_BACKUP_TEST_OFFSITE === '1';
 
 async function until(check, message) {
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -29,7 +31,7 @@ async function until(check, message) {
   assert.fail(message);
 }
 
-test('Control recovers from an encrypted PostgreSQL backup and re-enrolls Chrome', { timeout: 240_000 }, async (t) => {
+test(`Control recovers from an encrypted ${offsite ? 'off-host' : 'local'} PostgreSQL backup and re-enrolls Chrome`, { timeout: 240_000 }, async (t) => {
   const work = await mkdtemp(join(tmpdir(), 'zekvar-backup-test-'));
   const override = join(work, 'compose.yaml');
   const publish = join(work, 'api');
@@ -52,7 +54,8 @@ test('Control recovers from an encrypted PostgreSQL backup and re-enrolls Chrome
   const recipients = path('recipients');
   const operate = (operation, db, file, key) => runHere(join(pilot, 'database-backup.sh'), [operation, db.name, db.env, file, key]);
   const backup = (file = archive, key = recipients) => operate('backup', source, file, key);
-  const restore = (file = archive, key = identity, db = target) => operate('restore', db, file, key);
+  let recoveryArchive = archive;
+  const restore = (file = recoveryArchive, key = identity, db = target) => operate('restore', db, file, key);
   let browser;
   let api;
   let projectStarted = false;
@@ -187,6 +190,72 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
       'The blocked attempt did not appear in Control.');
   }
   const event = await blockPrompt(source.owner, previous.installationId);
+
+  if (offsite) {
+    const prefix = 'zekvar/pilot';
+    const storage = await startBackupBucket(prefix);
+    t.after(storage.close);
+    const storageEnv = (role, overrides) => ({ ...process.env, ...storage.env(role), TMPDIR: work, ...overrides });
+    const runStorage = (role, args, overrides) => runHere(join(pilot, 's3-backup.sh'), args, { env: storageEnv(role, overrides) });
+    const publish = (key = recipients, overrides) => runStorage('WRITER', ['publish', source.name, source.env, key], overrides);
+    const freshness = (role = 'MONITOR', hours = '30') => runStorage(role, ['check', hours]);
+    const clockKey = (offset) => new Date(Date.now() + offset * 3600_000).toISOString().slice(0, 19).replace(/[-:]/g, '') + 'Z';
+    const seeded = { body: Buffer.from('synthetic listing entry'), modified: new Date() };
+    storage.objects.set(`${prefix}/${clockKey(-72)}-0000000000000000.age`, seeded);
+    storage.objects.set(`${prefix}/${clockKey(72)}-0000000000000000.age`, seeded);
+    storage.objects.set(`${prefix}/${clockKey(-1)}-0000000000000000.age`, { ...seeded, modified: new Date('2020-01-01') });
+    storage.objects.set(`${prefix}/${clockKey(-2)}-0000000000000000.age`, { ...seeded, body: Buffer.alloc(0) });
+    await assert.rejects(freshness(), /No off-host backup within the last 30 hours/);
+    await assert.rejects(freshness('MONITOR', '0'), /between 1 and 168 hours/);
+    await assert.rejects(freshness('WRITER'), /Could not check off-host backup freshness/);
+    await assert.rejects(publish(recipients, { ZEKVAR_BACKUP_RELEASE: 'invalid,metadata' }), /deployed release ID/);
+    await assert.rejects(publish(path('missing-recipients')), /age key file must be readable/);
+    assert.equal(storage.uploads.length, 0);
+
+    storage.denyUploads();
+    await assert.rejects(publish(), /Off-host backup upload failed/);
+    await assert.rejects(freshness(), /No off-host backup/);
+    storage.allowUploads();
+    storage.failNextUpload();
+    const published = (await publish()).stdout;
+    const [key, digest] = [published.match(/ key=(\S+)/)?.[1], published.match(/ sha256=(\S+)/)?.[1]];
+    assert.deepEqual(storage.uploads, [key, key], 'The CLI retried the same upload key after a temporary 503');
+    const object = storage.objects.get(key);
+    assert.deepEqual(object.metadata, { release: 'test-release', keyId: 'test-recovery-key', started: key.slice(prefix.length + 1, -21) });
+    assert.equal(object.checksum, digest);
+    assert.equal(object.body.subarray(0, 22).toString(), 'age-encryption.org/v1\n');
+    assert.ok((await freshness()).stdout.includes(`key=${key}`), 'The monitor selected a valid backup across paginated results');
+
+    const duplicate = path('duplicate.age');
+    await writeFile(duplicate, 'replacement payload');
+    await assert.rejects(runHere('aws', ['s3api', 'put-object', '--bucket', storage.env('WRITER').ZEKVAR_BACKUP_BUCKET,
+      '--expected-bucket-owner', storage.env('WRITER').ZEKVAR_BACKUP_BUCKET_OWNER, '--key', key, '--body', duplicate, '--if-none-match', '*'],
+    { env: storageEnv('WRITER') }), /PreconditionFailed/);
+    assert.equal(storage.objects.get(key), object);
+
+    const download = path('downloaded snapshot.age');
+    const fetchArchive = (role = 'READER', file = download, expected = digest, objectKey = key, overrides) =>
+      runStorage(role, ['fetch', objectKey, file, expected], overrides);
+    await assert.rejects(fetchArchive('WRITER'), /Off-host backup download failed/);
+    await assert.rejects(fetchArchive('MONITOR'), /Off-host backup download failed/);
+    await assert.rejects(fetchArchive('READER', download, digest, key, { ZEKVAR_BACKUP_BUCKET_OWNER: '000000000000' }), /Off-host backup download failed/);
+    await assert.rejects(fetchArchive('READER', download, digest, key.replace(prefix, 'wrong/prefix')), /configured backup prefix/);
+    assert.equal(storage.reads(), 0);
+    const wrongDigest = createHash('sha256').update('wrong').digest('base64');
+    await assert.rejects(fetchArchive('READER', download, wrongDigest), /did not match the recorded checksum/);
+    storage.corruptDownloads(true);
+    await assert.rejects(fetchArchive(), /No archive was published/);
+    storage.corruptDownloads(false);
+    await assert.rejects(stat(download), { code: 'ENOENT' });
+    await symlink(path('missing.age'), path('symlink.age'));
+    await assert.rejects(fetchArchive('READER', path('symlink.age')), /destination already exists/);
+    const downloads = await Promise.allSettled([fetchArchive(), fetchArchive()]);
+    assert.equal(downloads.filter((result) => result.status === 'fulfilled').length, 1);
+    assert.deepEqual(await readFile(download), object.body);
+    assert.equal((await stat(download)).mode & 0o777, 0o600);
+    assert.ok(!(await readdir(work)).some((name) => /^\.zekvar-download\.|^zekvar-offsite\./.test(name)));
+    recoveryArchive = download;
+  }
 
   await writeFile(path('invalid-recipients'), 'invalid public encryption recipient\n');
   const unpublished = path('unpublished.age');

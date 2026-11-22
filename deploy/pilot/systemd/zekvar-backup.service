@@ -1,0 +1,17 @@
+[Unit]
+Description=Publish an encrypted Zekvar Control database backup
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/zekvar/backup.env
+Environment=AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true
+ExecStart=/opt/zekvar/deploy/pilot/s3-backup.sh publish ${ZEKVAR_BACKUP_PROJECT} ${ZEKVAR_BACKUP_COMPOSE_ENV} ${ZEKVAR_BACKUP_RECIPIENTS}
+TimeoutStartSec=45min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
