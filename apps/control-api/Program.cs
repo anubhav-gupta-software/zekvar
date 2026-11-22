@@ -213,24 +213,32 @@ admin.MapPost("/installations/{id:guid}/policy-group", async (Guid id, AssignPol
         "upgrade_required" => Results.Conflict(new { error = "Update this browser to Zekvar Browser v0.8.0 before moving it." }),
         _ => Results.NotFound()
     });
-admin.MapGet("/events", async (string? appId, string? decision, DateTimeOffset? since, HttpContext http, CancellationToken ct) =>
-    Results.Ok((await store.EventHistory(Identity(http).OrganizationId, new(appId, decision, since, null, null), null, ct)).Entries));
+admin.MapGet("/events", async (string? appId, string? decision, DateTimeOffset? since, string? rolloutGroup, HttpContext http, CancellationToken ct) =>
+{
+    if (http.Request.Query["rolloutGroup"].Count > 1 || EventRolloutFilter.Parse(rolloutGroup) is null)
+        return Results.BadRequest(new { error = "Choose a valid event rollout group." });
+    return Results.Ok((await store.EventHistory(Identity(http).OrganizationId, new(appId, decision, since, null, null, rolloutGroup), null, ct)).Entries);
+});
 admin.MapGet("/events/history", async ([AsParameters] EventFilters filters, DateTimeOffset? beforeAt,
     Guid? beforeEventId, Guid? beforeInstallationId, HttpContext http, CancellationToken ct) =>
 {
-    if (!filters.Valid() || beforeAt.HasValue != beforeEventId.HasValue || beforeAt.HasValue != beforeInstallationId.HasValue ||
+    if (!filters.Valid() || http.Request.Query["rolloutGroup"].Count > 1 ||
+        beforeAt.HasValue != beforeEventId.HasValue || beforeAt.HasValue != beforeInstallationId.HasValue ||
         beforeEventId == Guid.Empty || beforeInstallationId == Guid.Empty)
         return Results.BadRequest(new { error = "Choose valid event filters and a complete history cursor." });
     var cursor = beforeAt is { } at && beforeEventId is { } id && beforeInstallationId is { } installationId
         ? new EventCursor(at, id, installationId) : null;
+    http.Response.Headers["X-Zekvar-Event-Rollout"] = "1";
     return Results.Ok(await store.EventHistory(Identity(http).OrganizationId, filters, cursor, ct));
 });
 admin.MapGet("/events/export", ([AsParameters] EventFilters filters, HttpContext http, CancellationToken ct) =>
 {
-    if (!filters.Valid()) return Results.BadRequest(new { error = "Choose valid event filters." });
+    if (!filters.Valid() || http.Request.Query["rolloutGroup"].Count > 1)
+        return Results.BadRequest(new { error = "Choose valid event filters." });
     var identity = Identity(http);
     http.Response.Headers.ContentDisposition = "attachment; filename=\"zekvar-security-events.json\"";
     http.Response.Headers.XContentTypeOptions = "nosniff";
+    http.Response.Headers["X-Zekvar-Event-Rollout"] = "1";
     return Results.Ok(new EventExport(identity.OrganizationSlug!, DateTime.UtcNow, filters,
         store.ReadEvents(identity.OrganizationId, filters, null, null, ct)));
 });
@@ -238,7 +246,7 @@ admin.MapGet("/reports/ai-enforcement", async (HttpContext http, CancellationTok
 {
     var query = AiReportQuery.Parse(http.Request.Query, DateTimeOffset.UtcNow);
     return query is null
-        ? Results.BadRequest(new { error = "Choose a supported AI app and a 7- or 30-day reporting window." })
+        ? Results.BadRequest(new { error = "Choose a supported AI app, reporting window, and rollout group." })
         : Results.Ok(await store.ReadAiEnforcement(Identity(http), query, ct));
 });
 admin.MapGet("/audit", async (string? action, DateTimeOffset? since, DateTimeOffset? until, DateTimeOffset? beforeAt,

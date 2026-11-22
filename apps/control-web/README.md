@@ -106,13 +106,15 @@ Open **Policy preview** for the intended scope and add an entry under **Temporar
 
 ## Investigate and export security events
 
-Open **Events** in the sidebar. Filter by application, decision, time range, or browser installation ID, then select **Apply filters**. Select an installation ID in a result to narrow the current view to that browser. Use **Older events** and **Newest events** to review the matching records.
+Open **Events** in the sidebar. Filter by application, decision, time range, browser installation ID, or **Recorded rollout group**, then select **Apply filters**. Select an installation ID or recorded rollout in a result to narrow the current view. Use **Older events** and **Newest events** to review the matching records.
+
+The **Recorded rollout** column shows the assignment associated with the event, including when a group inherits the baseline policy. **Organization baseline** means the browser was outside a group for that event. **Unattributed** means the earlier record lacks enough information to determine its assignment. Use **Browser health** to check a browser's current assignment.
 
 **Export security events (JSON)** downloads all retained records matching the applied filters, even when you are viewing an older page. Both the view and the download use the same cutoff for relative time filters. The file includes organization, filter, and decision metadata. Prompt text, matched values, and tokens stay out of the download. Treat installation IDs and decision history as organization data.
 
 ## Review AI enforcement
 
-Open **Reports** in Control. Choose the last 7 or 30 UTC calendar days and an AI application, then select **Apply report filters**. Review the trend, totals by app and rule, and counts for monitor, warn, block, warning override, and exception use. A warning and its override each contribute one policy event. The current UTC day shows activity through the displayed time. The local prompt fixture is excluded. Safe test markers used on supported AI sites still count.
+Open **Reports** in Control. Choose the last 7 or 30 UTC calendar days, an AI application, and a recorded rollout group, then select **Apply report filters**. Use **Investigate security events** to open individual records for the selected rollout. Review the trend, totals by app and rule, and counts for monitor, warn, block, warning override, and exception use. A warning and its override each contribute one policy event. The current UTC day shows activity through the displayed time. The local prompt fixture is excluded. Safe test markers used on supported AI sites still count.
 
 **Export report (JSON)** downloads the same time window and filters using current retention. It contains aggregate counts and excludes individual events and browser identifiers. Reload the report if its download link is more than 24 hours old. Owners, administrators, and auditors can read and export the report. [AI enforcement API](../control-api/README.md#ai-enforcement-report)
 

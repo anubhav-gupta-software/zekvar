@@ -53,6 +53,15 @@ async function request<T>(path: string, token: string, method = 'GET', body?: un
 
 const policiesPath = (groupId?: string) => groupId ? `/policy-groups/${groupId}/policies` : '/policies';
 
+async function eventResponse(path: string, token: string, filters: URLSearchParams, signal?: AbortSignal) {
+  const response = await apiResponse(`${path}?${filters}`, token, { signal });
+  if (filters.get('rolloutGroup') && response.headers.get('X-Zekvar-Event-Rollout') !== '1') {
+    await response.body?.cancel();
+    throw new ApiError(409, 'event_rollout_unavailable');
+  }
+  return response;
+}
+
 export const controlApi = {
   session: (token: string) => request<ControlSession>('/session', token),
   access: (token: string) => request<ControlAccess[]>('/access', token),
@@ -81,9 +90,12 @@ export const controlApi = {
   }),
   extensionInventory: (token: string) => request<InventoryInstallation[]>('/extension-inventory', token),
   browserExtensionInventory: (token: string, id: string) => request<InventoryInstallation>(`/extension-inventory/${id}`, token),
-  events: (token: string, filters: URLSearchParams) => request<EventPage>(`/events/history?${filters}`, token),
+  events: async (token: string, filters: URLSearchParams): Promise<EventPage> => {
+    const response = await eventResponse('/events/history', token, filters);
+    return { ...await response.json(), rolloutAvailable: response.headers.get('X-Zekvar-Event-Rollout') === '1' };
+  },
   exportEvents: (token: string, filters: URLSearchParams, signal: AbortSignal) =>
-    apiResponse(`/events/export?${filters}`, token, { signal }),
+    eventResponse('/events/export', token, filters, signal),
   aiEnforcement: (token: string, filters: URLSearchParams) => request<AiEnforcementReport>(`/reports/ai-enforcement?${filters}`, token),
   audit: (token: string, filters: URLSearchParams) => request<AuditPage>(`/audit?${filters}`, token),
   retention: (token: string) => request<RetentionPolicy>('/retention', token),

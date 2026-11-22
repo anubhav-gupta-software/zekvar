@@ -272,6 +272,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
     assert.deepEqual(await totals.locator('strong').allTextContents(), ['0', '0', '0']);
     await page.getByLabel('Reporting window (UTC)', { exact: true }).selectOption('30');
     await app.selectOption('chatgpt');
+    await page.getByLabel('Recorded rollout group', { exact: true }).selectOption('baseline');
     await filter.click();
     await apps.getByRole('rowheader', { name: 'ChatGPT', exact: true }).waitFor();
     assert.equal(await daily.locator('tbody tr').count(), 30);
@@ -284,6 +285,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
     const downloaded = JSON.parse(serialized);
     assert.equal(Date.parse(downloaded.asOf), anchor);
     assert.equal(downloaded.appId, 'chatgpt');
+    assert.equal(downloaded.rolloutGroup, 'baseline');
     assert.equal(downloaded.days, 30);
     assert.equal(downloaded.daily.length, 30);
     assert.deepEqual(downloaded.counts, { monitor: 0, warn: 1, block: 0, warn_override: 0, exception_applied: 0 });
@@ -295,13 +297,14 @@ test('Control dashboard signs in and manages a real browser installation and eve
     assert.equal(response.headers()['cross-origin-resource-policy'], 'same-origin');
     assert.deepEqual(await response.json(), downloaded);
     assert.equal((await context.request.get(`${dashboard}/reports/export?appId=chatgpt&appId=gemini`)).status(), 400);
+    assert.equal((await context.request.get(`${dashboard}/reports/export?rolloutGroup=baseline&rolloutGroup=unattributed`)).status(), 400);
     assert.equal((await context.request.get(`${dashboard}/reports/export?asOf=0`)).status(), 400);
     await page.setViewportSize({ width: 390, height: 820 });
     await assertFitsViewport(page);
     assert.ok(await daily.evaluate((table) => table.scrollWidth > table.parentElement.clientWidth));
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.goto(`${dashboard}/reports?days=7&days=30`);
-    await page.getByRole('alert').filter({ hasText: 'Choose a valid AI application and reporting window.' }).waitFor();
+    await page.getByRole('alert').filter({ hasText: 'Choose a valid AI application, reporting window, and rollout group.' }).waitFor();
     assert.equal(await link.count(), 0);
     await filter.click();
     await link.waitFor();
@@ -577,12 +580,14 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await page.getByLabel('Application', { exact: true }).selectOption('chatgpt');
     await page.getByLabel('Decision', { exact: true }).selectOption(policy.mode);
     await page.getByLabel('Time range', { exact: true }).selectOption('day');
+    await page.getByLabel('Recorded rollout group', { exact: true }).selectOption('baseline');
     const installation = page.getByLabel('Browser installation ID', { exact: true });
     await installation.fill('invalid');
     await page.getByRole('button', { name: 'Apply filters' }).click();
     await page.getByRole('alert').filter({ hasText: 'Enter a complete browser installation ID.' }).waitFor();
     const link = page.getByRole('link', { name: 'Export security events (JSON)', exact: true });
     assert.equal(await link.count(), 0);
+    await page.getByLabel('Recorded rollout group', { exact: true }).selectOption('baseline');
     await installation.fill(browser.installationId);
     await page.getByRole('button', { name: 'Apply filters' }).click();
     const older = page.getByRole('link', { name: 'Older events', exact: true });
@@ -593,11 +598,13 @@ test('Control dashboard signs in and manages a real browser installation and eve
     assert.equal(filters.get('installationId'), browser.installationId);
     assert.equal(filters.get('appId'), 'chatgpt');
     assert.equal(filters.get('decision'), policy.mode);
+    assert.equal(filters.get('rolloutGroup'), 'baseline');
     assert.ok(filters.get('since'));
     await older.click();
     const newest = page.getByRole('link', { name: 'Newest events', exact: true });
     await newest.waitFor();
     assert.equal(new URL(page.url()).searchParams.get('since'), filters.get('since'));
+    assert.equal(new URL(page.url()).searchParams.get('eventGroup'), 'baseline');
     assert.equal(await link.getAttribute('href'), href);
     assert.equal(await events.locator('tbody tr').count(), 2);
     const screenshot = process.env.ZEKVAR_TEST_EVENTS_SCREENSHOT;
@@ -615,16 +622,24 @@ test('Control dashboard signs in and manages a real browser installation and eve
     const { entries, organization, filters: reported } = JSON.parse(data);
     assert.equal(organization, await page.locator('.eyebrow').textContent());
     assert.equal(Date.parse(reported.since), Date.parse(filters.get('since')));
+    assert.equal(reported.rolloutGroup, 'baseline');
     assert.deepEqual(entries.map(({ eventId }) => eventId).sort(), ids.sort());
     assert.ok(entries.every((entry) => entry.installationId === browser.installationId && entry.appId === 'chatgpt'));
+    assert.ok(entries.every(({ rollout }) => rollout.kind === 'baseline'));
     assert.equal([token, browser.token, other.token, grant, otherGrant].some((value) => data.includes(value)), false);
-    for (const query of ['appId=chatgpt&appId=chatgpt', 'beforeAt=now', 'organization=another-tenant']) {
+    for (const query of ['appId=chatgpt&appId=chatgpt', 'beforeAt=now', 'organization=another-tenant',
+      'rolloutGroup=baseline&rolloutGroup=unattributed', 'rolloutGroup=invalid']) {
       assert.equal((await context.request.get(`${dashboard}/events/export?${query}`)).status(), 400);
     }
     await newest.click();
     await older.waitFor();
     const filterBrowser = events.getByRole('link', { name: `Filter events for installation ${browser.installationId}` }).first();
     assert.equal(new URL(await filterBrowser.getAttribute('href'), dashboard).searchParams.get('since'), filters.get('since'));
+    await page.getByRole('link', { name: 'Clear filters', exact: true }).click();
+    await page.waitForURL((url) => url.search === '');
+    await page.goto(`${dashboard}/?eventGroup=baseline&eventGroup=unattributed#events`);
+    await page.getByRole('alert').filter({ hasText: 'Choose a valid recorded rollout group.' }).waitFor();
+    assert.equal(await link.count(), 0);
     await page.getByRole('link', { name: 'Clear filters', exact: true }).click();
     await page.waitForURL((url) => url.search === '');
   });

@@ -25,6 +25,7 @@ const reportAdmin = randomBytes(32).toString('hex');
 const coverageAdmin = randomBytes(32).toString('hex');
 const keyAdmin = randomBytes(32).toString('hex');
 const fileAdmin = randomBytes(32).toString('hex');
+const rolloutHistoryAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -99,6 +100,8 @@ async function start(sweepSeconds = 3600) {
       Control__Organizations__8__AdminToken: keyAdmin,
       Control__Organizations__9__Slug: `private-file-${suffix}`,
       Control__Organizations__9__AdminToken: fileAdmin,
+      Control__Organizations__10__Slug: `rollout-history-${suffix}`,
+      Control__Organizations__10__AdminToken: rolloutHistoryAdmin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -196,7 +199,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const { installationId, receivedAt, ...metadata } = stored[0];
     assert.equal(installationId, client.installationId);
     assert.ok(Number.isFinite(Date.parse(receivedAt)));
-    assert.deepEqual(metadata, event);
+    assert.deepEqual(metadata, { ...event, rollout: { kind: 'baseline' } });
     assert.deepEqual(await call('/v1/admin/events?appId=local-prompt-fixture&decision=monitor', { token: first }), stored);
     assert.deepEqual(await call('/v1/admin/events?appId=other-app', { token: first }), []);
     assert.deepEqual(await call('/v1/admin/events?decision=block', { token: first }), []);
@@ -253,7 +256,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const [stored, ...duplicates] = await call('/v1/admin/events', { token: second });
     const { installationId, receivedAt, ...metadata } = stored;
     assert.deepEqual(duplicates, []);
-    assert.deepEqual(metadata, historical);
+    assert.deepEqual(metadata, { ...historical, rollout: { kind: 'baseline' } });
   });
 
   await t.test('AI discovery is opt-in, tenant scoped, monotonic, and revocable', async () => {
@@ -709,7 +712,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual(entries.slice(1), paged);
     assert.equal(entries[0].eventId, inserted.eventId);
     assert.deepEqual(Object.keys(entries[0]).sort(), [
-      'appId', 'decision', 'detectorCategory', 'eventId', 'installationId', 'policyVersion', 'receivedAt', 'ruleId', 'timestamp',
+      'appId', 'decision', 'detectorCategory', 'eventId', 'installationId', 'policyVersion', 'receivedAt', 'rollout', 'ruleId', 'timestamp',
     ]);
     assert.equal([first, one.token, two.token, 'private-synthetic-export-sample'].some((value) => json.includes(value)), false);
 
@@ -1601,6 +1604,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       await retentionFixture(`
         DELETE FROM schema_migrations WHERE version = 19;
         ALTER TABLE policy_versions DROP COLUMN prompt_exceptions;
+        DELETE FROM policy_deliveries WHERE assignment_version = 0;
         ALTER TABLE policy_deliveries DROP COLUMN exception_scope, DROP CONSTRAINT policy_deliveries_assignment_version_check,
             ADD CONSTRAINT policy_deliveries_assignment_version_check CHECK (assignment_version > 0);
         ALTER TABLE security_events DROP CONSTRAINT security_events_decision_check,
@@ -2434,5 +2438,149 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual((await post(`${groupPath}/promote`, { expectedVersion: scoped.version })).fileInspection, scoped.fileInspection);
     assert.deepEqual((await post(`policies/${initial.version}/restore`)).fileInspection, off);
     await send(await fetchPolicy(), {}, 400);
+  });
+
+  await t.test('keeps recorded rollout groups through migration, reassignment, retries, and retention', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: rolloutHistoryAdmin, ...options });
+    const post = (path, body, expect = 200) => admin(path, { method: 'POST', body, expect });
+    const enroll = async () => {
+      const { grant } = await post('enrollment-grants', {});
+      const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+      return [browser, await current(browser)];
+    };
+    const current = (browser) => call('/v1/browser/policy', { token: browser.token, assignmentAware: true });
+    const assign = (browser, groupId) => post(`installations/${browser.installationId}/policy-group`, { groupId }, 204);
+    const submit = async (browser, policy, fields = {}, expect = 204) => {
+      const body = { ...event, eventId: randomUUID(), timestamp: new Date().toISOString(), appId: 'chatgpt',
+        decision: policy.mode, policyVersion: policy.version, assignmentVersion: policy.assignmentVersion, ...fields };
+      await call('/v1/browser/events', { method: 'POST', token: browser.token, body, expect });
+      return body;
+    };
+    const exportEvents = async (rolloutGroup, options) => (await admin(
+      `events/export?${new URLSearchParams(rolloutGroup ? { rolloutGroup } : {})}`, options)).entries;
+    const groupRollout = ({ id, name }) => ({ kind: 'group', groupId: id, groupName: name });
+    const baseline = { kind: 'baseline' };
+    const unattributed = { kind: 'unattributed' };
+    const [alpha, beta, scoped] = await Promise.all(['History Alpha', 'History Beta', 'History Scoped'].map(
+      (name) => post('policy-groups', { name })));
+    await post(`policy-groups/${scoped.id}/policies`, { mode: 'block' });
+    const [[neverMoved, original], [moving, early], [legacy, legacyPolicy]] = await Promise.all([enroll(), enroll(), enroll()]);
+    const untouched = await submit(neverMoved, original);
+    const originalEvent = await submit(moving, early);
+    await assign(moving, alpha.id);
+    await assign(legacy, scoped.id);
+    const [firstAlpha, scopedPolicy] = await Promise.all([current(moving), current(legacy)]);
+    const originalAlpha = await submit(moving, firstAlpha);
+    const originalScoped = await submit(legacy, scopedPolicy);
+    await assign(moving, beta.id);
+    const firstBeta = await current(moving);
+    assert.equal(firstBeta.version, firstAlpha.version);
+    assert.notEqual(firstBeta.assignmentVersion, firstAlpha.assignmentVersion);
+
+    if (postgres) {
+      await stop();
+      await retentionFixture(`
+        DELETE FROM schema_migrations WHERE version = 28;
+        DROP INDEX events_by_recorded_rollout;
+        ALTER TABLE security_events DROP COLUMN rollout_group_id, DROP COLUMN rollout_attributed;
+        ALTER TABLE policy_deliveries DROP COLUMN rollout_group_id, DROP COLUMN rollout_attributed;
+        DELETE FROM policy_deliveries WHERE installation_id = '${legacy.installationId}' AND assignment_version = 0;
+      `);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 28'), '1');
+      const migrated = new Map((await exportEvents()).map((entry) => [entry.eventId, entry.rollout]));
+      assert.deepEqual(migrated.get(untouched.eventId), baseline);
+      assert.deepEqual(migrated.get(originalScoped.eventId), groupRollout(scoped));
+      assert.deepEqual(migrated.get(originalEvent.eventId), unattributed);
+      assert.deepEqual(migrated.get(originalAlpha.eventId), unattributed);
+    }
+    const lateOriginal = await submit(moving, early);
+    const lateAlpha = await submit(moving, firstAlpha);
+    const missingProof = await submit(legacy, legacyPolicy);
+    const knownBeta = await submit(moving, firstBeta);
+    await assign(moving, null);
+    const reset = await current(moving);
+    await assign(moving, alpha.id);
+    const active = await current(moving);
+    await assign(moving, alpha.id);
+    assert.equal((await current(moving)).assignmentVersion, active.assignmentVersion);
+    assert.equal(active.version, reset.version);
+    const movedBaseline = await submit(moving, reset);
+    await submit(moving, active, { eventId: movedBaseline.eventId });
+    await submit(moving, active, { assignmentVersion: active.assignmentVersion + 1 }, 400);
+    await submit(moving, active, { prompt: 'synthetic-private-group-sample' }, 400);
+    const expired = await submit(moving, active, { timestamp: new Date(Date.now() - 3 * 86_400_000).toISOString() });
+    const ids = Array.from({ length: 104 }, () => randomUUID());
+    for (let index = 0; index < ids.length; index += 10) {
+      await Promise.all(ids.slice(index, index + 10).map((eventId) => submit(moving, active, { eventId })));
+    }
+    await assign(moving, beta.id);
+    const lateActive = await submit(moving, active);
+    const foreign = await admin('policy-groups', { method: 'POST', body: { name: 'History Alpha' }, token: second });
+    const auditor = await post('access', { name: 'Rollout history auditor', role: 'auditor', hours: 1 });
+    const recorded = new Map((await exportEvents()).map((entry) => [entry.eventId, entry.rollout]));
+    assert.deepEqual(recorded.get(lateOriginal.eventId), baseline);
+    assert.deepEqual(recorded.get(lateAlpha.eventId), postgres ? unattributed : groupRollout(alpha));
+    assert.deepEqual(recorded.get(missingProof.eventId), postgres ? unattributed : baseline);
+    assert.deepEqual(recorded.get(knownBeta.eventId), groupRollout(beta));
+    assert.deepEqual(recorded.get(movedBaseline.eventId), baseline);
+    assert.deepEqual(recorded.get(lateActive.eventId), groupRollout(alpha));
+
+    const query = new URLSearchParams({ rolloutGroup: alpha.id.toUpperCase(), appId: 'chatgpt', installationId: moving.installationId });
+    const page = await admin(`events/history?${query}`);
+    assert.equal(page.entries.length, 100);
+    const cursor = new URLSearchParams(query);
+    cursor.set('beforeAt', page.next.receivedAt);
+    cursor.set('beforeEventId', page.next.eventId);
+    cursor.set('beforeInstallationId', page.next.installationId);
+    const older = await admin(`events/history?${cursor}`);
+    assert.equal(older.next, null);
+    const exported = (await admin(`events/export?${query}`)).entries;
+    assert.deepEqual([...page.entries, ...older.entries], exported);
+    assert.ok(exported.every((entry) => entry.rollout.groupId === alpha.id));
+    const expected = [...ids, expired.eventId, lateActive.eventId, ...(postgres ? [] : [originalAlpha.eventId, lateAlpha.eventId])];
+    assert.deepEqual(exported.map(({ eventId }) => eventId).sort(), expected.sort());
+    assert.deepEqual((await admin(`events?rolloutGroup=${alpha.id}`)), page.entries);
+    assert.deepEqual(await exportEvents(alpha.id, { token: auditor.token }), exported);
+    assert.deepEqual(await exportEvents(alpha.id, { token: second }), []);
+    assert.deepEqual(await exportEvents(foreign.id), []);
+    await admin(`events/export?rolloutGroup=${alpha.id}`, { token: moving.token, expect: 401 });
+
+    for (const key of ['rolloutGroup=invalid', 'rolloutGroup=00000000-0000-0000-0000-000000000000',
+      'rolloutGroup=baseline&RolloutGroup=unattributed', 'rolloutGroup=%20baseline', 'rolloutGroup=%27%20OR%20true']) {
+      for (const path of ['events', 'events/history', 'events/export', 'reports/ai-enforcement']) {
+        await admin(`${path}?${key}`, { expect: 400 });
+      }
+    }
+    await delay(5);
+    const anchor = Date.now();
+    const report = (filter, options) => admin(`reports/ai-enforcement?days=7&appId=chatgpt&asOf=${anchor}&rolloutGroup=${filter}`, options);
+    const selected = await report(alpha.id);
+    assert.equal(selected.rolloutGroup, alpha.id);
+    assert.equal(selected.counts.monitor, exported.length);
+    assert.equal(selected.daily.reduce((total, day) => total + day.counts.monitor, 0), exported.length);
+    assert.deepEqual(await report(alpha.id, { token: auditor.token }), selected);
+    assert.equal((await report(foreign.id)).counts.monitor, 0);
+    assert.equal((await report(alpha.id, { token: second })).counts.monitor, 0);
+    assert.equal((await report('baseline')).counts.monitor, (await exportEvents('baseline')).length);
+    assert.equal((await report('unattributed')).counts.monitor, (await exportEvents('unattributed')).length);
+    const printable = JSON.stringify(selected);
+    for (const secret of [moving.installationId, moving.token, ids[0], auditor.token, 'synthetic-private-group-sample']) {
+      assert.ok(!printable.includes(secret));
+    }
+
+    await post(`installations/${moving.installationId}/revoke`, {}, 204);
+    await submit(moving, active, {}, 401);
+    assert.deepEqual(await report(alpha.id), selected);
+    const retention = { securityEventDays: 1, aiObservationDays: null, auditDays: null };
+    await post('retention', retention, 204);
+    assert.equal((await report(alpha.id)).counts.monitor, exported.length - 1);
+    assert.ok(!(await exportEvents(alpha.id)).some(({ eventId }) => eventId === expired.eventId));
+    assert.equal((await post('retention/cleanup', {})).securityEvents, 1);
+    if (postgres) {
+      await assert.rejects(() => retentionFixture(`UPDATE security_events SET rollout_group_id = '${foreign.id}',
+        rollout_attributed = true WHERE event_id = '${knownBeta.eventId}'`), /violates foreign key constraint/);
+      assert.deepEqual((await exportEvents(beta.id))[0].rollout, groupRollout(beta));
+    }
   });
 });

@@ -50,6 +50,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 25, "025_composer_readiness.sql", ct);
         await ApplyMigration(connection, 26, "026_private_key_detection.sql", ct);
         await ApplyMigration(connection, 27, "027_file_content_inspection.sql", ct);
+        await ApplyMigration(connection, 28, "028_event_rollout_attribution.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -172,19 +173,22 @@ internal sealed partial class ControlStore
                 LEFT JOIN policy_groups g ON g.organization_id = o.id AND g.id = i.policy_group_id
             ), delivery AS (
                 INSERT INTO policy_deliveries (organization_id, installation_id, assignment_version, policy_version,
-                    exception_scope, claude_prompt, private_key, file_inspection)
+                    exception_scope, claude_prompt, private_key, file_inspection, rollout_group_id, rollout_attributed)
                 SELECT e.organization_id, e.id, e.assignment_version, e.version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id,
-                    $3 AND p.claude_prompt_enabled, $5 AND p.private_key_mode <> 'off', $6 AND (p.chatgpt_file_inspection OR p.gemini_file_inspection)
+                    $3 AND p.claude_prompt_enabled, $5 AND p.private_key_mode <> 'off',
+                    $6 AND (p.chatgpt_file_inspection OR p.gemini_file_inspection), e.policy_group_id, true
                 FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
-                WHERE e.assignment_version > 0 OR p.prompt_exceptions <> '[]'::jsonb OR ($3 AND p.claude_prompt_enabled)
-                    OR ($5 AND p.private_key_mode <> 'off') OR ($6 AND (p.chatgpt_file_inspection OR p.gemini_file_inspection))
                 ON CONFLICT (installation_id, assignment_version, policy_version) DO UPDATE
                 SET claude_prompt = policy_deliveries.claude_prompt OR EXCLUDED.claude_prompt,
                     private_key = policy_deliveries.private_key OR EXCLUDED.private_key,
-                    file_inspection = policy_deliveries.file_inspection OR EXCLUDED.file_inspection
+                    file_inspection = policy_deliveries.file_inspection OR EXCLUDED.file_inspection,
+                    rollout_group_id = CASE WHEN policy_deliveries.rollout_attributed THEN policy_deliveries.rollout_group_id
+                        ELSE EXCLUDED.rollout_group_id END,
+                    rollout_attributed = true
                 WHERE (EXCLUDED.claude_prompt AND NOT policy_deliveries.claude_prompt)
                     OR (EXCLUDED.private_key AND NOT policy_deliveries.private_key)
                     OR (EXCLUDED.file_inspection AND NOT policy_deliveries.file_inspection)
+                    OR NOT policy_deliveries.rollout_attributed
             )
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
                 p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
@@ -375,10 +379,15 @@ internal sealed partial class ControlStore
     {
         await using var command = Command("""
             WITH active AS (
-                SELECT organization_id FROM installations WHERE id = $1 AND revoked_at IS NULL FOR SHARE
+                SELECT organization_id, assignment_version FROM installations WHERE id = $1 AND revoked_at IS NULL FOR SHARE
             ), eligible AS (
-                SELECT p.organization_id FROM active
+                SELECT p.organization_id, COALESCE(p.policy_group_id, d.rollout_group_id) AS rollout_group_id,
+                    p.policy_group_id IS NOT NULL OR COALESCE(d.rollout_attributed, false)
+                        OR ($8 = 0 AND active.assignment_version = 0) AS rollout_attributed
+                FROM active
                 JOIN policy_versions p ON p.organization_id = active.organization_id AND p.version = $4
+                LEFT JOIN policy_deliveries d ON d.organization_id = active.organization_id AND d.installation_id = $1
+                    AND d.assignment_version = $8 AND d.policy_version = $4
                 LEFT JOIN retention_cutoffs r ON r.organization_id = active.organization_id
                 CROSS JOIN LATERAL (SELECT CASE $7 WHEN 'github-classic-pat' THEN p.github_pat_mode
                     WHEN 'payment-card-number' THEN p.payment_card_mode
@@ -396,15 +405,15 @@ internal sealed partial class ControlStore
                   AND ($6 <> 'claude' OR p.claude_prompt_enabled)
                   AND (($8 = 0 AND p.policy_group_id IS NULL AND $5 <> 'exception_applied' AND $6 <> 'claude' AND $7 <> 'pem-private-key'
                         AND NOT detector.file_content)
-                    OR EXISTS (SELECT 1 FROM policy_deliveries d
-                    WHERE d.installation_id = $1 AND d.assignment_version = $8 AND d.policy_version = $4
+                    OR (d.installation_id IS NOT NULL
                         AND ($6 <> 'claude' OR d.claude_prompt)
                         AND ($7 <> 'pem-private-key' OR d.private_key)
                         AND (NOT detector.file_content OR d.file_inspection)
                         AND ($5 <> 'exception_applied' OR d.exception_scope)))
             ), written AS (
-                INSERT INTO security_events (organization_id, installation_id, event_id, occurred_at, policy_version, decision, app_id, rule_id, upload_method)
-                SELECT organization_id, $1, $2, $3, $4, $5, $6, $7, $9 FROM eligible
+                INSERT INTO security_events (organization_id, installation_id, event_id, occurred_at, policy_version, decision, app_id, rule_id, upload_method,
+                    rollout_group_id, rollout_attributed)
+                SELECT organization_id, $1, $2, $3, $4, $5, $6, $7, $9, rollout_group_id, rollout_attributed FROM eligible
                 ON CONFLICT (installation_id, event_id) DO NOTHING
             )
             SELECT EXISTS (SELECT 1 FROM eligible)
@@ -428,9 +437,12 @@ internal sealed partial class ControlStore
     public async IAsyncEnumerable<StoredEvent> ReadEvents(Guid organizationId, EventFilters filters, EventCursor? cursor,
         int? limit, [EnumeratorCancellation] CancellationToken ct)
     {
+        var rollout = EventRolloutFilter.Parse(filters.RolloutGroup) ?? throw new ArgumentException("Invalid event rollout filter.");
         await using var command = Command("""
-            SELECT event_id, installation_id, occurred_at, received_at, policy_version, decision, app_id, rule_id, upload_method
+            SELECT e.event_id, e.installation_id, e.occurred_at, e.received_at, e.policy_version, e.decision, e.app_id, e.rule_id, e.upload_method,
+                e.rollout_attributed, e.rollout_group_id, g.name
             FROM security_events e LEFT JOIN retention_cutoffs r ON e.organization_id = r.organization_id
+            LEFT JOIN policy_groups g ON e.organization_id = g.organization_id AND e.rollout_group_id = g.id
             WHERE e.organization_id = $1
                 AND (r.event_cutoff IS NULL OR LEAST(occurred_at, received_at) >= r.event_cutoff)
                 AND ($2::text IS NULL OR decision = $2)
@@ -439,15 +451,20 @@ internal sealed partial class ControlStore
                 AND ($5::timestamptz IS NULL OR occurred_at < $5)
                 AND ($6::uuid IS NULL OR installation_id = $6)
                 AND ($7::timestamptz IS NULL OR (received_at, event_id, installation_id) < ($7, $8::uuid, $9::uuid))
+                AND ($11::boolean IS NULL OR e.rollout_attributed = $11
+                    AND (e.rollout_group_id = $12::uuid OR ($12 IS NULL AND e.rollout_group_id IS NULL)))
             ORDER BY received_at DESC, event_id DESC, installation_id DESC LIMIT $10::integer
             """, organizationId, (object?)filters.Decision ?? DBNull.Value, (object?)filters.Since?.UtcDateTime ?? DBNull.Value,
             (object?)filters.AppId ?? DBNull.Value, (object?)filters.Until?.UtcDateTime ?? DBNull.Value,
             (object?)filters.InstallationId ?? DBNull.Value, (object?)cursor?.ReceivedAt.UtcDateTime ?? DBNull.Value,
-            (object?)cursor?.EventId ?? DBNull.Value, (object?)cursor?.InstallationId ?? DBNull.Value, (object?)limit ?? DBNull.Value);
+            (object?)cursor?.EventId ?? DBNull.Value, (object?)cursor?.InstallationId ?? DBNull.Value, (object?)limit ?? DBNull.Value,
+            (object?)rollout.Attributed ?? DBNull.Value, (object?)rollout.GroupId ?? DBNull.Value);
         await using var rows = await command.ExecuteReaderAsync(ct);
         while (await rows.ReadAsync(ct))
             yield return new(rows.GetGuid(0), rows.GetGuid(1), rows.GetDateTime(2), rows.GetDateTime(3),
-                rows.GetInt32(4), rows.GetString(5), rows.GetString(6), rows.GetString(7), rows.IsDBNull(8) ? null : rows.GetString(8));
+                rows.GetInt32(4), rows.GetString(5), rows.GetString(6), rows.GetString(7), rows.IsDBNull(8) ? null : rows.GetString(8),
+                rows.GetBoolean(9) ? rows.IsDBNull(10) ? new("baseline") : new("group", rows.GetGuid(10), rows.GetString(11))
+                    : new("unattributed"));
     }
 
     public async Task<bool> ObserveApp(Guid installationId, AppObservation observation, CancellationToken ct)

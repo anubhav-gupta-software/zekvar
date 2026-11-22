@@ -115,6 +115,7 @@ export type SecurityEvent = {
   policyVersion: number;
   decision: Decision;
   uploadMethod?: UploadMethod;
+  rollout?: { kind: 'baseline' | 'unattributed' } | { kind: 'group'; groupId: string; groupName: string };
 };
 
 export type Grant = { grant: string; expiresAt: string };
@@ -129,4 +130,11 @@ export const utc = new Intl.DateTimeFormat('en-US', {
 
 export function isId(value: unknown): value is string {
   return typeof value === 'string' && /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(value);
+}
+
+export function rolloutFilter(value: unknown) {
+  if (value === undefined || value === '') return '';
+  if (value === 'baseline' || value === 'unattributed') return value;
+  if (isId(value) && value !== '00000000-0000-0000-0000-000000000000') return value.toLowerCase();
+  return undefined;
 }

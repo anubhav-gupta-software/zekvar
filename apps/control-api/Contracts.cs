@@ -160,7 +160,7 @@ internal sealed record Installation(Guid InstallationId, DateTime EnrolledAt, Da
 
 internal sealed record StoredEvent(Guid EventId, Guid InstallationId, DateTime Timestamp, DateTime ReceivedAt,
     int PolicyVersion, string Decision, string AppId, string RuleId,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? UploadMethod)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? UploadMethod, EventRollout Rollout)
 {
     public string DetectorCategory => RuleId switch
     {
@@ -171,12 +171,30 @@ internal sealed record StoredEvent(Guid EventId, Guid InstallationId, DateTime T
     };
 }
 
-internal sealed record EventFilters(string? AppId, string? Decision, DateTimeOffset? Since, DateTimeOffset? Until, Guid? InstallationId)
+internal sealed record EventRollout(string Kind,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? GroupId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? GroupName = null);
+
+internal readonly record struct EventRolloutFilter(bool? Attributed, Guid? GroupId)
+{
+    public static EventRolloutFilter? Parse(string? value) => value switch
+    {
+        null or "" => new(null, null),
+        "baseline" => new(true, null),
+        "unattributed" => new(false, null),
+        _ when value.Length == 36 && Guid.TryParseExact(value, "D", out var id) && id != Guid.Empty => new(true, id),
+        _ => null
+    };
+}
+
+internal sealed record EventFilters(string? AppId, string? Decision, DateTimeOffset? Since, DateTimeOffset? Until, Guid? InstallationId,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? RolloutGroup = null)
 {
     public bool Valid() =>
         (AppId is null || FixtureContract.IsApp(AppId)) &&
         (Decision is null || FixtureContract.IsDecision(Decision)) &&
-        (Since is null || Until is null || Since < Until) && InstallationId != Guid.Empty;
+        (Since is null || Until is null || Since < Until) && InstallationId != Guid.Empty &&
+        EventRolloutFilter.Parse(RolloutGroup) is not null;
 }
 
 internal sealed record EventCursor(DateTimeOffset ReceivedAt, Guid EventId, Guid InstallationId);

@@ -12,7 +12,7 @@ import { ssoOptions } from '../lib/sso';
 import { classifyAiApp, revokeInstallation, signOut } from './actions';
 import { DomainRulesForm, EnrollmentForm, MutationForm, RefreshSection, SignInForm } from './forms';
 import { PolicyVersionTable, PublishPolicyForm } from './policies';
-import { Brand, DeploymentBadge, Sidebar } from './workspace';
+import { Brand, DeploymentBadge, RecordedRolloutOptions, Sidebar } from './workspace';
 import { uploadMethods, uploadRule } from '../../../contracts/policy/uploads';
 
 type Search = Record<string, string | string[] | undefined>;
@@ -26,12 +26,16 @@ export default async function Control({ searchParams }: { searchParams: Promise<
   const eventPage = new URLSearchParams(filters.page);
   const historyQuery = new URLSearchParams(filters.query);
   if (filters.cursor) setEventCursor(historyQuery, filters.cursor);
+  const validHistory = !filters.invalidInstallation && !filters.invalidCursor && filters.rolloutGroup !== undefined;
 
   try {
     const [session, policies, browserHealth, history, discoveredApps] = await Promise.all([
       controlApi.session(token), controlApi.policies(token),
       loadBrowserHealth(token, browserFilters),
-      filters.invalidInstallation || filters.invalidCursor ? undefined : controlApi.events(token, historyQuery),
+      validHistory ? controlApi.events(token, historyQuery).catch((error: unknown) => {
+        if (error instanceof ApiError && error.code === 'event_rollout_unavailable') return undefined;
+        throw error;
+      }) : undefined,
       controlApi.aiApps(token),
     ]);
     const events = history?.entries ?? [];
@@ -170,16 +174,26 @@ export default async function Control({ searchParams }: { searchParams: Promise<
               <input id="event-installation" name="installation" defaultValue={filters.installation} maxLength={36}
                 autoCapitalize="none" autoComplete="off" spellCheck={false} placeholder="All browsers" />
             </div>
+            {(history?.rolloutAvailable || filters.rolloutGroup || filters.rolloutGroup === undefined) &&
+              <div><label htmlFor="event-rollout">Recorded rollout group</label>
+                <select id="event-rollout" name="eventGroup" defaultValue={filters.rolloutGroup ?? ''}>
+                  <RecordedRolloutOptions groups={groups} selected={filters.rolloutGroup ?? ''} />
+                </select>
+              </div>}
             <button className="button">Apply filters</button>
             {(filters.query.size > 0 || filters.cursor || !history) && <a className="clear-link" href={`/?${selectedBrowserFilters}#events`}>Clear filters</a>}
           </form>
-          {!history ? <p className="empty" role="alert">{filters.invalidInstallation
-            ? 'Enter a complete browser installation ID.' : 'This event history link is invalid. Clear the filters to open the newest events.'}</p>
+          {!history ? <p className="empty" role="alert">{validHistory ? 'This Control API version does not support recorded rollout filters.'
+            : filters.invalidInstallation ? 'Enter a complete browser installation ID.'
+              : filters.rolloutGroup === undefined ? 'Choose a valid recorded rollout group.'
+                : 'This event history link is invalid. Clear the filters to open the newest events.'}</p>
             : <>
               <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="events-heading">
                 <table aria-labelledby="events-heading">
-                  <thead><tr><th>Occurred (UTC)</th><th>Application</th><th>Decision</th><th>Detector</th><th>Policy</th><th>Installation</th></tr></thead>
-                  <tbody>{events.map((event) => <EventRow key={`${event.installationId}:${event.eventId}`} event={event} filters={overviewPage} />)}</tbody>
+                  <thead><tr><th>Occurred (UTC)</th><th>Application</th><th>Decision</th><th>Detector</th><th>Policy</th>
+                    {history.rolloutAvailable && <th>Recorded rollout</th>}<th>Installation</th></tr></thead>
+                  <tbody>{events.map((event) => <EventRow key={`${event.installationId}:${event.eventId}`} event={event}
+                    filters={overviewPage} showRollout={history.rolloutAvailable} />)}</tbody>
                 </table>
                 {events.length === 0 && <p className="empty">{filters.query.size ? 'No events match these filters.' : 'No security events recorded yet.'}</p>}
               </div>
@@ -347,9 +361,12 @@ function CoverageCell({ coverage, checkedAt, enabled = true }: { coverage?: 'rea
   </span>{checkedAt && <div className="muted"><Timestamp value={checkedAt} /> UTC</div>}</td>;
 }
 
-function EventRow({ event, filters }: { event: SecurityEvent; filters: URLSearchParams }) {
+function EventRow({ event, filters, showRollout }: { event: SecurityEvent; filters: URLSearchParams; showRollout?: boolean }) {
   const browser = new URLSearchParams(filters);
   browser.set('installation', event.installationId);
+  const rolloutQuery = new URLSearchParams(filters);
+  const rollout = event.rollout;
+  if (rollout) rolloutQuery.set('eventGroup', rollout.kind === 'group' ? rollout.groupId : rollout.kind);
   return <tr>
     <td><Timestamp value={event.timestamp} /></td>
     <td className="emphasis">{isPromptApp(event.appId) ? promptAppLabels[event.appId] : event.appId}</td>
@@ -357,6 +374,8 @@ function EventRow({ event, filters }: { event: SecurityEvent; filters: URLSearch
     <td>{event.ruleId === uploadRule ? 'File upload' : ruleLabels[event.ruleId as keyof typeof ruleLabels] ?? event.detectorCategory}
       {event.uploadMethod && <div className="muted">{event.ruleId !== uploadRule && 'File content · '}{uploadMethods[event.uploadMethod]}</div>}</td>
     <td>v{event.policyVersion}</td>
+    {showRollout && <td>{rollout ? <a className="underline" href={`/?${rolloutQuery}#events`}>
+      {rollout.kind === 'group' ? rollout.groupName : rollout.kind === 'baseline' ? 'Organization baseline' : 'Unattributed'}</a> : '—'}</td>}
     <td><a className="underline" href={`/?${browser}#events`}
       aria-label={`Filter events for installation ${event.installationId}`}><InstallationId value={event.installationId} /></a></td>
   </tr>;

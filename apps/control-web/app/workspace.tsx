@@ -1,5 +1,17 @@
 import { signOut } from './actions';
 import { canChangePolicy, canWrite, roleLabels, type ControlSession } from '../lib/access';
+import type { PolicyGroup } from '../lib/control';
+
+export function RecordedRolloutOptions({ groups, selected }: { groups: PolicyGroup[]; selected: string }) {
+  return <>
+    <option value="">All rollout groups</option>
+    <option value="baseline">Organization baseline</option>
+    <option value="unattributed">Unattributed</option>
+    {groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+    {selected && !['baseline', 'unattributed'].includes(selected) && !groups.some(({ id }) => id === selected) &&
+      <option value={selected}>Unavailable rollout group</option>}
+  </>;
+}
 
 export function Brand() {
   return <div className="brand"><span className="brand-mark" aria-hidden="true">Z</span>

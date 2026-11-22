@@ -4,7 +4,7 @@ import { aiPromptApps, decisionLabels, decisions, promptAppLabels, ruleLabels, u
 import { eventTotal, reportFilters, type AiEnforcementReport, type DecisionCounts, type ReportBreakdown } from '../../lib/reports';
 import { sessionToken } from '../../lib/session';
 import { uploadRule } from '../../../../contracts/policy/uploads';
-import { DeploymentBadge, Sidebar } from '../workspace';
+import { DeploymentBadge, RecordedRolloutOptions, Sidebar } from '../workspace';
 
 const number = new Intl.NumberFormat('en-US');
 const date = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'UTC' });
@@ -17,14 +17,16 @@ export default async function Reports({ searchParams }: { searchParams: Promise<
   const result = await Promise.all([
     controlApi.session(token),
     filters ? controlApi.aiEnforcement(token, filters.query) : undefined,
+    controlApi.groups(token),
   ]).catch((error: unknown) => {
     if (error instanceof ApiError && error.status === 401) redirect('/');
     if (error instanceof ApiError) return null;
     throw error;
   });
-  const [session, report] = result ?? [];
+  const [session, report, groups] = result ?? [];
   const download = new URLSearchParams(filters?.query);
   if (report) download.set('asOf', String(Date.parse(report.asOf)));
+  const eventLink = filters?.rolloutGroup ? `/?${new URLSearchParams({ eventGroup: filters.rolloutGroup })}#events` : '/#events';
 
   return <div className="workspace">
     <Sidebar active="reports" session={session} />
@@ -51,14 +53,20 @@ export default async function Reports({ searchParams }: { searchParams: Promise<
               {aiPromptApps.map((app) => <option key={app} value={app}>{promptAppLabels[app]}</option>)}
             </select>
           </div>
+          {(report?.rolloutGroup !== undefined || filters?.rolloutGroup || !filters) &&
+            <div><label htmlFor="report-rollout">Recorded rollout group</label>
+              <select id="report-rollout" name="rolloutGroup" defaultValue={filters?.rolloutGroup ?? ''}>
+                <RecordedRolloutOptions groups={groups ?? []} selected={filters?.rolloutGroup ?? ''} />
+              </select>
+            </div>}
           <button className="button">Apply report filters</button>
         </form>
-        {!filters ? <p className="empty" role="alert">Choose a valid AI application and reporting window.</p> :
+        {!filters ? <p className="empty" role="alert">Choose a valid AI application, reporting window, and rollout group.</p> :
           !report ? <p className="empty" role="alert">Control could not load the AI enforcement report. Try reloading this page.</p> :
             <div className="table-footer">
               <p className="table-note">From <time dateTime={report.startOn}>{date.format(new Date(report.startOn))}</time> through{' '}
                 <time dateTime={report.asOf}>{utc.format(new Date(report.asOf))} UTC</time></p>
-              <a className="clear-link report-events-link" href="/#events">Investigate security events</a>
+              <a className="clear-link report-events-link" href={eventLink}>Investigate security events</a>
             </div>}
       </section>
       {report && <ReportResults report={report} />}

@@ -1,7 +1,7 @@
-import { decisions, isId, isPromptApp, type SecurityEvent } from './control';
+import { decisions, isId, isPromptApp, rolloutFilter, type SecurityEvent } from './control';
 
 export type EventCursor = { receivedAt: string; eventId: string; installationId: string };
-export type EventPage = { entries: SecurityEvent[]; next: EventCursor | null };
+export type EventPage = { entries: SecurityEvent[]; next: EventCursor | null; rolloutAvailable?: boolean };
 type Search = Record<string, string | string[] | undefined>;
 const emptyId = '00000000-0000-0000-0000-000000000000';
 
@@ -28,6 +28,7 @@ export function eventFilters(search: Search) {
   const period = search.period === 'day' || search.period === 'week' ? search.period : '';
   const installation = nonEmptyId(search.installation) ?? '';
   const invalidInstallation = search.installation !== undefined && search.installation !== '' && !installation;
+  const rolloutGroup = rolloutFilter(search.eventGroup);
   if (app) {
     page.set('app', app);
     query.set('appId', app);
@@ -39,6 +40,10 @@ export function eventFilters(search: Search) {
   if (installation) {
     page.set('installation', installation);
     query.set('installationId', installation);
+  }
+  if (rolloutGroup) {
+    page.set('eventGroup', rolloutGroup);
+    query.set('rolloutGroup', rolloutGroup);
   }
   if (period) {
     const since = timestamp(search.since) ? search.since
@@ -53,5 +58,5 @@ export function eventFilters(search: Search) {
   const cursor = timestamp(beforeAt) && eventId && browserId
     ? { receivedAt: beforeAt, eventId, installationId: browserId } : undefined;
   const invalidCursor = !cursor && [beforeAt, beforeEventId, beforeInstallationId].some((value) => value !== undefined);
-  return { app, decision, period, installation, invalidInstallation, invalidCursor, cursor, page, query };
+  return { app, decision, period, installation, rolloutGroup, invalidInstallation, invalidCursor, cursor, page, query };
 }

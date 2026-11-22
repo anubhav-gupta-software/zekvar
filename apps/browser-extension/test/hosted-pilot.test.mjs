@@ -157,14 +157,14 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   assert.equal((await call(browserOrigin + '/v1/enroll', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ grant: '0'.repeat(64) }) })).status, 401);
 
-  async function admin(path, body) {
+  async function admin(path, body, expected = 200) {
     const response = await fetch(`http://127.0.0.1:${apiPort}/v1/admin/${path}`, {
       method: body ? 'POST' : 'GET',
       headers: { Authorization: `Bearer ${owner}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
       body: body && JSON.stringify(body), signal: AbortSignal.timeout(5000),
     });
-    assert.equal(response.status, 200, 'Private Control operation failed');
-    return response.json();
+    assert.equal(response.status, expected, 'Private Control operation failed');
+    return response.status === 204 ? undefined : response.json();
   }
 
   function build(hosted) {
@@ -340,7 +340,7 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   await chat.getByRole('button', { name: 'Send message', exact: true }).click();
   await chat.getByRole('alert').filter({ hasText: 'Submission blocked' }).waitFor();
   assert.equal(await chat.locator('#fixture-sends').textContent(), '0');
-  await until(async () => (await admin('events')).find(({ installationId, decision }) => installationId === newId && decision === 'block'),
+  await until(async () => (await admin(`events?rolloutGroup=${group.id}`)).find(({ installationId, decision }) => installationId === newId && decision === 'block'),
     'The hosted browser did not report a decision.');
   await dashboard.reload();
   await dashboard.getByRole('table', { name: 'Security events', exact: true }).getByText('ChatGPT', { exact: true }).waitFor();
@@ -414,6 +414,41 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   assert.equal(report.report.bySource.find(({ id }) => id === 'file_content').counts.monitor, 1);
   assert.deepEqual(report.report.byApp.map(({ id }) => id), ['chatgpt', 'claude']);
   assert.doesNotMatch(JSON.stringify(report.report), /Synthetic (?:pilot|TLS Claude) draft|ZEKVAR_TEST_SECRET|installationId|eventId|BEGIN ENCRYPTED|WnJBWnJB|private-hosted-content/);
+
+  await admin(`installations/${newId}/policy-group`, { groupId: null }, 204);
+  await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
+  await label(popup, `Connected to Control · MONITOR v${initialVersion.version}`).waitFor();
+  await chat.getByText(new RegExp(`^Zekvar · MONITOR v${initialVersion.version}`)).waitFor();
+  await chat.getByPlaceholder('Ask ChatGPT', { exact: true }).fill('Synthetic baseline draft ZEKVAR_TEST_SECRET');
+  await chat.getByRole('button', { name: 'Send message', exact: true }).click();
+  await until(async () => (await admin('events?rolloutGroup=baseline&appId=chatgpt'))
+    .some(({ installationId, decision }) => installationId === newId && decision === 'monitor'),
+  'The moved browser did not report a baseline decision.');
+  assert.equal(await chat.locator('#fixture-sends').textContent(), '1');
+  await dashboard.goto(`${dashboardOrigin}/?rolloutGroup=baseline#events`);
+  const policyEvents = dashboard.getByRole('table', { name: 'Security events', exact: true });
+  await policyEvents.getByRole('link', { name: group.name, exact: true }).first().click();
+  await dashboard.waitForURL((url) => url.searchParams.get('eventGroup') === group.id && url.searchParams.get('rolloutGroup') === 'baseline');
+  assert.equal(await policyEvents.locator('tbody tr').count(), 4);
+  assert.equal(await policyEvents.getByRole('link', { name: 'Organization baseline', exact: true }).count(), 0);
+  const downloadPath = await dashboard.getByRole('link', { name: 'Export security events (JSON)', exact: true }).getAttribute('href');
+  const scoped = await dashboard.evaluate(async (path) => (await fetch(path)).json(), downloadPath);
+  assert.equal(scoped.filters.rolloutGroup, group.id);
+  assert.equal(scoped.entries.length, 4);
+  assert.ok(scoped.entries.every(({ rollout }) => rollout.kind === 'group' && rollout.groupId === group.id && rollout.groupName === group.name));
+  if (artifacts) await dashboard.locator('#events').screenshot({ path: join(artifacts, '34-recorded-rollout.png') });
+
+  await dashboard.getByRole('link', { name: 'Reports', exact: true }).click();
+  await dashboard.getByLabel('Recorded rollout group', { exact: true }).selectOption(group.id);
+  await dashboard.getByRole('button', { name: 'Apply report filters', exact: true }).click();
+  await dashboard.waitForURL((url) => url.searchParams.get('rolloutGroup') === group.id);
+  const scopedHref = await reportLink.getAttribute('href');
+  const scopedReport = await dashboard.evaluate(async (path) => (await fetch(path)).json(), scopedHref);
+  assert.equal(scopedReport.rolloutGroup, group.id);
+  assert.deepEqual(scopedReport.counts, report.report.counts);
+  await dashboard.getByRole('link', { name: 'Investigate security events', exact: true }).click();
+  await dashboard.waitForURL((url) => url.searchParams.get('eventGroup') === group.id);
+  assert.equal(await policyEvents.locator('tbody tr').count(), 4);
   await dashboard.getByRole('button', { name: 'Sign out', exact: true }).click();
   await dashboard.getByRole('heading', { name: 'Sign in to Control', exact: true }).waitFor();
   assert.equal((await browser.cookies(dashboardOrigin)).some(({ name }) => name === session.name), false);
