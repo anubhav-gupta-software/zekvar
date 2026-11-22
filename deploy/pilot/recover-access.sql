@@ -40,6 +40,14 @@ WITH revoked AS (
 INSERT INTO public.control_audit (organization_id, occurred_at, action, installation_id)
 SELECT organization_id, revoked_at, 'browser_revoked', id FROM revoked;
 
+DO $$
+BEGIN
+    IF to_regclass('public.composer_observations') IS NOT NULL THEN
+        DELETE FROM public.composer_observations;
+    END IF;
+END;
+$$;
+
 WITH cancelled AS (
     UPDATE public.policy_reviews SET status = 'cancelled', decided_at = CURRENT_TIMESTAMP
     WHERE status = 'pending' RETURNING organization_id, id, operation, group_id, base_version

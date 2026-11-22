@@ -285,7 +285,7 @@ browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
 });
 browser.MapPost("/heartbeat", async (Heartbeat request, HttpContext http, CancellationToken ct) =>
     request.IsValid() &&
-    await store.RecordHeartbeat(Identity(http).InstallationId!.Value, request, ct)
+    await store.RecordHeartbeat(Identity(http).InstallationId!.Value, request, http.Request.Headers["X-Zekvar-Composer-Coverage"] == "1", ct)
         ? Results.NoContent() : Results.BadRequest(new { error = "Policy or browser enforcement could not be acknowledged." }));
 browser.MapPost("/events", async (PolicyEvent request, HttpContext http, CancellationToken ct) =>
     FixtureContract.IsEvent(request) && await store.Ingest(Identity(http).InstallationId!.Value, request, ct)

@@ -79,6 +79,7 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
         headers: {
           ...(request.headers.authorization ? { Authorization: request.headers.authorization } : {}),
           ...(request.headers['x-zekvar-assignment-aware'] ? { 'X-Zekvar-Assignment-Aware': request.headers['x-zekvar-assignment-aware'] } : {}),
+          ...(request.headers['x-zekvar-composer-coverage'] ? { 'X-Zekvar-Composer-Coverage': request.headers['x-zekvar-composer-coverage'] } : {}),
           ...(body.length ? { 'Content-Type': 'application/json' } : {}),
         },
         body: body.length ? body : undefined,
@@ -180,6 +181,9 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
     await dashboard.reload();
     await health.getByText('v2', { exact: true }).waitFor();
     await health.getByText('Detected', { exact: true }).waitFor();
+    const readiness = dashboard.getByRole('table', { name: 'Composer readiness', exact: true });
+    const chatCoverage = readiness.getByRole('row', { name: /^ChatGPT / });
+    assert.deepEqual(await chatCoverage.getByRole('cell').allTextContents(), ['1', '1', '0', '0', '0', '0', '0']);
     await dashboard.getByLabel('Application', { exact: true }).selectOption('chatgpt');
     await dashboard.getByRole('button', { name: 'Apply filters' }).click();
     await dashboard.waitForURL((url) => url.searchParams.get('app') === 'chatgpt');

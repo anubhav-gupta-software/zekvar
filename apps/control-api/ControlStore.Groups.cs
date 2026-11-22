@@ -47,6 +47,8 @@ internal sealed partial class ControlStore
                     claude_coverage = NULL, claude_checked_at = NULL, claude_coverage_version = NULL
                 FROM target t WHERE i.id = t.id AND t.assignment_aware AND t.policy_group_id IS DISTINCT FROM $3
                 RETURNING i.organization_id, i.id, i.policy_group_id, t.group_name
+            ), cleared_composers AS (
+                DELETE FROM composer_observations o USING changed c WHERE o.installation_id = c.id
             ), audit AS (
                 INSERT INTO control_audit (organization_id, action, group_change, actor_access_id)
                 SELECT organization_id, 'policy_group_assigned', jsonb_build_object(

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Zekvar Browser",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "minimum_chrome_version": "120",
   "description": "Applies Zekvar domain, prompt, and file upload policies and reports cataloged app discovery when enabled.",
   "permissions": ["storage", "alarms", "declarativeNetRequest"],

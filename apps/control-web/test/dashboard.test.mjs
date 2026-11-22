@@ -10,12 +10,13 @@ const token = process.env.ZEKVAR_TEST_ADMIN_TOKEN;
 assert.match(token ?? '', /^[a-f0-9]{64}$/, 'Set ZEKVAR_TEST_ADMIN_TOKEN for a disposable demo organization.');
 const { event } = JSON.parse(await readFile(new URL('../../../contracts/control/demo-v1.json', import.meta.url)));
 
-async function post(path, body, bearer) {
+async function post(path, body, bearer, headers = {}) {
   const response = await fetch(`${api}${path}`, {
     method: 'POST',
     headers: {
       ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
       'Content-Type': 'application/json',
+      ...headers,
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(5000),
@@ -150,6 +151,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await browserSection.getByLabel('Reported extension version', { exact: true }).fill('0.21.0');
     await browserSection.getByRole('button', { name: 'Apply browser filters', exact: true }).click();
     await browserSection.getByText('No installations match these browser filters.', { exact: true }).waitFor();
+    await browserSection.getByText('No active browsers match these filters.', { exact: true }).waitFor();
     await page.getByRole('table', { name: 'Extension rollout' }).getByRole('link', { name: '0.20.1', exact: true }).waitFor();
     await selectedGroup.selectOption('baseline');
     await browserSection.getByRole('button', { name: 'Apply browser filters', exact: true }).click();
@@ -176,11 +178,21 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await post('/browser/events', {
       ...event, appId: 'chatgpt', eventId: randomUUID(), policyVersion, decision: 'warn', timestamp: new Date().toISOString(),
     }, installation.token);
-    await post('/browser/heartbeat', { policyVersion, chatGptCoverage: 'unsupported' }, installation.token);
+    await post('/browser/heartbeat', { policyVersion, chatGptCoverage: 'unsupported' }, installation.token,
+      { 'X-Zekvar-Composer-Coverage': '1' });
     await page.reload();
     await events.getByText('Local prompt fixture', { exact: true }).first().waitFor();
     await events.getByText('ChatGPT', { exact: true }).first().waitFor();
     await browsers.getByText('Unsupported', { exact: true }).first().waitFor();
+    const readiness = page.getByRole('table', { name: 'Composer readiness', exact: true });
+    const row = readiness.getByRole('row', { name: /^ChatGPT / });
+    assert.deepEqual(await row.getByRole('cell').allTextContents(), ['2', '0', '1', '0', '0', '1', '0']);
+    const screenshot = process.env.ZEKVAR_TEST_COVERAGE_SCREENSHOT;
+    if (screenshot) await readiness.screenshot({ path: screenshot });
+    await page.setViewportSize({ width: 390, height: 820 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    assert.ok(await readiness.evaluate((table) => table.scrollWidth > table.parentElement.clientWidth));
+    await page.setViewportSize({ width: 1440, height: 1000 });
     await page.getByLabel('Application', { exact: true }).selectOption('chatgpt');
     await page.getByRole('button', { name: 'Apply filters' }).click();
     await page.waitForURL((url) => url.searchParams.get('app') === 'chatgpt');

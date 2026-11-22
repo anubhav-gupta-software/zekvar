@@ -74,6 +74,7 @@ export type Installation = {
   assignmentAware?: boolean;
   extensionVersion?: string | null;
   extensionVersionReportedAt?: string | null;
+  composerReadiness?: Record<AiAppId, ComposerCheck>;
 };
 
 export type BrowserReleaseCount = {
@@ -87,6 +88,18 @@ export type BrowserHealthView = {
   activeInstallations: number;
   releases: BrowserReleaseCount[];
   installations: Installation[];
+  composerReadiness?: BrowserComposerReadiness;
+};
+
+export const composerStateLabels = {
+  detected: 'Detected', unsupported: 'Unsupported', stale: 'Stale', unobserved: 'Unobserved',
+  policy_pending: 'Policy pending', off: 'Off',
+} as const;
+export type ComposerState = keyof typeof composerStateLabels;
+export type ComposerCheck = { state: ComposerState; checkedAt: string | null };
+export type BrowserComposerReadiness = {
+  activeInstallations: number;
+  apps: { appId: AiAppId; counts: Record<ComposerState, number> }[];
 };
 
 export type SecurityEvent = {

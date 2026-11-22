@@ -22,6 +22,7 @@ const releaseAdmin = randomBytes(32).toString('hex');
 const groupViewAdmin = randomBytes(32).toString('hex');
 const batchAdmin = randomBytes(32).toString('hex');
 const reportAdmin = randomBytes(32).toString('hex');
+const coverageAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -40,7 +41,7 @@ async function retentionFixture(query) {
 }
 
 async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false,
-  extensionVersion, scopedEnrollment = false } = {}) {
+  extensionVersion, scopedEnrollment = false, composerAware = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -49,6 +50,7 @@ async function call(path, { token, method = 'GET', body, expect = 200, assignmen
   if (expectReview) headers['X-Zekvar-Expect-Review'] = '1';
   if (extensionVersion !== undefined) headers['X-Zekvar-Extension-Version'] = extensionVersion;
   if (scopedEnrollment) headers['X-Zekvar-Scoped-Enrollment'] = '1';
+  if (composerAware) headers['X-Zekvar-Composer-Coverage'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
@@ -87,6 +89,8 @@ async function start(sweepSeconds = 3600) {
       Control__Organizations__5__AdminToken: batchAdmin,
       Control__Organizations__6__Slug: `report-${suffix}`,
       Control__Organizations__6__AdminToken: reportAdmin,
+      Control__Organizations__7__Slug: `coverage-${suffix}`,
+      Control__Organizations__7__AdminToken: coverageAdmin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -1869,7 +1873,11 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const broad = await post('policy-groups', { name: 'Broad rollout' });
     const foreign = await post('policy-groups', { name: 'Canary rollout' }, { token: second });
     const scope = `rolloutGroup=${canary.id}`;
-    assert.deepEqual(await health(scope), { activeInstallations: 0, releases: [], installations: [] });
+    const empty = await health(scope);
+    assert.equal(empty.composerReadiness.activeInstallations, 0);
+    assert.equal(empty.activeInstallations, 0);
+    assert.deepEqual(empty.releases, []);
+    assert.deepEqual(empty.installations, []);
     async function enroll(extensionVersion) {
       const { grant } = await post('enrollment-grants');
       const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
@@ -1888,7 +1896,11 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual(ids(cohort), [candidate.installationId]);
     assert.deepEqual(ids(await health('rolloutGroup=baseline&browserVersion=unreported')), [unreported.installationId]);
     assert.deepEqual(ids(await health('browserVersion=0.20.0')), [stable.installationId]);
-    assert.deepEqual(await health(`${scope}&browserVersion=0.20.0`), { activeInstallations: 3, releases: [expected], installations: [] });
+    const noMatch = await health(`${scope}&browserVersion=0.20.0`);
+    assert.equal(noMatch.activeInstallations, 3);
+    assert.deepEqual(noMatch.releases, [expected]);
+    assert.deepEqual(noMatch.installations, []);
+    assert.equal(noMatch.composerReadiness.activeInstallations, 0);
     assert.deepEqual(ids(await health('rolloutGroup=&browserVersion=')), [candidate.installationId, stable.installationId, unreported.installationId].sort());
 
     for (const input of ['rolloutGroup=invalid', 'rolloutGroup=00000000-0000-0000-0000-000000000000',
@@ -1909,6 +1921,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       const [racing] = await Promise.all([health(scope), assign(candidate.installationId, next)]);
       assert.equal(racing.activeInstallations, 3);
       assert.equal(racing.releases.reduce((sum, row) => sum + row.installations, 0), racing.installations.length);
+      assert.equal(racing.composerReadiness.activeInstallations, racing.installations.length);
       assert.ok(racing.installations.every(({ policyGroupId }) => policyGroupId === canary.id));
     }
     await post(`installations/${candidate.installationId}/revoke`, {}, { expect: 204 });
@@ -1922,7 +1935,10 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
         SELECT gen_random_uuid(), o.id, encode(sha256(convert_to('group-view-${suffix}-' || n, 'UTF8')), 'hex'),
             '${canary.id}'::uuid, '0.20.0', now() - interval '2 minutes'
         FROM organizations o CROSS JOIN generate_series(1, 101) AS fixture(n) WHERE o.slug = 'group-view-${suffix}'`);
-      assert.equal((await health(scope)).installations.length, 100);
+      const capped = await health(scope);
+      assert.equal(capped.installations.length, 100);
+      assert.equal(capped.composerReadiness.activeInstallations, 101);
+      assert.equal(capped.composerReadiness.apps.find(({ appId }) => appId === 'chatgpt').counts.policy_pending, 101);
       const older = await health(`${scope}&browserVersion=0.20.1`);
       assert.deepEqual(ids(older), [candidate.installationId]);
       assert.deepEqual(older.releases, [{ kind: 'release', extensionVersion: '0.20.0', installations: 101, recentReports: 0 }]);
@@ -2139,5 +2155,105 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       assert.equal(await retentionFixture("SELECT to_regclass('public.ai_events_by_organization_time')"), 'ai_events_by_organization_time');
       assert.deepEqual(await report(week), before);
     }
+  });
+
+  await t.test('counts only timely composer observations for the current applied policy and assignment', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: coverageAdmin, ...options });
+    const post = (path, body, expect = 200) => admin(path, { method: 'POST', body, expect });
+    const health = (filter = '', options) => admin(`browser-health?${filter}`, options);
+    const appCount = (view, app, state) => view.composerReadiness.apps.find(({ appId }) => appId === app).counts[state];
+    const check = (view, browser, app) => view.installations.find(({ installationId }) => installationId === browser.installationId).composerReadiness[app];
+    const policy = (browser, extensionVersion) => call('/v1/browser/policy', { token: browser.token, assignmentAware: true,
+      claudeAware: true, extensionVersion });
+    const heartbeat = (browser, policy, reports = {}, { composerAware = true, expect = 204 } = {}) =>
+      call('/v1/browser/heartbeat', { token: browser.token, method: 'POST', composerAware, expect,
+        body: { policyVersion: policy.version, assignmentVersion: policy.assignmentVersion, ...reports } });
+    const assign = (browser, groupId) => post(`installations/${browser.installationId}/policy-group`, { groupId }, 204);
+    async function enroll(version) {
+      const { grant } = await post('enrollment-grants');
+      const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+      await policy(browser, version);
+      return browser;
+    }
+    const [current, legacy, pending] = await Promise.all([enroll('0.22.0'), enroll('0.21.0'), enroll()]);
+    const group = await post('policy-groups', { name: 'Composer readiness' });
+    const sibling = await post('policy-groups', { name: 'Sibling readiness' });
+    const scope = `rolloutGroup=${group.id}`;
+    await assign(current, group.id);
+    await assign(legacy, group.id);
+    let v1 = await policy(current);
+    await heartbeat(legacy, await policy(legacy), { chatGptCoverage: 'ready', geminiCoverage: 'unsupported' }, { composerAware: false });
+    if (postgres) {
+      await stop();
+      await retentionFixture('DELETE FROM schema_migrations WHERE version = 25; DROP TABLE composer_observations;');
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 25'), '1');
+      const history = (await admin('installations')).find(({ installationId }) => installationId === legacy.installationId);
+      assert.equal(history.chatGptCoverage, 'ready');
+      assert.equal(history.geminiCoverage, 'unsupported');
+    }
+    await heartbeat(current, v1, { chatGptCoverage: 'ready', geminiCoverage: 'unsupported' });
+    const before = await health(scope);
+    assert.equal(before.composerReadiness.activeInstallations, 2);
+    assert.equal(appCount(before, 'chatgpt', 'detected'), 1);
+    assert.equal(appCount(before, 'chatgpt', 'unobserved'), 1);
+    assert.equal(appCount(before, 'gemini', 'unsupported'), 1);
+    assert.equal(appCount(before, 'claude', 'off'), 2);
+    assert.equal(check(before, legacy, 'chatgpt').state, 'unobserved');
+    assert.ok(Date.parse(check(before, current, 'chatgpt').checkedAt));
+    assert.equal(check(await health(), pending, 'chatgpt').state, 'policy_pending');
+    assert.equal((await health(`${scope}&browserVersion=0.22.0`)).composerReadiness.activeInstallations, 1);
+    assert.equal(appCount(await health(`${scope}&browserVersion=0.21.0`), 'chatgpt', 'unobserved'), 1);
+    assert.equal(appCount(await health('rolloutGroup=baseline&browserVersion=unreported'), 'chatgpt', 'policy_pending'), 1);
+    await health(scope, { token: current.token, expect: 401 });
+    await health(scope, { token: second, expect: 404 });
+
+    await assign(current, sibling.id);
+    const samePolicy = await policy(current);
+    assert.equal(samePolicy.version, v1.version);
+    assert.notEqual(samePolicy.assignmentVersion, v1.assignmentVersion);
+    await heartbeat(current, v1, { chatGptCoverage: 'ready' }, { expect: 400 });
+    await heartbeat(current, samePolicy);
+    assert.equal(check(await health(), current, 'chatgpt').state, 'unobserved');
+    await assign(current, group.id);
+    v1 = await policy(current);
+    await heartbeat(current, v1, { chatGptCoverage: 'ready' });
+    await post(`policy-groups/${group.id}/policies`, { mode: 'block', claudePromptEnabled: true });
+    const waiting = await health(scope);
+    assert.equal(appCount(waiting, 'chatgpt', 'policy_pending'), 2);
+    assert.equal(appCount(waiting, 'claude', 'policy_pending'), 2);
+    const v2 = await policy(current);
+    await heartbeat(current, v2, { chatGptCoverage: 'ready', claudeCoverage: 'ready' }, { expect: 400 });
+    await heartbeat(current, v2, { chatGptCoverage: 'ready', claudePromptApplied: true, claudeCoverage: 'ready' });
+    await heartbeat(current, v1, { chatGptCoverage: 'unsupported', geminiCoverage: 'ready' });
+    const newer = await health(scope);
+    assert.equal(check(newer, current, 'chatgpt').state, 'detected');
+    assert.equal(check(newer, current, 'gemini').state, 'unobserved');
+    assert.equal(check(newer, current, 'claude').state, 'detected');
+    assert.equal(appCount(newer, 'claude', 'detected'), 1);
+    assert.doesNotMatch(JSON.stringify(newer.composerReadiness), /installationId|checkedAt|token/);
+    const badReport = { geminiCoverage: 'synthetic raw prompt' };
+    await heartbeat(current, v2, badReport, { expect: 400 });
+
+    if (postgres) {
+      await retentionFixture(`UPDATE composer_observations SET checked_at = now() - interval '25 hours'
+        WHERE installation_id = '${current.installationId}' AND app_id = 'chatgpt';`);
+      const older = await health(scope);
+      assert.equal(check(older, current, 'chatgpt').state, 'stale');
+      assert.equal(check(older, current, 'claude').state, 'detected');
+      await retentionFixture(`UPDATE installations SET last_seen_at = now() - interval '91 seconds' WHERE id = '${current.installationId}';`);
+      assert.equal(appCount(await health(scope), 'claude', 'stale'), 1);
+      await heartbeat(current, v2, { claudePromptApplied: true, chatGptCoverage: 'ready' });
+      assert.equal(appCount(await health(scope), 'chatgpt', 'detected'), 1);
+    }
+
+    const auditor = await post('access', { name: 'Coverage auditor', role: 'auditor', hours: 1 });
+    assert.deepEqual((await health(scope, { token: auditor.token })).composerReadiness, (await health(scope)).composerReadiness);
+    await post(`installations/${current.installationId}/revoke`, {}, 204);
+    const revoked = await health(scope);
+    assert.equal(revoked.composerReadiness.activeInstallations, 1);
+    assert.equal(appCount(revoked, 'chatgpt', 'detected'), 0);
+    assert.equal(revoked.installations.find(({ installationId }) => installationId === current.installationId).composerReadiness, undefined);
+    if (postgres) assert.equal(await retentionFixture(`SELECT count(*) FROM composer_observations WHERE installation_id = '${current.installationId}'`), '0');
   });
 });

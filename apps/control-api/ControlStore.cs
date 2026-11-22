@@ -47,6 +47,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 22, "022_browser_release.sql", ct);
         await ApplyMigration(connection, 23, "023_enrollment_batches.sql", ct);
         await ApplyMigration(connection, 24, "024_ai_enforcement_report.sql", ct);
+        await ApplyMigration(connection, 25, "025_composer_readiness.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -189,9 +190,10 @@ internal sealed partial class ControlStore
         return policy with { AssignmentVersion = rows.GetInt32(19), PromptExceptions = rows.GetBoolean(20) ? policy.PromptExceptions : [] };
     }
 
-    public async Task<bool> RecordHeartbeat(Guid installationId, Heartbeat request, CancellationToken ct)
+    public async Task<bool> RecordHeartbeat(Guid installationId, Heartbeat request, bool scopedCoverage, CancellationToken ct)
     {
         await using var command = Command("""
+            WITH updated AS (
             UPDATE installations i SET last_seen_at = GREATEST(i.last_seen_at, now()),
                 applied_policy_version = CASE WHEN (p.payment_card_mode = 'off' OR $7)
                     AND (p.chatgpt_upload_mode = 'off' AND p.gemini_upload_mode = 'off' OR $8)
@@ -223,12 +225,25 @@ internal sealed partial class ControlStore
                 AND ($13::text IS NULL OR p.claude_prompt_enabled AND $14)
                 AND (($5 = 0 AND p.policy_group_id IS NULL AND NOT $14) OR EXISTS (SELECT 1 FROM policy_deliveries d
                     WHERE d.installation_id = i.id AND d.assignment_version = $5 AND d.policy_version = $2 AND (NOT $14 OR d.claude_prompt)))
+            RETURNING i.id, i.organization_id
+            ), observed AS (
+                INSERT INTO composer_observations (organization_id, installation_id, app_id, policy_version, assignment_version, coverage)
+                SELECT u.organization_id, u.id, report.app_id, $2, $5, report.coverage
+                FROM updated u CROSS JOIN (VALUES ('chatgpt', $3::text), ('gemini', $6::text), ('claude', $13::text)) report(app_id, coverage)
+                WHERE $15 AND report.coverage IS NOT NULL
+                ON CONFLICT (installation_id, app_id) DO UPDATE SET policy_version = EXCLUDED.policy_version,
+                    assignment_version = EXCLUDED.assignment_version, coverage = EXCLUDED.coverage,
+                    checked_at = GREATEST(composer_observations.checked_at, EXCLUDED.checked_at)
+                WHERE (composer_observations.assignment_version, composer_observations.policy_version, composer_observations.checked_at)
+                    <= (EXCLUDED.assignment_version, EXCLUDED.policy_version, EXCLUDED.checked_at)
+            )
+            SELECT EXISTS (SELECT FROM updated)
             """, installationId, request.PolicyVersion, (object?)request.ChatGptCoverage ?? DBNull.Value,
             request.DomainRulesApplied, request.AssignmentVersion, (object?)request.GeminiCoverage ?? DBNull.Value,
             request.PaymentCardModeApplied, request.UploadControlsApplied, request.PathRulesApplied, request.UploadTypesApplied,
             request.CustomDiscoveryApplied, request.PromptExceptionsApplied, (object?)request.ClaudeCoverage ?? DBNull.Value,
-            request.ClaudePromptApplied);
-        return await command.ExecuteNonQueryAsync(ct) == 1;
+            request.ClaudePromptApplied, scopedCoverage);
+        return (bool)(await command.ExecuteScalarAsync(ct))!;
     }
 
     public async Task<BrowserHealthView?> BrowserHealth(Guid organizationId, BrowserHealthFilter filter, CancellationToken ct)
@@ -244,6 +259,7 @@ internal sealed partial class ControlStore
 
         var releases = await BrowserReleases(organizationId, ct, filter, snapshot);
         var installations = await Installations(organizationId, ct, filter, snapshot);
+        var (readiness, checks) = await BrowserComposerReadiness(organizationId, filter, installations, snapshot, ct);
         var active = releases.Sum(row => row.Installations);
         if (filter.Scoped)
         {
@@ -252,7 +268,8 @@ internal sealed partial class ControlStore
             active = (long)(await count.ExecuteScalarAsync(ct))!;
         }
         await snapshot.CommitAsync(ct);
-        return new(active, releases, installations);
+        return new(active, releases, installations.Select(row => checks.TryGetValue(row.InstallationId, out var composers)
+            ? row with { ComposerReadiness = composers } : row).ToArray(), readiness);
     }
 
     public async Task<IReadOnlyList<Installation>> Installations(Guid organizationId, CancellationToken ct,
@@ -329,6 +346,8 @@ internal sealed partial class ControlStore
                 RETURNING organization_id, id, revoked_at
             ), cleared AS (
                 DELETE FROM extension_inventory_snapshots s USING revoked r WHERE s.installation_id = r.id
+            ), cleared_composers AS (
+                DELETE FROM composer_observations o USING revoked r WHERE o.installation_id = r.id
             ), audit AS (
                 INSERT INTO control_audit (organization_id, occurred_at, action, installation_id, actor_access_id)
                 SELECT organization_id, revoked_at, 'browser_revoked', id, $3 FROM revoked

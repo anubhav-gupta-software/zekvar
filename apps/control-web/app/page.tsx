@@ -1,7 +1,8 @@
 import { ApiError, controlApi } from '../lib/api';
 import {
-  aiApps, classifications, classificationLabels, decisionLabels, decisions, isPromptApp, promptAppLabels, ruleLabels, utc,
-  type BrowserReleaseCount, type Decision, type DiscoveredApp, type Installation, type SecurityEvent,
+  aiApps, classifications, classificationLabels, composerStateLabels, decisionLabels, decisions, isPromptApp, promptAppLabels, ruleLabels, utc,
+  type BrowserComposerReadiness, type BrowserReleaseCount, type ComposerCheck, type ComposerState, type Decision, type DiscoveredApp,
+  type Installation, type SecurityEvent,
 } from '../lib/control';
 import { eventFilters, setEventCursor } from '../lib/events';
 import { browserHealthFilters, loadBrowserHealth } from '../lib/browser-health';
@@ -42,7 +43,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
     const current = policies[0];
     const writable = canWrite(session);
     const policyWritable = canChangePolicy(session);
-    const { activeInstallations, installations, releases, groups } = browserHealth;
+    const { activeInstallations, installations, releases, groups, composerReadiness } = browserHealth;
     const groupFilter = browserFilters.get('rolloutGroup')?.toLowerCase() ?? '';
     const releaseFilter = browserHealth.error ? '' : browserFilters.get('browserVersion') ?? '';
     const releaseLinks = new URLSearchParams([...eventPage, ...selectedBrowserFilters]);
@@ -127,11 +128,12 @@ export default async function Control({ searchParams }: { searchParams: Promise<
           {browserHealth.error ? <p className="empty" role="alert">{browserHealth.error}</p> : <>
           {releases && releases.length > 0 && <BrowserReleases releases={releases}
             links={browserHealth.filtersAvailable ? releaseLinks : undefined} />}
+          {composerReadiness && <ComposerReadiness readiness={composerReadiness} />}
           <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="browsers-heading">
             <table aria-labelledby="browsers-heading">
               <thead><tr><th>Installation</th><th>Rollout group</th><th>Reporting</th><th>Extension version</th><th>Policy status</th><th>Applied policy</th><th>ChatGPT composer</th><th>Gemini composer</th><th>Claude composer</th><th>Last seen (UTC)</th><th>Action</th></tr></thead>
               <tbody>{installations.map((installation) => <BrowserRow key={installation.installationId}
-                installation={installation} latestVersion={current?.version} writable={writable} />)}</tbody>
+                installation={installation} latestVersion={current?.version} writable={writable} scopedCoverage={!!composerReadiness} />)}</tbody>
             </table>
             {installations.length === 0 && <p className="empty">{browserFilters.size ? 'No installations match these browser filters.'
               : 'No browsers enrolled yet. Create an enrollment grant to add one.'}</p>}
@@ -274,7 +276,32 @@ function BrowserReleases({ releases, links }: { releases: BrowserReleaseCount[];
   </details>;
 }
 
-function BrowserRow({ installation, latestVersion, writable }: { installation: Installation; latestVersion?: number; writable: boolean }) {
+const composerStates = Object.keys(composerStateLabels) as ComposerState[];
+
+function ComposerReadiness({ readiness }: { readiness: BrowserComposerReadiness }) {
+  return <details className="browser-releases" open>
+    <summary id="composer-readiness-heading">Composer readiness</summary>
+    {readiness.activeInstallations ? <>
+      <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="composer-readiness-heading">
+        <table aria-labelledby="composer-readiness-heading">
+          <thead><tr><th scope="col">Application</th><th scope="col">Matching active browsers</th>
+            {composerStates.map((state) => <th key={state} scope="col">{composerStateLabels[state]}</th>)}
+          </tr></thead>
+          <tbody>{readiness.apps.map(({ appId, counts }) => <tr key={appId}>
+            <th scope="row">{aiApps[appId]}</th><td>{readiness.activeInstallations}</td>
+            {composerStates.map((state) => <td key={state}>{counts[state]}</td>)}
+          </tr>)}</tbody>
+        </table>
+      </div>
+      <div className="table-footer"><p className="table-note">Browser v0.22.0 or later reports composers for the applied policy.
+        An observation becomes stale after 24 hours or 90 seconds without a heartbeat.</p></div>
+    </> : <p className="empty">No active browsers match these filters.</p>}
+  </details>;
+}
+
+function BrowserRow({ installation, latestVersion, writable, scopedCoverage }: {
+  installation: Installation; latestVersion?: number; writable: boolean; scopedCoverage: boolean;
+}) {
   const status = installation.revokedAt ? 'Revoked' : installation.appliedPolicyVersion === null ? 'Awaiting policy' :
     installation.appliedPolicyVersion === (installation.expectedPolicyVersion ?? latestVersion) ? 'Current' : 'Update pending';
   const stale = Date.now() - Date.parse(installation.lastSeenAt) >= 90_000;
@@ -287,9 +314,15 @@ function BrowserRow({ installation, latestVersion, writable }: { installation: I
       : 'Unreported'}</td>
     <td><span className={`badge ${status === 'Current' ? 'current' : ''}`}>{status}</span></td>
     <td>{installation.appliedPolicyVersion ? `v${installation.appliedPolicyVersion}` : '—'}</td>
-    <CoverageCell coverage={installation.chatGptCoverage} checkedAt={installation.chatGptCheckedAt} />
-    <CoverageCell coverage={installation.geminiCoverage} checkedAt={installation.geminiCheckedAt} />
-    <CoverageCell coverage={installation.claudeCoverage} checkedAt={installation.claudeCheckedAt} enabled={installation.claudePromptEnabled === true} />
+    {scopedCoverage ? <>
+      <ComposerCell check={installation.composerReadiness?.chatgpt} />
+      <ComposerCell check={installation.composerReadiness?.gemini} />
+      <ComposerCell check={installation.composerReadiness?.claude} />
+    </> : <>
+      <CoverageCell coverage={installation.chatGptCoverage} checkedAt={installation.chatGptCheckedAt} />
+      <CoverageCell coverage={installation.geminiCoverage} checkedAt={installation.geminiCheckedAt} />
+      <CoverageCell coverage={installation.claudeCoverage} checkedAt={installation.claudeCheckedAt} enabled={installation.claudePromptEnabled === true} />
+    </>}
     <td><Timestamp value={installation.lastSeenAt} /></td>
     <td>{installation.revokedAt || !writable ? '—' :
       <MutationForm action={revokeInstallation} label="Revoke" appearance="small danger"
@@ -299,6 +332,13 @@ function BrowserRow({ installation, latestVersion, writable }: { installation: I
       </MutationForm>}
     </td>
   </tr>;
+}
+
+function ComposerCell({ check }: { check?: ComposerCheck }) {
+  if (!check) return <td>—</td>;
+  const tone = check.state === 'detected' ? 'current' : check.state === 'unsupported' || check.state === 'stale' ? 'warn' : '';
+  return <td><span className={`badge ${tone}`}>{composerStateLabels[check.state]}</span>
+    {check.checkedAt && <div className="muted"><Timestamp value={check.checkedAt} /> UTC</div>}</td>;
 }
 
 function CoverageCell({ coverage, checkedAt, enabled = true }: { coverage?: 'ready' | 'unsupported' | null; checkedAt?: string | null; enabled?: boolean }) {

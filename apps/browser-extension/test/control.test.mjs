@@ -48,6 +48,7 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
   let browser;
   let popup;
   let page;
+  let worker;
   let offline = false;
   let stalePolicy;
   let staleResponses = 0;
@@ -71,6 +72,7 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
         headers: {
           ...(request.headers.authorization ? { Authorization: request.headers.authorization } : {}),
           ...(request.headers['x-zekvar-assignment-aware'] ? { 'X-Zekvar-Assignment-Aware': request.headers['x-zekvar-assignment-aware'] } : {}),
+          ...(request.headers['x-zekvar-composer-coverage'] ? { 'X-Zekvar-Composer-Coverage': request.headers['x-zekvar-composer-coverage'] } : {}),
           ...(body.length ? { 'Content-Type': 'application/json' } : {}),
         },
         body: body.length ? body : undefined,
@@ -104,12 +106,12 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
 
   async function openChrome() {
     browser = await chromium.launchPersistentContext(profile, {
-      channel: 'chromium',
+      channel: 'chromium', headless: process.env.ZEKVAR_DEMO_HEADED !== '1',
       args: [`--disable-extensions-except=${buildPath}`, `--load-extension=${buildPath}`],
     });
     browser.setDefaultTimeout(5000);
     await browser.route(fixtureUrl, (route) => route.fulfill({ contentType: 'text/html', body: fixture }));
-    const worker = browser.serviceWorkers()[0] ?? await browser.waitForEvent('serviceworker');
+    worker = browser.serviceWorkers()[0] ?? await browser.waitForEvent('serviceworker');
     const id = new URL(worker.url()).hostname;
     popup = await browser.newPage();
     await popup.goto(`chrome-extension://${id}/popup.html`);
@@ -280,6 +282,40 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
     await until(async () => (await coverage()).chatGptCoverage === 'ready', 'Recovery was not reported.');
     await chatGpt.goto('https://chatgpt.com/unrelated');
     await chatGpt.getByText('Zekvar · Unsupported ChatGPT page', { exact: true }).waitFor();
+  });
+
+  await t.test('keeps a cached composer check from certifying a new policy or a fresh reconnection', async () => {
+    const verified = async () => (await adminCall('browser-health')).installations
+      .find(({ installationId }) => installationId === chatGptInstallation).composerReadiness.chatgpt.state;
+    for (const changesPolicy of [false, true]) {
+      await chatGpt.goto('https://chatgpt.com/');
+      await until(async () => await verified() === 'detected', 'Control did not confirm the recognized composer.');
+      offline = true;
+      await chatGpt.locator('#prompt-textarea').evaluate((element) => { element.id = 'renamed-composer'; });
+      await chatGpt.getByText('Zekvar · Unsupported composer (editable field missing)', { exact: true }).waitFor();
+      await until(() => worker.evaluate(async () => {
+        const { controlState } = await chrome.storage.local.get('controlState');
+        return controlState.coveragePending?.coverage === 'unsupported';
+      }), 'The offline composer check did not reach the extension worker.');
+      await chatGpt.close();
+      if (changesPolicy) {
+        await adminCall('policies', { mode: 'block' });
+        assert.equal(await verified(), 'policy_pending');
+      } else {
+        await worker.evaluate(async () => {
+          const { controlState } = await chrome.storage.local.get('controlState');
+          controlState.coveragePending.observedAt -= 61_000;
+          await chrome.storage.local.set({ controlState });
+        });
+      }
+      offline = false;
+      await popup.getByRole('button', { name: 'Sync now' }).click();
+      await popup.getByText(/Connected to Control/).waitFor();
+      assert.equal(await verified(), changesPolicy ? 'unobserved' : 'detected');
+      chatGpt = await browser.newPage();
+    }
+    await chatGpt.goto('https://chatgpt.com/');
+    await until(async () => await verified() === 'detected', 'A fresh composer check did not restore readiness.');
   });
 
   await t.test('allows one ChatGPT warning override for the unchanged draft', async () => {

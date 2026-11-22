@@ -366,6 +366,11 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   assert.equal(await claude.locator('#submitted').textContent(), '0');
   await until(async () => (await admin('events?appId=claude')).find(({ installationId }) => installationId === newId),
     'The managed Chrome profile did not report its Claude decision through HTTPS.');
+  await until(async () => {
+    const health = await admin(`browser-health?rolloutGroup=${group.id}&browserVersion=${extensionVersion}`);
+    return health.composerReadiness.activeInstallations === 1 &&
+      health.composerReadiness.apps.find(({ appId }) => appId === 'claude').counts.detected === 1;
+  }, 'The managed Chrome profile did not report fresh Claude readiness through HTTPS.');
   await dashboard.reload();
   await dashboard.getByRole('table', { name: 'Security events' }).getByText('Claude', { exact: true }).waitFor();
   await dashboard.getByRole('link', { name: 'Reports', exact: true }).click();

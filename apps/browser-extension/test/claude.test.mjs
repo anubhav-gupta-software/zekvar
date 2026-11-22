@@ -52,7 +52,7 @@ test('Claude opt-in, coverage, and recovery with Control and real Chrome', { tim
       if (request.url === '/v1/browser/events') attempts.push(body.toString());
       const response = await fetch(api + request.url, {
         method: request.method, signal: AbortSignal.timeout(5000),
-        headers: Object.fromEntries(['authorization', 'content-type', 'x-zekvar-assignment-aware', 'x-zekvar-claude-prompt']
+        headers: Object.fromEntries(['authorization', 'content-type', 'x-zekvar-assignment-aware', 'x-zekvar-claude-prompt', 'x-zekvar-composer-coverage']
           .filter((key) => request.headers[key]).map((key) => [key, request.headers[key]])),
         body: body.length ? body : undefined,
       });

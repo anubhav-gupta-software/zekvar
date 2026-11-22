@@ -142,7 +142,8 @@ internal sealed record Installation(Guid InstallationId, DateTime EnrolledAt, Da
     int? AppliedPolicyVersion, DateTime? RevokedAt, string? ChatGptCoverage, DateTime? ChatGptCheckedAt,
     Guid? PolicyGroupId, string? PolicyGroupName, int ExpectedPolicyVersion, bool AssignmentAware,
     string? GeminiCoverage, DateTime? GeminiCheckedAt, bool ClaudePromptEnabled, string? ClaudeCoverage, DateTime? ClaudeCheckedAt,
-    string? ExtensionVersion, DateTime? ExtensionVersionReportedAt);
+    string? ExtensionVersion, DateTime? ExtensionVersionReportedAt,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyDictionary<string, ComposerCheck>? ComposerReadiness = null);
 
 internal sealed record StoredEvent(Guid EventId, Guid InstallationId, DateTime Timestamp, DateTime ReceivedAt,
     int PolicyVersion, string Decision, string AppId, string RuleId,

@@ -27,6 +27,15 @@ Select a version or **Unreported** in the summary to find matching installations
 
 The organization baseline applies to unassigned browsers and groups that follow it. The dashboard keeps Control tokens in server memory and gives the browser a short-lived HTTP-only session cookie. Restarting the dashboard clears those sessions. Keep both services on loopback and use synthetic demo data.
 
+### Review composer readiness before switching a group to Block
+
+Open **Browser health** and choose the rollout group and, if needed, a reported extension version. **Composer readiness** counts all matching active browsers for ChatGPT, Gemini, and Claude. Each matching installation shows the same status in its app column. Compare the readiness table with the **AI enforcement report** before promoting a group.
+
+- **Detected** or **Unsupported** reflects the latest recent observation for the browser's applied policy and assignment. Test the intended compose workflows in your own pilot.
+- **Unobserved** means no matching observation has arrived. Install Browser v0.22.0 or later and open the app in that profile.
+- **Policy pending** means Control is waiting for acknowledgment of the assigned policy. **Off** means that policy disables Claude prompt protection.
+- **Stale** means the observation is at least 24 hours old or the browser has missed 90 seconds of heartbeats. Ask the user to reopen the app and refresh Browser health.
+
 ## Enroll a rollout group
 
 1. Publish or verify the group's policy in **Rollout groups**, then open **Enroll browsers in group**. **Enrollment batches** also lets you choose the group or organization baseline directly.

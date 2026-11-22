@@ -15,6 +15,7 @@ import { leaseTime, readExceptionLease, sampleClock, type BrowserLease } from '.
 declare const CONTROL_ORIGIN: string;
 
 type Enrollment = { installationId: string; token: string; source?: Summary['enrollmentSource'] };
+type PendingCoverage = { coverage: Coverage; observedAt: number };
 type State = {
   status: Summary['status'];
   controlOrigin?: string;
@@ -25,10 +26,10 @@ type State = {
   pathRules?: PathRules;
   domainRulesError?: boolean;
   chatGptEnabled?: boolean;
-  coveragePending?: Coverage;
+  coveragePending?: PendingCoverage | Coverage;
   geminiEnabled?: boolean;
-  geminiCoveragePending?: Coverage;
-  claudeCoveragePending?: Coverage;
+  geminiCoveragePending?: PendingCoverage | Coverage;
+  claudeCoveragePending?: PendingCoverage | Coverage;
   queue: PolicyEvent[];
   observations?: Partial<Record<DiscoveryApp, AppObservation>>;
   inventoryStatus?: InventoryStatus;
@@ -41,6 +42,7 @@ type State = {
 const key = 'controlState';
 const alarmName = 'control-sync';
 const maxQueue = 100;
+const pendingCoverageLifetimeMs = 60_000;
 const inventoryRefreshMs = 15 * 60_000;
 let work = Promise.resolve();
 let deliveryScheduled = false;
@@ -137,6 +139,7 @@ async function request(path: string, token?: string, body?: object): Promise<unk
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(path === 'browser/policy' ? { 'X-Zekvar-Assignment-Aware': '1', 'X-Zekvar-Claude-Prompt': '1',
         'X-Zekvar-Extension-Version': extensionVersion } : {}),
+      ...(path === 'browser/heartbeat' ? { 'X-Zekvar-Composer-Coverage': '1' } : {}),
       ...(path === 'enroll' ? { 'X-Zekvar-Scoped-Enrollment': '1' } : {}),
       ...(body ? { 'Content-Type': 'application/json' } : {}),
     },
@@ -292,13 +295,12 @@ async function sync(state: State) {
         sameDomainRules(domainRules, state.domainRules ?? emptyDomainRules) &&
         (!state.pathRules || sameDomainRules(pathRules, state.pathRules)))))) {
       await applyDomainRules(state, domainRules, pathRules);
-      if (policy.version !== state.policy?.version) state.claudeCoveragePending = undefined;
+      if (policy.version !== state.policy?.version || assignment !== previousAssignment) clearCoverage(state);
       state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, discoveryEnabled, customApps, extensionInventoryEnabled, claudePromptEnabled,
         assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini }, targetedUploads };
       promptLease = lease ? { installationId: state.enrollment.installationId, version: policy.version,
         assignment: policy.assignmentVersion, lease } : undefined;
       if (!discoveryEnabled || assignment !== previousAssignment) state.observations = undefined;
-      if (assignment !== previousAssignment) clearCoverage(state);
       state.chatGptEnabled = Array.isArray(policy.appIds) && policy.appIds.includes(chatGptApp);
       state.geminiEnabled = Array.isArray(policy.appIds) && policy.appIds.includes(geminiApp);
       await save(state);
@@ -348,15 +350,23 @@ async function reportExtensionInventory(state: State) {
   await save(state);
 }
 
+function recentCoverage(pending: PendingCoverage | Coverage | undefined, now: number) {
+  // Older releases cached the status without an observation time.
+  if (!pending || typeof pending === 'string') return undefined;
+  const age = now - pending.observedAt;
+  return age >= 0 && age < pendingCoverageLifetimeMs ? pending.coverage : undefined;
+}
+
 async function heartbeat(state: State) {
   if (!state.enrollment || !state.policy) return;
   const scopedUploads = uploadApps.some((app) => state.policy?.targetedUploads?.[app]);
+  const now = Date.now();
   await request('browser/heartbeat', state.enrollment.token, {
     policyVersion: state.policy.version,
     assignmentVersion: state.policy.assignmentVersion,
-    chatGptCoverage: state.chatGptEnabled ? state.coveragePending : undefined,
-    geminiCoverage: state.geminiEnabled ? state.geminiCoveragePending : undefined,
-    claudeCoverage: state.policy.claudePromptEnabled ? state.claudeCoveragePending : undefined,
+    chatGptCoverage: state.chatGptEnabled ? recentCoverage(state.coveragePending, now) : undefined,
+    geminiCoverage: state.geminiEnabled ? recentCoverage(state.geminiCoveragePending, now) : undefined,
+    claudeCoverage: state.policy.claudePromptEnabled ? recentCoverage(state.claudeCoveragePending, now) : undefined,
     claudePromptApplied: state.policy.claudePromptEnabled || undefined,
     paymentCardModeApplied: isMode(state.policy.paymentCardMode) ? true : undefined,
     uploadControlsApplied: scopedUploads || (state.policy.uploadModes &&
@@ -450,13 +460,13 @@ async function onMessage(message: Record<string, unknown>, app: AppId | undefine
   if (message.type === 'coverage' && app && app !== fixtureApp && appEnabled(state, app) && state.enrollment &&
       message.installationId === state.enrollment.installationId &&
       (message.coverage === 'ready' || message.coverage === 'unsupported')) {
-    if (app === claudeApp) {
-      if (message.version !== state.policy?.version || message.assignmentVersion !== state.policy?.assignmentVersion) {
-        return { summary: summary(state), error: 'Claude coverage belongs to an older policy.' };
-      }
-      state.claudeCoveragePending = message.coverage;
-    } else if (app === chatGptApp) state.coveragePending = message.coverage;
-    else state.geminiCoveragePending = message.coverage;
+    if (message.version !== state.policy?.version || message.assignmentVersion !== state.policy?.assignmentVersion) {
+      return { summary: summary(state), error: 'Composer coverage belongs to an older policy.' };
+    }
+    const observation = { coverage: message.coverage, observedAt: Date.now() } satisfies PendingCoverage;
+    if (app === claudeApp) state.claudeCoveragePending = observation;
+    else if (app === chatGptApp) state.coveragePending = observation;
+    else state.geminiCoveragePending = observation;
     await save(state);
     if (state.status === 'connected') {
       try {
