@@ -43,6 +43,41 @@ ZEKVAR_CONTROL_ORIGIN=https://browser.example.com ZEKVAR_EXTENSION_OUTDIR=dist-p
 
 For the pilot lab, load `dist-pilot` as an unpacked extension. Reload it from `chrome://extensions` when rebuilding in the same directory. Obtain a fresh enrollment grant from the dashboard. Managed enrollment uses both `ControlOrigin`, set to the exact browser API origin in the build, and the short-lived `EnrollmentGrant` for that profile. The popup shows the configured HTTPS destination. If the build moves to a different Control origin, enroll again with a grant from that destination. Update the managed origin and grant together.
 
+### Distribute signed Browser releases
+
+Use this path for managed devices that allow self-hosted Chrome extensions. Run the packager on Linux or macOS with a current trusted Chrome or Chrome for Testing executable. Generate an RSA signing key on a restricted signing machine. Keep the key and its recoverable backup outside the checkout and web root. Pin the resulting extension ID in your release records and device manager. Subsequent versions of the same extension require the same key. [Chrome self-hosting and update requirements](https://developer.chrome.com/docs/extensions/how-to/distribute/host-on-linux)
+
+```sh
+umask 077
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out /secure/zekvar-browser.pem
+node apps/browser-extension/package-pilot.mjs --print-id --key /secure/zekvar-browser.pem
+```
+
+Set `ZEKVAR_EXTENSION_ID` to the pinned ID and `CHROME_BINARY` to the absolute executable path. Start a channel with `--first`. For later builds, increase the version in `apps/browser-extension/manifest.json`, use a fresh output directory, and replace `--first` with `--previous /secure/releases/<last-release>/release.json`. The packager checks the key, extension ID, version, previous update URL, and Control origin before signing. Use the same Control origin throughout a channel. [Chrome extension version format](https://developer.chrome.com/docs/extensions/reference/manifest/version)
+
+```sh
+npm --prefix apps/browser-extension ci
+npm --prefix apps/browser-extension run package:pilot -- \
+  --key /secure/zekvar-browser.pem --id "$ZEKVAR_EXTENSION_ID" --chrome "$CHROME_BINARY" \
+  --control-origin https://browser.example.com --update-origin https://updates.example.com \
+  --channel pilot --first --output /secure/releases/pilot-0.19.0
+```
+
+1. Serve the package and `updates.xml` from the output's `public/pilot/` directory at `https://updates.example.com/pilot/`. Serve CRX files as `application/x-chrome-extension` and XML as `application/xml`. Deploy the new versioned CRX first, verify the downloaded SHA-256 against `release.json`, and replace the HTTPS `updates.xml` atomically. Keep versioned CRX files immutable and let clients revalidate `updates.xml` on every check. Keep the update path accessible to managed Chrome without browser cookies or interactive sign-in. [Chrome update manifest and hosting](https://developer.chrome.com/docs/extensions/how-to/distribute/host-on-linux#update)
+2. Merge `chrome-policy.json` into the policy for the pilot device group. Its `ExtensionSettings` entry force-installs the pinned ID and keeps subsequent updates on the assigned channel. On Linux use the managed-policy JSON directory for Chrome or Chromium. macOS requires MDM, domain management, or Chrome Enterprise Core for self-hosted force install. Windows requires eligible domain or Chrome Enterprise Core management. Confirm the deployment mechanism and eligibility with the partner admin. [Chrome ExtensionSettings](https://support.google.com/chrome/a/answer/9867568) · [Chrome enterprise force-install requirements](https://chromium.googlesource.com/chromium/src/+/HEAD/components/policy/resources/templates/policy_definitions/Extensions/ExtensionInstallForcelist.yaml) · [Managed extension settings on Linux](https://www.chromium.org/administrators/configuring-policy-for-extensions/#linux)
+3. In the managed settings for the pinned ID, include the exact `ControlOrigin` from the package and deliver a fresh `EnrollmentGrant` for each browser profile through restricted device management. Remove the grant from management after enrollment. Confirm the extension version in `chrome://extensions`, the assigned policy in its popup, and the installation in Control. Grant values belong in per-profile settings. The generated release contains the shared origin and distribution policy.
+4. Verify an upgrade with a test device before updating the wider channel. Reload any AI tabs that were already open and confirm the active Zekvar policy before testing submissions. An installed browser will ignore an older package version. To restore known-good extension code, rebuild that source with a higher manifest version, sign with the same key, and repeat the staged rollout. For removal, apply `installation_mode: removed` for the pinned ID, remove its managed configuration, and revoke the corresponding Control installation. If the signing key is compromised or lost, coordinate removal and enroll devices with a new extension ID after switching keys. [Chrome update and removal policies](https://support.google.com/chrome/a/answer/9867568)
+
+The package test creates disposable signed versions without customer credentials. Run it with Chrome for Testing and `unzip` installed. Optional `ZEKVAR_SIGNED_PILOT_ARTIFACTS` saves its three signed outputs in a new directory for the Linux test. The Linux test needs a disposable VM with Chromium, Node, OpenSSL, passwordless `sudo`, and `npm ci` in the checkout. It writes one named managed browser policy file and removes it at teardown. Point `ZEKVAR_SIGNED_PILOT_API` at a disposable Control API backed by PostgreSQL and reachable on the VM's loopback address, and set `ZEKVAR_DEMO_TOKEN` to the test owner's token. The test serves the update and browser hosts through local HTTPS on port 9443. Set `ZEKVAR_DEMO_HEADED=1` with a display or Xvfb to use a browser window. Set `ZEKVAR_SIGNED_PILOT_SCREENSHOT` to save the blocked submission after the upgrade.
+
+```sh
+ZEKVAR_SIGNED_PILOT_ARTIFACTS=/tmp/zekvar-signed-test \
+  node --test apps/browser-extension/test/package-pilot.test.mjs
+
+ZEKVAR_SIGNED_PILOT_ARTIFACTS=/tmp/zekvar-signed-test \
+  node --test apps/browser-extension/test/signed-pilot.test.mjs
+```
+
 ## Back up and recover Control
 
 Install `age` and `age-keygen` on the appropriate operator machines. Generate a recovery identity in the recovery environment with `age-keygen -o pilot-identity.txt`. Derive its public recipient with `age-keygen -y pilot-identity.txt > pilot-recipients.txt`. Store the private identity separately from the host and backup storage. Copy the public recipient file to the backup host. [age command reference](https://github.com/FiloSottile/age/blob/main/doc/age.1.ronn)
