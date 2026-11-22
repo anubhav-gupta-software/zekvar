@@ -1,7 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { cookies } from 'next/headers';
 
-const name = 'zekvar_control_session';
+const hostedPilot = process.env.ZEKVAR_HOSTED_PILOT === '1';
+const name = hostedPilot ? '__Host-zekvar_control_session' : 'zekvar_control_session';
+const cookieScope = { httpOnly: true, secure: hostedPilot, sameSite: 'strict', path: '/' } as const;
 const duration = 60 * 60;
 type Session = { token: string; expires: number };
 const server = globalThis as typeof globalThis & { zekvarControlSessions?: Map<string, Session> };
@@ -26,12 +28,12 @@ export async function startSession(token: string) {
   if (previous) sessions.delete(previous);
   const id = randomBytes(32).toString('hex');
   sessions.set(id, { token, expires: now + duration * 1000 });
-  jar.set(name, id, { httpOnly: true, sameSite: 'strict', path: '/', maxAge: duration });
+  jar.set(name, id, { ...cookieScope, maxAge: duration });
 }
 
 export async function endSession() {
   const jar = await cookies();
   const id = jar.get(name)?.value;
   if (id) sessions.delete(id);
-  jar.delete(name);
+  jar.set(name, '', { ...cookieScope, maxAge: 0 });
 }

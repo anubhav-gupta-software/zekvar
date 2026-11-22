@@ -2,6 +2,8 @@
 
 Zekvar Browser enforces domain rules, evaluates prompts locally, and controls native file intake on supported ChatGPT and Gemini routes. It also supports the loopback prompt fixture. Managed browsers send decision metadata to Control and can report visits to cataloged apps when discovery is enabled.
 
+For the [TLS pilot](../../deploy/pilot/README.md#build-and-enroll-browser), build v0.18.0 with a fixed HTTPS browser API origin. Managed enrollment includes that origin and its short-lived grant. A change of origin clears the previous enrollment, queued data, and cached enforcement before enrollment at the new destination.
+
 ## Run the demo
 
 From `apps/browser-extension`, using Node.js 22 or newer:

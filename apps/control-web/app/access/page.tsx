@@ -5,7 +5,7 @@ import { utc } from '../../lib/control';
 import { sessionToken } from '../../lib/session';
 import { revokeControlAccess } from '../actions';
 import { MutationForm, RefreshSection } from '../forms';
-import { Sidebar } from '../workspace';
+import { DeploymentBadge, Sidebar } from '../workspace';
 import { IssueAccessForm } from './issue-form';
 
 export default async function AccessPage() {
@@ -22,7 +22,7 @@ export default async function AccessPage() {
     <main className="dashboard">
       <header className="page-heading">
         <div>{result && <p className="eyebrow">{result.session.organization}</p>}<h1>Control access</h1></div>
-        <span className="badge local"><span aria-hidden="true" />Local demo</span>
+        <DeploymentBadge />
       </header>
       {credentials ? <>
         <section className="panel" aria-labelledby="issue-heading">

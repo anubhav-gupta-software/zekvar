@@ -6,3 +6,5 @@ obj/
 *.tsbuildinfo
 next-env.d.ts
 .env.local
+deploy/pilot/.env
+apps/browser-extension/dist-pilot/

@@ -119,7 +119,7 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
   browser.setDefaultTimeout(7000);
   const worker = browser.serviceWorkers()[0] ?? await browser.waitForEvent('serviceworker');
   const buildManifest = JSON.parse(await readFile(join(dist, 'manifest.json'), 'utf8'));
-  assert.equal(new URL(worker.url()).pathname, `/worker-${buildManifest.version}.js`);
+  assert.equal(new URL(worker.url()).pathname, '/' + buildManifest.background.service_worker);
   const popup = await browser.newPage();
   await popup.goto(new URL('popup.html', worker.url()).href);
   const dashboard = await browser.newPage();

@@ -1,6 +1,13 @@
 import { discoveryPermission, send, type Summary } from './protocol';
 import { inventoryPermission } from './extension-inventory';
 
+declare const CONTROL_ORIGIN: string;
+const destination = document.querySelector<HTMLElement>('#control-origin')!;
+if (CONTROL_ORIGIN.startsWith('https:')) {
+  destination.textContent = CONTROL_ORIGIN;
+  destination.hidden = false;
+}
+
 const form = document.querySelector<HTMLFormElement>('#enroll')!;
 const grant = document.querySelector<HTMLInputElement>('#grant')!;
 const indicator = document.querySelector<HTMLElement>('#status')!;
@@ -71,9 +78,11 @@ function render(summary: Summary) {
     invalid: 'Chrome policy contains an invalid enrollment grant.',
     rejected: 'Chrome policy grant expired or was already used. Ask your admin for a fresh grant.',
     retrying: 'Waiting for Control to redeem the Chrome policy grant.',
+    origin_mismatch: 'Chrome policy must specify this build’s Control origin before it can enroll.',
   };
   managed.textContent = summary.enrollmentSource === 'managed' ? 'Enrolled by Chrome policy.' :
-    summary.managedEnrollment ? onboarding[summary.managedEnrollment] : '';
+    summary.managedEnrollment ? onboarding[summary.managedEnrollment] :
+      summary.originChanged ? 'Control changed. Enroll with a new grant from this destination.' : '';
   form.hidden = Boolean(summary.installationId);
   sync.hidden = !summary.installationId;
   inventoryEnabled = Boolean(summary.installationId && summary.policy?.extensionInventoryEnabled);

@@ -6,11 +6,12 @@ using Microsoft.AspNetCore.Http.Features;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
-if (!builder.Environment.IsDevelopment())
-    throw new InvalidOperationException("The Control API demo requires the Development environment.");
+var hostedPilot = builder.Configuration.GetValue("Control:HostedPilot", false);
+if (hostedPilot ? !builder.Environment.IsProduction() : !builder.Environment.IsDevelopment())
+    throw new InvalidOperationException("Run Control in Development for the local demo or explicitly enable HostedPilot in Production.");
 
 var connectionString = builder.Configuration.GetConnectionString("Control")
-    ?? throw new InvalidOperationException("Set ConnectionStrings__Control for the demo PostgreSQL database.");
+    ?? throw new InvalidOperationException("Set ConnectionStrings__Control for PostgreSQL.");
 var port = builder.Configuration.GetValue("Control:Port", 5187);
 if (port is < 1024 or > 65535)
     throw new InvalidOperationException("Configure a Control loopback port between 1024 and 65535.");
@@ -59,7 +60,22 @@ app.Use(async (context, next) =>
     await next(context);
 });
 
-app.MapGet("/health", () => Results.Ok(new { status = "ready" }));
+app.MapGet("/health", async (NpgsqlDataSource database, CancellationToken ct) =>
+{
+    if (!hostedPilot) return Results.Ok(new { status = "ready" });
+    using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+    deadline.CancelAfter(TimeSpan.FromSeconds(2));
+    try
+    {
+        await using var ping = database.CreateCommand("SELECT 1");
+        await ping.ExecuteScalarAsync(deadline.Token);
+        return Results.Ok(new { status = "ready" });
+    }
+    catch (Exception error) when (error is NpgsqlException or OperationCanceledException)
+    {
+        return Results.Json(new { status = "unavailable" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
 
 var admin = app.MapGroup("/v1/admin").AddEndpointFilter(Authenticate(browser: false));
 admin.MapGet("/session", async (HttpContext http, CancellationToken ct) =>

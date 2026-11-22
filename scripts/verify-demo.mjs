@@ -13,9 +13,9 @@ const flags = new Set();
 let artifacts;
 for (let index = 0; index < args.length; index++) {
   const arg = args[index];
-  if (arg === '--headed' || arg === '--live' || arg === '--pilot') flags.add(arg);
+  if (arg === '--headed' || arg === '--live' || arg === '--pilot' || arg === '--hosted') flags.add(arg);
   else if (arg === '--artifacts' && args[index + 1] && !args[index + 1].startsWith('--')) artifacts = resolve(args[++index]);
-  else throw new Error('Usage: node scripts/verify-demo.mjs [--headed] [--live] [--pilot] [--artifacts DIRECTORY]');
+  else throw new Error('Usage: node scripts/verify-demo.mjs [--headed] [--live] [--pilot] [--hosted] [--artifacts DIRECTORY]');
 }
 
 const runFile = promisify(execFile);
@@ -89,7 +89,7 @@ process.once('SIGTERM', stopOnSignal);
 
 try {
   if (artifacts) await mkdir(artifacts, { recursive: true });
-  for (const directory of ['apps/browser-extension', 'apps/control-api', 'apps/control-web', 'contracts']) {
+  for (const directory of ['apps/browser-extension', 'apps/control-api', 'apps/control-web', 'contracts', 'deploy/pilot']) {
     await mkdir(join(temp, directory), { recursive: true });
     await cp(join(root, directory), join(temp, directory), {
       recursive: true,
@@ -201,6 +201,35 @@ try {
     await run(process.execPath, ['--test', 'test/pilot.test.mjs'], extension, {
       ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: pilotAdmin,
       ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_ARTIFACTS: artifacts ?? '',
+    });
+  }
+  if (flags.has('--hosted')) {
+    console.log('Verifying the hosted pilot through a local TLS edge.');
+    webServer.child.kill('SIGTERM');
+    await webServer.finished;
+    await run('npm', ['run', 'build'], web, { ZEKVAR_STANDALONE: '1' });
+    const standalone = join(temp, 'hosted-web');
+    await cp(join(web, '.next/standalone'), standalone, { recursive: true });
+    await cp(join(web, '.next/static'), join(standalone, '.next/static'), { recursive: true });
+    await run('dotnet', ['publish', '--no-restore', '-c', 'Release', '-o', join(temp, 'hosted-api')], api);
+
+    const hostedPort = await availablePort('127.0.0.1');
+    const standalonePort = await availablePort('127.0.0.1');
+    const owner = randomBytes(32).toString('hex');
+    const hostedApi = startService('dotnet', [join(temp, 'hosted-api/Control.Api.dll')], api, {
+      DOTNET_ENVIRONMENT: 'Production', ASPNETCORE_ENVIRONMENT: 'Production', Control__HostedPilot: 'true',
+      Control__Port: String(hostedPort), ConnectionStrings__Control: db,
+      Control__Organizations__0__Slug: 'tls-pilot', Control__Organizations__0__AdminToken: owner,
+    });
+    await ready(`http://127.0.0.1:${hostedPort}/health`, hostedApi, hostedApi.log);
+    const hostedWeb = startService(process.execPath, ['server.js'], standalone, {
+      HOSTNAME: '127.0.0.1', PORT: String(standalonePort), NODE_ENV: 'production', ZEKVAR_HOSTED_PILOT: '1',
+      ZEKVAR_CONTROL_PORT: String(hostedPort),
+    });
+    await ready(`http://127.0.0.1:${standalonePort}`, hostedWeb, hostedWeb.log);
+    await run(process.execPath, ['--test', 'test/hosted-pilot.test.mjs'], extension, {
+      ZEKVAR_HOSTED_TEST_API_PORT: String(hostedPort), ZEKVAR_HOSTED_TEST_WEB_PORT: String(standalonePort),
+      ZEKVAR_DEMO_TOKEN: owner, ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_ARTIFACTS: artifacts ?? '',
     });
   }
   if (artifacts) console.log(`Browser screenshots saved to ${artifacts}`);

@@ -17,6 +17,8 @@ declare const CONTROL_ORIGIN: string;
 type Enrollment = { installationId: string; token: string; source?: Summary['enrollmentSource'] };
 type State = {
   status: Summary['status'];
+  controlOrigin?: string;
+  originChanged?: boolean;
   enrollment?: Enrollment;
   policy?: Policy & { customApps?: CustomApp[] };
   domainRules?: DomainRules;
@@ -44,6 +46,8 @@ let deliveryScheduled = false;
 let promptLease: { installationId: string; version: number; assignment?: number; lease: BrowserLease } | undefined;
 
 const managedGrantKey = 'EnrollmentGrant';
+const managedOriginKey = 'ControlOrigin';
+const hostedControl = CONTROL_ORIGIN.startsWith('https:');
 const setup = Promise.all([
   chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }),
   chrome.storage.managed.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }),
@@ -57,7 +61,23 @@ function serial<T>(operation: () => Promise<T>): Promise<T> {
 
 async function readState(): Promise<State> {
   const stored = await chrome.storage.local.get(key);
-  return (stored[key] as State | undefined) ?? { status: 'standalone', queue: [], discarded: 0 };
+  const state = stored[key] as State | undefined;
+  if (!state) return { status: 'standalone', controlOrigin: CONTROL_ORIGIN, queue: [], discarded: 0 };
+  if (state.controlOrigin === CONTROL_ORIGIN) return state;
+  // Older development builds only addressed loopback. Never migrate their credentials to a hosted origin.
+  if (state.controlOrigin === undefined && !hostedControl) {
+    state.controlOrigin = CONTROL_ORIGIN;
+    await save(state);
+    return state;
+  }
+  promptLease = undefined;
+  const reset: State = {
+    status: 'standalone', controlOrigin: CONTROL_ORIGIN, originChanged: true, queue: [],
+    discarded: state.discarded + state.queue.length, domainRulesError: true,
+  };
+  await applyDomainRules(reset, emptyDomainRules).catch(() => undefined);
+  await save(reset);
+  return reset;
 }
 
 function save(state: State) {
@@ -85,6 +105,7 @@ function summary(state: State): Summary {
     inventoryStatus: state.inventoryStatus,
     customDiscoveryCount: state.policy?.discoveryEnabled ? customApps?.length : undefined,
     promptExceptionLease: state.status === 'connected' ? currentPromptLease(state) : undefined,
+    originChanged: state.originChanged,
   };
 }
 
@@ -352,13 +373,13 @@ async function enroll(state: State, grant: unknown, managedHash?: string): Promi
     }
     return { summary: summary(state), error: rejected
       ? 'The grant is invalid, expired, or already used. Create a new grant in Control.'
-      : 'Control is unavailable. Check that the local API is running and try again.' };
+      : 'Control is unavailable. Check your connection to Control and try again.' };
   }
   if (!isRecord(enrollment) || !isToken(enrollment.token) || !isId(enrollment.installationId)) {
     return { summary: summary(state), error: 'Control returned an invalid enrollment response.' };
   }
   const next: State = {
-    status: 'offline', enrollment: { installationId: enrollment.installationId, token: enrollment.token,
+    status: 'offline', controlOrigin: CONTROL_ORIGIN, enrollment: { installationId: enrollment.installationId, token: enrollment.token,
       source: managedHash ? 'managed' : 'manual' },
     queue: [], discarded: 0,
     usedManagedGrant: managedHash ?? state.usedManagedGrant,
@@ -373,16 +394,24 @@ async function syncOrEnroll(state: State): Promise<Reply> {
     await sync(state);
     return { summary: summary(state) };
   }
-  if (state.status === 'revoked' && state.domainRulesError) {
+  if (state.domainRulesError) {
     await applyDomainRules(state, emptyDomainRules).catch(() => undefined);
     await save(state);
   }
-  const managed = await chrome.storage.managed.get(managedGrantKey).catch(() => ({} as Record<string, unknown>));
+  const managed = await chrome.storage.managed.get([managedGrantKey, managedOriginKey]).catch(() => ({} as Record<string, unknown>));
   const grant = managed[managedGrantKey];
   if (!isToken(grant)) {
     const status = grant === undefined ? undefined : 'invalid';
     if (state.managedEnrollment !== status) {
       state.managedEnrollment = status;
+      await save(state);
+    }
+    return { summary: summary(state) };
+  }
+  const origin = managed[managedOriginKey];
+  if ((hostedControl || origin !== undefined) && origin !== CONTROL_ORIGIN) {
+    if (state.managedEnrollment !== 'origin_mismatch') {
+      state.managedEnrollment = 'origin_mismatch';
       await save(state);
     }
     return { summary: summary(state) };
@@ -519,7 +548,7 @@ chrome.permissions.onRemoved.addListener(({ permissions }) => {
 });
 listenForCustomApps();
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'managed' && managedGrantKey in changes) synchronizeInBackground();
+  if (area === 'managed' && (managedGrantKey in changes || managedOriginKey in changes)) synchronizeInBackground();
 });
 
 void serial(async () => {

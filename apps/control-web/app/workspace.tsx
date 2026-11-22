@@ -7,6 +7,12 @@ export function Brand() {
   </div>;
 }
 
+export function DeploymentBadge() {
+  return <span className="badge local"><span aria-hidden="true" />
+    {process.env.ZEKVAR_HOSTED_PILOT === '1' ? 'Hosted pilot' : 'Local demo'}
+  </span>;
+}
+
 export function Sidebar({ active, session }: {
   active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews' | 'extensions'; session?: ControlSession;
 }) {

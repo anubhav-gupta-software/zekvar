@@ -6,7 +6,7 @@ import { auditActions, auditFilters, type AuditEntry } from '../../lib/audit';
 import { aiApps, classificationLabels, utc } from '../../lib/control';
 import { cleanupCounts, retentionFields, type RetentionField } from '../../lib/retention';
 import { sessionToken } from '../../lib/session';
-import { Sidebar } from '../workspace';
+import { DeploymentBadge, Sidebar } from '../workspace';
 
 export default async function Audit({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const token = await sessionToken();
@@ -33,7 +33,7 @@ export default async function Audit({ searchParams }: { searchParams: Promise<Re
     <main className="dashboard">
       <header className="page-heading">
         <div>{session && <p className="eyebrow">{session.organization}</p>}<h1>Audit log</h1></div>
-        <span className="badge local"><span aria-hidden="true" />Local demo</span>
+        <DeploymentBadge />
       </header>
       <section className="panel table-panel" aria-labelledby="audit-heading">
         <div className="panel-heading">

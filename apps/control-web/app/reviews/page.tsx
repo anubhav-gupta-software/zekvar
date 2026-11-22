@@ -8,7 +8,7 @@ import { sessionToken } from '../../lib/session';
 import { decidePolicyReview, setPolicyReview } from '../actions';
 import { MutationForm, RefreshSection } from '../forms';
 import { PolicyChanges } from '../policy-changes';
-import { Sidebar } from '../workspace';
+import { DeploymentBadge, Sidebar } from '../workspace';
 
 export default async function PolicyReviewPage() {
   const token = await sessionToken();
@@ -23,7 +23,7 @@ export default async function PolicyReviewPage() {
     <main className="dashboard">
       <header className="page-heading">
         <div>{result && <p className="eyebrow">{result[0].organization}</p>}<h1>Policy reviews</h1></div>
-        <span className="badge local"><span aria-hidden="true" />Local demo</span>
+        <DeploymentBadge />
       </header>
       {result ? <ReviewQueue session={result[0]} required={result[1].required} entries={result[1].entries} /> :
         <section className="panel" role="alert">Control could not load policy reviews. Reload to try again.</section>}

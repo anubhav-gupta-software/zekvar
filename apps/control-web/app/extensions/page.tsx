@@ -5,7 +5,7 @@ import { isId, utc } from '../../lib/control';
 import { installTypeLabels, inventoryStatusLabels, needsReview, siteAccessLabels, type InventoryInstallation } from '../../lib/extension-inventory';
 import { sessionToken } from '../../lib/session';
 import { RefreshSection } from '../forms';
-import { Sidebar } from '../workspace';
+import { DeploymentBadge, Sidebar } from '../workspace';
 
 export default async function ExtensionsPage({ searchParams }: { searchParams: Promise<{ browser?: string | string[] }> }) {
   const token = await sessionToken();
@@ -21,7 +21,7 @@ export default async function ExtensionsPage({ searchParams }: { searchParams: P
     <main className="dashboard">
       <header className="page-heading">
         <div>{data && <p className="eyebrow">{data.session.organization}</p>}<h1>Browser extensions</h1></div>
-        <span className="badge local"><span aria-hidden="true" />Local demo</span>
+        <DeploymentBadge />
       </header>
       {data ? <>
         <section className="panel table-panel" aria-labelledby="inventory-heading">

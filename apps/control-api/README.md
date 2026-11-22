@@ -4,6 +4,8 @@ This ASP.NET Core API issues enrollment grants, publishes policy versions, track
 
 Use the [Control dashboard](../control-web/README.md) to sign in and publish a policy. The [Zekvar Browser extension](../browser-extension/README.md#run-the-demo) can redeem a grant, apply the policy, and report fixture events automatically.
 
+The [TLS pilot](../../deploy/pilot/README.md) runs the API in Production with `Control__HostedPilot=true`. The API listens on loopback and verifies the database on its readiness route.
+
 ## Start the API
 
 In your terminal, `cd` into your `zekvar` checkout before running these commands. `pwd` should end in `/zekvar`, and `ls apps/control-api/Control.Api.csproj` should find the project. A prompt showing `~` is in your home directory.

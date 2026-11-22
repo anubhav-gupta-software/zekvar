@@ -6,7 +6,7 @@ import { sessionToken } from '../../lib/session';
 import { assignPolicyGroup, createPolicyGroup, promotePolicyGroup } from '../actions';
 import { DomainRulesForm, MutationForm } from '../forms';
 import { PolicyVersionTable, PublishPolicyForm } from '../policies';
-import { Sidebar } from '../workspace';
+import { DeploymentBadge, Sidebar } from '../workspace';
 
 export default async function Groups({ searchParams }: { searchParams: Promise<{ group?: string | string[] }> }) {
   const token = await sessionToken();
@@ -25,7 +25,7 @@ export default async function Groups({ searchParams }: { searchParams: Promise<{
     <main className="dashboard">
       <header className="page-heading">
         <div>{result && <p className="eyebrow">{result.session.organization}</p>}<h1>Rollout groups</h1></div>
-        <span className="badge local"><span aria-hidden="true" />Local demo</span>
+        <DeploymentBadge />
       </header>
       {result ? <>
         <section className="panel" aria-labelledby="groups-heading">

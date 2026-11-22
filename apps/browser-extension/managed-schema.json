@@ -5,6 +5,11 @@
       "type": "string",
       "title": "Zekvar enrollment grant",
       "description": "A short-lived, single-use grant for this Chrome profile."
+    },
+    "ControlOrigin": {
+      "type": "string",
+      "title": "Zekvar Control origin",
+      "description": "The exact HTTPS browser API origin built into the hosted extension."
     }
   }
 }

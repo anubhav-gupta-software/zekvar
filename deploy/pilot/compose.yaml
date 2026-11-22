@@ -1,0 +1,81 @@
+name: zekvar-pilot
+services:
+  edge:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      ZEKVAR_DASHBOARD_HOST: ${ZEKVAR_DASHBOARD_HOST:?set the dashboard DNS hostname}
+      ZEKVAR_BROWSER_HOST: ${ZEKVAR_BROWSER_HOST:?set the browser API DNS hostname}
+      ZEKVAR_ACME_EMAIL: ${ZEKVAR_ACME_EMAIL:?set the ACME contact}
+      ZEKVAR_ADMIN_NETWORKS: ${ZEKVAR_ADMIN_NETWORKS:?set the administrator source CIDRs}
+    ports:
+      - "80:80"
+      - "443:443"
+    networks: [edge, database]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - edge_data:/data
+      - edge_config:/config
+
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/pilot/Control.Api.Dockerfile
+    restart: unless-stopped
+    network_mode: service:edge
+    depends_on:
+      edge:
+        condition: service_started
+        restart: true
+      postgres:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Control__HostedPilot: "true"
+      Control__Organizations__0__Slug: ${ZEKVAR_ORGANIZATION_SLUG:?set the organization slug}
+      Control__Organizations__0__AdminToken: ${ZEKVAR_OWNER_TOKEN:?generate an owner token}
+      ConnectionStrings__Control: "Host=postgres;Database=zekvar;Username=zekvar_app;Password=${ZEKVAR_POSTGRES_APP_PASSWORD:?generate an app database password}"
+
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/pilot/Control.Web.Dockerfile
+    restart: unless-stopped
+    network_mode: service:edge
+    depends_on:
+      edge:
+        condition: service_started
+        restart: true
+      api:
+        condition: service_started
+    environment:
+      HOSTNAME: 127.0.0.1
+      PORT: 3000
+      ZEKVAR_HOSTED_PILOT: "1"
+
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: zekvar
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${ZEKVAR_POSTGRES_OPERATOR_PASSWORD:?generate an operator database password}
+      ZEKVAR_POSTGRES_APP_PASSWORD: ${ZEKVAR_POSTGRES_APP_PASSWORD:?generate an app database password}
+    networks: [database]
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - ./init-database.sh:/docker-entrypoint-initdb.d/init-database.sh:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "zekvar"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+networks:
+  edge:
+  database:
+    internal: true
+volumes:
+  edge_data:
+  edge_config:
+  postgres_data:

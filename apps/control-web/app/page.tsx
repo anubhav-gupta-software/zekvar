@@ -9,7 +9,7 @@ import { sessionToken } from '../lib/session';
 import { classifyAiApp, revokeInstallation, signOut } from './actions';
 import { DomainRulesForm, EnrollmentForm, MutationForm, RefreshSection, SignInForm } from './forms';
 import { PolicyVersionTable, PublishPolicyForm } from './policies';
-import { Brand, Sidebar } from './workspace';
+import { Brand, DeploymentBadge, Sidebar } from './workspace';
 import { uploadMethods } from '../../../contracts/policy/uploads';
 
 type Search = Record<string, string | string[] | undefined>;
@@ -44,7 +44,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
             <p className="eyebrow">{session.organization}</p>
             <h1>Security overview</h1>
           </div>
-          <span className="badge local"><span aria-hidden="true" />Local demo</span>
+          <DeploymentBadge />
         </header>
 
         <div className="metrics" aria-label="Control summary">
@@ -165,7 +165,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
       <section className="auth-card">
         <Brand />
         <h1>Control API unavailable</h1>
-        <p className="muted">Start the local Control API and PostgreSQL, then reload the dashboard.</p>
+        <p className="muted">Check the Control API and database connection, then reload the dashboard.</p>
         <a className="button primary" href="/">Reload dashboard</a>
         <form action={signOut}><button className="button">Sign out</button></form>
       </section>
@@ -178,7 +178,7 @@ function SignIn({ invalid }: { invalid?: boolean }) {
     <section className="auth-card" aria-labelledby="sign-in-heading">
       <Brand />
       <div><h1 id="sign-in-heading">Sign in to Control</h1>
-        <p className="muted">Use your delegated token or the owner token configured for the local Control API.</p></div>
+        <p className="muted">Use your delegated token or the owner token configured for this deployment.</p></div>
       <SignInForm invalid={invalid} />
     </section>
   </main>;

@@ -5,7 +5,7 @@ import { retentionFields, type RetentionField } from '../../lib/retention';
 import { sessionToken } from '../../lib/session';
 import { cleanupRetention, saveRetention } from '../actions';
 import { MutationForm } from '../forms';
-import { Sidebar } from '../workspace';
+import { DeploymentBadge, Sidebar } from '../workspace';
 
 export default async function RetentionPage() {
   const token = await sessionToken();
@@ -22,7 +22,7 @@ export default async function RetentionPage() {
     <main className="dashboard">
       <header className="page-heading">
         <div>{session && <p className="eyebrow">{session.organization}</p>}<h1>Data retention</h1></div>
-        <span className="badge local"><span aria-hidden="true" />Local demo</span>
+        <DeploymentBadge />
       </header>
       {policy ? <>
         <section className="panel" aria-labelledby="retention-heading">

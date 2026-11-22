@@ -3,7 +3,7 @@ import { ApiError, controlApi } from '../../lib/api';
 import { canChangePolicy } from '../../lib/access';
 import { previewSnapshot } from '../../lib/preview';
 import { sessionToken } from '../../lib/session';
-import { Sidebar } from '../workspace';
+import { DeploymentBadge, Sidebar } from '../workspace';
 import { PolicyPreview } from './preview';
 
 export default async function PreviewPage({ searchParams }: { searchParams: Promise<{ group?: string | string[] }> }) {
@@ -21,7 +21,7 @@ export default async function PreviewPage({ searchParams }: { searchParams: Prom
     <main className="dashboard">
       <header className="page-heading">
         <div>{data && <p className="eyebrow">{data.session.organization}</p>}<h1>Policy preview</h1></div>
-        <span className="badge local"><span aria-hidden="true" />Local demo</span>
+        <DeploymentBadge />
       </header>
       {data ? <>
         {data.groups.length > 0 && <section className="panel" aria-labelledby="preview-scope-heading">
