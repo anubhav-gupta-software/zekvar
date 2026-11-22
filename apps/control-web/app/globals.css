@@ -95,6 +95,8 @@ label { font-size: .9rem; font-weight: 600; }
 
 .table-panel { padding: 0; overflow: clip; }
 .table-panel > .panel-heading { padding: .95rem 1.15rem; }
+.browser-releases { border-top: 1px solid var(--line); margin-bottom: 1rem; }
+.browser-releases summary { cursor: pointer; padding: .7rem 1.15rem; font-size: .9rem; font-weight: 600; }
 .table-scroll { overflow-x: auto; }
 .table-scroll:focus-visible { outline-offset: -2px; }
 table { width: 100%; border-collapse: collapse; text-align: left; font-size: .875rem; }

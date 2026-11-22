@@ -138,8 +138,12 @@ test('a Linux-managed Chromium profile installs, updates, and removes signed Zek
     browser.setDefaultTimeout(10_000);
   }
   await launch();
-  const extensions = await browser.newPage();
-  await extensions.goto('chrome://extensions');
+  async function openExtensions() {
+    const page = await browser.newPage();
+    await page.goto('chrome://extensions');
+    return page;
+  }
+  let extensions = await openExtensions();
   const extensionInfo = (page = extensions) => page.evaluate(async (id) =>
     (await chrome.developerPrivate.getExtensionsInfo({ includeDisabled: true, includeTerminated: true })).find((item) => item.id === id), extensionId);
   const installed = await until(() => extensionInfo(),
@@ -147,8 +151,9 @@ test('a Linux-managed Chromium profile installs, updates, and removes signed Zek
   assert.equal(installed.version, first.version);
   assert.equal(installed.userMayModify, false);
   const browserInstallations = async () => (await admin('installations')).filter(({ installationId }) => !existingInstallations.has(installationId));
-  const before = await until(async () => (await browserInstallations()).find((row) => row.appliedPolicyVersion === blockPolicy.version),
-    'The force-installed browser did not enroll and apply its assigned Control policy.');
+  const before = await until(async () => (await browserInstallations()).find((row) =>
+    row.appliedPolicyVersion === blockPolicy.version && row.extensionVersion === first.version),
+  'The force-installed browser did not report its extension release and apply its Control policy.');
 
   async function enforce(useKeyboard) {
     const chat = await browser.newPage();
@@ -177,12 +182,15 @@ test('a Linux-managed Chromium profile installs, updates, and removes signed Zek
   await deployPolicy();
 
   await extensions.locator('extensions-item').getByText('Zekvar Browser', { exact: true }).waitFor();
-  const devMode = extensions.locator('extensions-toolbar #devMode');
-  if ((await devMode.getAttribute('aria-pressed')) !== 'true') await devMode.click();
-  const updateNow = extensions.locator('extensions-toolbar #updateNow');
+  async function requestUpdate() {
+    const devMode = extensions.locator('extensions-toolbar #devMode');
+    const updateNow = extensions.locator('extensions-toolbar #updateNow');
+    if (!await updateNow.isVisible()) await devMode.click();
+    await updateNow.click();
+  }
   async function checkUpdate() {
     const attempted = downloads.length;
-    await updateNow.click();
+    await requestUpdate();
     await until(() => downloads.slice(attempted).includes(next.packageUrl.pathname), 'Chromium did not fetch the advertised update.');
   }
   manifest = next;
@@ -198,6 +206,22 @@ test('a Linux-managed Chromium profile installs, updates, and removes signed Zek
   }, 'Chromium did not activate the signed update.');
   assert.equal(upgraded.id, extensionId);
   assert.equal(upgraded.userMayModify, false);
+  const reportedRelease = async () => (await browserInstallations()).find((row) => row.extensionVersion === next.version);
+  let released;
+  for (let attempt = 0; attempt < 20 && !released; attempt++) {
+    released = await reportedRelease();
+    if (!released) await delay(200);
+  }
+  if (!released) {
+    t.diagnostic('Chromium displayed the upgraded package before its worker reported the release. Relaunching the same managed profile.');
+    await browser.close();
+    await launch();
+    extensions = await openExtensions();
+    assert.equal((await extensionInfo())?.version, next.version);
+    released = await until(reportedRelease, 'Control did not observe the new extension release after relaunch.');
+  }
+  assert.equal(released.installationId, before.installationId);
+  assert.ok(Date.parse(released.extensionVersionReportedAt) > Date.parse(before.extensionVersionReportedAt));
   await enforce(true);
   assert.equal(enrollmentRequests.length, 1);
   assert.deepEqual((await browserInstallations()).map(({ installationId }) => installationId), [before.installationId]);
@@ -211,7 +235,7 @@ test('a Linux-managed Chromium profile installs, updates, and removes signed Zek
   const previousRequests = downloads.length;
   const previousChecks = updateEndpoints.length;
   manifest = first;
-  await updateNow.click();
+  await requestUpdate();
   await until(() => updateEndpoints.slice(previousChecks).some(({ path }) => path === first.update.pathname),
     'Chromium did not check the channel advertising the older version.');
   await delay(1_200);

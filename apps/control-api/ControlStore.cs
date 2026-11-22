@@ -43,6 +43,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 19, "019_prompt_exceptions.sql", ct);
         await ApplyMigration(connection, 20, "020_claude_prompt_protection.sql", ct);
         await ApplyMigration(connection, 21, "021_control_sso.sql", ct);
+        await ApplyMigration(connection, 22, "022_browser_release.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -136,11 +137,17 @@ internal sealed partial class ControlStore
         return policies;
     }
 
-    public async Task<Policy?> CurrentPolicy(Guid installationId, bool assignmentAware, bool claudeAware, CancellationToken ct)
+    public async Task<Policy?> CurrentPolicy(Guid installationId, bool assignmentAware, bool claudeAware, string? extensionVersion,
+        CancellationToken ct)
     {
         await using var command = Command("""
             WITH active AS (
-                UPDATE installations SET last_seen_at = GREATEST(last_seen_at, now()), assignment_aware = $2
+                UPDATE installations SET last_seen_at = GREATEST(last_seen_at, now()), assignment_aware = $2,
+                    extension_version = CASE WHEN $4::text IS NOT NULL AND
+                        (extension_version_reported_at IS NULL OR extension_version_reported_at <= now())
+                        THEN $4 ELSE extension_version END,
+                    extension_version_reported_at = CASE WHEN $4::text IS NOT NULL
+                        THEN GREATEST(extension_version_reported_at, now()) ELSE extension_version_reported_at END
                 WHERE id = $1 AND revoked_at IS NULL AND (assignment_version = 0 OR $2)
                 RETURNING organization_id, id, policy_group_id, assignment_version
             ), effective AS (
@@ -163,7 +170,7 @@ internal sealed partial class ControlStore
                 p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, e.assignment_version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id
             FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
             LEFT JOIN policy_audit a ON a.organization_id = p.organization_id AND a.version = p.version
-            """, installationId, assignmentAware, claudeAware);
+            """, installationId, assignmentAware, claudeAware, (object?)extensionVersion ?? DBNull.Value);
         await using var rows = await command.ExecuteReaderAsync(ct);
         if (!await rows.ReadAsync(ct)) return null;
         var policy = ReadPolicy(rows);
@@ -218,7 +225,8 @@ internal sealed partial class ControlStore
             SELECT i.id, i.enrolled_at, i.last_seen_at, i.applied_policy_version, i.revoked_at, i.chatgpt_coverage, i.chatgpt_checked_at,
                 i.policy_group_id, g.name, p.version, i.assignment_aware, i.gemini_coverage, i.gemini_checked_at,
                 p.claude_prompt_enabled, CASE WHEN i.claude_coverage_version = p.version AND i.revoked_at IS NULL THEN i.claude_coverage END,
-                CASE WHEN i.claude_coverage_version = p.version AND i.revoked_at IS NULL THEN i.claude_checked_at END
+                CASE WHEN i.claude_coverage_version = p.version AND i.revoked_at IS NULL THEN i.claude_checked_at END,
+                i.extension_version, i.extension_version_reported_at
             FROM installations i JOIN organizations o ON o.id = i.organization_id
             LEFT JOIN policy_groups g ON g.organization_id = o.id AND g.id = i.policy_group_id
             JOIN policy_versions p ON p.organization_id = i.organization_id AND p.version = COALESCE(g.policy_version, o.policy_version)
@@ -232,8 +240,35 @@ internal sealed partial class ControlStore
                 rows.IsDBNull(5) ? null : rows.GetString(5), rows.IsDBNull(6) ? null : rows.GetDateTime(6),
                 rows.IsDBNull(7) ? null : rows.GetGuid(7), rows.IsDBNull(8) ? null : rows.GetString(8), rows.GetInt32(9), rows.GetBoolean(10),
                 rows.IsDBNull(11) ? null : rows.GetString(11), rows.IsDBNull(12) ? null : rows.GetDateTime(12), rows.GetBoolean(13),
-                rows.IsDBNull(14) ? null : rows.GetString(14), rows.IsDBNull(15) ? null : rows.GetDateTime(15)));
+                rows.IsDBNull(14) ? null : rows.GetString(14), rows.IsDBNull(15) ? null : rows.GetDateTime(15),
+                rows.IsDBNull(16) ? null : rows.GetString(16), rows.IsDBNull(17) ? null : rows.GetDateTime(17)));
         return installations;
+    }
+
+    public async Task<IReadOnlyList<BrowserReleaseCount>> BrowserReleases(Guid organizationId, CancellationToken ct)
+    {
+        await using var command = Command("""
+            WITH counts AS (
+                SELECT extension_version, count(*) AS installations, count(*) FILTER (
+                    WHERE extension_version_reported_at > now() - interval '90 seconds') AS recent_reports
+                FROM installations WHERE organization_id = $1 AND revoked_at IS NULL GROUP BY extension_version
+            ), ranked AS (
+                SELECT *, row_number() OVER (PARTITION BY extension_version IS NULL
+                    ORDER BY installations DESC, extension_version) AS position FROM counts
+            ), buckets AS (
+                SELECT CASE WHEN position <= 8 THEN extension_version END AS version,
+                    CASE WHEN extension_version IS NULL THEN 'unreported' WHEN position <= 8 THEN 'release' ELSE 'other' END AS kind,
+                    sum(installations)::bigint AS installations, sum(recent_reports)::bigint AS recent_reports
+                FROM ranked GROUP BY 1, 2
+            )
+            SELECT version, kind, installations, recent_reports FROM buckets
+            ORDER BY CASE kind WHEN 'release' THEN 0 WHEN 'other' THEN 1 ELSE 2 END, installations DESC, version
+            """, organizationId);
+        await using var rows = await command.ExecuteReaderAsync(ct);
+        var releases = new List<BrowserReleaseCount>();
+        while (await rows.ReadAsync(ct))
+            releases.Add(new(rows.GetString(1), rows.IsDBNull(0) ? null : rows.GetString(0), rows.GetInt64(2), rows.GetInt64(3)));
+        return releases;
     }
 
     public async Task<bool> Revoke(RequestIdentity identity, Guid installationId, CancellationToken ct)

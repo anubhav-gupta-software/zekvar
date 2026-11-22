@@ -25,7 +25,7 @@ async function post(path, body, bearer) {
 }
 
 test('Control dashboard signs in and manages a real browser installation and event', { timeout: 45_000 }, async (t) => {
-  const browser = await chromium.launch({ channel: 'chromium' });
+  const browser = await chromium.launch({ channel: 'chromium', headless: process.env.ZEKVAR_DEMO_HEADED !== '1' });
   t.after(() => browser.close());
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage();
@@ -81,6 +81,39 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await post('/browser/heartbeat', { policyVersion }, installation.token);
     await page.reload();
     await browsers.getByText('Current', { exact: true }).waitFor();
+  });
+
+  await t.test('shows the reported extension release separately from the applied policy', async () => {
+    const row = browsers.getByRole('row').filter({ hasText: installation.installationId.slice(0, 13) });
+    const rollout = page.getByRole('table', { name: 'Extension rollout' });
+    await row.getByText('Unreported', { exact: true }).waitFor();
+    await rollout.getByRole('rowheader', { name: 'Unreported', exact: true }).waitFor();
+    const report = async (version) => {
+      const response = await fetch(`${api}/browser/policy`, { headers: {
+        Authorization: `Bearer ${installation.token}`, 'X-Zekvar-Extension-Version': version,
+      }, signal: AbortSignal.timeout(5000) });
+      assert.ok(response.ok);
+      assert.equal((await response.json()).version, policyVersion);
+    };
+    await report('0.20.0');
+    await page.getByRole('button', { name: 'Refresh browser health' }).click();
+    const version = row.locator('code').filter({ hasText: /^0\.20\.0$/ });
+    await version.waitFor();
+    const releaseCell = row.getByRole('cell').filter({ has: page.locator('code').filter({ hasText: /^0\.20\.0$/ }) });
+    assert.ok(await releaseCell.locator('time').getAttribute('datetime'));
+    assert.deepEqual(await rollout.getByRole('row').filter({ hasText: '0.20.0' }).getByRole('cell').allTextContents(), ['1', '1']);
+    await row.getByText(`v${policyVersion}`, { exact: true }).waitFor();
+    await report('0.21.0');
+    await page.getByRole('button', { name: 'Refresh browser health' }).click();
+    await row.getByText('0.21.0', { exact: true }).waitFor();
+    assert.equal(await rollout.getByRole('rowheader', { name: '0.20.0', exact: true }).count(), 0);
+    assert.deepEqual(await rollout.getByRole('row').filter({ hasText: '0.21.0' }).getByRole('cell').allTextContents(), ['1', '1']);
+    const screenshot = process.env.ZEKVAR_TEST_RELEASE_SCREENSHOT;
+    if (screenshot) await page.locator('#browsers').screenshot({ path: screenshot });
+    await page.setViewportSize({ width: 390, height: 820 });
+    await rollout.getByRole('rowheader', { name: '0.21.0' }).waitFor();
+    assert.ok(await browsers.evaluate((table) => table.scrollWidth > table.parentElement.clientWidth));
+    await page.setViewportSize({ width: 1440, height: 1000 });
   });
 
   await t.test('shows and filters metadata from a real policy event', async () => {

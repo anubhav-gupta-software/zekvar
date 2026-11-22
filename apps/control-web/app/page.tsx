@@ -1,7 +1,7 @@
 import { ApiError, controlApi } from '../lib/api';
 import {
   aiApps, classifications, classificationLabels, decisionLabels, decisions, isPromptApp, promptAppLabels, ruleLabels, utc,
-  type Decision, type DiscoveredApp, type Installation, type SecurityEvent,
+  type BrowserReleaseCount, type Decision, type DiscoveredApp, type Installation, type SecurityEvent,
 } from '../lib/control';
 import { eventFilters, setEventCursor } from '../lib/events';
 import { canChangePolicy, canWrite } from '../lib/access';
@@ -24,9 +24,10 @@ export default async function Control({ searchParams }: { searchParams: Promise<
   if (filters.cursor) setEventCursor(historyQuery, filters.cursor);
 
   try {
-    const [session, policies, installations, history, discoveredApps] = await Promise.all([
+    const [session, policies, installations, releases, history, discoveredApps] = await Promise.all([
       controlApi.session(token), controlApi.policies(token),
       controlApi.installations(token),
+      controlApi.browserReleases(token),
       filters.invalidInstallation || filters.invalidCursor ? undefined : controlApi.events(token, historyQuery),
       controlApi.aiApps(token),
     ]);
@@ -36,7 +37,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
     const current = policies[0];
     const writable = canWrite(session);
     const policyWritable = canChangePolicy(session);
-    const active = installations.filter(({ revokedAt }) => !revokedAt).length;
+    const active = releases?.reduce((total, row) => total + row.installations, 0) ?? installations.filter(({ revokedAt }) => !revokedAt).length;
     return <div className="workspace" id="overview">
       <Sidebar session={session} />
       <main className="dashboard">
@@ -54,7 +55,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
             <span>{current ? `Version ${current.version}` : 'Publish a policy to get started'}</span>
           </div>
           <div className="metric"><p>Active installations</p><strong>{active}</strong>
-            <span>{installations.length === 100 ? 'Among the latest 100' : 'With valid credentials'}</span>
+            <span>{!releases && installations.length === 100 ? 'Among the latest 100' : 'With valid credentials'}</span>
           </div>
           <div className="metric"><p>Events shown</p><strong>{events.length}</strong>
             <span>{filters.cursor ? 'Older events' : filters.query.size ? 'Filtered view' : 'Latest 100 events'}</span>
@@ -98,14 +99,16 @@ export default async function Control({ searchParams }: { searchParams: Promise<
 
         <section className="panel table-panel" id="browsers" aria-labelledby="browsers-heading">
           <div className="panel-heading"><h2 id="browsers-heading">Browser health</h2><RefreshSection label="Refresh browser health" /></div>
+          {releases && releases.length > 0 && <BrowserReleases releases={releases} />}
           <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="browsers-heading">
             <table aria-labelledby="browsers-heading">
-              <thead><tr><th>Installation</th><th>Rollout group</th><th>Reporting</th><th>Policy status</th><th>Applied version</th><th>ChatGPT composer</th><th>Gemini composer</th><th>Claude composer</th><th>Last seen (UTC)</th><th>Action</th></tr></thead>
+              <thead><tr><th>Installation</th><th>Rollout group</th><th>Reporting</th><th>Extension version</th><th>Policy status</th><th>Applied policy</th><th>ChatGPT composer</th><th>Gemini composer</th><th>Claude composer</th><th>Last seen (UTC)</th><th>Action</th></tr></thead>
               <tbody>{installations.map((installation) => <BrowserRow key={installation.installationId}
                 installation={installation} latestVersion={current?.version} writable={writable} />)}</tbody>
             </table>
             {installations.length === 0 && <p className="empty">No browsers enrolled yet. Create an enrollment grant to add one.</p>}
           </div>
+          {installations.length === 100 && <div className="table-footer"><p className="table-note">Latest 100 installations.</p></div>}
         </section>
 
         <section className="panel table-panel" id="events" aria-labelledby="events-heading">
@@ -219,6 +222,20 @@ function DiscoveredAppRow({ app, writable }: { app: DiscoveredApp; writable: boo
   </tr>;
 }
 
+function BrowserReleases({ releases }: { releases: BrowserReleaseCount[] }) {
+  return <details className="browser-releases" open>
+    <summary id="browser-releases-heading">Extension rollout</summary>
+    <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="browser-releases-heading">
+      <table aria-labelledby="browser-releases-heading">
+        <thead><tr><th scope="col">Extension version</th><th scope="col">Active installations</th><th scope="col">Version reported in last 90 seconds</th></tr></thead>
+        <tbody>{releases.map(({ kind, extensionVersion, installations, recentReports }) =>
+          <tr key={extensionVersion ?? kind}><th scope="row">{kind === 'release' ? extensionVersion : kind === 'other' ? 'Other versions' : 'Unreported'}</th>
+            <td>{installations}</td><td>{recentReports}</td></tr>)}</tbody>
+      </table>
+    </div>
+  </details>;
+}
+
 function BrowserRow({ installation, latestVersion, writable }: { installation: Installation; latestVersion?: number; writable: boolean }) {
   const status = installation.revokedAt ? 'Revoked' : installation.appliedPolicyVersion === null ? 'Awaiting policy' :
     installation.appliedPolicyVersion === (installation.expectedPolicyVersion ?? latestVersion) ? 'Current' : 'Update pending';
@@ -227,6 +244,9 @@ function BrowserRow({ installation, latestVersion, writable }: { installation: I
     <td><InstallationId value={installation.installationId} /></td>
     <td>{installation.policyGroupName ?? 'Organization baseline'}</td>
     <td>{installation.revokedAt ? '—' : <span className={`badge ${stale ? 'warn' : 'current'}`}>{stale ? 'Stale' : 'Reporting'}</span>}</td>
+    <td>{installation.extensionVersion ? <><code>{installation.extensionVersion}</code>
+      {installation.extensionVersionReportedAt && <div className="muted"><Timestamp value={installation.extensionVersionReportedAt} /> UTC</div>}</>
+      : 'Unreported'}</td>
     <td><span className={`badge ${status === 'Current' ? 'current' : ''}`}>{status}</span></td>
     <td>{installation.appliedPolicyVersion ? `v${installation.appliedPolicyVersion}` : '—'}</td>
     <CoverageCell coverage={installation.chatGptCoverage} checkedAt={installation.chatGptCheckedAt} />

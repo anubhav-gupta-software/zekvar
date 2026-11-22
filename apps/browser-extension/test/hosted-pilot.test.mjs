@@ -127,10 +127,12 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   assert.equal(redirect.status, 308);
   assert.equal(redirect.headers.location, `https://${browserHost}/health`);
   for (const origin of [browserOrigin, dashboardOrigin]) {
-    const blocked = await call(origin + '/v1/admin/session', { headers: { Authorization: `Bearer ${owner}` } });
-    assert.equal(blocked.status, 404);
-    assert.equal(blocked.headers['cache-control'], 'no-store');
-    assert.match(blocked.headers['strict-transport-security'], /^max-age=/);
+    for (const path of ['/v1/admin/session', '/v1/admin/browser-releases']) {
+      const blocked = await call(origin + path, { headers: { Authorization: `Bearer ${owner}` } });
+      assert.equal(blocked.status, 404);
+      assert.equal(blocked.headers['cache-control'], 'no-store');
+      assert.match(blocked.headers['strict-transport-security'], /^max-age=/);
+    }
   }
   assert.equal((await call(dashboardOrigin + '/v1/browser/policy')).status, 404);
   assert.equal((await call(browserOrigin + '/')).status, 404);
@@ -264,6 +266,11 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   await dashboard.getByText(`Version ${version} published in block mode.`, { exact: true }).waitFor();
   await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
   await label(popup, `Connected to Control · BLOCK v${version}`).waitFor();
+  const { version: extensionVersion } = JSON.parse(await readFile(join(extension, 'manifest.json'), 'utf8'));
+  assert.equal((await admin('installations')).find(({ installationId }) => installationId === newId).extensionVersion, extensionVersion);
+  await dashboard.reload();
+  await dashboard.getByRole('table', { name: 'Browser health', exact: true }).getByRole('row')
+    .filter({ hasText: newId.slice(0, 13) }).getByText(extensionVersion, { exact: true }).waitFor();
   const chat = await browser.newPage();
   await chat.route('https://chatgpt.com/**', (route) => route.fulfill({ contentType: 'text/html', body: fixture }));
   await chat.goto('https://chatgpt.com/');

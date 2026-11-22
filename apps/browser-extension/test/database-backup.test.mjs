@@ -190,6 +190,9 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
       'The blocked attempt did not appear in Control.');
   }
   const event = await blockPrompt(source.owner, previous.installationId);
+  const { version: extensionVersion } = JSON.parse(await readFile(join(extension, 'manifest.json'), 'utf8'));
+  assert.equal((await admin(source.owner, 'installations')).find(({ installationId }) =>
+    installationId === previous.installationId).extensionVersion, extensionVersion);
 
   if (offsite) {
     const prefix = 'zekvar/pilot';
@@ -321,6 +324,10 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
   assert.deepEqual(await admin(target.owner, 'retention'), retention);
   assert.deepEqual(await admin(target.owner, 'events'), [event]);
   assert.deepEqual(await admin(target.otherOwner, 'events'), []);
+  assert.deepEqual(await admin(target.owner, 'browser-releases'), []);
+  const historical = (await admin(target.owner, 'installations')).find(({ installationId }) => installationId === previous.installationId);
+  assert.ok(historical.revokedAt);
+  assert.equal(historical.extensionVersion, extensionVersion);
   assert.equal((await admin(target.owner, 'policy-reviews')).entries[0].status, 'cancelled');
   const { entries } = await admin(target.owner, 'audit');
   const revoked = entries.filter((row) => row.action === 'access_revoked').map((row) => row.subjectAccess.name).sort();
@@ -334,6 +341,9 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
   const replacement = await enroll((await admin(target.owner, 'enrollment-grants', {})).grant);
   assert.notEqual(replacement.installationId, previous.installationId);
   await blockPrompt(target.owner, replacement.installationId);
+  assert.deepEqual(await admin(target.owner, 'browser-releases'), [
+    { kind: 'release', extensionVersion, installations: 1, recentReports: 1 },
+  ]);
   const exportData = await admin(target.owner, 'events/export');
   assert.equal(exportData.entries.length, 2);
   assert.doesNotMatch(JSON.stringify(exportData), /Backup recovery fixture|ZEKVAR_TEST_SECRET/);

@@ -49,6 +49,7 @@ let promptLease: { installationId: string; version: number; assignment?: number;
 const managedGrantKey = 'EnrollmentGrant';
 const managedOriginKey = 'ControlOrigin';
 const hostedControl = CONTROL_ORIGIN.startsWith('https:');
+const extensionVersion = chrome.runtime.getManifest().version;
 const setup = Promise.all([
   chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }),
   chrome.storage.managed.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }),
@@ -134,7 +135,8 @@ async function request(path: string, token?: string, body?: object): Promise<unk
     signal: AbortSignal.timeout(3500),
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(path === 'browser/policy' ? { 'X-Zekvar-Assignment-Aware': '1', 'X-Zekvar-Claude-Prompt': '1' } : {}),
+      ...(path === 'browser/policy' ? { 'X-Zekvar-Assignment-Aware': '1', 'X-Zekvar-Claude-Prompt': '1',
+        'X-Zekvar-Extension-Version': extensionVersion } : {}),
       ...(body ? { 'Content-Type': 'application/json' } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -545,6 +547,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === alarmName) synchronizeInBackground();
 });
 chrome.runtime.onStartup.addListener(synchronizeInBackground);
+chrome.runtime.onInstalled.addListener(({ reason }) => {
+  if (reason === 'update') synchronizeInBackground();
+});
 chrome.permissions.onAdded.addListener(({ permissions }) => {
   if (permissions?.includes('webNavigation')) listenForCustomApps();
   if (permissions?.some((permission) => permission === 'management' || permission === 'webNavigation')) synchronizeInBackground();

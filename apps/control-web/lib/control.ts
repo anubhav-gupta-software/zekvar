@@ -72,6 +72,15 @@ export type Installation = {
   policyGroupName?: string | null;
   expectedPolicyVersion?: number;
   assignmentAware?: boolean;
+  extensionVersion?: string | null;
+  extensionVersionReportedAt?: string | null;
+};
+
+export type BrowserReleaseCount = {
+  kind: 'release' | 'other' | 'unreported';
+  extensionVersion: string | null;
+  installations: number;
+  recentReports: number;
 };
 
 export type SecurityEvent = {

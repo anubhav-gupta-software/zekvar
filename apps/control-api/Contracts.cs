@@ -141,7 +141,8 @@ internal sealed record Enrollment(Guid InstallationId, string Token);
 internal sealed record Installation(Guid InstallationId, DateTime EnrolledAt, DateTime LastSeenAt,
     int? AppliedPolicyVersion, DateTime? RevokedAt, string? ChatGptCoverage, DateTime? ChatGptCheckedAt,
     Guid? PolicyGroupId, string? PolicyGroupName, int ExpectedPolicyVersion, bool AssignmentAware,
-    string? GeminiCoverage, DateTime? GeminiCheckedAt, bool ClaudePromptEnabled, string? ClaudeCoverage, DateTime? ClaudeCheckedAt);
+    string? GeminiCoverage, DateTime? GeminiCheckedAt, bool ClaudePromptEnabled, string? ClaudeCoverage, DateTime? ClaudeCheckedAt,
+    string? ExtensionVersion, DateTime? ExtensionVersionReportedAt);
 
 internal sealed record StoredEvent(Guid EventId, Guid InstallationId, DateTime Timestamp, DateTime ReceivedAt,
     int PolicyVersion, string Decision, string AppId, string RuleId,

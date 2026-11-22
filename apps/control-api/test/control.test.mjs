@@ -18,6 +18,7 @@ const suffix = randomBytes(8).toString('hex');
 const first = randomBytes(32).toString('hex');
 const second = randomBytes(32).toString('hex');
 const retentionAdmin = randomBytes(32).toString('hex');
+const releaseAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -35,13 +36,15 @@ async function retentionFixture(query) {
   return stdout.trim();
 }
 
-async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false } = {}) {
+async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false,
+  extensionVersion } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (claudeAware) headers['X-Zekvar-Claude-Prompt'] = '1';
   if (assignmentAware) headers['X-Zekvar-Assignment-Aware'] = '1';
   if (expectReview) headers['X-Zekvar-Expect-Review'] = '1';
+  if (extensionVersion !== undefined) headers['X-Zekvar-Extension-Version'] = extensionVersion;
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
@@ -72,6 +75,8 @@ async function start(sweepSeconds = 3600) {
       Control__Organizations__1__AdminToken: second,
       Control__Organizations__2__Slug: `retention-${suffix}`,
       Control__Organizations__2__AdminToken: retentionAdmin,
+      Control__Organizations__3__Slug: `release-${suffix}`,
+      Control__Organizations__3__AdminToken: releaseAdmin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -1756,5 +1761,89 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(session.access.id, named.id);
     await call('/v1/admin/access/sso', { token: first, expect: 204 });
     await call('/v1/internal/sso/session', { token: first, method: 'POST', body: {}, expect: 404 });
+  });
+
+  await t.test('tracks reported extension releases independently of policy acknowledgment and isolates the full fleet summary', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: releaseAdmin, ...options });
+    const coverage = (options) => admin('browser-releases', options);
+    const issue = async () => {
+      const { grant } = await admin('enrollment-grants', { method: 'POST' });
+      return call('/v1/enroll', { method: 'POST', body: { grant } });
+    };
+    assert.deepEqual(await coverage(), []);
+    const browser = await issue();
+    const legacy = await issue();
+    const read = (extensionVersion, token = browser.token, expect = 200) => call('/v1/browser/policy', { token, extensionVersion, expect });
+    const details = async () => (await admin('installations')).find((row) => row.installationId === browser.installationId);
+    const initial = await read();
+    await call('/v1/browser/heartbeat', { token: browser.token, method: 'POST', body: { policyVersion: initial.version }, expect: 204 });
+    const beforeUpgrade = (await admin('installations')).map(({ extensionVersion, extensionVersionReportedAt, ...entry }) => entry);
+    if (postgres) {
+      await stop();
+      await retentionFixture(`DELETE FROM schema_migrations WHERE version = 22;
+        ALTER TABLE installations DROP COLUMN extension_version, DROP COLUMN extension_version_reported_at;`);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 22'), '1');
+      assert.deepEqual((await admin('installations')).map(({ extensionVersion, extensionVersionReportedAt, ...entry }) => entry), beforeUpgrade);
+    }
+
+    const unreported = { kind: 'unreported', extensionVersion: null, installations: 1, recentReports: 0 };
+    assert.deepEqual(await coverage(), [{ ...unreported, installations: 2 }]);
+    await read('0.20.0');
+    const original = await details();
+    assert.equal(original.extensionVersion, '0.20.0');
+    assert.equal(original.appliedPolicyVersion, initial.version);
+    assert.ok(Number.isFinite(Date.parse(original.extensionVersionReportedAt)));
+    for (const invalid of ['0.0', '0.020.0', '65536', '0.20.0, 0.21.0', '1.2.3.4.5', 'ZEKVAR_TEST_SECRET', '9'.repeat(30)]) {
+      assert.deepEqual(await read(invalid), initial);
+    }
+    await read();
+    assert.equal((await details()).extensionVersionReportedAt, original.extensionVersionReportedAt);
+    await read(undefined, legacy.token);
+    assert.deepEqual(await coverage(), [{ kind: 'release', extensionVersion: '0.20.0', installations: 1, recentReports: 1 }, unreported]);
+
+    if (postgres) {
+      await retentionFixture(`UPDATE installations SET extension_version_reported_at = now() - interval '91 seconds'
+        WHERE id = '${browser.installationId}'`);
+      await read();
+      assert.equal((await coverage())[0].recentReports, 0);
+    }
+    await Promise.all([read('0.21.0'), read('0.21.0')]);
+    assert.equal((await coverage())[0].installations, 1);
+    assert.equal((await details()).extensionVersion, '0.21.0');
+    await read('65535.0.1.0');
+    assert.equal((await details()).extensionVersion, '65535.0.1.0');
+    await read('0.20.0');
+    assert.equal((await details()).extensionVersion, '0.20.0');
+
+    const auditor = await admin('access', { method: 'POST', body: { name: 'Rollout Auditor', role: 'auditor', hours: 1 } });
+    assert.deepEqual(await coverage({ token: auditor.token }), await coverage());
+    const { grant: foreignGrant } = await admin('enrollment-grants', { token: second, method: 'POST' });
+    const foreign = await call('/v1/enroll', { method: 'POST', body: { grant: foreignGrant } });
+    await read('0.99.0', foreign.token);
+    assert.deepEqual((await coverage({ token: second })).filter(({ kind }) => kind === 'release'), [
+      { kind: 'release', extensionVersion: '0.99.0', installations: 1, recentReports: 1 },
+    ]);
+    assert.ok(!(await coverage()).some((row) => row.extensionVersion === '0.99.0'));
+    await coverage({ token: browser.token, expect: 401 });
+    await coverage({ token: undefined, expect: 401 });
+    await admin(`installations/${browser.installationId}/revoke`, { method: 'POST', expect: 204 });
+    await read('0.22.0', undefined, 401);
+    assert.equal((await details()).extensionVersion, '0.20.0');
+    assert.deepEqual(await coverage(), [unreported]);
+
+    if (postgres) {
+      await retentionFixture(`INSERT INTO installations (id, organization_id, token_hash, extension_version, extension_version_reported_at)
+        SELECT gen_random_uuid(), o.id, encode(sha256(convert_to('release-fixture-${suffix}-' || n, 'UTF8')), 'hex'),
+            ('1.0.' || (n % 10)), now() - interval '2 minutes'
+        FROM organizations o CROSS JOIN generate_series(1, 105) AS fixture(n) WHERE o.slug = 'release-${suffix}'`);
+      assert.equal((await admin('installations')).length, 100);
+      const fleet = await coverage();
+      assert.equal(fleet.filter((row) => row.kind === 'release').length, 8);
+      assert.deepEqual(fleet.find((row) => row.kind === 'other'), { kind: 'other', extensionVersion: null, installations: 20, recentReports: 0 });
+      assert.deepEqual(fleet.at(-1), unreported);
+      assert.equal(fleet.reduce((total, row) => total + row.installations, 0), 106);
+      assert.equal(fleet.reduce((total, row) => total + row.recentReports, 0), 0);
+    }
   });
 });

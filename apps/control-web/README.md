@@ -21,6 +21,8 @@ Control is a local dashboard for publishing browser policies, issuing enrollment
 
 In **Browser health**, **Reporting** indicates Control heard from the installation within the last 90 seconds. **Stale** indicates the reporting window elapsed. **Policy status** shows whether the browser’s last applied version matches the current policy. Use **Refresh** to update the table. The [two-profile pilot lab](../browser-extension/README.md#run-the-two-profile-chrome-pilot-lab) demonstrates both states.
 
+**Extension rollout** counts active installations across the organization by the last extension version they reported. Compare the first count with **Version reported in last 90 seconds** before promoting an update. The eight most common releases have individual rows. Less common releases appear under **Other versions**, and browsers that have never reported a version appear under **Unreported**. The installation table shows the last version and the time Control received it, separately from the applied policy. Browser v0.20.0 and later reports its manifest version when it fetches policy. A version report is an observation from an authenticated browser. Use `chrome://extensions` or device management for independent confirmation of the installed package. [Signed Browser distribution](../../deploy/pilot/README.md#distribute-signed-browser-releases)
+
 The organization baseline applies to unassigned browsers and groups that follow it. The dashboard keeps Control tokens in server memory and gives the browser a short-lived HTTP-only session cookie. Restarting the dashboard clears those sessions. Keep both services on loopback and use synthetic demo data.
 
 ## Review browser extension inventory

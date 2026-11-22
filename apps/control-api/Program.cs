@@ -133,6 +133,8 @@ admin.MapPost("/enrollment-grants", async (HttpContext http, CancellationToken c
     Results.Ok(await store.CreateGrant(Identity(http), ct)));
 admin.MapGet("/installations", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.Installations(Identity(http).OrganizationId, ct)));
+admin.MapGet("/browser-releases", async (HttpContext http, CancellationToken ct) =>
+    Results.Ok(await store.BrowserReleases(Identity(http).OrganizationId, ct)));
 admin.MapGet("/extension-inventory", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.ExtensionInventory(Identity(http).OrganizationId, null, ct)));
 admin.MapGet("/extension-inventory/{id:guid}", async (Guid id, HttpContext http, CancellationToken ct) =>
@@ -248,7 +250,10 @@ browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
 {
     var aware = http.Request.Headers["X-Zekvar-Assignment-Aware"] == "1";
     var claudeAware = http.Request.Headers["X-Zekvar-Claude-Prompt"] == "1";
-    if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, claudeAware, ct) is { } policy) return Results.Ok(policy.ForBrowser(claudeAware));
+    var versionHeader = http.Request.Headers["X-Zekvar-Extension-Version"];
+    var extensionVersion = versionHeader.Count == 1 ? BrowserRelease.ReadVersion(versionHeader[0]) : null;
+    if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, claudeAware, extensionVersion, ct) is { } policy)
+        return Results.Ok(policy.ForBrowser(claudeAware));
     return aware ? Results.Unauthorized() : Results.Conflict(new { error = "Update the browser to receive the assigned policy." });
 });
 browser.MapPost("/heartbeat", async (Heartbeat request, HttpContext http, CancellationToken ct) =>
