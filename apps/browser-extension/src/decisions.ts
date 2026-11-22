@@ -1,6 +1,6 @@
 import type { MatchedDecision } from './policy';
-import { send, type AiPromptApp, type AppId, type Policy, type PolicyEvent } from './protocol';
-import { uploadCategory, uploadRule, type UploadDecision, type UploadMethod } from '../../../contracts/policy/uploads';
+import { send, type AppId, type Policy, type PolicyEvent } from './protocol';
+import { uploadCategory, uploadRule, type UploadApp, type UploadDecision, type UploadMethod } from '../../../contracts/policy/uploads';
 
 export function recordDecision(appId: AppId, match: MatchedDecision, installationId: string | undefined,
   decision: PolicyEvent['decision'] = match.action, timestamp = new Date().toISOString()) {
@@ -11,7 +11,7 @@ export function recordDecision(appId: AppId, match: MatchedDecision, installatio
   }, installationId);
 }
 
-export function recordUploadDecision(appId: AiPromptApp, policy: Policy, installationId: string, decision: UploadDecision, uploadMethod: UploadMethod) {
+export function recordUploadDecision(appId: UploadApp, policy: Policy, installationId: string, decision: UploadDecision, uploadMethod: UploadMethod) {
   report({
     eventId: crypto.randomUUID(), appId, timestamp: new Date().toISOString(),
     policyVersion: policy.version, assignmentVersion: policy.assignmentVersion, decision,

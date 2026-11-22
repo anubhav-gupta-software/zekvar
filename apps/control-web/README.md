@@ -64,7 +64,11 @@ Control records group creation, assignment, publication, rollback, and promotion
 2. Edit detector settings, file upload modes and types, or navigation rules. Choose **Run preview** to see how the current policy and the draft handle the same built-in and optional custom samples. Custom prompts, navigation URLs, and sample file names and media types stay in the browser tab.
 3. Review the outcomes and setting changes. Choose **Publish previewed policy** and confirm to publish the draft to the selected scope. If the current version changed while you were editing, reload the page and run the comparison again.
 
-The preview evaluates the supported text detectors, file metadata, and individual top-level HTTP and HTTPS URLs. For each AI app, a blank **File types** field applies its upload mode to all files. Enter types such as `.pdf` or `image/*` for selected files. Use a pilot group to test native browser actions before promotion. [File upload test guide](../browser-extension/README.md#test-file-upload-policies)
+The preview evaluates the supported text detectors, file metadata, and individual top-level HTTP and HTTPS URLs. Choose **Prompt sample destination** to compare app-specific settings such as **Claude prompt protection** and temporary exceptions. A blank **File types** field applies the upload mode to all files for ChatGPT or Gemini. Enter types such as `.pdf` or `image/*` for selected files. Use a pilot group to test native browser actions before promotion. [File upload test guide](../browser-extension/README.md#test-file-upload-policies)
+
+## Pilot Claude prompt protection
+
+Enable **Claude prompt protection** in a rollout group and sync Browser v0.19.0 or later. **Browser health** shows **Off** when the assigned policy disables the adapter, **Unobserved** before a composer check for the assigned version, and the last observed **Detected** or **Unsupported** status. Filter **Security events** to Claude to review metadata-only decisions. [Experimental Claude test guide](../browser-extension/README.md#try-experimental-claude-prompt-protection)
 
 ## Configure app inventory
 

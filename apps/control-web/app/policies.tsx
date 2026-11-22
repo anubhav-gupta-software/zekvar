@@ -1,5 +1,5 @@
-import { aiPromptApps, decisionLabels, detectorModeLabels, detectorModes, modes, promptAppLabels, ruleLabels, utc, type Policy } from '../lib/control';
-import { uploadModes, uploadTypesHint } from '../../../contracts/policy/uploads';
+import { decisionLabels, detectorModeLabels, detectorModes, modes, promptAppLabels, ruleLabels, utc, type Policy } from '../lib/control';
+import { uploadApps, uploadModes, uploadTypesHint } from '../../../contracts/policy/uploads';
 import { exceptionKey } from '../../../contracts/policy/prompt-exceptions';
 import { fixtureRule } from '../../../contracts/policy/prompt';
 import { publishPolicy, restorePolicy } from './actions';
@@ -42,7 +42,14 @@ export function PublishPolicyForm({ policy, groupId, review }: { policy?: Policy
         <option value="off">Off</option><option value="on">On</option>
       </select>
     </div>
-    {aiPromptApps.map((app) => <div className="grid gap-1" key={app}>
+    <div className="grid gap-1">
+      <label htmlFor="claude-prompt-mode">Claude prompt protection</label>
+      <select key={policy?.version} id="claude-prompt-mode" name="claudePromptEnabled"
+        defaultValue={policy?.claudePromptEnabled ? 'on' : 'off'}>
+        <option value="off">Off</option><option value="on">On · experimental</option>
+      </select>
+    </div>
+    {uploadApps.map((app) => <div className="grid gap-1" key={app}>
       <label htmlFor={`upload-${app}`}>{promptAppLabels[app]} file uploads</label>
       <select key={policy?.version} id={`upload-${app}`} name={`upload-${app}`} defaultValue={policy?.uploadModes?.[app] ?? 'off'}>
         {uploadModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
@@ -65,7 +72,7 @@ export function PolicyVersionTable({ policies, groupId, writable, review }: {
     <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="history-heading">
       <table aria-labelledby="history-heading">
         <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>Payment card number</th><th>App discovery</th>
-          <th>Extension inventory</th><th>File uploads</th><th>Navigation rules</th><th>Published (UTC)</th><th>Restore source</th>
+          <th>Extension inventory</th><th>Claude prompt protection</th><th>File uploads</th><th>Navigation rules</th><th>Published (UTC)</th><th>Restore source</th>
           <th>Prompt exceptions</th><th>Action</th></tr></thead>
         <tbody>{policies.map((policy, index) => <PolicyRow key={policy.version} policy={policy} current={index === 0}
           groupId={groupId} writable={writable} review={review} />)}</tbody>
@@ -90,7 +97,8 @@ function PolicyRow({ policy, current, groupId, writable, review }: {
         {policy.customApps.map(({ id, host, name }) => <p key={id}>{name} · <code>{host}</code></p>)}
       </details>}</td>
     <td>{policy.extensionInventoryEnabled ? 'On' : 'Off'}</td>
-    <td>{aiPromptApps.map((app) => {
+    <td>{policy.claudePromptEnabled ? 'On' : 'Off'}</td>
+    <td>{uploadApps.map((app) => {
       const types = policy.uploadTypes?.[app] ?? [];
       return <div key={app}>{promptAppLabels[app]} · {detectorModeLabels[policy.uploadModes?.[app] ?? 'off']}
         {types.length > 0 && <details className="domain-rule-history"><summary>{types.length} selected types</summary>

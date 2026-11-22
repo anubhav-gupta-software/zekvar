@@ -3,6 +3,7 @@ import { evaluatePrompt, ruleLabels, type PromptPolicy, type PromptRuleId } from
 
 export const exceptionDecision = 'exception_applied';
 export const exceptionWindowMs = 24 * 60 * 60_000;
+export const promptExceptionLimit = aiPromptApps.length * Object.keys(ruleLabels).length;
 export type PromptException = { appId: AiPromptApp; ruleId: PromptRuleId; expiresAt: string; reason: string };
 export type PromptExceptionGrant = { appId: AiPromptApp; ruleId: PromptRuleId; expiresAtMs: number };
 export type PromptExceptionLease = { serverTimeMs: number; grants: PromptExceptionGrant[] };
@@ -24,7 +25,7 @@ export function samePromptExceptions(before: readonly PromptException[], after: 
 }
 
 export function readPromptExceptions(input: unknown): PromptException[] | undefined {
-  if (!Array.isArray(input) || input.length > 6) return;
+  if (!Array.isArray(input) || input.length > promptExceptionLimit) return;
   const entries = new Map<string, PromptException>();
   for (const raw of input) {
     if (!raw || !isExceptionTarget(raw.appId, raw.ruleId) || typeof raw.expiresAt !== 'string' ||

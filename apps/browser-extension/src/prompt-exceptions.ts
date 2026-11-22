@@ -1,4 +1,4 @@
-import { exceptionKey, exceptionWindowMs, isExceptionTarget, type PromptExceptionLease } from '../../../contracts/policy/prompt-exceptions';
+import { exceptionKey, exceptionWindowMs, isExceptionTarget, promptExceptionLimit, type PromptExceptionLease } from '../../../contracts/policy/prompt-exceptions';
 import { isRecord } from './protocol';
 
 const freshnessMs = 45_000;
@@ -22,7 +22,7 @@ export function leaseTime(lease: BrowserLease, now = sampleClock()) {
 export function readExceptionLease(value: unknown, clock: ClockSample): BrowserLease | undefined {
   if (!isRecord(value) || typeof value.serverTimeMs !== 'number' || !Number.isSafeInteger(value.serverTimeMs) ||
       value.serverTimeMs <= 0 || value.serverTimeMs >= 8.64e15 - exceptionWindowMs ||
-      !Array.isArray(value.grants) || value.grants.length < 1 || value.grants.length > 6) return;
+      !Array.isArray(value.grants) || value.grants.length < 1 || value.grants.length > promptExceptionLimit) return;
   const serverTimeMs = value.serverTimeMs;
   const grants: BrowserLease['grants'] = [];
   for (const item of value.grants) {

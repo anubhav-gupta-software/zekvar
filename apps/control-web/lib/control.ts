@@ -48,6 +48,7 @@ export type Policy = {
   customApps?: CustomApp[];
   promptExceptions?: PromptException[];
   extensionInventoryEnabled?: boolean;
+  claudePromptEnabled?: boolean;
   domainRules?: DomainRules;
   pathRules?: PathRules;
   publishedAt: string;
@@ -64,6 +65,9 @@ export type Installation = {
   chatGptCheckedAt?: string | null;
   geminiCoverage?: 'ready' | 'unsupported' | null;
   geminiCheckedAt?: string | null;
+  claudePromptEnabled?: boolean;
+  claudeCoverage?: 'ready' | 'unsupported' | null;
+  claudeCheckedAt?: string | null;
   policyGroupId?: string | null;
   policyGroupName?: string | null;
   expectedPolicyVersion?: number;

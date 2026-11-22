@@ -1,15 +1,18 @@
-import type { AiPromptApp } from './apps';
+import { chatGptApp, geminiApp } from './apps';
 
 export const uploadModes = ['off', 'monitor', 'block'] as const;
 export type UploadMode = typeof uploadModes[number];
 export type UploadDecision = Exclude<UploadMode, 'off'>;
-export type UploadModes = Record<AiPromptApp, UploadMode>;
+export const uploadApps = [chatGptApp, geminiApp] as const;
+export type UploadApp = typeof uploadApps[number];
+export const isUploadApp = (app: unknown): app is UploadApp => app === chatGptApp || app === geminiApp;
+export type UploadModes = Record<UploadApp, UploadMode>;
 export const uploadsOff: UploadModes = { chatgpt: 'off', gemini: 'off' };
-export type UploadTypes = Record<AiPromptApp, string[]>;
+export type UploadTypes = Record<UploadApp, string[]>;
 export const allUploadTypes: UploadTypes = { chatgpt: [], gemini: [] };
 export type UploadFile = { name: string; type: string };
 export type UploadFilter = { mode: UploadDecision; types: string[] };
-export type TargetedUploads = Partial<Record<AiPromptApp, UploadFilter>>;
+export type TargetedUploads = Partial<Record<UploadApp, UploadFilter>>;
 export const uploadTypesHint = 'Leave blank for all files, or enter up to 25 types such as .pdf or image/*. Separate types with spaces, commas, or line breaks.';
 export const uploadTypesError = 'Enter up to 25 valid file extensions or media types per app, with at most 64 characters per type.';
 

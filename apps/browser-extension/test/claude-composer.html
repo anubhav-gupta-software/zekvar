@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Zekvar Claude composer fixture</title></head>
+<body>
+  <main>
+    <output id="submitted">0</output>
+    <output id="unrelated">0</output>
+    <form id="feedback">
+      <label>Unrelated draft <input></label>
+      <button type="submit" aria-label="Send message">Send feedback</button>
+    </form>
+  </main>
+  <script>
+    const submitted = document.querySelector('#submitted');
+    const feedback = document.querySelector('#feedback');
+    feedback.addEventListener('submit', (event) => {
+      event.preventDefault();
+      document.querySelector('#unrelated').value++;
+    });
+
+    const legacy = location.pathname.startsWith('/chat/');
+    const composer = document.createElement(legacy ? 'fieldset' : 'section');
+    composer.id = 'composer';
+    if (!legacy) composer.dataset.testid = 'chat-input';
+    const editor = document.createElement('div');
+    editor.className = 'tiptap ProseMirror';
+    editor.contentEditable = 'true';
+    editor.setAttribute('role', 'textbox');
+    editor.setAttribute('aria-label', 'Fixture prompt');
+    editor.style.minHeight = '2rem';
+    const send = document.createElement('button');
+    send.textContent = 'Send prompt';
+    if (legacy) send.setAttribute('aria-label', 'Send Message');
+    else send.dataset.testid = 'send-button';
+    composer.append(editor, send);
+    document.querySelector('main').prepend(composer);
+
+    function update() { send.hidden = !editor.textContent.trim(); }
+    function submit() {
+      if (!editor.textContent.trim()) return;
+      submitted.dataset.last = editor.innerText;
+      submitted.value++;
+      editor.replaceChildren();
+      update();
+    }
+    editor.addEventListener('input', update);
+    editor.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+      event.preventDefault();
+      submit();
+    });
+    send.addEventListener('click', submit);
+    update();
+  </script>
+</body>
+</html>

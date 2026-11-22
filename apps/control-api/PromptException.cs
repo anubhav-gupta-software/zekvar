@@ -10,11 +10,11 @@ internal sealed record PromptException(string AppId, string RuleId, DateTimeOffs
     {
         normalized = null;
         if (submitted is null) return true;
-        if (submitted.Length > 6) return false;
+        if (submitted.Length > 9) return false;
         var entries = new Dictionary<(string, string), PromptException>();
         foreach (var entry in submitted)
         {
-            if (entry is null || entry.AppId is not (FixtureContract.ChatGpt or FixtureContract.Gemini) ||
+            if (entry is null || !FixtureContract.IsAiPromptApp(entry.AppId) ||
                 !FixtureContract.IsPromptRule(entry.RuleId) ||
                 entry.ExpiresAt == default || entry.ExpiresAt > now.AddHours(24) ||
                 entry.Reason?.Trim() is not { Length: >= 3 and <= 120 } reason || Controls.IsMatch(reason)) return false;

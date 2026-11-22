@@ -216,7 +216,8 @@ var browser = app.MapGroup("/v1/browser").AddEndpointFilter(Authenticate(browser
 browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
 {
     var aware = http.Request.Headers["X-Zekvar-Assignment-Aware"] == "1";
-    if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, ct) is { } policy) return Results.Ok(policy.ForBrowser());
+    var claudeAware = http.Request.Headers["X-Zekvar-Claude-Prompt"] == "1";
+    if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, claudeAware, ct) is { } policy) return Results.Ok(policy.ForBrowser(claudeAware));
     return aware ? Results.Unauthorized() : Results.Conflict(new { error = "Update the browser to receive the assigned policy." });
 });
 browser.MapPost("/heartbeat", async (Heartbeat request, HttpContext http, CancellationToken ct) =>
@@ -246,7 +247,7 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
           request.Mode is null && (request.DomainRules is not null || request.PaymentCardMode is not null ||
               request.PathRules is not null || request.UploadModes?.HasSettings() == true ||
               request.UploadTypes?.HasSettings() == true || request.ExtensionInventoryEnabled.HasValue || request.CustomApps is not null ||
-              request.PromptExceptions is not null)) ||
+              request.PromptExceptions is not null || request.ClaudePromptEnabled.HasValue)) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode))
         return Results.BadRequest(new { error = "Choose a valid rule mode." });
     if (request.UploadModes?.IsValid() == false)

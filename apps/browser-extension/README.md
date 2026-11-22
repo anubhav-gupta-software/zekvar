@@ -1,8 +1,8 @@
 # Zekvar Browser and Control demo
 
-Zekvar Browser enforces domain rules, evaluates prompts locally, and controls native file intake on supported ChatGPT and Gemini routes. It also supports the loopback prompt fixture. Managed browsers send decision metadata to Control and can report visits to cataloged apps when discovery is enabled.
+Zekvar Browser enforces domain rules, evaluates prompts locally, and controls native file intake on supported ChatGPT and Gemini routes. It also supports the loopback prompt fixture and opt-in experimental Claude text protection. Managed browsers send decision metadata to Control and can report visits to cataloged apps when discovery is enabled.
 
-For the [TLS pilot](../../deploy/pilot/README.md#build-and-enroll-browser), build v0.18.0 with a fixed HTTPS browser API origin. Managed enrollment includes that origin and its short-lived grant. A change of origin clears the previous enrollment, queued data, and cached enforcement before enrollment at the new destination.
+For the [TLS pilot](../../deploy/pilot/README.md#build-and-enroll-browser), build v0.18.0 or later with a fixed HTTPS browser API origin. Managed enrollment includes that origin and its short-lived grant. A change of origin clears the previous enrollment, queued data, and cached enforcement before enrollment at the new destination.
 
 ## Run the demo
 
@@ -48,6 +48,14 @@ The verification runner exercises redaction in the controlled marked editor and 
 
 The adapter matches a single visible text editor and Send control in the same Gemini composer. An empty draft may show **Waiting for Send control**. The supported paths are native click and plain Enter with the recognized English editor. Signed-in Workspace layouts, files, voice, and other compose surfaces require separate verification. [Gemini web app access](https://support.google.com/gemini/answer/13275745?hl=en)
 
+## Try experimental Claude prompt protection
+
+1. In Control, assign a browser to a test rollout group. Set **Claude prompt protection** to **On · experimental** for that group and start with the Test marker in **Monitor** mode. Sync Browser v0.19.0 or later.
+2. On an authorized Claude account, try `ZEKVAR_TEST_SECRET` in a fresh chat and an existing chat. Check **Claude composer** in Browser health and filter Security events to Claude. Use **Copy composer diagnostics** if the banner reports an unsupported layout. The diagnostics include structure and route type.
+3. After confirming the layout and Monitor events, use the same synthetic marker to check **Warn** and **Block**, including click, Enter, and the separate Send after reviewing a redaction.
+
+The pilot recognizes a visible ProseMirror editor paired with one visible Send control in a marked composer on `/new` or `/chat/<conversation-id>`. The automated suite covers two controlled composer layouts, typed and pasted text on Send, warnings, redaction, and temporary exceptions. Signed-in Claude is pending live verification. Claude file attachments, voice, and other app surfaces have separate coverage requirements. [Claude web chat and sign-in](https://support.claude.com/en/articles/8114491-get-started-with-claude)
+
 ## Try the GitHub classic PAT rule
 
 Set **GitHub classic PAT** under **Publish a policy** in Control, publish, and use **Sync now** in the Zekvar Browser popup. The rule starts **Off** and has its own setting. In **Monitor**, it records a matching attempt and allows Send. **Warn** asks the user to edit or continue. **Block** holds the attempt until the prompt is edited. When both rules match, Zekvar applies the stricter action and reports the rule that determined it. A tie is attributed to the GitHub rule.
@@ -78,7 +86,7 @@ Update enrolled Chrome profiles to v0.15.0 before publishing scoped file types. 
 
 1. Start the updated Control services and load Browser v0.17.0. In **Policy preview**, choose the baseline or a rollout group. Set the detector to **Warn** or **Block** and choose **Add prompt exception**. Select the AI app and detector, enter a reason, and set an expiry (UTC) within 24 hours.
 2. Pick a **Prompt sample destination** and run the preview. Check the relevant detection and a mixed sample. Publish or request independent approval. Click **Sync now** on the assigned browser.
-3. Try the test marker on the controlled guest ChatGPT or Gemini composer. The exception applies to its selected app and detector. A different matching Warn or Block rule still applies. Control reports **Exception applied** on the Security events page when the exception allows a send.
+3. Try the test marker on the controlled guest ChatGPT, Gemini, or enabled Claude pilot composer. The exception applies to its selected app and detector. A different matching Warn or Block rule still applies. Control reports **Exception applied** on the Security events page when the exception allows a send.
 
 Chrome uses the server deadline and a grant that can be used for up to 45 seconds after a policy fetch. It resumes standard enforcement after expiry, clock discontinuity, confirmed disconnection, or a browser restart before the next successful sync. Removing an exception takes effect at the next sync or when the local grant expires. Rollback and promotion preserve the target scope's exception list. A rollout group that inherits the baseline uses its regular rules and has its own exception list. [Chrome extension alarms](https://developer.chrome.com/docs/extensions/reference/api/alarms) · [High Resolution Time](https://www.w3.org/TR/hr-time-3/)
 
@@ -135,7 +143,7 @@ node scripts/verify-demo.mjs --headed --live --artifacts /tmp/zekvar-demo
 
 The command builds in a temporary directory and starts its own PostgreSQL, Control API, dashboard, and Chrome profile. It generates a temporary admin token, signs in, creates an enrollment grant, and redeems it in the extension. It publishes and restores policy, verifies the displayed events, and checks that an event retry after a lost acknowledgment stores a single record. It exercises all four GitHub rule settings and checks that the candidate value stays out of event transport and storage. It enables app discovery, visits the controlled catalog origins, saves app classifications, and verifies privacy and recovery. It also checks allowed and blocked navigation against a local HTTP server, including while Control is unavailable and after rollback and revocation. API, dashboard, and extension regression suites run against isolated organizations. The command tears down its services at the end. On the first run, it downloads Chrome for Testing before opening the browser.
 
-`--headed` opens Chrome during the demo. `--artifacts` saves screenshots of the controlled workflow. `--live` separately attempts the public ChatGPT composer using the isolated profile and synthetic text. The runner reports a skip if the site blocks access or the supported composer is unavailable. The controlled workflow uses a local response for the ChatGPT page and the real loopback API for its events.
+`--headed` opens Chrome during the demo. `--artifacts` saves screenshots from the workflow. `--live` separately attempts the public ChatGPT and Gemini composers using the isolated profile and synthetic text. The runner reports a skip if a site blocks access or its supported composer is unavailable. The experimental Claude workflow uses two controlled composer fixtures and the real loopback API and database.
 
 To run the standalone extension tests from `apps/browser-extension`:
 

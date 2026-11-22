@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { readNavigationRules } from '../../lib/navigation';
 import { detectorModes, fixtureRule, modes, ruleLabels, type DetectorMode, type PolicyMode, type PromptRuleId } from '../../../../contracts/policy/prompt';
-import { parseUploadTypes, uploadModes, uploadTypesError, uploadTypesHint, type UploadMode } from '../../../../contracts/policy/uploads';
+import { parseUploadTypes, uploadApps, uploadModes, uploadTypesError, uploadTypesHint, type UploadApp, type UploadMode } from '../../../../contracts/policy/uploads';
 import { aiPromptApps, decisionLabels, detectorModeLabels, promptAppLabels } from '../../lib/control';
 import { changedDecision, parseWebAddress, runComparison, samePolicy,
   type PreviewDecision, type PreviewPolicy, type PreviewResult, type PreviewSnapshot } from '../../lib/preview';
@@ -11,7 +11,7 @@ import { publishPreview } from '../actions';
 import { MutationForm } from '../forms';
 import { PolicyChanges } from '../policy-changes';
 import { customAppError, parseCustomApps } from '../../../../contracts/policy/discovery';
-import { exceptionWindowMs, promptExceptionError, readPromptExceptions, samePromptExceptions, type PromptException } from '../../../../contracts/policy/prompt-exceptions';
+import { exceptionWindowMs, promptExceptionError, promptExceptionLimit, readPromptExceptions, samePromptExceptions, type PromptException } from '../../../../contracts/policy/prompt-exceptions';
 import { chatGptApp, type AiPromptApp } from '../../../../contracts/policy/apps';
 
 const navigationFields = [
@@ -19,13 +19,14 @@ const navigationFields = [
   ['allowPaths', 'Draft allowed paths'], ['blockPaths', 'Draft blocked paths'],
 ] as const;
 type Editor = Omit<PreviewPolicy, 'domainRules' | 'pathRules' | 'uploadTypes' | 'customApps'> &
-  Record<typeof navigationFields[number][0], string> & { uploadTypeText: Record<typeof aiPromptApps[number], string>; catalog: string };
+  Record<typeof navigationFields[number][0], string> & { uploadTypeText: Record<UploadApp, string>; catalog: string };
 
 function editorFor(snapshot: PreviewSnapshot): Editor {
   return {
     mode: snapshot.mode, githubPatMode: snapshot.githubPatMode, paymentCardMode: snapshot.paymentCardMode,
     discoveryEnabled: snapshot.discoveryEnabled,
     extensionInventoryEnabled: snapshot.extensionInventoryEnabled,
+    claudePromptEnabled: snapshot.claudePromptEnabled,
     uploadModes: snapshot.uploadModes,
     uploadTypeText: { chatgpt: snapshot.uploadTypes.chatgpt.join(', '), gemini: snapshot.uploadTypes.gemini.join(', ') },
     catalog: snapshot.customApps.map(({ host, name }) => `${host}, ${name}`).join('\n'),
@@ -46,6 +47,9 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
   const [promptApp, setPromptApp] = useState<AiPromptApp>(chatGptApp);
   const [result, setResult] = useState<PreviewResult>();
   const [error, setError] = useState('');
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => setReady(true), []);
 
   function invalidate() {
     setResult(undefined);
@@ -106,12 +110,13 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
     setError('');
     setResult(runComparison(reference, {
       mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode,
-      discoveryEnabled: editor.discoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled, domainRules, pathRules,
+      discoveryEnabled: editor.discoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled,
+      claudePromptEnabled: editor.claudePromptEnabled, domainRules, pathRules,
       uploadModes: editor.uploadModes, uploadTypes: { chatgpt, gemini }, customApps, promptExceptions,
     }, customPrompt, address, file, promptApp));
   }
 
-  return <>
+  return <fieldset disabled={!ready} className="m-0 min-w-0 border-0 p-0">
     <section className="panel" aria-labelledby="draft-heading">
       <div className="panel-heading"><h2 id="draft-heading">Draft policy</h2><span className="badge">Current {reference.label}</span></div>
       <p className="muted">Compare an editable draft with the current policy for {scopeName}.</p>
@@ -154,7 +159,14 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
             <option value="off">Off</option><option value="on">On</option>
           </select>
         </div>
-        {aiPromptApps.map((app) => <div className="grid gap-1" key={app}>
+        <div className="grid gap-1">
+          <label htmlFor="draft-claude-prompt">Draft Claude prompt protection</label>
+          <select id="draft-claude-prompt" value={editor.claudePromptEnabled ? 'on' : 'off'}
+            onChange={(event) => edit('claudePromptEnabled', event.target.value === 'on')}>
+            <option value="off">Off</option><option value="on">On · experimental</option>
+          </select>
+        </div>
+        {uploadApps.map((app) => <div className="grid gap-1" key={app}>
           <label htmlFor={`draft-upload-${app}`}>Draft {promptAppLabels[app]} file uploads</label>
           <select id={`draft-upload-${app}`} value={editor.uploadModes[app]}
             onChange={(event) => edit('uploadModes', { ...editor.uploadModes, [app]: event.target.value as UploadMode })}>
@@ -215,19 +227,19 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
         <div><button type="button" className="button small" aria-label={`Remove exception ${index + 1}`}
           onClick={() => edit('promptExceptions', editor.promptExceptions.filter((_entry, position) => position !== index))}>Remove</button></div>
       </fieldset>)}
-      <button type="button" className="button small" disabled={editor.promptExceptions.length >= 6} onClick={() => edit('promptExceptions',
+      <button type="button" className="button small" disabled={editor.promptExceptions.length >= promptExceptionLimit} onClick={() => edit('promptExceptions',
         [...editor.promptExceptions, { appId: chatGptApp, ruleId: fixtureRule, expiresAt: '', reason: '' }])}>Add prompt exception</button>
     </section>
     <section className="panel" aria-labelledby="preview-samples-heading">
       <h2 id="preview-samples-heading">Test samples</h2>
       <p className="muted">Built-in cases cover prompt detectors, navigation, and file upload policies. Custom samples stay in this tab.</p>
       <div className="policy-fields preview-inputs">
-        {editor.promptExceptions.length + reference.promptExceptions.length > 0 && <div className="grid gap-1">
+        <div className="grid gap-1">
           <label htmlFor="preview-prompt-app">Prompt sample destination</label>
           <select id="preview-prompt-app" value={promptApp} onChange={(event) => { setPromptApp(event.target.value as AiPromptApp); invalidate(); }}>
             {aiPromptApps.map((app) => <option key={app} value={app}>{promptAppLabels[app]}</option>)}
           </select>
-        </div>}
+        </div>
         <div className="grid gap-1">
           <label htmlFor="preview-prompt">Custom prompt</label>
           <textarea id="preview-prompt" rows={3} maxLength={16000} autoComplete="off" spellCheck={false} value={customPrompt}
@@ -254,7 +266,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
       {error && <p className="feedback error" role="alert">{error}</p>}
     </section>
     {result && <PreviewResults result={result} groupId={groupId} scopeName={scopeName} writable={writable} review={review} />}
-  </>;
+  </fieldset>;
 }
 
 function PreviewResults({ result, groupId, scopeName, writable, review }: {
@@ -293,8 +305,9 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         <input type="hidden" name="customApps" value={candidate.customApps.map(({ host, name }) => `${host}, ${name}`).join('\n')} />
         <input type="hidden" name="promptExceptions" value={JSON.stringify(candidate.promptExceptions)} />
         <input type="hidden" name="extensionInventoryEnabled" value={candidate.extensionInventoryEnabled ? 'on' : 'off'} />
-        {aiPromptApps.map((app) => <input key={app} type="hidden" name={`upload-${app}`} value={candidate.uploadModes[app]} />)}
-        {aiPromptApps.map((app) => <input key={app} type="hidden" name={`upload-types-${app}`} value={candidate.uploadTypes[app].join(', ')} />)}
+        <input type="hidden" name="claudePromptEnabled" value={candidate.claudePromptEnabled ? 'on' : 'off'} />
+        {uploadApps.map((app) => <input key={app} type="hidden" name={`upload-${app}`} value={candidate.uploadModes[app]} />)}
+        {uploadApps.map((app) => <input key={app} type="hidden" name={`upload-types-${app}`} value={candidate.uploadTypes[app].join(', ')} />)}
         <input type="hidden" name="allow" value={candidate.domainRules.allow.join('\n')} />
         <input type="hidden" name="block" value={candidate.domainRules.block.join('\n')} />
         <input type="hidden" name="allowPaths" value={candidate.pathRules.allow.join('\n')} />

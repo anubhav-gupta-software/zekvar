@@ -99,7 +99,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
           <div className="panel-heading"><h2 id="browsers-heading">Browser health</h2><RefreshSection label="Refresh browser health" /></div>
           <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="browsers-heading">
             <table aria-labelledby="browsers-heading">
-              <thead><tr><th>Installation</th><th>Rollout group</th><th>Reporting</th><th>Policy status</th><th>Applied version</th><th>ChatGPT composer</th><th>Gemini composer</th><th>Last seen (UTC)</th><th>Action</th></tr></thead>
+              <thead><tr><th>Installation</th><th>Rollout group</th><th>Reporting</th><th>Policy status</th><th>Applied version</th><th>ChatGPT composer</th><th>Gemini composer</th><th>Claude composer</th><th>Last seen (UTC)</th><th>Action</th></tr></thead>
               <tbody>{installations.map((installation) => <BrowserRow key={installation.installationId}
                 installation={installation} latestVersion={current?.version} writable={writable} />)}</tbody>
             </table>
@@ -226,6 +226,7 @@ function BrowserRow({ installation, latestVersion, writable }: { installation: I
     <td>{installation.appliedPolicyVersion ? `v${installation.appliedPolicyVersion}` : '—'}</td>
     <CoverageCell coverage={installation.chatGptCoverage} checkedAt={installation.chatGptCheckedAt} />
     <CoverageCell coverage={installation.geminiCoverage} checkedAt={installation.geminiCheckedAt} />
+    <CoverageCell coverage={installation.claudeCoverage} checkedAt={installation.claudeCheckedAt} enabled={installation.claudePromptEnabled === true} />
     <td><Timestamp value={installation.lastSeenAt} /></td>
     <td>{installation.revokedAt || !writable ? '—' :
       <MutationForm action={revokeInstallation} label="Revoke" appearance="small danger"
@@ -237,9 +238,9 @@ function BrowserRow({ installation, latestVersion, writable }: { installation: I
   </tr>;
 }
 
-function CoverageCell({ coverage, checkedAt }: { coverage?: 'ready' | 'unsupported' | null; checkedAt?: string | null }) {
+function CoverageCell({ coverage, checkedAt, enabled = true }: { coverage?: 'ready' | 'unsupported' | null; checkedAt?: string | null; enabled?: boolean }) {
   return <td><span className={`badge ${coverage === 'unsupported' ? 'warn' : ''}`}>
-    {coverage === 'ready' ? 'Detected' : coverage === 'unsupported' ? 'Unsupported' : 'Unobserved'}
+    {!enabled ? 'Off' : coverage === 'ready' ? 'Detected' : coverage === 'unsupported' ? 'Unsupported' : 'Unobserved'}
   </span>{checkedAt && <div className="muted"><Timestamp value={checkedAt} /> UTC</div>}</td>;
 }
 

@@ -29,7 +29,7 @@ const worker = `worker-${manifest.version}-${createHash('sha256').update(origin)
 await build({
   entryPoints: {
     ...(hostedOrigin === undefined ? { content: 'src/content.ts' } : {}),
-    chatgpt: 'src/chatgpt.ts', gemini: 'src/gemini.ts',
+    chatgpt: 'src/chatgpt.ts', claude: 'src/claude.ts', gemini: 'src/gemini.ts',
     discovery: 'src/discovery.ts', popup: 'src/popup.ts', [worker]: 'src/worker.ts',
   },
   bundle: true,

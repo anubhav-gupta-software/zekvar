@@ -1,4 +1,5 @@
-import { aiPromptApps, decisionLabels, detectorModeLabels, promptAppLabels, ruleLabels, utc } from '../lib/control';
+import { decisionLabels, detectorModeLabels, promptAppLabels, ruleLabels, utc } from '../lib/control';
+import { uploadApps } from '../../../contracts/policy/uploads';
 import type { PreviewPolicy } from '../lib/preview';
 import { exceptionKey, samePromptExceptions } from '../../../contracts/policy/prompt-exceptions';
 import { fixtureRule } from '../../../contracts/policy/prompt';
@@ -11,9 +12,10 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     ['Payment card number', detectorModeLabels[reference.paymentCardMode], detectorModeLabels[candidate.paymentCardMode]],
     ['App discovery', toggle(reference.discoveryEnabled), toggle(candidate.discoveryEnabled)],
     ['Extension inventory', toggle(reference.extensionInventoryEnabled), toggle(candidate.extensionInventoryEnabled)],
-    ...aiPromptApps.map((app) => [`${promptAppLabels[app]} file uploads`, detectorModeLabels[reference.uploadModes[app]],
+    ['Claude prompt protection', toggle(reference.claudePromptEnabled), toggle(candidate.claudePromptEnabled)],
+    ...uploadApps.map((app) => [`${promptAppLabels[app]} file uploads`, detectorModeLabels[reference.uploadModes[app]],
       detectorModeLabels[candidate.uploadModes[app]]]),
-    ...aiPromptApps.map((app) => [`${promptAppLabels[app]} file types`, reference.uploadTypes[app].join(', ') || 'All files',
+    ...uploadApps.map((app) => [`${promptAppLabels[app]} file types`, reference.uploadTypes[app].join(', ') || 'All files',
       candidate.uploadTypes[app].join(', ') || 'All files']),
   ];
   return <ul className="preview-changes" aria-label="Policy setting changes">

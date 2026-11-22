@@ -43,7 +43,8 @@ internal sealed partial class ControlStore
                 WHERE i.organization_id = $1 AND i.id = $2 AND i.revoked_at IS NULL AND ($3 IS NULL OR g.id IS NOT NULL)
                 FOR UPDATE OF i
             ), changed AS (
-                UPDATE installations i SET policy_group_id = $3, assignment_version = assignment_version + 1, applied_policy_version = NULL
+                UPDATE installations i SET policy_group_id = $3, assignment_version = assignment_version + 1, applied_policy_version = NULL,
+                    claude_coverage = NULL, claude_checked_at = NULL, claude_coverage_version = NULL
                 FROM target t WHERE i.id = t.id AND t.assignment_aware AND t.policy_group_id IS DISTINCT FROM $3
                 RETURNING i.organization_id, i.id, i.policy_group_id, t.group_name
             ), audit AS (

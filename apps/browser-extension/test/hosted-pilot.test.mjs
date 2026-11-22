@@ -283,6 +283,23 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   });
   assert.equal(exported.status, 200);
   assert.doesNotMatch(exported.body, /Synthetic pilot draft|ZEKVAR_TEST_SECRET/);
+
+  const claudePolicy = await admin('policies', { claudePromptEnabled: true });
+  await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
+  await label(popup, `Connected to Control · BLOCK v${claudePolicy.version}`).waitFor();
+  const claude = await browser.newPage();
+  const claudeFixture = await readFile(new URL('./claude-composer.html', import.meta.url), 'utf8');
+  await claude.route('https://claude.ai/**', (route) => route.fulfill({ contentType: 'text/html', body: claudeFixture }));
+  await claude.goto('https://claude.ai/new');
+  await claude.getByText(new RegExp(`^Zekvar · BLOCK v${claudePolicy.version}`)).waitFor();
+  await claude.getByRole('textbox', { name: 'Fixture prompt' }).fill('Synthetic TLS Claude draft ZEKVAR_TEST_SECRET');
+  await claude.locator('#composer button').click();
+  await claude.getByRole('alert').filter({ hasText: 'Submission blocked' }).waitFor();
+  assert.equal(await claude.locator('#submitted').textContent(), '0');
+  await until(async () => (await admin('events?appId=claude')).find(({ installationId }) => installationId === newId),
+    'The managed Chrome profile did not report its Claude decision through HTTPS.');
+  await dashboard.reload();
+  await dashboard.getByRole('table', { name: 'Security events' }).getByText('Claude', { exact: true }).waitFor();
   await dashboard.getByRole('button', { name: 'Sign out', exact: true }).click();
   await dashboard.getByRole('heading', { name: 'Sign in to Control', exact: true }).waitFor();
   assert.equal((await browser.cookies(dashboardOrigin)).some(({ name }) => name === session.name), false);

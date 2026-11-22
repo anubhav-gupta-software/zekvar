@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Zekvar Browser",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "minimum_chrome_version": "120",
   "description": "Applies Zekvar domain, prompt, and file upload policies and reports cataloged app discovery when enabled.",
   "permissions": ["storage", "alarms", "declarativeNetRequest"],
@@ -23,6 +23,11 @@
     {
       "matches": ["https://gemini.google.com/*"],
       "js": ["gemini.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["claude.js"],
       "run_at": "document_start"
     },
     {

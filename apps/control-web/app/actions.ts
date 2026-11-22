@@ -107,20 +107,22 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
   const uploadTypes = readUploadTypes(form);
   const discovery = form.get('discoveryEnabled');
   const inventory = form.get('extensionInventoryEnabled');
+  const claude = form.get('claudePromptEnabled');
   const groupId = form.get('groupId');
   if (groupId !== null && !isId(groupId)) return { error: 'Choose a valid rollout group.' };
   if (!Number.isInteger(expectedVersion) || expectedVersion < 1 || expectedVersion > 2147483647) {
     return { error: 'Reload the current policy before saving changes.' };
   }
   if (!modes.includes(mode) || !detectorModes.includes(githubPatMode) || !isDetectorMode(paymentCardMode) || !uploadModes ||
-      (discovery !== 'on' && discovery !== 'off') || (inventory !== 'on' && inventory !== 'off')) {
+      (discovery !== 'on' && discovery !== 'off') || (inventory !== 'on' && inventory !== 'off') || (claude !== 'on' && claude !== 'off')) {
     return { error: 'Choose a setting for each policy control.' };
   }
   if (!uploadTypes) return { error: uploadTypesError };
   return perform(async (token) => {
     try {
       const policy = await controlApi.publish(token, { mode, githubPatMode, paymentCardMode, uploadModes, uploadTypes,
-        discoveryEnabled: discovery === 'on', extensionInventoryEnabled: inventory === 'on', expectedVersion }, review, groupId ?? undefined);
+        discoveryEnabled: discovery === 'on', extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on', expectedVersion },
+        review, groupId ?? undefined);
       if ('reviewId' in policy) return queued(policy.reviewId);
       refreshPolicyViews();
       return { message: `Version ${policy.version} published in ${decisionLabels[mode].toLowerCase()} mode.` };
@@ -187,10 +189,12 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   const uploadTypes = readUploadTypes(form);
   const discovery = form.get('discoveryEnabled');
   const inventory = form.get('extensionInventoryEnabled');
+  const claude = form.get('claudePromptEnabled');
   const groupId = form.get('groupId');
   const expectedVersion = Number(form.get('expectedVersion'));
   if (!isMode(mode) || !isDetectorMode(githubPatMode) || !isDetectorMode(paymentCardMode) || !uploadModes ||
       (discovery !== 'on' && discovery !== 'off') || (inventory !== 'on' && inventory !== 'off') ||
+      (claude !== 'on' && claude !== 'off') ||
       (groupId !== null && !isId(groupId)) || !Number.isInteger(expectedVersion) || expectedVersion < 1 ||
       expectedVersion > 2147483647) {
     return { error: 'Run the preview again before publishing.' };
@@ -210,7 +214,8 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   return perform(async (token) => {
     try {
       const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, uploadModes, uploadTypes,
-        discoveryEnabled: discovery === 'on', extensionInventoryEnabled: inventory === 'on', domainRules, pathRules, customApps, promptExceptions },
+        discoveryEnabled: discovery === 'on', extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on',
+        domainRules, pathRules, customApps, promptExceptions },
         expectedVersion, form.get('expectReview') === 'on', groupId ?? undefined);
       if ('reviewId' in published) return queued(published.reviewId);
       refreshPolicyViews();

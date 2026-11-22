@@ -40,6 +40,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 17, "017_upload_types.sql", ct);
         await ApplyMigration(connection, 18, "018_custom_app_catalog.sql", ct);
         await ApplyMigration(connection, 19, "019_prompt_exceptions.sql", ct);
+        await ApplyMigration(connection, 20, "020_claude_prompt_protection.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -123,7 +124,7 @@ internal sealed partial class ControlStore
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
                 p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
-                p.custom_apps, p.prompt_exceptions
+                p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.policy_group_id IS NOT DISTINCT FROM $2::uuid ORDER BY p.version DESC LIMIT 100
             """, organizationId, (object?)groupId ?? DBNull.Value);
@@ -133,7 +134,7 @@ internal sealed partial class ControlStore
         return policies;
     }
 
-    public async Task<Policy?> CurrentPolicy(Guid installationId, bool assignmentAware, CancellationToken ct)
+    public async Task<Policy?> CurrentPolicy(Guid installationId, bool assignmentAware, bool claudeAware, CancellationToken ct)
     {
         await using var command = Command("""
             WITH active AS (
@@ -146,23 +147,25 @@ internal sealed partial class ControlStore
                 FROM active i JOIN organizations o ON o.id = i.organization_id
                 LEFT JOIN policy_groups g ON g.organization_id = o.id AND g.id = i.policy_group_id
             ), delivery AS (
-                INSERT INTO policy_deliveries (organization_id, installation_id, assignment_version, policy_version, exception_scope)
-                SELECT e.organization_id, e.id, e.assignment_version, e.version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id
+                INSERT INTO policy_deliveries (organization_id, installation_id, assignment_version, policy_version, exception_scope, claude_prompt)
+                SELECT e.organization_id, e.id, e.assignment_version, e.version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id,
+                    $3 AND p.claude_prompt_enabled
                 FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
-                WHERE e.assignment_version > 0 OR p.prompt_exceptions <> '[]'::jsonb
-                ON CONFLICT DO NOTHING
+                WHERE e.assignment_version > 0 OR p.prompt_exceptions <> '[]'::jsonb OR ($3 AND p.claude_prompt_enabled)
+                ON CONFLICT (installation_id, assignment_version, policy_version) DO UPDATE SET claude_prompt = true
+                WHERE EXCLUDED.claude_prompt AND NOT policy_deliveries.claude_prompt
             )
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
                 p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
-                p.custom_apps, p.prompt_exceptions, e.assignment_version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id
+                p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, e.assignment_version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id
             FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
             LEFT JOIN policy_audit a ON a.organization_id = p.organization_id AND a.version = p.version
-            """, installationId, assignmentAware);
+            """, installationId, assignmentAware, claudeAware);
         await using var rows = await command.ExecuteReaderAsync(ct);
         if (!await rows.ReadAsync(ct)) return null;
         var policy = ReadPolicy(rows);
-        return policy with { AssignmentVersion = rows.GetInt32(18), PromptExceptions = rows.GetBoolean(19) ? policy.PromptExceptions : [] };
+        return policy with { AssignmentVersion = rows.GetInt32(19), PromptExceptions = rows.GetBoolean(20) ? policy.PromptExceptions : [] };
     }
 
     public async Task<bool> RecordHeartbeat(Guid installationId, Heartbeat request, CancellationToken ct)
@@ -175,25 +178,35 @@ internal sealed partial class ControlStore
                     AND ($10 OR (p.chatgpt_upload_mode = 'off' OR cardinality(p.chatgpt_upload_types) = 0)
                         AND (p.gemini_upload_mode = 'off' OR cardinality(p.gemini_upload_types) = 0))
                     AND (NOT p.discovery_enabled OR p.custom_apps = '[]'::jsonb OR $11)
+                    AND (NOT p.claude_prompt_enabled OR $14)
                     AND ($12 OR i.policy_group_id IS DISTINCT FROM p.policy_group_id OR NOT EXISTS (
                         SELECT 1 FROM jsonb_array_elements(p.prompt_exceptions) AS entries(entry)
-                        WHERE (entry->>'expiresAt')::timestamptz > now()))
+                        WHERE (entry->>'expiresAt')::timestamptz > now()
+                            AND (entry->>'appId' <> 'claude' OR p.claude_prompt_enabled)))
                     THEN GREATEST(i.applied_policy_version, $2)
                     WHEN i.applied_policy_version = $2 THEN NULL ELSE i.applied_policy_version END,
                 chatgpt_coverage = COALESCE($3::text, i.chatgpt_coverage),
                 chatgpt_checked_at = CASE WHEN $3::text IS NULL THEN i.chatgpt_checked_at ELSE now() END,
                 gemini_coverage = COALESCE($6::text, i.gemini_coverage),
-                gemini_checked_at = CASE WHEN $6::text IS NULL THEN i.gemini_checked_at ELSE now() END
+                gemini_checked_at = CASE WHEN $6::text IS NULL THEN i.gemini_checked_at ELSE now() END,
+                claude_coverage = CASE WHEN $13::text IS NOT NULL AND $2 >= COALESCE(i.claude_coverage_version, 0)
+                    THEN $13 ELSE i.claude_coverage END,
+                claude_checked_at = CASE WHEN $13::text IS NOT NULL AND $2 >= COALESCE(i.claude_coverage_version, 0)
+                    THEN now() ELSE i.claude_checked_at END,
+                claude_coverage_version = CASE WHEN $13::text IS NOT NULL THEN GREATEST(i.claude_coverage_version, $2)
+                    ELSE i.claude_coverage_version END
             FROM policy_versions p
             WHERE i.id = $1 AND i.revoked_at IS NULL AND i.assignment_version = $5
                 AND p.organization_id = i.organization_id AND p.version = $2
                 AND ($4 OR cardinality(p.allowed_domains) + cardinality(p.blocked_domains) = 0)
-                AND (($5 = 0 AND p.policy_group_id IS NULL) OR EXISTS (SELECT 1 FROM policy_deliveries d
-                    WHERE d.installation_id = i.id AND d.assignment_version = $5 AND d.policy_version = $2))
+                AND ($13::text IS NULL OR p.claude_prompt_enabled AND $14)
+                AND (($5 = 0 AND p.policy_group_id IS NULL AND NOT $14) OR EXISTS (SELECT 1 FROM policy_deliveries d
+                    WHERE d.installation_id = i.id AND d.assignment_version = $5 AND d.policy_version = $2 AND (NOT $14 OR d.claude_prompt)))
             """, installationId, request.PolicyVersion, (object?)request.ChatGptCoverage ?? DBNull.Value,
             request.DomainRulesApplied, request.AssignmentVersion, (object?)request.GeminiCoverage ?? DBNull.Value,
             request.PaymentCardModeApplied, request.UploadControlsApplied, request.PathRulesApplied, request.UploadTypesApplied,
-            request.CustomDiscoveryApplied, request.PromptExceptionsApplied);
+            request.CustomDiscoveryApplied, request.PromptExceptionsApplied, (object?)request.ClaudeCoverage ?? DBNull.Value,
+            request.ClaudePromptApplied);
         return await command.ExecuteNonQueryAsync(ct) == 1;
     }
 
@@ -201,10 +214,12 @@ internal sealed partial class ControlStore
     {
         await using var command = Command("""
             SELECT i.id, i.enrolled_at, i.last_seen_at, i.applied_policy_version, i.revoked_at, i.chatgpt_coverage, i.chatgpt_checked_at,
-                i.policy_group_id, g.name, COALESCE(g.policy_version, o.policy_version), i.assignment_aware,
-                i.gemini_coverage, i.gemini_checked_at
+                i.policy_group_id, g.name, p.version, i.assignment_aware, i.gemini_coverage, i.gemini_checked_at,
+                p.claude_prompt_enabled, CASE WHEN i.claude_coverage_version = p.version AND i.revoked_at IS NULL THEN i.claude_coverage END,
+                CASE WHEN i.claude_coverage_version = p.version AND i.revoked_at IS NULL THEN i.claude_checked_at END
             FROM installations i JOIN organizations o ON o.id = i.organization_id
             LEFT JOIN policy_groups g ON g.organization_id = o.id AND g.id = i.policy_group_id
+            JOIN policy_versions p ON p.organization_id = i.organization_id AND p.version = COALESCE(g.policy_version, o.policy_version)
             WHERE i.organization_id = $1 ORDER BY i.enrolled_at DESC, i.id LIMIT 100
             """, organizationId);
         var installations = new List<Installation>();
@@ -214,7 +229,8 @@ internal sealed partial class ControlStore
                 rows.IsDBNull(3) ? null : rows.GetInt32(3), rows.IsDBNull(4) ? null : rows.GetDateTime(4),
                 rows.IsDBNull(5) ? null : rows.GetString(5), rows.IsDBNull(6) ? null : rows.GetDateTime(6),
                 rows.IsDBNull(7) ? null : rows.GetGuid(7), rows.IsDBNull(8) ? null : rows.GetString(8), rows.GetInt32(9), rows.GetBoolean(10),
-                rows.IsDBNull(11) ? null : rows.GetString(11), rows.IsDBNull(12) ? null : rows.GetDateTime(12)));
+                rows.IsDBNull(11) ? null : rows.GetString(11), rows.IsDBNull(12) ? null : rows.GetDateTime(12), rows.GetBoolean(13),
+                rows.IsDBNull(14) ? null : rows.GetString(14), rows.IsDBNull(15) ? null : rows.GetDateTime(15)));
         return installations;
     }
 
@@ -254,8 +270,10 @@ internal sealed partial class ControlStore
                         AND EXISTS (SELECT 1 FROM jsonb_array_elements(p.prompt_exceptions) AS entries(entry)
                             WHERE entry->>'appId' = $6 AND entry->>'ruleId' = $7 AND $3 < (entry->>'expiresAt')::timestamptz)))
                   AND (r.event_cutoff IS NULL OR $3 >= r.event_cutoff)
-                  AND (($8 = 0 AND p.policy_group_id IS NULL AND $5 <> 'exception_applied') OR EXISTS (SELECT 1 FROM policy_deliveries d
+                  AND ($6 <> 'claude' OR p.claude_prompt_enabled)
+                  AND (($8 = 0 AND p.policy_group_id IS NULL AND $5 <> 'exception_applied' AND $6 <> 'claude') OR EXISTS (SELECT 1 FROM policy_deliveries d
                     WHERE d.installation_id = $1 AND d.assignment_version = $8 AND d.policy_version = $4
+                        AND ($6 <> 'claude' OR d.claude_prompt)
                         AND ($5 <> 'exception_applied' OR d.exception_scope)))
             ), written AS (
                 INSERT INTO security_events (organization_id, installation_id, event_id, occurred_at, policy_version, decision, app_id, rule_id, upload_method)
@@ -449,5 +467,5 @@ internal sealed partial class ControlStore
         new(rows.GetFieldValue<string[]>(11), rows.GetFieldValue<string[]>(12)), rows.GetBoolean(13),
         new(rows.GetFieldValue<string[]>(14), rows.GetFieldValue<string[]>(15)),
         JsonSerializer.Deserialize<CustomApp[]>(rows.GetString(16), JsonSerializerOptions.Web),
-        JsonSerializer.Deserialize<PromptException[]>(rows.GetString(17), JsonSerializerOptions.Web));
+        JsonSerializer.Deserialize<PromptException[]>(rows.GetString(17), JsonSerializerOptions.Web), ClaudePromptEnabled: rows.GetBoolean(18));
 }

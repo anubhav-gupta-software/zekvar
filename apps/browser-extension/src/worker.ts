@@ -1,12 +1,12 @@
 import {
-  aiPromptApps, chatGptApp, discoveredApp, discoveryPermission, fixtureApp, fixtureDetector, fixtureRule, geminiApp, isDetectorMode,
+  aiPromptApps, chatGptApp, claudeApp, discoveredApp, discoveryPermission, fixtureApp, fixtureDetector, fixtureRule, geminiApp, isDetectorMode,
   isId, isMode, isRecord, isToken, isVersion, promptApp, readMetadata,
   type AiPromptApp, type AppId, type AppObservation, type Coverage, type DiscoveryApp, type Policy, type PolicyEvent,
   type Reply, type Summary,
 } from './protocol';
 import { domainRuleLimit, emptyDomainRules, emptyPathRules, installDomainRules, readDomainRules, readPathRules,
   ruleCount, sameDomainRules, type DomainRules, type PathRules } from './domain-rules';
-import { isUploadModes, readTargetedUpload, sameUploadTypes, uploadsOff, type TargetedUploads } from '../../../contracts/policy/uploads';
+import { isUploadModes, readTargetedUpload, sameUploadTypes, uploadApps, uploadsOff, type TargetedUploads } from '../../../contracts/policy/uploads';
 import { collectExtensionInventory } from './extension-inventory';
 import type { InventoryStatus } from '../../../contracts/policy/extension-inventory';
 import { isCustomAppId, readCustomApps, type CustomApp } from '../../../contracts/policy/discovery';
@@ -28,6 +28,7 @@ type State = {
   coveragePending?: Coverage;
   geminiEnabled?: boolean;
   geminiCoveragePending?: Coverage;
+  claudeCoveragePending?: Coverage;
   queue: PolicyEvent[];
   observations?: Partial<Record<DiscoveryApp, AppObservation>>;
   inventoryStatus?: InventoryStatus;
@@ -85,12 +86,14 @@ function save(state: State) {
 }
 
 function appEnabled(state: State, app: AiPromptApp) {
+  if (app === claudeApp) return state.policy?.claudePromptEnabled === true;
   return app === chatGptApp ? state.chatGptEnabled === true : state.geminiEnabled === true;
 }
 
 function clearCoverage(state: State) {
   state.coveragePending = undefined;
   state.geminiCoveragePending = undefined;
+  state.claudeCoveragePending = undefined;
 }
 
 function summary(state: State): Summary {
@@ -131,7 +134,7 @@ async function request(path: string, token?: string, body?: object): Promise<unk
     signal: AbortSignal.timeout(3500),
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(path === 'browser/policy' ? { 'X-Zekvar-Assignment-Aware': '1' } : {}),
+      ...(path === 'browser/policy' ? { 'X-Zekvar-Assignment-Aware': '1', 'X-Zekvar-Claude-Prompt': '1' } : {}),
       ...(body ? { 'Content-Type': 'application/json' } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -215,7 +218,7 @@ function readTargetedUploads(value: unknown): TargetedUploads {
   if (value === undefined) return {};
   if (!isRecord(value) || Array.isArray(value)) throw new Error('Invalid scoped file upload rules');
   const filters: TargetedUploads = {};
-  for (const app of aiPromptApps) {
+  for (const app of uploadApps) {
     if (!Object.hasOwn(value, app)) continue;
     const filter = readTargetedUpload(value[app]);
     if (!filter) throw new Error('Invalid scoped file upload rule');
@@ -226,7 +229,7 @@ function readTargetedUploads(value: unknown): TargetedUploads {
 }
 
 function sameTargetedUploads(before: TargetedUploads, after: TargetedUploads) {
-  return aiPromptApps.every((app) => before[app]?.mode === after[app]?.mode &&
+  return uploadApps.every((app) => before[app]?.mode === after[app]?.mode &&
     sameUploadTypes(before[app]?.types ?? [], after[app]?.types ?? []));
 }
 
@@ -243,6 +246,7 @@ async function sync(state: State) {
         (policy.uploadModes !== undefined && !isUploadModes(policy.uploadModes)) ||
         (policy.discoveryEnabled !== undefined && typeof policy.discoveryEnabled !== 'boolean') ||
         (policy.extensionInventoryEnabled !== undefined && typeof policy.extensionInventoryEnabled !== 'boolean') ||
+        (policy.claudePromptEnabled !== undefined && typeof policy.claudePromptEnabled !== 'boolean') ||
         policy.appId !== fixtureApp || policy.ruleId !== fixtureRule || policy.detectorCategory !== fixtureDetector) {
       throw new Error('Unknown policy format');
     }
@@ -252,7 +256,7 @@ async function sync(state: State) {
     const previousUploads = state.policy?.uploadModes;
     const targetedUploads = readTargetedUploads(policy.targetedUploads);
     const previousTargets = state.policy?.targetedUploads;
-    if (aiPromptApps.some((app) => targetedUploads[app] && uploads[app] !== 'off')) {
+    if (uploadApps.some((app) => targetedUploads[app] && uploads[app] !== 'off')) {
       throw new Error('Invalid combination of file upload rules');
     }
     const discoveryEnabled = policy.discoveryEnabled ?? false;
@@ -262,6 +266,7 @@ async function sync(state: State) {
     const lease = readExceptionLease(policy.promptExceptionLease, requestedAt);
     if (policy.promptExceptionLease !== undefined && !lease) throw new Error('Invalid prompt exception lease');
     const extensionInventoryEnabled = policy.extensionInventoryEnabled ?? false;
+    const claudePromptEnabled = policy.claudePromptEnabled === true && Array.isArray(policy.appIds) && policy.appIds.includes(claudeApp);
     const domainRules = readDomainRules(policy.domainRules);
     const pathRules = readPathRules(policy.pathRules);
     if (!domainRules || !pathRules || ruleCount(domainRules) + ruleCount(pathRules) > domainRuleLimit) {
@@ -280,10 +285,12 @@ async function sync(state: State) {
         (!previousCatalog || (previousCatalog.length === customApps.length && previousCatalog.every(({ id, host, name }, index) =>
           id === customApps[index].id && host === customApps[index].host && name === customApps[index].name))) &&
         (state.policy.extensionInventoryEnabled === undefined || extensionInventoryEnabled === state.policy.extensionInventoryEnabled) &&
+        (state.policy.claudePromptEnabled === undefined || claudePromptEnabled === state.policy.claudePromptEnabled) &&
         sameDomainRules(domainRules, state.domainRules ?? emptyDomainRules) &&
         (!state.pathRules || sameDomainRules(pathRules, state.pathRules)))))) {
       await applyDomainRules(state, domainRules, pathRules);
-      state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, discoveryEnabled, customApps, extensionInventoryEnabled,
+      if (policy.version !== state.policy?.version) state.claudeCoveragePending = undefined;
+      state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, discoveryEnabled, customApps, extensionInventoryEnabled, claudePromptEnabled,
         assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini }, targetedUploads };
       promptLease = lease ? { installationId: state.enrollment.installationId, version: policy.version,
         assignment: policy.assignmentVersion, lease } : undefined;
@@ -340,15 +347,17 @@ async function reportExtensionInventory(state: State) {
 
 async function heartbeat(state: State) {
   if (!state.enrollment || !state.policy) return;
-  const scopedUploads = aiPromptApps.some((app) => state.policy?.targetedUploads?.[app]);
+  const scopedUploads = uploadApps.some((app) => state.policy?.targetedUploads?.[app]);
   await request('browser/heartbeat', state.enrollment.token, {
     policyVersion: state.policy.version,
     assignmentVersion: state.policy.assignmentVersion,
     chatGptCoverage: state.chatGptEnabled ? state.coveragePending : undefined,
     geminiCoverage: state.geminiEnabled ? state.geminiCoveragePending : undefined,
+    claudeCoverage: state.policy.claudePromptEnabled ? state.claudeCoveragePending : undefined,
+    claudePromptApplied: state.policy.claudePromptEnabled || undefined,
     paymentCardModeApplied: isMode(state.policy.paymentCardMode) ? true : undefined,
     uploadControlsApplied: scopedUploads || (state.policy.uploadModes &&
-      aiPromptApps.some((app) => state.policy?.uploadModes?.[app] !== 'off')) ? true : undefined,
+      uploadApps.some((app) => state.policy?.uploadModes?.[app] !== 'off')) ? true : undefined,
     uploadTypesApplied: scopedUploads ? true : undefined,
     customDiscoveryApplied: state.policy.discoveryEnabled && state.policy.customApps?.length && await canDiscoverCustomApps() ? true : undefined,
     promptExceptionsApplied: currentPromptLease(state) ? true : undefined,
@@ -438,7 +447,12 @@ async function onMessage(message: Record<string, unknown>, app: AppId | undefine
   if (message.type === 'coverage' && app && app !== fixtureApp && appEnabled(state, app) && state.enrollment &&
       message.installationId === state.enrollment.installationId &&
       (message.coverage === 'ready' || message.coverage === 'unsupported')) {
-    if (app === chatGptApp) state.coveragePending = message.coverage;
+    if (app === claudeApp) {
+      if (message.version !== state.policy?.version || message.assignmentVersion !== state.policy?.assignmentVersion) {
+        return { summary: summary(state), error: 'Claude coverage belongs to an older policy.' };
+      }
+      state.claudeCoveragePending = message.coverage;
+    } else if (app === chatGptApp) state.coveragePending = message.coverage;
     else state.geminiCoveragePending = message.coverage;
     await save(state);
     if (state.status === 'connected') {

@@ -296,6 +296,7 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
       await preview.goto(new URL(href, web).href);
       await preview.getByText('Current Managed browser pilot v6', { exact: true }).waitFor();
       await preview.getByLabel('Load draft from').selectOption({ label: 'Baseline v4' });
+      assert.equal(await preview.getByLabel('Draft test marker').inputValue(), 'monitor');
       await preview.getByLabel('Custom navigation URL').fill('http://apps.test/');
       await preview.getByRole('button', { name: 'Run preview', exact: true }).click();
       const table = preview.getByRole('table', { name: 'Preview results' });

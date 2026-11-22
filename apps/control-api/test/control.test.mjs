@@ -27,10 +27,11 @@ async function retentionFixture(query) {
   return stdout.trim();
 }
 
-async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false } = {}) {
+async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (claudeAware) headers['X-Zekvar-Claude-Prompt'] = '1';
   if (assignmentAware) headers['X-Zekvar-Assignment-Aware'] = '1';
   if (expectReview) headers['X-Zekvar-Expect-Review'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
@@ -1660,6 +1661,71 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await delay(Math.max(0, Date.parse(expiry) - Date.now() + 100));
     assert.equal((await decide(approver.token, 409)).code, 'review_stale');
     assert.deepEqual((await admin('policies'))[0].promptExceptions, []);
+    await post('policy-reviews/setting', { required: false }, 204);
+  });
+
+  await t.test('isolates Claude policy deliveries and coverage across upgrades, versions and tenants', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: first, ...options });
+    const post = (path, body, expect = 200, token = first) => admin(path, { method: 'POST', body, expect, token });
+    const previous = await admin('policies');
+    const history = await admin('events');
+    if (postgres) {
+      await stop();
+      await retentionFixture(`
+        DELETE FROM schema_migrations WHERE version = 20;
+        ALTER TABLE policy_versions DROP COLUMN claude_prompt_enabled;
+        ALTER TABLE policy_deliveries DROP COLUMN claude_prompt;
+        ALTER TABLE installations DROP COLUMN claude_coverage, DROP COLUMN claude_checked_at, DROP COLUMN claude_coverage_version;
+        ALTER TABLE security_events DROP CONSTRAINT security_events_app_id_check,
+            ADD CONSTRAINT security_events_app_id_check CHECK (app_id IN ('local-prompt-fixture', 'chatgpt', 'gemini'));
+      `);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 20'), '1');
+      assert.deepEqual(await admin('policies'), previous);
+      assert.deepEqual(await admin('events'), history);
+    }
+
+    const active = await post('policies', { mode: 'block', claudePromptEnabled: true });
+    const { grant } = await post('enrollment-grants');
+    const client = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const browser = (path, options = {}) => call(`/v1/browser/${path}`, { token: client.token, assignmentAware: true, ...options });
+    const installed = async () => (await admin('installations')).find((row) => row.installationId === client.installationId);
+    const heartbeat = (policyVersion, body = {}, expect = 204) => browser('heartbeat', { method: 'POST', expect, body: {
+      policyVersion, domainRulesApplied: true, pathRulesApplied: true, paymentCardModeApplied: true,
+      uploadControlsApplied: true, uploadTypesApplied: true, customDiscoveryApplied: true, ...body,
+    } });
+    const decision = { eventId: randomUUID(), timestamp: new Date().toISOString(), policyVersion: active.version, appId: 'claude',
+      ruleId: 'fixture-secret', detectorCategory: 'synthetic-secret', decision: 'block' };
+    const send = (body, expect = 204) => browser('events', { method: 'POST', body, expect });
+    assert.equal((await browser('policy')).claudePromptEnabled, false);
+    await heartbeat(active.version);
+    assert.equal((await installed()).appliedPolicyVersion, null);
+    await send(decision, 400);
+    await heartbeat(active.version, { claudeCoverage: 'ready', claudePromptApplied: true }, 400);
+    assert.equal((await browser('policy', { claudeAware: true })).claudePromptEnabled, true);
+    await heartbeat(active.version, { claudeCoverage: 'ready' }, 400);
+    await heartbeat(active.version, { claudeCoverage: 'ready', claudePromptApplied: true });
+    assert.equal((await installed()).claudeCoverage, 'ready');
+    assert.equal((await installed()).appliedPolicyVersion, active.version);
+    await send({ ...decision, prompt: 'synthetic input' }, 400);
+    await send({ ...decision, ruleId: 'ai-file-upload', detectorCategory: 'file-upload', uploadMethod: 'picker' }, 400);
+    await send(decision);
+    await send(decision);
+    const query = 'events/export?appId=claude';
+    assert.deepEqual((await admin(query)).entries.map(({ eventId }) => eventId), [decision.eventId]);
+    assert.deepEqual((await admin(query, { token: second })).entries, []);
+
+    const author = await post('access', { name: 'Claude Policy Author', role: 'administrator', hours: 1 });
+    const approver = await post('access', { name: 'Claude Policy Reviewer', role: 'administrator', hours: 1 });
+    await post('policy-reviews/setting', { required: true }, 204);
+    const draft = await post('policies', { claudePromptEnabled: false }, 202, author.token);
+    assert.equal((await admin('policies'))[0].claudePromptEnabled, true);
+    const updated = await post(`policy-reviews/${draft.reviewId}/decision`, { approve: true }, 200, approver.token);
+    assert.equal(updated.claudePromptEnabled, false);
+    assert.equal((await installed()).claudeCoverage, null);
+    await heartbeat(updated.version, { claudeCoverage: 'ready', claudePromptApplied: true }, 400);
+    await heartbeat(active.version, { claudeCoverage: 'unsupported', claudePromptApplied: true });
+    assert.equal((await installed()).claudeCoverage, null);
     await post('policy-reviews/setting', { required: false }, 204);
   });
 });

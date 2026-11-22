@@ -8,6 +8,7 @@ internal static class FixtureContract
 {
     public const string AppId = "local-prompt-fixture";
     public const string ChatGpt = "chatgpt";
+    public const string Claude = "claude";
     public const string Gemini = "gemini";
     public const string RuleId = "fixture-secret";
     public const string DetectorCategory = "synthetic-secret";
@@ -21,14 +22,15 @@ internal static class FixtureContract
 
     public static bool IsMode(string? mode) => mode is "monitor" or "warn" or "block";
     public static bool IsOptionalDetectorMode(string? mode) => mode is null or "off" || IsMode(mode);
-    public static bool IsApp(string? appId) => appId is AppId or ChatGpt or Gemini;
+    public static bool IsAiPromptApp(string? appId) => appId is ChatGpt or Claude or Gemini;
+    public static bool IsApp(string? appId) => appId == AppId || IsAiPromptApp(appId);
     public static bool IsDecision(string? decision) => IsMode(decision) || decision is "warn_override" or ExceptionApplied;
     public static bool IsPromptRule(string? rule) => rule is RuleId or GitHubPatRule or PaymentCardRule;
 
     public static bool IsEvent(PolicyEvent request) =>
         request.EventId != Guid.Empty && request.Timestamp != default && request.PolicyVersion > 0 &&
         IsApp(request.AppId) && (request.RuleId == UploadRule
-            ? request.AppId != AppId && request.DetectorCategory == UploadCategory &&
+            ? request.AppId is ChatGpt or Gemini && request.DetectorCategory == UploadCategory &&
               request.Decision is "monitor" or "block" && request.UploadMethod is "picker" or "drop" or "paste"
             : request.UploadMethod is null && IsDecision(request.Decision) &&
               (request.Decision != ExceptionApplied || request.AppId != AppId) &&
@@ -39,7 +41,7 @@ internal static class FixtureContract
 
 internal static class DiscoveryCatalog
 {
-    public static readonly string[] AppIds = [FixtureContract.ChatGpt, "claude", FixtureContract.Gemini];
+    public static readonly string[] AppIds = [FixtureContract.ChatGpt, FixtureContract.Claude, FixtureContract.Gemini];
 
     public static bool IsBuiltIn(string? appId) => appId is not null && AppIds.Contains(appId);
     public static bool IsApp(string? appId) => IsBuiltIn(appId) || CustomApps.IsId(appId);
@@ -64,7 +66,7 @@ internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId
 internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode = null, bool? DiscoveryEnabled = null,
     DomainRules? DomainRules = null, int? ExpectedVersion = null, string? PaymentCardMode = null, UploadModes? UploadModes = null,
     PathRules? PathRules = null, bool? ExtensionInventoryEnabled = null, UploadTypes? UploadTypes = null,
-    CustomAppSetting?[]? CustomApps = null, PromptException?[]? PromptExceptions = null);
+    CustomAppSetting?[]? CustomApps = null, PromptException?[]? PromptExceptions = null, bool? ClaudePromptEnabled = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null)
 {
     public bool HasSettings() => Chatgpt is not null || Gemini is not null;
@@ -74,10 +76,11 @@ internal sealed record RedeemGrant(string Grant);
 internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = null, bool DomainRulesApplied = false,
     int AssignmentVersion = 0, string? GeminiCoverage = null, bool PaymentCardModeApplied = false, bool UploadControlsApplied = false,
     bool PathRulesApplied = false, bool UploadTypesApplied = false, bool CustomDiscoveryApplied = false,
-    bool PromptExceptionsApplied = false)
+    bool PromptExceptionsApplied = false, string? ClaudeCoverage = null, bool ClaudePromptApplied = false)
 {
     public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported") &&
-        (GeminiCoverage is null or "ready" or "unsupported");
+        (GeminiCoverage is null or "ready" or "unsupported") &&
+        (ClaudeCoverage is null or "ready" or "unsupported");
 }
 internal sealed record PolicyEvent(Guid EventId, string AppId, DateTimeOffset Timestamp, string RuleId,
     string DetectorCategory, int PolicyVersion, string Decision, int AssignmentVersion = 0, string? UploadMethod = null);
@@ -90,21 +93,27 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PromptException[]? PromptExceptions = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] TargetedUploads? TargetedUploads = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PromptExceptionLease? PromptExceptionLease = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int AssignmentVersion = 0)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int AssignmentVersion = 0,
+    bool ClaudePromptEnabled = false)
 {
     public string AppId => FixtureContract.AppId;
-    public string[] AppIds => [FixtureContract.AppId, FixtureContract.ChatGpt, FixtureContract.Gemini];
+    public string[] AppIds => ClaudePromptEnabled
+        ? [FixtureContract.AppId, FixtureContract.ChatGpt, FixtureContract.Gemini, FixtureContract.Claude]
+        : [FixtureContract.AppId, FixtureContract.ChatGpt, FixtureContract.Gemini];
     public string RuleId => FixtureContract.RuleId;
     public string DetectorCategory => FixtureContract.DetectorCategory;
 
-    public Policy ForBrowser()
+    public Policy ForBrowser(bool claudeAware)
     {
         var now = DateTimeOffset.UtcNow;
         var nowMs = now.ToUnixTimeMilliseconds();
-        var exceptions = PromptExceptions?.Select(entry => new PromptExceptionGrant(entry.AppId, entry.RuleId, entry.ExpiresAt.ToUnixTimeMilliseconds()))
+        var claudeEnabled = claudeAware && ClaudePromptEnabled;
+        var exceptions = PromptExceptions?.Where(entry => entry.AppId != FixtureContract.Claude || claudeEnabled)
+            .Select(entry => new PromptExceptionGrant(entry.AppId, entry.RuleId, entry.ExpiresAt.ToUnixTimeMilliseconds()))
             .Where(entry => entry.ExpiresAtMs > nowMs).ToArray();
         var browser = this with
         {
+            ClaudePromptEnabled = claudeEnabled,
             PromptExceptions = PromptExceptions is { Length: > 0 } ? null : PromptExceptions,
             PromptExceptionLease = exceptions is { Length: > 0 } ? new(nowMs, exceptions) : null
         };
@@ -132,7 +141,7 @@ internal sealed record Enrollment(Guid InstallationId, string Token);
 internal sealed record Installation(Guid InstallationId, DateTime EnrolledAt, DateTime LastSeenAt,
     int? AppliedPolicyVersion, DateTime? RevokedAt, string? ChatGptCoverage, DateTime? ChatGptCheckedAt,
     Guid? PolicyGroupId, string? PolicyGroupName, int ExpectedPolicyVersion, bool AssignmentAware,
-    string? GeminiCoverage, DateTime? GeminiCheckedAt);
+    string? GeminiCoverage, DateTime? GeminiCheckedAt, bool ClaudePromptEnabled, string? ClaudeCoverage, DateTime? ClaudeCheckedAt);
 
 internal sealed record StoredEvent(Guid EventId, Guid InstallationId, DateTime Timestamp, DateTime ReceivedAt,
     int PolicyVersion, string Decision, string AppId, string RuleId,

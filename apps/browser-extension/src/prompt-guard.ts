@@ -3,6 +3,7 @@ import { recordDecision, recordUploadDecision } from './decisions';
 import { evaluatePrompt, withPolicyVersion, type MatchedDecision } from './policy';
 import { isMode, send, type AiPromptApp, type Coverage, type Summary } from './protocol';
 import { promptAppLabels } from '../../../contracts/policy/apps';
+import { isUploadApp } from '../../../contracts/policy/uploads';
 import { bindUploadGuard } from './upload-guard';
 import { promptText, replacePromptText, supportsRedaction, type Composer, type ComposerInspection } from './prompt-composer';
 import { leaseTime } from './prompt-exceptions';
@@ -14,6 +15,7 @@ type PromptAdapter = {
   route: (url: string) => string;
   inspect: () => ComposerInspection;
   diagnostics: () => object;
+  hideWhenDisabled?: boolean;
 };
 
 type InterruptedDraft = { input: HTMLElement; page: string; value: string; installationId: string; match: MatchedDecision };
@@ -75,6 +77,7 @@ function controls(appId: AiPromptApp) {
 export function bindPromptGuard(adapter: PromptAdapter) {
   const ui = controls(adapter.appId);
   const appName = promptAppLabels[adapter.appId];
+  const uploadApp = isUploadApp(adapter.appId) ? adapter.appId : undefined;
   const enabled = (summary: Summary | undefined) => summary?.promptApps?.includes(adapter.appId) === true;
   const supported = () => adapter.route(location.href) !== 'other';
   let control: Summary | undefined;
@@ -92,6 +95,14 @@ export function bindPromptGuard(adapter: PromptAdapter) {
 
   function observe() {
     if (!document.body) return;
+    if (adapter.hideWhenDisabled && (!supported() || !control?.installationId || !enabled(control))) {
+      ui.host.remove();
+      clearInterruption();
+      lastCoverage = undefined;
+      unsupportedSince = 0;
+      unsupportedInput = undefined;
+      return;
+    }
     if (!ui.host.isConnected) document.body.append(ui.host);
     if (!supported()) {
       clearInterruption();
@@ -118,8 +129,8 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     const managedPolicy = installationId && enabled(control) ? policy : undefined;
     const github = managedPolicy?.githubPatMode;
     const card = managedPolicy?.paymentCardMode;
-    const targetedUpload = managedPolicy?.targetedUploads?.[adapter.appId];
-    const upload = targetedUpload?.mode ?? managedPolicy?.uploadModes?.[adapter.appId];
+    const targetedUpload = uploadApp && managedPolicy?.targetedUploads?.[uploadApp];
+    const upload = targetedUpload?.mode ?? (uploadApp && managedPolicy?.uploadModes?.[uploadApp]);
     if (upload !== 'block') ui.uploadNotice.textContent = '';
     const detectors = (isMode(github) ? ` · GitHub PAT ${github}` : '') + (isMode(card) ? ` · Payment card ${card}` : '') +
       (upload && upload !== 'off' ? ` · File uploads ${upload}${targetedUpload ? ' (selected types)' : ''}` : '');
@@ -133,7 +144,7 @@ export function bindPromptGuard(adapter: PromptAdapter) {
         now - lastCoverage.at < 60_000) return;
     const report = { installationId, coverage, version: managedPolicy.version, assignment: managedPolicy.assignmentVersion, at: now } as const;
     lastCoverage = report;
-    void send({ type: 'coverage', installationId, coverage }).then((reply) => {
+    void send({ type: 'coverage', installationId, coverage, version: report.version, assignmentVersion: report.assignment }).then((reply) => {
       if (reply.error && lastCoverage === report) lastCoverage = undefined;
     }, () => {
       if (lastCoverage === report) lastCoverage = undefined;
@@ -214,14 +225,14 @@ export function bindPromptGuard(adapter: PromptAdapter) {
   }
 
   window.addEventListener('click', (event) => {
-    if (!event.isTrusted || !supported() || !(event.target instanceof Element) || !event.target.closest('button')) return;
+    if (!event.isTrusted || !enabled(control) || !supported() || !(event.target instanceof Element) || !event.target.closest('button')) return;
     const current = adapter.inspect().composer;
     if (current?.button?.contains(event.target) && !current.button.disabled) check(event, current);
   }, { capture: true });
 
   window.addEventListener('keydown', (event) => {
     if (!event.isTrusted || event.key !== 'Enter' || event.shiftKey || event.altKey || event.metaKey || event.ctrlKey ||
-        event.isComposing || event.keyCode === 229 || !supported() || !(event.target instanceof Node)) return;
+        event.isComposing || event.keyCode === 229 || !enabled(control) || !supported() || !(event.target instanceof Node)) return;
     const inspection = adapter.inspect();
     const current = inspection.composer;
     if (!current?.input.contains(event.target)) return;
@@ -268,7 +279,11 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     const { draft, policy } = review;
     const replacement = redactPrompt(draft.value, policy);
     const edited = replacePromptText(draft.input, draft.value, replacement);
-    const clean = edited && promptText(draft.input) === replacement && evaluatePrompt(replacement, policy).action === 'allow';
+    const actual = promptText(draft.input);
+    // Chrome can reshape trailing blank lines when replacing a contenteditable draft.
+    const matches = actual === replacement || (!(draft.input instanceof HTMLTextAreaElement) &&
+      replacement.endsWith('\n') && actual.replace(/\n+$/, '') === replacement.replace(/\n+$/, ''));
+    const clean = edited && matches && evaluatePrompt(actual, policy).action === 'allow';
     ui.notice.textContent = clean ? 'Detected values redacted. Review the updated draft before sending.' :
       'Zekvar could not verify the redaction. Review and edit the draft before trying again.';
   });
@@ -308,16 +323,16 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     observe();
   }
 
-  bindUploadGuard(() => {
+  if (uploadApp) bindUploadGuard(() => {
     if (!supported() || !enabled(control) || !control?.installationId || !control.policy) return;
-    const targeted = control.policy.targetedUploads?.[adapter.appId];
+    const targeted = control.policy.targetedUploads?.[uploadApp];
     if (targeted) return targeted;
-    const mode = control.policy?.uploadModes?.[adapter.appId];
+    const mode = control.policy.uploadModes?.[uploadApp];
     if (mode === 'monitor' || mode === 'block') return { mode, types: [] };
   }, (decision, method) => {
     if (decision !== 'block') ui.uploadNotice.textContent = '';
     if (!decision || !control?.policy || !control.installationId) return;
-    recordUploadDecision(adapter.appId, control.policy, control.installationId, decision, method);
+    recordUploadDecision(uploadApp, control.policy, control.installationId, decision, method);
     if (decision === 'block') ui.uploadNotice.textContent = `File upload blocked by your organization’s ${appName} policy.`;
   });
   refreshPage();
