@@ -29,6 +29,38 @@ ZEKVAR_CONTROL_ORIGIN=https://browser.example.com ZEKVAR_EXTENSION_OUTDIR=dist-p
 
 For the pilot lab, load `dist-pilot` as an unpacked extension. Reload it from `chrome://extensions` when rebuilding in the same directory. Obtain a fresh enrollment grant from the dashboard. Managed enrollment uses both `ControlOrigin`, set to the exact browser API origin in the build, and the short-lived `EnrollmentGrant` for that profile. The popup shows the configured HTTPS destination. If the build moves to a different Control origin, enroll again with a grant from that destination. Update the managed origin and grant together.
 
+## Back up and recover Control
+
+Install `age` and `age-keygen` on the appropriate operator machines. Generate a recovery identity in the recovery environment with `age-keygen -o pilot-identity.txt`. Derive its public recipient with `age-keygen -y pilot-identity.txt > pilot-recipients.txt`. Store the private identity separately from the host and backup storage. Copy the public recipient file to the backup host. [age command reference](https://github.com/FiloSottile/age/blob/main/doc/age.1.ronn)
+
+Run a daily backup from a restricted location. The host streams a consistent PostgreSQL snapshot through encryption and publishes the archive only after both commands succeed. It refuses to replace an existing file. Copy the encrypted result to access-controlled off-host storage. Record its creation time, Control release, size, checksum, and recovery key identifier in the backup job record. Check job failures and keep a retention schedule approved for the pilot's data. Store deployment configuration and secrets in the operator's secret store so they can be recovered separately. [PostgreSQL logical backup](https://www.postgresql.org/docs/18/backup-dump.html)
+
+```sh
+deploy/pilot/database-backup.sh backup zekvar-pilot deploy/pilot/.env \
+  /srv/backups/zekvar/2026-11-22T0000Z.age /etc/zekvar/pilot-recipients.txt
+```
+
+Rehearse recovery using a new Compose project on an isolated host or network. Use a separate environment file, the same organization slug, and fresh owner and database credentials. Verify the archive checksum against the backup job record and use an archive from the trusted job. Start only PostgreSQL in the new project. Restore requires an empty application database. SQL failures roll back the transaction so the recovery database can be retried. [PostgreSQL restore options](https://www.postgresql.org/docs/18/app-pgrestore.html)
+
+```sh
+docker compose --project-name zekvar-recovery --env-file /secure/recovery.env \
+  -f deploy/pilot/compose.yaml up -d --wait postgres
+deploy/pilot/database-backup.sh restore zekvar-recovery /secure/recovery.env \
+  /srv/backups/zekvar/2026-11-22T0000Z.age /secure/pilot-identity.txt
+```
+
+Restore revokes previous browser enrollments and named Control credentials, expires unused grants, and cancels pending policy reviews in the same transaction. This prevents an older snapshot from reactivating revoked access or leaving a browser on a newer cached policy from before the outage. Start Control with the new owner token, issue fresh access, and re-enroll Chrome with fresh grants. Reassign re-enrolled browsers to their rollout groups before restoring normal access.
+
+Keep both origins on the recovery network while verifying policies, event export, enrollment, and retention. Reconcile post-backup policy changes, retention changes, and data deletions against the independent operator record before exposing the recovered environment. For an actual switch, keep the original environment offline to avoid divergent writes and measure data loss and recovery time from the backup and drill timestamps.
+
+Run the disposable recovery drill with Bash, Docker Compose, age, .NET, Node, and Chrome for Testing available. It uses generated keys, synthetic events, and two disposable PostgreSQL databases.
+
+```sh
+npm --prefix apps/browser-extension ci
+npm --prefix apps/browser-extension exec -- playwright install chromium --no-shell
+node --test apps/browser-extension/test/database-backup.test.mjs
+```
+
 ## Verify the deployment
 
 The hosted verifier builds the standalone dashboard and Release API, then exercises real TLS, managed enrollment, publishing, and enforcement from an isolated Chrome profile. The verifier needs Docker for its disposable database, plus Caddy and OpenSSL on the host. It uses a test certificate and leaves the system trust store alone.

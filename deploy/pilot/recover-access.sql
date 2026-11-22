@@ -1,0 +1,33 @@
+-- The restored snapshot may predate access changes. Require fresh enrollment and delegated access.
+-- Control seeds owner credentials from the recovery deployment configuration at startup.
+DELETE FROM public.admin_memberships;
+
+UPDATE public.enrollment_grants SET expires_at = CURRENT_TIMESTAMP
+WHERE redeemed_at IS NULL AND expires_at > CURRENT_TIMESTAMP;
+
+WITH revoked AS (
+    UPDATE public.control_access SET revoked_at = CURRENT_TIMESTAMP, token_hash = NULL
+    WHERE revoked_at IS NULL RETURNING organization_id, id, revoked_at
+)
+INSERT INTO public.control_audit (organization_id, occurred_at, action, subject_access_id)
+SELECT organization_id, revoked_at, 'access_revoked', id FROM revoked;
+
+WITH revoked AS (
+    UPDATE public.installations SET revoked_at = CURRENT_TIMESTAMP
+    WHERE revoked_at IS NULL RETURNING organization_id, id, revoked_at
+), cleared AS (
+    DELETE FROM public.extension_inventory_snapshots s USING revoked r WHERE s.installation_id = r.id
+)
+INSERT INTO public.control_audit (organization_id, occurred_at, action, installation_id)
+SELECT organization_id, revoked_at, 'browser_revoked', id FROM revoked;
+
+WITH cancelled AS (
+    UPDATE public.policy_reviews SET status = 'cancelled', decided_at = CURRENT_TIMESTAMP
+    WHERE status = 'pending' RETURNING organization_id, id, operation, group_id, base_version
+)
+INSERT INTO public.control_audit (organization_id, action, review_change)
+SELECT organization_id, 'policy_review_decided', jsonb_build_object(
+    'reviewId', id, 'operation', operation, 'status', 'cancelled', 'groupId', group_id, 'baseVersion', base_version
+) FROM cancelled;
+
+COMMIT;
