@@ -73,6 +73,8 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
           ...(request.headers.authorization ? { Authorization: request.headers.authorization } : {}),
           ...(request.headers['x-zekvar-assignment-aware'] ? { 'X-Zekvar-Assignment-Aware': request.headers['x-zekvar-assignment-aware'] } : {}),
           ...(request.headers['x-zekvar-composer-coverage'] ? { 'X-Zekvar-Composer-Coverage': request.headers['x-zekvar-composer-coverage'] } : {}),
+          ...(request.headers['x-zekvar-private-key'] ? { 'X-Zekvar-Private-Key': request.headers['x-zekvar-private-key'] } : {}),
+          ...(request.headers['x-zekvar-file-inspection'] ? { 'X-Zekvar-File-Inspection': request.headers['x-zekvar-file-inspection'] } : {}),
           ...(body.length ? { 'Content-Type': 'application/json' } : {}),
         },
         body: body.length ? body : undefined,
@@ -766,20 +768,59 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
       assert.doesNotMatch(JSON.stringify([...posts, ...await scopedRows()]),
         /private-mixed-case|private-allowed|private-archive|Synthetic scoped file|image\/png|application\/pdf|\.tar\.gz/);
 
+      const scanChat = await browser.newPage();
+      const scanGemini = await browser.newPage();
+      try {
+        for (const [target, url] of [[scanChat, 'https://chatgpt.com/'], [scanGemini, 'https://gemini.google.com/app']]) {
+          await target.route(`${new URL(url).origin}/**`, (route) => route.fulfill({ contentType: 'text/html', body: uploadFixture }));
+          await target.goto(url);
+        }
+        const likelyKey = ['-----BEGIN PRIVATE KEY-----', 'c3lk'.repeat(16), '-----END PRIVATE KEY-----'].join('\n');
+        const disguised = join(root, 'synthetic-inspected-image.png');
+        const raw = join(root, 'synthetic-inspected-notes.txt');
+        const binary = join(root, 'synthetic-invalid-text.txt');
+        const blockedFile = join(root, 'synthetic-inspected-archive.bin');
+        const card = '4242-4242-4242-4242';
+        await Promise.all([writeFile(disguised, likelyKey), writeFile(raw, `${marker}\n${card}`),
+          writeFile(binary, Buffer.concat([Buffer.from([0xff]), Buffer.from(marker)])), writeFile(blockedFile, likelyKey)]);
+        const scan = await adminCall('policies', { privateKeyMode: 'block', paymentCardMode: 'warn', fileInspection: { chatgpt: true, gemini: true },
+          uploadModes: { chatgpt: 'off', gemini: 'block' }, uploadTypes: { gemini: ['.bin'] } });
+        await popup.getByRole('button', { name: 'Sync now' }).click();
+        for (const target of [scanChat, scanGemini]) await target.getByText(/File content monitor$/).waitFor();
+        await pick(scanChat, [raw, disguised]);
+        assert.deepEqual(await observed(scanChat), [['input', 2], ['change', 2]]);
+        await input(scanChat).setInputFiles([]);
+        await drag(scanChat, input(scanChat), [disguised]);
+        await pick(scanGemini, [blockedFile]);
+        await scanGemini.getByRole('alert').filter({ hasText: 'File upload blocked' }).waitFor();
+        assert.deepEqual(await observed(scanGemini), []);
+        await pick(scanGemini, [raw]);
+        await pick(scanGemini, [binary]);
+        await pasteFile(scanChat);
+        assert.deepEqual((await observed(scanChat)).slice(2), [['drop', 1], ['input', 1], ['change', 1], ['paste', 1]]);
+        assert.deepEqual(await observed(scanGemini), [['input', 1], ['change', 1], ['input', 1], ['change', 1]]);
+        const scanned = async () => (await adminCall('events')).filter(({ policyVersion }) => policyVersion === scan.version);
+        await until(async () => (await scanned()).length >= 4, 'Control did not receive the independent file policies and inspections.');
+        const aggregates = (await scanned()).map(({ appId, decision, ruleId, uploadMethod }) => `${appId}/${decision}/${ruleId}/${uploadMethod}`).sort();
+        assert.deepEqual(aggregates, ['chatgpt/monitor/pem-private-key/drop', 'chatgpt/monitor/pem-private-key/picker',
+          'gemini/block/ai-file-upload/picker', 'gemini/monitor/payment-card-number/picker']);
+        assert.doesNotMatch(JSON.stringify([...posts, ...await scanned()]), /synthetic-inspected|synthetic-invalid|c3lkc3lk|4242-4242|ZEKVAR_TEST_SECRET/);
+      } finally { await Promise.all([scanChat.close(), scanGemini.close()]); }
+
       const restored = await adminCall(`policies/${original.version}/restore`, {});
       await popup.getByRole('button', { name: 'Sync now' }).click();
       await gemini.getByText(new RegExp(`^Zekvar · [A-Z]+ v${restored.version}(?: · GitHub PAT [a-z]+)?$`)).waitFor();
       await pick(gemini);
       assert.deepEqual((await observed(gemini)).slice(3), [['input', 2], ['change', 2]]);
       assert.equal(await gemini.getByRole('alert').filter({ hasText: 'File upload blocked' }).count(), 0);
-      assert.equal((await rows()).length, 15);
+      assert.equal((await rows()).length, 16);
       const resumed = await adminCall('policies', { uploadModes: { gemini: 'block' } });
       await popup.getByRole('button', { name: 'Sync now' }).click();
       await gemini.getByText(new RegExp(` v${resumed.version}.*File uploads block$`)).waitFor();
       await input(gemini).setInputFiles([]);
       await pick(gemini);
       await gemini.getByRole('alert').filter({ hasText: 'File upload blocked' }).waitFor();
-      await until(async () => (await rows()).length === 16, 'Control did not record the resumed block.');
+      await until(async () => (await rows()).length === 17, 'Control did not record the resumed block.');
       const [{ installationId }] = await adminCall('installations');
       await adminCall(`installations/${installationId}/revoke`, {});
       await popup.getByRole('button', { name: 'Sync now' }).click();
@@ -787,7 +828,7 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
       assert.equal(await gemini.getByRole('alert').filter({ hasText: 'File upload blocked' }).count(), 0);
       await pick(gemini);
       assert.deepEqual((await observed(gemini)).slice(3), [['input', 2], ['change', 2], ['input', 2], ['change', 2]]);
-      assert.equal((await rows()).length, 16);
+      assert.equal((await rows()).length, 17);
     } finally { await Promise.all([chat.close(), gemini.close()]); }
   });
 });

@@ -16,6 +16,8 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     ['Claude prompt protection', toggle(reference.claudePromptEnabled), toggle(candidate.claudePromptEnabled)],
     ...uploadApps.map((app) => [`${promptAppLabels[app]} file uploads`, detectorModeLabels[reference.uploadModes[app]],
       detectorModeLabels[candidate.uploadModes[app]]]),
+    ...uploadApps.map((app) => [`${promptAppLabels[app]} file content monitoring`, reference.fileInspection?.[app] ? 'Monitor' : 'Off',
+      candidate.fileInspection?.[app] ? 'Monitor' : 'Off']),
     ...uploadApps.map((app) => [`${promptAppLabels[app]} file types`, reference.uploadTypes[app].join(', ') || 'All files',
       candidate.uploadTypes[app].join(', ') || 'All files']),
   ];

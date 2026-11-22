@@ -1,7 +1,8 @@
 import { credentialDetector, fixtureDetector, fixtureRule, githubPatRule, isMode, paymentCardRule, paymentDetector, privateKeyRule, type PolicyMode,
   type PromptPolicy, type RuleMetadata } from '../../../contracts/policy/prompt';
 import { chatGptApp, claudeApp, fixtureApp, geminiApp, isPromptApp, type AiPromptApp, type AppId } from '../../../contracts/policy/apps';
-import { isUploadApp, isUploadMethod, uploadCategory, uploadRule, type TargetedUploads, type UploadMetadata, type UploadModes } from '../../../contracts/policy/uploads';
+import { isUploadApp, isUploadMethod, uploadCategory, uploadRule, type FileInspection, type TargetedUploads,
+  type UploadMetadata, type UploadMethod, type UploadModes } from '../../../contracts/policy/uploads';
 import type { InventoryStatus } from '../../../contracts/policy/extension-inventory';
 import { builtInDiscoveryApps, type BuiltInDiscoveryApp, type CustomAppId } from '../../../contracts/policy/discovery';
 import { exceptionDecision } from '../../../contracts/policy/prompt-exceptions';
@@ -25,6 +26,7 @@ export type Coverage = 'ready' | 'unsupported';
 export type Policy = PromptPolicy & {
   version: number; discoveryEnabled?: boolean; assignmentVersion?: number; uploadModes?: UploadModes;
   targetedUploads?: TargetedUploads; extensionInventoryEnabled?: boolean; claudePromptEnabled?: boolean;
+  fileInspection?: FileInspection;
 };
 export type PolicyEvent = {
   eventId: string;
@@ -33,7 +35,7 @@ export type PolicyEvent = {
   policyVersion: number;
   assignmentVersion?: number;
   decision: PolicyMode | 'warn_override' | typeof exceptionDecision;
-} & (RuleMetadata | UploadMetadata);
+} & ((RuleMetadata & { uploadMethod?: UploadMethod }) | UploadMetadata);
 
 export type Summary = {
   status: 'standalone' | 'connected' | 'offline' | 'revoked';
@@ -129,17 +131,18 @@ export function readMetadata(value: unknown): PolicyEvent | undefined {
       (value.decision === 'monitor' || value.decision === 'block') && isUploadMethod(value.uploadMethod)) {
     return { ...event, ruleId: uploadRule, detectorCategory: uploadCategory, uploadMethod: value.uploadMethod };
   }
-  if (value.uploadMethod !== undefined) return;
+  if (value.uploadMethod !== undefined && !(isUploadApp(value.appId) && value.decision === 'monitor' && isUploadMethod(value.uploadMethod))) return;
+  const source = isUploadMethod(value.uploadMethod) ? { uploadMethod: value.uploadMethod } : {};
   if (value.ruleId === fixtureRule && value.detectorCategory === fixtureDetector) {
-    return { ...event, ruleId: fixtureRule, detectorCategory: fixtureDetector };
+    return { ...event, ...source, ruleId: fixtureRule, detectorCategory: fixtureDetector };
   }
   if (value.ruleId === githubPatRule && value.detectorCategory === credentialDetector) {
-    return { ...event, ruleId: githubPatRule, detectorCategory: credentialDetector };
+    return { ...event, ...source, ruleId: githubPatRule, detectorCategory: credentialDetector };
   }
   if (value.ruleId === paymentCardRule && value.detectorCategory === paymentDetector) {
-    return { ...event, ruleId: paymentCardRule, detectorCategory: paymentDetector };
+    return { ...event, ...source, ruleId: paymentCardRule, detectorCategory: paymentDetector };
   }
   if (value.ruleId === privateKeyRule && value.detectorCategory === credentialDetector) {
-    return { ...event, ruleId: privateKeyRule, detectorCategory: credentialDetector };
+    return { ...event, ...source, ruleId: privateKeyRule, detectorCategory: credentialDetector };
   }
 }

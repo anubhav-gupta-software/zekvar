@@ -64,6 +64,13 @@ export function PublishPolicyForm({ policy, groupId, review }: { policy?: Policy
       <textarea key={`types-${policy?.version}`} id={`upload-types-${app}`} name={`upload-types-${app}`}
         rows={2} maxLength={1700} spellCheck={false} autoCapitalize="none" autoComplete="off"
         aria-describedby="upload-types-hint" defaultValue={policy?.uploadTypes?.[app]?.join(', ') ?? ''} />
+      {policy?.fileInspection && <>
+        <label htmlFor={`file-inspection-${app}`}>{promptAppLabels[app]} file content monitoring</label>
+        <select key={`inspection-${policy.version}`} id={`file-inspection-${app}`} name={`file-inspection-${app}`}
+          defaultValue={policy.fileInspection[app] ? 'on' : 'off'}>
+          <option value="off">Off</option><option value="on">Monitor</option>
+        </select>
+      </>}
     </div>)}
     <p className="muted" id="upload-types-hint">{uploadTypesHint}</p>
   </MutationForm>;
@@ -108,6 +115,7 @@ function PolicyRow({ policy, current, groupId, writable, review }: {
     <td>{uploadApps.map((app) => {
       const types = policy.uploadTypes?.[app] ?? [];
       return <div key={app}>{promptAppLabels[app]} · {detectorModeLabels[policy.uploadModes?.[app] ?? 'off']}
+        {policy.fileInspection?.[app] && <div className="muted">File content monitored</div>}
         {types.length > 0 && <details className="domain-rule-history"><summary>{types.length} selected types</summary>
           <code>{types.join(', ')}</code></details>}
       </div>;

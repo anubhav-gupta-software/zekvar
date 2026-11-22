@@ -96,6 +96,14 @@ The upload policy covers the supported top-level ChatGPT home and conversation r
 
 Update enrolled Chrome profiles to v0.15.0 before publishing scoped file types. Older builds skip the scoped portion and Control leaves the policy version unacknowledged. Other enabled controls and any unscoped upload mode continue to apply.
 
+## Monitor file contents
+
+1. Upgrade the test profile to Browser v0.24.0 or later. In Control, set **ChatGPT file content monitoring** or **Gemini file content monitoring** to **Monitor** in the baseline or a rollout group. **Policy preview** includes a synthetic text file for each app. Each setting starts Off.
+2. Save `ZEKVAR_TEST_SECRET` in a synthetic UTF-8 text file. Sync the browser and attach the file with the native picker or a file drop on a supported ChatGPT or Gemini page. The attachment proceeds and Browser scans its bytes locally. An existing file-type Block rule takes precedence. For other detectors, enable the corresponding prompt detector in the policy. The file match is recorded as Monitor regardless of its prompt action.
+3. Open **Security events** and look for **Synthetic secret** with **File content · File picker** or **File content · Drag and drop**. **Reports → By activity** separates inspection matches, file upload rules, and prompt events. Control receives rule and attempt metadata. File names, bytes, and decoded text stay outside telemetry.
+
+Browser reads plain UTF-8 text up to 256 KiB per file, up to 16 supplied files and 1 MiB of reads per intake, with two scans in progress per tab. File-backed clipboard entries use the same scanner when Chrome supplies the files. A batch produces at most one inspection event for the highest-priority match. Temporary prompt exceptions apply to prompts. [File API](https://w3c.github.io/FileAPI/#dom-blob-arraybuffer)
+
 ## Test temporary prompt exceptions
 
 1. Start the updated Control services and load Browser v0.17.0. In **Policy preview**, choose the baseline or a rollout group. Set the detector to **Warn** or **Block** and choose **Add prompt exception**. Select the AI app and detector, enter a reason, and set an expiry (UTC) within 24 hours.

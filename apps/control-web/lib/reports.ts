@@ -6,6 +6,7 @@ export type AiEnforcementReport = {
   organization: string; startOn: string; asOf: string; days: number; appId: string | null;
   counts: DecisionCounts; daily: { day: string; counts: DecisionCounts }[];
   byApp: ReportBreakdown[]; byRule: ReportBreakdown[];
+  bySource?: ReportBreakdown[];
 };
 
 export function reportFilters(search: Record<string, string | string[] | undefined>) {

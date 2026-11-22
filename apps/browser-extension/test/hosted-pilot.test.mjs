@@ -352,7 +352,7 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   assert.equal(exported.status, 200);
   assert.doesNotMatch(exported.body, /Synthetic pilot draft|ZEKVAR_TEST_SECRET/);
 
-  const claudePolicy = await admin(groupPath, { claudePromptEnabled: true, privateKeyMode: 'block' });
+  const claudePolicy = await admin(groupPath, { claudePromptEnabled: true, privateKeyMode: 'block', fileInspection: { chatgpt: true } });
   await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
   await label(popup, `Connected to Control · BLOCK v${claudePolicy.version}`).waitFor();
   const claude = await browser.newPage();
@@ -378,13 +378,30 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
     return health.composerReadiness.activeInstallations === 1 &&
       health.composerReadiness.apps.find(({ appId }) => appId === 'claude').counts.detected === 1;
   }, 'The managed Chrome profile did not report fresh Claude readiness through HTTPS.');
+
+  const attachment = await browser.newPage();
+  const attachmentFixture = await readFile(new URL('./upload-composer.html', import.meta.url), 'utf8');
+  await attachment.route('https://chatgpt.com/**', (route) => route.fulfill({ contentType: 'text/html', body: attachmentFixture }));
+  await attachment.goto('https://chatgpt.com/');
+  await attachment.getByText(/File content monitor$/).waitFor();
+  const attachmentName = join(scratch, 'private-hosted-content-sample.txt');
+  await writeFile(attachmentName, keyBlock);
+  const chooser = attachment.waitForEvent('filechooser');
+  await attachment.getByLabel('Attach fixture files').click();
+  await (await chooser).setFiles(attachmentName);
+  assert.deepEqual(await attachment.evaluate(() => window.fileEvents), [['input', 1], ['change', 1]]);
+  await until(async () => (await admin('events?appId=chatgpt')).some(({ ruleId, uploadMethod, decision }) =>
+    ruleId === 'pem-private-key' && uploadMethod === 'picker' && decision === 'monitor'), 'The private key file observation did not appear in Control.');
   await dashboard.reload();
   await dashboard.getByRole('table', { name: 'Security events' }).getByRole('row').filter({ hasText: 'Private key' })
     .getByText('Claude', { exact: true }).waitFor();
+  await dashboard.getByRole('table', { name: 'Security events' }).getByText('File content · File picker', { exact: true }).waitFor();
   await dashboard.getByRole('link', { name: 'Reports', exact: true }).click();
   const reportApps = dashboard.getByRole('table', { name: 'By AI application', exact: true });
   await reportApps.getByRole('rowheader', { name: 'Claude', exact: true }).waitFor();
   assert.equal(await reportApps.locator('tbody tr').count(), 2);
+  const contentActivity = dashboard.getByRole('table', { name: 'By activity', exact: true }).getByRole('row', { name: /^File content inspection / });
+  assert.deepEqual(await contentActivity.getByRole('cell').allTextContents(), ['1', '0', '0', '0', '0', '1']);
   const reportLink = dashboard.getByRole('link', { name: 'Export report (JSON)', exact: true });
   const href = await reportLink.getAttribute('href');
   const report = await dashboard.evaluate(async (path) => {
@@ -394,8 +411,9 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   assert.equal(report.status, 200);
   assert.equal(report.report.counts.block, 3);
   assert.equal(report.report.byRule.find(({ id }) => id === 'pem-private-key').counts.block, 1);
+  assert.equal(report.report.bySource.find(({ id }) => id === 'file_content').counts.monitor, 1);
   assert.deepEqual(report.report.byApp.map(({ id }) => id), ['chatgpt', 'claude']);
-  assert.doesNotMatch(JSON.stringify(report.report), /Synthetic (?:pilot|TLS Claude) draft|ZEKVAR_TEST_SECRET|installationId|eventId|BEGIN ENCRYPTED|WnJBWnJB/);
+  assert.doesNotMatch(JSON.stringify(report.report), /Synthetic (?:pilot|TLS Claude) draft|ZEKVAR_TEST_SECRET|installationId|eventId|BEGIN ENCRYPTED|WnJBWnJB|private-hosted-content/);
   await dashboard.getByRole('button', { name: 'Sign out', exact: true }).click();
   await dashboard.getByRole('heading', { name: 'Sign in to Control', exact: true }).waitFor();
   assert.equal((await browser.cookies(dashboardOrigin)).some(({ name }) => name === session.name), false);

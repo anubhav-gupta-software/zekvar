@@ -287,6 +287,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
     assert.equal(downloaded.days, 30);
     assert.equal(downloaded.daily.length, 30);
     assert.deepEqual(downloaded.counts, { monitor: 0, warn: 1, block: 0, warn_override: 0, exception_applied: 0 });
+    assert.deepEqual(downloaded.bySource, [{ id: 'prompt', counts: downloaded.counts }]);
     assert.ok(![installation.installationId, installation.token, token, enrollmentGrant].some((secret) => serialized.includes(secret)));
     const response = await context.request.get(`${dashboard}${href}`);
     assert.equal(response.status(), 200);
@@ -424,6 +425,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       await page.getByLabel('Draft private key', { exact: true }).selectOption('block');
       await page.getByLabel('Draft ChatGPT file uploads').selectOption('block');
       await page.getByLabel('Draft Gemini file uploads').selectOption('monitor');
+      await page.getByLabel('Draft ChatGPT file content monitoring', { exact: true }).selectOption('on');
       await page.getByLabel('Draft ChatGPT file types', { exact: true }).fill('IMAGE/*, .PDF');
       await geminiTypes.fill('application/x-zekvar-private-type');
       await page.getByLabel('Draft app discovery').selectOption('on');
@@ -468,6 +470,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
         ['ChatGPT TXT upload', 'Allow', 'Allow'],
         ['ChatGPT PNG upload', 'Allow', 'Block'],
         ['ChatGPT custom file upload', 'Allow', 'Block'],
+        ['ChatGPT synthetic text file', 'Allow', 'Monitor'],
         ['Gemini TXT upload', 'Allow', 'Allow'],
         ['Gemini custom file upload', 'Allow', 'Monitor'],
         ['Custom prompt', 'Monitor', 'Block'],
@@ -523,6 +526,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       assert.equal(published.paymentCardMode, 'warn');
       assert.equal(published.privateKeyMode, 'block');
       assert.deepEqual(published.uploadModes, { chatgpt: 'block', gemini: 'monitor' });
+      assert.deepEqual(published.fileInspection, { chatgpt: true, gemini: false });
       assert.deepEqual(published.uploadTypes, { chatgpt: ['.pdf', 'image/*'], gemini: ['application/x-zekvar-private-type'] });
       assert.equal(published.discoveryEnabled, true);
       assert.deepEqual(published.domainRules, { allow: ['work.pilot.example.test'], block: ['pilot.example.test'] });

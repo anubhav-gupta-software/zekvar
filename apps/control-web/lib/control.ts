@@ -4,7 +4,7 @@ export { ruleLabels } from '../../../contracts/policy/prompt';
 export type { DetectorMode } from '../../../contracts/policy/prompt';
 export type { DomainRules, PathRules } from '../../../contracts/policy/domains';
 import type { DomainRules, PathRules } from '../../../contracts/policy/domains';
-import type { UploadMethod, UploadModes, UploadTypes } from '../../../contracts/policy/uploads';
+import type { FileInspection, UploadMethod, UploadModes, UploadTypes } from '../../../contracts/policy/uploads';
 import type { CustomApp, CustomAppId } from '../../../contracts/policy/discovery';
 import { exceptionDecision, type PromptException } from '../../../contracts/policy/prompt-exceptions';
 
@@ -45,6 +45,7 @@ export type Policy = {
   privateKeyMode?: DetectorMode;
   uploadModes?: UploadModes;
   uploadTypes?: UploadTypes;
+  fileInspection?: FileInspection;
   discoveryEnabled?: boolean;
   customApps?: CustomApp[];
   promptExceptions?: PromptException[];

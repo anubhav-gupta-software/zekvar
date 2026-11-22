@@ -24,6 +24,7 @@ const batchAdmin = randomBytes(32).toString('hex');
 const reportAdmin = randomBytes(32).toString('hex');
 const coverageAdmin = randomBytes(32).toString('hex');
 const keyAdmin = randomBytes(32).toString('hex');
+const fileAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -42,7 +43,7 @@ async function retentionFixture(query) {
 }
 
 async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false,
-  extensionVersion, scopedEnrollment = false, composerAware = false, privateKeyAware = false } = {}) {
+  extensionVersion, scopedEnrollment = false, composerAware = false, privateKeyAware = false, fileInspectionAware = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -53,6 +54,7 @@ async function call(path, { token, method = 'GET', body, expect = 200, assignmen
   if (scopedEnrollment) headers['X-Zekvar-Scoped-Enrollment'] = '1';
   if (composerAware) headers['X-Zekvar-Composer-Coverage'] = '1';
   if (privateKeyAware) headers['X-Zekvar-Private-Key'] = '1';
+  if (fileInspectionAware) headers['X-Zekvar-File-Inspection'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
@@ -95,6 +97,8 @@ async function start(sweepSeconds = 3600) {
       Control__Organizations__7__AdminToken: coverageAdmin,
       Control__Organizations__8__Slug: `private-key-${suffix}`,
       Control__Organizations__8__AdminToken: keyAdmin,
+      Control__Organizations__9__Slug: `private-file-${suffix}`,
+      Control__Organizations__9__AdminToken: fileAdmin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -2352,5 +2356,83 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal((await post(`${groupPath}/policies/${previous.version}/restore`)).privateKeyMode, 'monitor');
     assert.equal((await post(`policies/${warn.version}/restore`)).privateKeyMode, 'warn');
     assert.equal((await post(`policies/${initial.version}/restore`)).privateKeyMode, 'off');
+  });
+
+  await t.test('validates negotiated file inspection independently of prompt modes and file upload policies', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: fileAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const off = { chatgpt: false, gemini: false };
+    const current = async () => (await admin('policies'))[0];
+    assert.deepEqual((await current()).fileInspection, off);
+    if (postgres) {
+      await stop();
+      await retentionFixture(`DELETE FROM schema_migrations WHERE version = 27;
+        ALTER TABLE policy_versions DROP COLUMN chatgpt_file_inspection, DROP COLUMN gemini_file_inspection;
+        ALTER TABLE policy_deliveries DROP COLUMN file_inspection;`);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 27'), '1');
+    }
+
+    const { grant } = await post('enrollment-grants');
+    const client = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const browser = (path, options) => call(`/v1/browser/${path}`, { token: client.token, assignmentAware: true, ...options });
+    const fetchPolicy = (options) => browser('policy', { fileInspectionAware: true, privateKeyAware: true, ...options });
+    const heartbeat = (policy, fields, expect = 204) => browser('heartbeat', { method: 'POST', expect,
+      body: { policyVersion: policy.version, assignmentVersion: policy.assignmentVersion, ...fields } });
+    const send = (policy, overrides = {}, expect = 204) => browser('events', { method: 'POST', expect,
+      body: { ...event, eventId: randomUUID(), timestamp: new Date().toISOString(), policyVersion: policy.version,
+        assignmentVersion: policy.assignmentVersion, appId: 'chatgpt', decision: 'monitor', uploadMethod: 'picker', ...overrides } });
+    const observed = async () => (await admin('installations'))[0].appliedPolicyVersion;
+    const initial = await fetchPolicy();
+    await heartbeat(initial, {});
+    await send(initial, {}, 400);
+    await post('policies', { fileInspection: {} }, { expect: 400 });
+    await post('policies', { fileInspection: { chatgpt: 'block' } }, { expect: 400 });
+    await post('policies', { fileInspection: { claude: true } }, { expect: 400 });
+    const draft = await post('policies', { mode: 'block', githubPatMode: 'warn', privateKeyMode: 'block', fileInspection: { chatgpt: true } });
+    const legacy = await fetchPolicy({ fileInspectionAware: false });
+    assert.deepEqual(legacy.fileInspection, off);
+    await heartbeat(legacy, { privateKeyModeApplied: true });
+    assert.equal(await observed(), initial.version);
+    await heartbeat(legacy, { privateKeyModeApplied: true, fileInspectionApplied: true }, 400);
+    await send(legacy, {}, 400);
+    const aware = await fetchPolicy();
+    assert.equal(aware.version, draft.version);
+    assert.deepEqual(aware.fileInspection, { chatgpt: true, gemini: false });
+    await heartbeat(aware, { privateKeyModeApplied: true, fileInspectionApplied: true });
+    assert.equal(await observed(), aware.version);
+
+    const exportPath = 'events/export';
+    const id = randomUUID();
+    const pat = { ruleId: 'github-classic-pat', detectorCategory: 'credential', uploadMethod: 'drop', eventId: id };
+    await Promise.all([send(aware, pat), send(aware, pat)]);
+    await send(aware, { ruleId: 'pem-private-key', detectorCategory: 'credential', uploadMethod: 'paste' });
+    await send(aware, { uploadMethod: undefined, decision: 'block' });
+    for (const input of [ { appId: 'gemini' }, { appId: 'claude' }, { appId: 'local-prompt-fixture' }, { decision: 'block' },
+      { decision: 'exception_applied' }, { uploadMethod: 'clipboard' }, { fileName: 'synthetic-sensitive-filename.txt' }, { content: 'synthetic-sensitive-file-contents' },
+      { ruleId: 'payment-card-number', detectorCategory: 'payment-card' } ]) await send(aware, input, 400);
+
+    await post('policies', { fileInspection: { gemini: true }, uploadModes: { chatgpt: 'monitor' } });
+    const both = await fetchPolicy();
+    assert.deepEqual(both.fileInspection, { chatgpt: true, gemini: true });
+    await send(both, { appId: 'gemini' });
+    await send(both, { ruleId: 'ai-file-upload', detectorCategory: 'file-upload' });
+    const records = (await admin(exportPath)).entries;
+    assert.equal(records.length, 5);
+    assert.equal(records.filter(({ eventId }) => eventId === id).length, 1);
+    assert.doesNotMatch(JSON.stringify(records), /synthetic-sensitive|fileName|mimeType|size/);
+    assert.deepEqual((await admin(exportPath, { token: coverageAdmin })).entries, []);
+    const sourceCounts = (await admin('reports/ai-enforcement')).bySource;
+    assert.deepEqual(sourceCounts.map(({ id, counts }) => [id, counts.monitor, counts.block]),
+      [['file_content', 3, 0], ['file_policy', 1, 0], ['prompt', 0, 1]]);
+
+    const group = await post('policy-groups', { name: 'File content cohort' });
+    const groupPath = `policy-groups/${group.id}`;
+    const scoped = await post(`${groupPath}/policies`, { fileInspection: { chatgpt: false } });
+    assert.deepEqual(scoped.fileInspection, { chatgpt: false, gemini: true });
+    assert.deepEqual((await current()).fileInspection, { chatgpt: true, gemini: true });
+    assert.deepEqual((await post(`${groupPath}/promote`, { expectedVersion: scoped.version })).fileInspection, scoped.fileInspection);
+    assert.deepEqual((await post(`policies/${initial.version}/restore`)).fileInspection, off);
+    await send(await fetchPolicy(), {}, 400);
   });
 });

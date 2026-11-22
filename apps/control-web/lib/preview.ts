@@ -2,8 +2,9 @@ import { evaluateNavigation, parseWebAddress, sameDomainRules, emptyDomainRules,
   type DomainRules, type PathRules } from '../../../contracts/policy/domains';
 import { fixtureRule, ruleLabels, testMarker, type DetectorMode, type PolicyMode } from '../../../contracts/policy/prompt';
 import { chatGptApp, claudeApp, promptAppLabels, type AiPromptApp } from '../../../contracts/policy/apps';
+import { evaluateFileInspection, fileInspectionDetectors } from '../../../contracts/policy/file-inspection';
 import { allUploadTypes, matchesUploadType, sameUploadTypes, uploadApps, uploadsOff, type UploadFile, type UploadMode,
-  type UploadModes, type UploadTypes } from '../../../contracts/policy/uploads';
+  type FileInspection, type UploadModes, type UploadTypes } from '../../../contracts/policy/uploads';
 import type { Policy } from './control';
 import { sameCustomApps, type CustomAppSetting } from '../../../contracts/policy/discovery';
 import { evaluatePromptWithExceptions, exceptionDecision, samePromptExceptions, type PromptException } from '../../../contracts/policy/prompt-exceptions';
@@ -12,6 +13,7 @@ export type PreviewPolicy = {
   mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; privateKeyMode?: DetectorMode; discoveryEnabled: boolean;
   extensionInventoryEnabled: boolean;
   claudePromptEnabled: boolean;
+  fileInspection?: FileInspection;
   domainRules: DomainRules; pathRules: PathRules; uploadModes: UploadModes; uploadTypes: UploadTypes;
   customApps: CustomAppSetting[];
   promptExceptions: PromptException[];
@@ -35,6 +37,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     pathRules: policy.pathRules ?? emptyPathRules,
     uploadModes: policy.uploadModes ?? uploadsOff,
     uploadTypes: policy.uploadTypes ?? allUploadTypes,
+    fileInspection: policy.fileInspection,
   };
 }
 
@@ -43,7 +46,8 @@ export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
     a.privateKeyMode === b.privateKeyMode &&
     a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
     a.claudePromptEnabled === b.claudePromptEnabled &&
-    uploadApps.every((app) => a.uploadModes[app] === b.uploadModes[app] && sameUploadTypes(a.uploadTypes[app], b.uploadTypes[app])) &&
+    uploadApps.every((app) => a.uploadModes[app] === b.uploadModes[app] && sameUploadTypes(a.uploadTypes[app], b.uploadTypes[app]) &&
+      a.fileInspection?.[app] === b.fileInspection?.[app]) &&
     sameCustomApps(a.customApps, b.customApps) && samePromptExceptions(a.promptExceptions, b.promptExceptions) &&
     sameDomainRules(a.domainRules, b.domainRules) && sameDomainRules(a.pathRules, b.pathRules);
 }
@@ -89,6 +93,13 @@ function uploadOutcome(mode: UploadMode, types: string[], file: UploadFile): Pre
   return { action: mode, rule: 'File upload policy' };
 }
 
+function fileInspectionOutcome(policy: PreviewPolicy, app: typeof uploadApps[number]): PreviewDecision {
+  const beforeInspection = uploadOutcome(policy.uploadModes[app], policy.uploadTypes[app], { name: 'synthetic.txt', type: 'text/plain' });
+  if (beforeInspection.action === 'block') return beforeInspection;
+  const match = policy.fileInspection?.[app] ? evaluateFileInspection(testMarker, fileInspectionDetectors(policy)) : undefined;
+  return match ? { action: 'monitor', rule: 'Test marker in file content' } : beforeInspection;
+}
+
 export function runComparison(reference: PreviewSnapshot, candidate: PreviewPolicy, prompt: string, address?: URL,
   file?: UploadFile, app: AiPromptApp = chatGptApp): PreviewResult {
   const now = Date.now();
@@ -103,6 +114,10 @@ export function runComparison(reference: PreviewSnapshot, candidate: PreviewPoli
   }
   if (address) rows.push({ name: 'Custom navigation', current: navigationOutcome(address, reference), draft: navigationOutcome(address, candidate) });
   for (const app of uploadApps) {
+    if (reference.fileInspection !== undefined || candidate.fileInspection !== undefined) {
+      rows.push({ name: `${promptAppLabels[app]} synthetic text file`, current: fileInspectionOutcome(reference, app),
+        draft: fileInspectionOutcome(candidate, app) });
+    }
     for (const [name, sample] of [
       ['TXT upload', { name: 'example.txt', type: 'text/plain' }],
       ['PNG upload', { name: 'example.png', type: 'image/png' }],

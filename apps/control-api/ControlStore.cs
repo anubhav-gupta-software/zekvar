@@ -49,6 +49,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 24, "024_ai_enforcement_report.sql", ct);
         await ApplyMigration(connection, 25, "025_composer_readiness.sql", ct);
         await ApplyMigration(connection, 26, "026_private_key_detection.sql", ct);
+        await ApplyMigration(connection, 27, "027_file_content_inspection.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -141,7 +142,7 @@ internal sealed partial class ControlStore
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
                 p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
-                p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, p.private_key_mode
+                p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, p.private_key_mode, p.chatgpt_file_inspection, p.gemini_file_inspection
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.policy_group_id IS NOT DISTINCT FROM $2::uuid ORDER BY p.version DESC LIMIT 100
             """, organizationId, (object?)groupId ?? DBNull.Value);
@@ -152,7 +153,7 @@ internal sealed partial class ControlStore
     }
 
     public async Task<Policy?> CurrentPolicy(Guid installationId, bool assignmentAware, bool claudeAware, string? extensionVersion, bool privateKeyAware,
-        CancellationToken ct)
+        bool fileInspectionAware, CancellationToken ct)
     {
         await using var command = Command("""
             WITH active AS (
@@ -170,30 +171,33 @@ internal sealed partial class ControlStore
                 FROM active i JOIN organizations o ON o.id = i.organization_id
                 LEFT JOIN policy_groups g ON g.organization_id = o.id AND g.id = i.policy_group_id
             ), delivery AS (
-                INSERT INTO policy_deliveries (organization_id, installation_id, assignment_version, policy_version, exception_scope, claude_prompt, private_key)
+                INSERT INTO policy_deliveries (organization_id, installation_id, assignment_version, policy_version,
+                    exception_scope, claude_prompt, private_key, file_inspection)
                 SELECT e.organization_id, e.id, e.assignment_version, e.version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id,
-                    $3 AND p.claude_prompt_enabled, $5 AND p.private_key_mode <> 'off'
+                    $3 AND p.claude_prompt_enabled, $5 AND p.private_key_mode <> 'off', $6 AND (p.chatgpt_file_inspection OR p.gemini_file_inspection)
                 FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
                 WHERE e.assignment_version > 0 OR p.prompt_exceptions <> '[]'::jsonb OR ($3 AND p.claude_prompt_enabled)
-                    OR ($5 AND p.private_key_mode <> 'off')
+                    OR ($5 AND p.private_key_mode <> 'off') OR ($6 AND (p.chatgpt_file_inspection OR p.gemini_file_inspection))
                 ON CONFLICT (installation_id, assignment_version, policy_version) DO UPDATE
                 SET claude_prompt = policy_deliveries.claude_prompt OR EXCLUDED.claude_prompt,
-                    private_key = policy_deliveries.private_key OR EXCLUDED.private_key
+                    private_key = policy_deliveries.private_key OR EXCLUDED.private_key,
+                    file_inspection = policy_deliveries.file_inspection OR EXCLUDED.file_inspection
                 WHERE (EXCLUDED.claude_prompt AND NOT policy_deliveries.claude_prompt)
                     OR (EXCLUDED.private_key AND NOT policy_deliveries.private_key)
+                    OR (EXCLUDED.file_inspection AND NOT policy_deliveries.file_inspection)
             )
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
                 p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
-                p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, p.private_key_mode,
+                p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, p.private_key_mode, p.chatgpt_file_inspection, p.gemini_file_inspection,
                 e.assignment_version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id
             FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
             LEFT JOIN policy_audit a ON a.organization_id = p.organization_id AND a.version = p.version
-            """, installationId, assignmentAware, claudeAware, (object?)extensionVersion ?? DBNull.Value, privateKeyAware);
+            """, installationId, assignmentAware, claudeAware, (object?)extensionVersion ?? DBNull.Value, privateKeyAware, fileInspectionAware);
         await using var rows = await command.ExecuteReaderAsync(ct);
         if (!await rows.ReadAsync(ct)) return null;
         var policy = ReadPolicy(rows);
-        return policy with { AssignmentVersion = rows.GetInt32(20), PromptExceptions = rows.GetBoolean(21) ? policy.PromptExceptions : [] };
+        return policy with { AssignmentVersion = rows.GetInt32(22), PromptExceptions = rows.GetBoolean(23) ? policy.PromptExceptions : [] };
     }
 
     public async Task<bool> RecordHeartbeat(Guid installationId, Heartbeat request, bool scopedCoverage, CancellationToken ct)
@@ -209,6 +213,7 @@ internal sealed partial class ControlStore
                     AND (NOT p.discovery_enabled OR p.custom_apps = '[]'::jsonb OR $11)
                     AND (NOT p.claude_prompt_enabled OR $14)
                     AND (p.private_key_mode = 'off' OR $16)
+                    AND (NOT (p.chatgpt_file_inspection OR p.gemini_file_inspection) OR $17)
                     AND ($12 OR i.policy_group_id IS DISTINCT FROM p.policy_group_id OR NOT EXISTS (
                         SELECT 1 FROM jsonb_array_elements(p.prompt_exceptions) AS entries(entry)
                         WHERE (entry->>'expiresAt')::timestamptz > now()
@@ -231,9 +236,9 @@ internal sealed partial class ControlStore
                 AND p.organization_id = i.organization_id AND p.version = $2
                 AND ($4 OR cardinality(p.allowed_domains) + cardinality(p.blocked_domains) = 0)
                 AND ($13::text IS NULL OR p.claude_prompt_enabled AND $14)
-                AND (($5 = 0 AND p.policy_group_id IS NULL AND NOT $14 AND NOT $16) OR EXISTS (SELECT 1 FROM policy_deliveries d
+                AND (($5 = 0 AND p.policy_group_id IS NULL AND NOT $14 AND NOT $16 AND NOT $17) OR EXISTS (SELECT 1 FROM policy_deliveries d
                     WHERE d.installation_id = i.id AND d.assignment_version = $5 AND d.policy_version = $2
-                        AND (NOT $14 OR d.claude_prompt) AND (NOT $16 OR d.private_key)))
+                        AND (NOT $14 OR d.claude_prompt) AND (NOT $16 OR d.private_key) AND (NOT $17 OR d.file_inspection)))
             RETURNING i.id, i.organization_id
             ), observed AS (
                 INSERT INTO composer_observations (organization_id, installation_id, app_id, policy_version, assignment_version, coverage)
@@ -251,7 +256,7 @@ internal sealed partial class ControlStore
             request.DomainRulesApplied, request.AssignmentVersion, (object?)request.GeminiCoverage ?? DBNull.Value,
             request.PaymentCardModeApplied, request.UploadControlsApplied, request.PathRulesApplied, request.UploadTypesApplied,
             request.CustomDiscoveryApplied, request.PromptExceptionsApplied, (object?)request.ClaudeCoverage ?? DBNull.Value,
-            request.ClaudePromptApplied, scopedCoverage, request.PrivateKeyModeApplied);
+            request.ClaudePromptApplied, scopedCoverage, request.PrivateKeyModeApplied, request.FileInspectionApplied);
         return (bool)(await command.ExecuteScalarAsync(ct))!;
     }
 
@@ -379,19 +384,23 @@ internal sealed partial class ControlStore
                     WHEN 'payment-card-number' THEN p.payment_card_mode
                     WHEN 'pem-private-key' THEN p.private_key_mode
                     WHEN 'ai-file-upload' THEN CASE $6 WHEN 'chatgpt' THEN p.chatgpt_upload_mode WHEN 'gemini' THEN p.gemini_upload_mode END
-                    ELSE p.mode END AS mode) AS detector
-                WHERE (detector.mode = CASE WHEN $5 = 'warn_override' THEN 'warn' ELSE $5 END
+                    ELSE p.mode END AS mode, $9::text IS NOT NULL AND $7 <> 'ai-file-upload' AS file_content) AS detector
+                WHERE (detector.file_content AND detector.mode <> 'off' AND
+                        CASE $6 WHEN 'chatgpt' THEN p.chatgpt_file_inspection WHEN 'gemini' THEN p.gemini_file_inspection ELSE false END
+                    OR NOT detector.file_content AND (detector.mode = CASE WHEN $5 = 'warn_override' THEN 'warn' ELSE $5 END
                     OR ($5 = 'exception_applied' AND detector.mode IN ('warn', 'block') AND $3 >= p.published_at
                         AND $3 <= now() + interval '2 minutes'
                         AND EXISTS (SELECT 1 FROM jsonb_array_elements(p.prompt_exceptions) AS entries(entry)
-                            WHERE entry->>'appId' = $6 AND entry->>'ruleId' = $7 AND $3 < (entry->>'expiresAt')::timestamptz)))
+                            WHERE entry->>'appId' = $6 AND entry->>'ruleId' = $7 AND $3 < (entry->>'expiresAt')::timestamptz))))
                   AND (r.event_cutoff IS NULL OR $3 >= r.event_cutoff)
                   AND ($6 <> 'claude' OR p.claude_prompt_enabled)
-                  AND (($8 = 0 AND p.policy_group_id IS NULL AND $5 <> 'exception_applied' AND $6 <> 'claude' AND $7 <> 'pem-private-key')
+                  AND (($8 = 0 AND p.policy_group_id IS NULL AND $5 <> 'exception_applied' AND $6 <> 'claude' AND $7 <> 'pem-private-key'
+                        AND NOT detector.file_content)
                     OR EXISTS (SELECT 1 FROM policy_deliveries d
                     WHERE d.installation_id = $1 AND d.assignment_version = $8 AND d.policy_version = $4
                         AND ($6 <> 'claude' OR d.claude_prompt)
                         AND ($7 <> 'pem-private-key' OR d.private_key)
+                        AND (NOT detector.file_content OR d.file_inspection)
                         AND ($5 <> 'exception_applied' OR d.exception_scope)))
             ), written AS (
                 INSERT INTO security_events (organization_id, installation_id, event_id, occurred_at, policy_version, decision, app_id, rule_id, upload_method)
@@ -587,5 +596,5 @@ internal sealed partial class ControlStore
         new(rows.GetFieldValue<string[]>(14), rows.GetFieldValue<string[]>(15)),
         JsonSerializer.Deserialize<CustomApp[]>(rows.GetString(16), JsonSerializerOptions.Web),
         JsonSerializer.Deserialize<PromptException[]>(rows.GetString(17), JsonSerializerOptions.Web), ClaudePromptEnabled: rows.GetBoolean(18),
-        PrivateKeyMode: rows.GetString(19));
+        PrivateKeyMode: rows.GetString(19), FileInspection: new(rows.GetBoolean(20), rows.GetBoolean(21)));
 }

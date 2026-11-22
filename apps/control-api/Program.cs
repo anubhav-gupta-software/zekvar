@@ -278,10 +278,11 @@ browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
     var aware = http.Request.Headers["X-Zekvar-Assignment-Aware"] == "1";
     var claudeAware = http.Request.Headers["X-Zekvar-Claude-Prompt"] == "1";
     var privateKeyAware = http.Request.Headers["X-Zekvar-Private-Key"] == "1";
+    var fileInspectionAware = http.Request.Headers["X-Zekvar-File-Inspection"] == "1";
     var versionHeader = http.Request.Headers["X-Zekvar-Extension-Version"];
     var extensionVersion = versionHeader.Count == 1 ? BrowserRelease.ReadVersion(versionHeader[0]) : null;
-    if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, claudeAware, extensionVersion, privateKeyAware, ct) is { } policy)
-        return Results.Ok(policy.ForBrowser(claudeAware, privateKeyAware));
+    if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, claudeAware, extensionVersion, privateKeyAware, fileInspectionAware, ct) is { } policy)
+        return Results.Ok(policy.ForBrowser(claudeAware, privateKeyAware, fileInspectionAware));
     return aware ? Results.Unauthorized() : Results.Conflict(new { error = "Update the browser to receive the assigned policy." });
 });
 browser.MapPost("/heartbeat", async (Heartbeat request, HttpContext http, CancellationToken ct) =>
@@ -311,7 +312,8 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
           request.Mode is null && (request.DomainRules is not null || request.PaymentCardMode is not null ||
               request.PathRules is not null || request.UploadModes?.HasSettings() == true ||
               request.UploadTypes?.HasSettings() == true || request.ExtensionInventoryEnabled.HasValue || request.CustomApps is not null ||
-              request.PromptExceptions is not null || request.ClaudePromptEnabled.HasValue || request.PrivateKeyMode is not null)) ||
+              request.PromptExceptions is not null || request.ClaudePromptEnabled.HasValue || request.PrivateKeyMode is not null ||
+              request.FileInspection?.HasSettings() == true)) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode) ||
         !FixtureContract.IsOptionalDetectorMode(request.PrivateKeyMode))
         return Results.BadRequest(new { error = "Choose a valid rule mode." });

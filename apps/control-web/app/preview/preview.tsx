@@ -28,6 +28,7 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
     extensionInventoryEnabled: snapshot.extensionInventoryEnabled,
     claudePromptEnabled: snapshot.claudePromptEnabled,
     uploadModes: snapshot.uploadModes,
+    fileInspection: snapshot.fileInspection,
     uploadTypeText: { chatgpt: snapshot.uploadTypes.chatgpt.join(', '), gemini: snapshot.uploadTypes.gemini.join(', ') },
     catalog: snapshot.customApps.map(({ host, name }) => `${host}, ${name}`).join('\n'),
     promptExceptions: snapshot.promptExceptions.map((entry) => ({ ...entry, expiresAt: new Date(entry.expiresAt).toISOString().slice(0, -1) })),
@@ -112,7 +113,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
       mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode, privateKeyMode: editor.privateKeyMode,
       discoveryEnabled: editor.discoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled,
       claudePromptEnabled: editor.claudePromptEnabled, domainRules, pathRules,
-      uploadModes: editor.uploadModes, uploadTypes: { chatgpt, gemini }, customApps, promptExceptions,
+      uploadModes: editor.uploadModes, uploadTypes: { chatgpt, gemini }, fileInspection: editor.fileInspection, customApps, promptExceptions,
     }, customPrompt, address, file, promptApp));
   }
 
@@ -183,6 +184,15 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
           <textarea id={`draft-upload-types-${app}`} rows={2} value={editor.uploadTypeText[app]}
             onChange={(event) => edit('uploadTypeText', { ...editor.uploadTypeText, [app]: event.target.value })}
             maxLength={1700} spellCheck={false} autoCapitalize="none" autoComplete="off" aria-describedby="draft-upload-types-hint" />
+          {editor.fileInspection && <>
+            <label htmlFor={`draft-file-inspection-${app}`}>Draft {promptAppLabels[app]} file content monitoring</label>
+            <select id={`draft-file-inspection-${app}`} value={editor.fileInspection[app] ? 'on' : 'off'}
+              onChange={(event) => {
+                if (editor.fileInspection) edit('fileInspection', { ...editor.fileInspection, [app]: event.target.value === 'on' });
+              }}>
+              <option value="off">Off</option><option value="on">Monitor</option>
+            </select>
+          </>}
         </div>)}
       </div>
       <p className="muted" id="draft-upload-types-hint">{uploadTypesHint}</p>
@@ -317,6 +327,8 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         <input type="hidden" name="claudePromptEnabled" value={candidate.claudePromptEnabled ? 'on' : 'off'} />
         {uploadApps.map((app) => <input key={app} type="hidden" name={`upload-${app}`} value={candidate.uploadModes[app]} />)}
         {uploadApps.map((app) => <input key={app} type="hidden" name={`upload-types-${app}`} value={candidate.uploadTypes[app].join(', ')} />)}
+        {candidate.fileInspection && uploadApps.map((app) => <input key={app} type="hidden" name={`file-inspection-${app}`}
+          value={candidate.fileInspection?.[app] ? 'on' : 'off'} />)}
         <input type="hidden" name="allow" value={candidate.domainRules.allow.join('\n')} />
         <input type="hidden" name="block" value={candidate.domainRules.block.join('\n')} />
         <input type="hidden" name="allowPaths" value={candidate.pathRules.allow.join('\n')} />

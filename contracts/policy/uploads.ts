@@ -7,6 +7,7 @@ export const uploadApps = [chatGptApp, geminiApp] as const;
 export type UploadApp = typeof uploadApps[number];
 export const isUploadApp = (app: unknown): app is UploadApp => app === chatGptApp || app === geminiApp;
 export type UploadModes = Record<UploadApp, UploadMode>;
+export type FileInspection = Record<UploadApp, boolean>;
 export const uploadsOff: UploadModes = { chatgpt: 'off', gemini: 'off' };
 export type UploadTypes = Record<UploadApp, string[]>;
 export const allUploadTypes: UploadTypes = { chatgpt: [], gemini: [] };
@@ -62,6 +63,11 @@ export function isUploadMode(value: unknown): value is UploadMode {
 export function isUploadModes(value: unknown): value is UploadModes {
   return typeof value === 'object' && value !== null && 'chatgpt' in value && 'gemini' in value &&
     isUploadMode(value.chatgpt) && isUploadMode(value.gemini);
+}
+
+export function isFileInspection(value: unknown): value is FileInspection {
+  return typeof value === 'object' && value !== null && 'chatgpt' in value && 'gemini' in value &&
+    typeof value.chatgpt === 'boolean' && typeof value.gemini === 'boolean';
 }
 
 export function isUploadMethod(value: unknown): value is UploadMethod {

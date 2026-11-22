@@ -101,6 +101,14 @@ function readUploadTypes(form: FormData) {
   if (chatgpt && gemini) return { chatgpt, gemini };
 }
 
+function readFileInspection(form: FormData) {
+  const chatgpt = form.get('file-inspection-chatgpt');
+  const gemini = form.get('file-inspection-gemini');
+  if (chatgpt === null && gemini === null) return undefined;
+  if ((chatgpt !== 'on' && chatgpt !== 'off') || (gemini !== 'on' && gemini !== 'off')) return null;
+  return { chatgpt: chatgpt === 'on', gemini: gemini === 'on' };
+}
+
 export async function issueControlAccess(_previous: Feedback, form: FormData): Promise<Feedback> {
   const input = form.get('name');
   const name = typeof input === 'string' ? input.trim() : '';
@@ -152,6 +160,7 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
   const privateKeyMode = form.get('privateKeyMode');
   const uploadModes = readUploadSettings(form);
   const uploadTypes = readUploadTypes(form);
+  const fileInspection = readFileInspection(form);
   const discovery = form.get('discoveryEnabled');
   const inventory = form.get('extensionInventoryEnabled');
   const claude = form.get('claudePromptEnabled');
@@ -161,14 +170,15 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
     return { error: 'Reload the current policy before saving changes.' };
   }
   if (!modes.includes(mode) || !detectorModes.includes(githubPatMode) || !isDetectorMode(paymentCardMode) ||
-      (privateKeyMode !== null && !isDetectorMode(privateKeyMode)) || !uploadModes ||
+      (privateKeyMode !== null && !isDetectorMode(privateKeyMode)) || !uploadModes || fileInspection === null ||
       (discovery !== 'on' && discovery !== 'off') || (inventory !== 'on' && inventory !== 'off') || (claude !== 'on' && claude !== 'off')) {
     return { error: 'Choose a setting for each policy control.' };
   }
   if (!uploadTypes) return { error: uploadTypesError };
   return perform(async (token) => {
     try {
-      const policy = await controlApi.publish(token, { mode, githubPatMode, paymentCardMode, privateKeyMode: privateKeyMode ?? undefined, uploadModes, uploadTypes,
+      const policy = await controlApi.publish(token, { mode, githubPatMode, paymentCardMode, privateKeyMode: privateKeyMode ?? undefined,
+        uploadModes, uploadTypes, fileInspection,
         discoveryEnabled: discovery === 'on', extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on', expectedVersion },
         review, groupId ?? undefined);
       if ('reviewId' in policy) return queued(policy.reviewId);
@@ -236,13 +246,14 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   const privateKeyMode = form.get('privateKeyMode');
   const uploadModes = readUploadSettings(form);
   const uploadTypes = readUploadTypes(form);
+  const fileInspection = readFileInspection(form);
   const discovery = form.get('discoveryEnabled');
   const inventory = form.get('extensionInventoryEnabled');
   const claude = form.get('claudePromptEnabled');
   const groupId = form.get('groupId');
   const expectedVersion = Number(form.get('expectedVersion'));
   if (!isMode(mode) || !isDetectorMode(githubPatMode) || !isDetectorMode(paymentCardMode) ||
-      (privateKeyMode !== null && !isDetectorMode(privateKeyMode)) || !uploadModes ||
+      (privateKeyMode !== null && !isDetectorMode(privateKeyMode)) || !uploadModes || fileInspection === null ||
       (discovery !== 'on' && discovery !== 'off') || (inventory !== 'on' && inventory !== 'off') ||
       (claude !== 'on' && claude !== 'off') ||
       (groupId !== null && !isId(groupId)) || !Number.isInteger(expectedVersion) || expectedVersion < 1 ||
@@ -263,7 +274,8 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   if (!promptExceptions) return { error: promptExceptionError };
   return perform(async (token) => {
     try {
-      const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, privateKeyMode: privateKeyMode ?? undefined, uploadModes, uploadTypes,
+      const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, privateKeyMode: privateKeyMode ?? undefined,
+        uploadModes, uploadTypes, fileInspection,
         discoveryEnabled: discovery === 'on', extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on',
         domainRules, pathRules, customApps, promptExceptions },
         expectedVersion, form.get('expectReview') === 'on', groupId ?? undefined);

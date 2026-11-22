@@ -21,7 +21,7 @@ internal sealed record AiReportQuery(int Days, string? AppId, DateTimeOffset AsO
 }
 
 internal sealed record AiEnforcementReport(string Organization, DateOnly StartOn, DateTimeOffset AsOf, int Days, string? AppId,
-    Dictionary<string, long> Counts, AiReportDay[] Daily, AiReportBreakdown[] ByApp, AiReportBreakdown[] ByRule);
+    Dictionary<string, long> Counts, AiReportDay[] Daily, AiReportBreakdown[] ByApp, AiReportBreakdown[] ByRule, AiReportBreakdown[] BySource);
 internal sealed record AiReportDay(DateOnly Day, Dictionary<string, long> Counts);
 internal sealed record AiReportBreakdown(string Id, Dictionary<string, long> Counts);
 
@@ -34,14 +34,17 @@ internal sealed partial class ControlStore
         var days = Enumerable.Range(0, query.Days).Select(offset => new AiReportDay(start.AddDays(offset), EmptyDecisionCounts())).ToArray();
         var apps = new SortedDictionary<string, Dictionary<string, long>>(StringComparer.Ordinal);
         var rules = new SortedDictionary<string, Dictionary<string, long>>(StringComparer.Ordinal);
+        var sources = new SortedDictionary<string, Dictionary<string, long>>(StringComparer.Ordinal);
 
         await using var command = Command("""
-            SELECT (occurred_at AT TIME ZONE 'UTC')::date AS day, app_id, rule_id, decision, count(*)
+            SELECT (occurred_at AT TIME ZONE 'UTC')::date AS day, app_id, rule_id,
+                CASE WHEN upload_method IS NULL THEN 'prompt' WHEN rule_id = 'ai-file-upload' THEN 'file_policy' ELSE 'file_content' END AS source,
+                decision, count(*)
             FROM security_events e LEFT JOIN retention_cutoffs r ON r.organization_id = e.organization_id
             WHERE e.organization_id = $1 AND occurred_at >= $2 AND occurred_at <= $3 AND received_at <= $3
                 AND (r.event_cutoff IS NULL OR LEAST(occurred_at, received_at) >= r.event_cutoff)
                 AND app_id <> 'local-prompt-fixture' AND ($4::text IS NULL OR app_id = $4)
-            GROUP BY GROUPING SETS ((decision), (day, decision), (app_id, decision), (rule_id, decision))
+            GROUP BY GROUPING SETS ((decision), (day, decision), (app_id, decision), (rule_id, decision), (source, decision))
             """, identity.OrganizationId, start.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc), query.AsOf.UtcDateTime,
             (object?)query.AppId ?? DBNull.Value);
         await using var rows = await command.ExecuteReaderAsync(ct);
@@ -49,12 +52,14 @@ internal sealed partial class ControlStore
         {
             var counts = !rows.IsDBNull(0) ? days[rows.GetFieldValue<DateOnly>(0).DayNumber - start.DayNumber].Counts
                 : !rows.IsDBNull(1) ? Bucket(apps, rows.GetString(1))
-                : !rows.IsDBNull(2) ? Bucket(rules, rows.GetString(2)) : totals;
-            counts[rows.GetString(3)] = rows.GetInt64(4);
+                : !rows.IsDBNull(2) ? Bucket(rules, rows.GetString(2))
+                : !rows.IsDBNull(3) ? Bucket(sources, rows.GetString(3)) : totals;
+            counts[rows.GetString(4)] = rows.GetInt64(5);
         }
         return new(identity.OrganizationSlug!, start, query.AsOf, query.Days, query.AppId, totals, days,
             apps.Select(entry => new AiReportBreakdown(entry.Key, entry.Value)).ToArray(),
-            rules.Select(entry => new AiReportBreakdown(entry.Key, entry.Value)).ToArray());
+            rules.Select(entry => new AiReportBreakdown(entry.Key, entry.Value)).ToArray(),
+            sources.Select(entry => new AiReportBreakdown(entry.Key, entry.Value)).ToArray());
     }
 
     private static Dictionary<string, long> Bucket(SortedDictionary<string, Dictionary<string, long>> buckets, string id)

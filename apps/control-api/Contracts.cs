@@ -33,7 +33,8 @@ internal static class FixtureContract
         IsApp(request.AppId) && (request.RuleId == UploadRule
             ? request.AppId is ChatGpt or Gemini && request.DetectorCategory == UploadCategory &&
               request.Decision is "monitor" or "block" && request.UploadMethod is "picker" or "drop" or "paste"
-            : request.UploadMethod is null && IsDecision(request.Decision) &&
+            : (request.UploadMethod is null && IsDecision(request.Decision) ||
+                (request.AppId is ChatGpt or Gemini) && (request.UploadMethod is "picker" or "drop" or "paste") && request.Decision == "monitor") &&
               (request.Decision != ExceptionApplied || request.AppId != AppId) &&
               ((request.RuleId == RuleId && request.DetectorCategory == DetectorCategory) ||
                ((request.RuleId is GitHubPatRule or PrivateKeyRule) && request.DetectorCategory == CredentialCategory) ||
@@ -68,17 +69,22 @@ internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode 
     DomainRules? DomainRules = null, int? ExpectedVersion = null, string? PaymentCardMode = null, UploadModes? UploadModes = null,
     PathRules? PathRules = null, bool? ExtensionInventoryEnabled = null, UploadTypes? UploadTypes = null,
     CustomAppSetting?[]? CustomApps = null, PromptException?[]? PromptExceptions = null, bool? ClaudePromptEnabled = null,
-    string? PrivateKeyMode = null);
+    string? PrivateKeyMode = null, FileInspection? FileInspection = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null)
 {
     public bool HasSettings() => Chatgpt is not null || Gemini is not null;
     public bool IsValid() => (Chatgpt is null or "off" or "monitor" or "block") && (Gemini is null or "off" or "monitor" or "block");
 }
+internal sealed record FileInspection(bool? Chatgpt = null, bool? Gemini = null)
+{
+    public bool HasSettings() => Chatgpt.HasValue || Gemini.HasValue;
+}
 internal sealed record RedeemGrant(string Grant);
 internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = null, bool DomainRulesApplied = false,
     int AssignmentVersion = 0, string? GeminiCoverage = null, bool PaymentCardModeApplied = false, bool UploadControlsApplied = false,
     bool PathRulesApplied = false, bool UploadTypesApplied = false, bool CustomDiscoveryApplied = false,
-    bool PromptExceptionsApplied = false, string? ClaudeCoverage = null, bool ClaudePromptApplied = false, bool PrivateKeyModeApplied = false)
+    bool PromptExceptionsApplied = false, string? ClaudeCoverage = null, bool ClaudePromptApplied = false, bool PrivateKeyModeApplied = false,
+    bool FileInspectionApplied = false)
 {
     public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported") &&
         (GeminiCoverage is null or "ready" or "unsupported") &&
@@ -97,7 +103,8 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PromptExceptionLease? PromptExceptionLease = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int AssignmentVersion = 0,
     bool ClaudePromptEnabled = false,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? PrivateKeyMode = "off")
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? PrivateKeyMode = "off",
+    FileInspection? FileInspection = null)
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => ClaudePromptEnabled
@@ -106,7 +113,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     public string RuleId => FixtureContract.RuleId;
     public string DetectorCategory => FixtureContract.DetectorCategory;
 
-    public Policy ForBrowser(bool claudeAware, bool privateKeyAware)
+    public Policy ForBrowser(bool claudeAware, bool privateKeyAware, bool fileInspectionAware)
     {
         var now = DateTimeOffset.UtcNow;
         var nowMs = now.ToUnixTimeMilliseconds();
@@ -119,6 +126,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
         {
             ClaudePromptEnabled = claudeEnabled,
             PrivateKeyMode = privateKeyAware ? PrivateKeyMode : "off",
+            FileInspection = fileInspectionAware ? FileInspection : new(false, false),
             PromptExceptions = PromptExceptions is { Length: > 0 } ? null : PromptExceptions,
             PromptExceptionLease = exceptions is { Length: > 0 } ? new(nowMs, exceptions) : null
         };

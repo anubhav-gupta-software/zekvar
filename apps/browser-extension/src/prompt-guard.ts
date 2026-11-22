@@ -1,10 +1,11 @@
 import { redactPrompt } from '../../../contracts/policy/prompt';
-import { recordDecision, recordUploadDecision } from './decisions';
+import { recordDecision, recordFileInspection, recordUploadDecision } from './decisions';
 import { evaluatePrompt, withPolicyVersion, type MatchedDecision } from './policy';
 import { isMode, send, type AiPromptApp, type Coverage, type Summary } from './protocol';
 import { promptAppLabels } from '../../../contracts/policy/apps';
-import { isUploadApp } from '../../../contracts/policy/uploads';
+import { isUploadApp, type UploadMethod } from '../../../contracts/policy/uploads';
 import { bindUploadGuard } from './upload-guard';
+import { inspectFiles } from './file-inspection';
 import { promptText, replacePromptText, supportsRedaction, type Composer, type ComposerInspection } from './prompt-composer';
 import { leaseTime } from './prompt-exceptions';
 import { evaluatePromptWithExceptions, exceptionDecision } from '../../../contracts/policy/prompt-exceptions';
@@ -135,7 +136,8 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     if (upload !== 'block') ui.uploadNotice.textContent = '';
     const detectors = (isMode(github) ? ` · GitHub PAT ${github}` : '') + (isMode(card) ? ` · Payment card ${card}` : '') +
       (isMode(privateKey) ? ` · Private key ${privateKey}` : '') +
-      (upload && upload !== 'off' ? ` · File uploads ${upload}${targetedUpload ? ' (selected types)' : ''}` : '');
+      (upload && upload !== 'off' ? ` · File uploads ${upload}${targetedUpload ? ' (selected types)' : ''}` : '') +
+      (uploadApp && managedPolicy?.fileInspection?.[uploadApp] ? ' · File content monitor' : '');
     const label = !managedPolicy ? `Zekvar · ${appName} policy unavailable` : coverage === 'unsupported' ?
       `Zekvar · Unsupported composer (${inspection.gap ?? 'Send control missing'})` : !coverage && !waiting ? 'Zekvar · Checking composer…' :
         `Zekvar · ${managedPolicy.mode.toUpperCase()} v${managedPolicy.version}${detectors}${control?.status === 'offline' ? ' · Offline policy' : ''}${current?.button ? '' : ' · Waiting for Send control'}`;
@@ -325,12 +327,21 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     observe();
   }
 
+  let scansInProgress = 0;
   if (uploadApp) bindUploadGuard(() => {
     if (!supported() || !enabled(control) || !control?.installationId || !control.policy) return;
-    const targeted = control.policy.targetedUploads?.[uploadApp];
-    if (targeted) return targeted;
-    const mode = control.policy.uploadModes?.[uploadApp];
-    if (mode === 'monitor' || mode === 'block') return { mode, types: [] };
+    const { policy, installationId } = control;
+    const mode = policy.uploadModes?.[uploadApp];
+    const filter = policy.targetedUploads?.[uploadApp] ?? (mode === 'monitor' || mode === 'block' ? { mode, types: [] } : undefined);
+    const inspect = policy.fileInspection?.[uploadApp] ? (files: readonly File[], method: UploadMethod) => {
+      if (!files.length || scansInProgress >= 2) return;
+      const timestamp = new Date().toISOString();
+      scansInProgress++;
+      void inspectFiles(files, policy).then((rule) => {
+        if (rule && control?.installationId === installationId) recordFileInspection(uploadApp, policy, installationId, rule, method, timestamp);
+      }).catch(() => undefined).finally(() => { scansInProgress--; });
+    } : undefined;
+    if (filter || inspect) return { filter, inspect };
   }, (decision, method) => {
     if (decision !== 'block') ui.uploadNotice.textContent = '';
     if (!decision || !control?.policy || !control.installationId) return;

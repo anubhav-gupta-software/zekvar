@@ -99,6 +99,8 @@ function ReportResults({ report }: { report: AiEnforcementReport }) {
     {total > 0 && <>
       <ReportBreakdownTable heading="By AI application" id="report-apps" name="Application" rows={report.byApp} labels={promptAppLabels} />
       <ReportBreakdownTable heading="By policy rule" id="report-rules" name="Rule" rows={report.byRule} labels={reportRuleLabels} />
+      {report.bySource && <ReportBreakdownTable heading="By activity" id="report-source" name="Activity" rows={report.bySource}
+        labels={{ prompt: 'Prompt', file_policy: 'File upload policy', file_content: 'File content inspection' }} />}
     </>}
   </>;
 }

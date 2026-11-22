@@ -90,6 +90,8 @@ Control records group creation, assignment, publication, rollback, and promotion
 
 The preview evaluates the supported text detectors, file metadata, and individual top-level HTTP and HTTPS URLs. Choose **Prompt sample destination** to compare app-specific settings such as **Claude prompt protection** and temporary exceptions. A blank **File types** field applies the upload mode to all files for ChatGPT or Gemini. Enter types such as `.pdf` or `image/*` for selected files. Use a pilot group to test native browser actions before promotion. [File upload test guide](../browser-extension/README.md#test-file-upload-policies)
 
+Use **Draft ChatGPT file content monitoring** or **Draft Gemini file content monitoring** and the built-in synthetic text file rows to preview local text inspection. In **Security events**, the detector label and **File content** describe each inspection match. The report's **By activity** table counts these matches separately from file upload rules and prompt events. [Monitor file contents](../browser-extension/README.md#monitor-file-contents)
+
 ## Pilot Claude prompt protection
 
 Enable **Claude prompt protection** in a rollout group and sync Browser v0.19.0 or later. **Browser health** shows **Off** when the assigned policy disables the adapter, **Unobserved** before a composer check for the assigned version, and the last observed **Detected** or **Unsupported** status. Filter **Security events** to Claude to review metadata-only decisions. [Experimental Claude test guide](../browser-extension/README.md#try-experimental-claude-prompt-protection)

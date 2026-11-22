@@ -218,7 +218,7 @@ internal sealed partial class ControlStore
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
                 p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
-                p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, p.private_key_mode
+                p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, p.private_key_mode, p.chatgpt_file_inspection, p.gemini_file_inspection
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.version = $2 AND (NOT $3 OR p.policy_group_id IS NOT DISTINCT FROM $4::uuid)
             """, transaction.Connection, transaction);
@@ -242,7 +242,9 @@ internal sealed partial class ControlStore
         PathRules = request.PathRules ?? current.PathRules,
         ExtensionInventoryEnabled = request.ExtensionInventoryEnabled ?? current.ExtensionInventoryEnabled,
         ClaudePromptEnabled = request.ClaudePromptEnabled ?? current.ClaudePromptEnabled,
-        PrivateKeyMode = request.PrivateKeyMode ?? current.PrivateKeyMode
+        PrivateKeyMode = request.PrivateKeyMode ?? current.PrivateKeyMode,
+        FileInspection = new(request.FileInspection?.Chatgpt ?? current.FileInspection?.Chatgpt ?? false,
+            request.FileInspection?.Gemini ?? current.FileInspection?.Gemini ?? false)
     };
 
     private static async Task<Policy> WritePolicy(NpgsqlTransaction transaction, RequestIdentity identity, Policy policy,
@@ -257,8 +259,8 @@ internal sealed partial class ControlStore
                 INSERT INTO policy_versions (organization_id, version, policy_group_id, mode, github_pat_mode, discovery_enabled,
                     allowed_domains, blocked_domains, payment_card_mode, chatgpt_upload_mode, gemini_upload_mode, allowed_paths, blocked_paths,
                     extension_inventory_enabled, chatgpt_upload_types, gemini_upload_types, custom_apps, prompt_exceptions, claude_prompt_enabled,
-                    private_key_mode)
-                SELECT id, policy_sequence, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $16, $17, $18, $19::jsonb, $20::jsonb, $21, $22
+                    private_key_mode, chatgpt_file_inspection, gemini_file_inspection)
+                SELECT id, policy_sequence, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $16, $17, $18, $19::jsonb, $20::jsonb, $21, $22, $23, $24
                 FROM next_version
                 RETURNING organization_id, version, published_at
             ), group_pointer AS (
@@ -280,12 +282,13 @@ internal sealed partial class ControlStore
             (object?)identity.Access?.Id ?? DBNull.Value, policy.ExtensionInventoryEnabled,
             policy.UploadTypes?.Chatgpt ?? Array.Empty<string>(), policy.UploadTypes?.Gemini ?? Array.Empty<string>(),
             JsonSerializer.Serialize(policy.CustomApps ?? [], JsonSerializerOptions.Web),
-            JsonSerializer.Serialize(policy.PromptExceptions ?? [], JsonSerializerOptions.Web), policy.ClaudePromptEnabled, policy.PrivateKeyMode ?? "off");
+            JsonSerializer.Serialize(policy.PromptExceptions ?? [], JsonSerializerOptions.Web), policy.ClaudePromptEnabled, policy.PrivateKeyMode ?? "off",
+            policy.FileInspection?.Chatgpt ?? false, policy.FileInspection?.Gemini ?? false);
         await using var rows = await command.ExecuteReaderAsync(ct);
         await rows.ReadAsync(ct);
         return policy with { Version = rows.GetInt32(0), PublishedAt = rows.GetDateTime(1), RestoredFrom = restoredFrom,
             UploadTypes = new(policy.UploadTypes?.Chatgpt ?? [], policy.UploadTypes?.Gemini ?? []), CustomApps = policy.CustomApps ?? [],
-            PromptExceptions = policy.PromptExceptions ?? [] };
+            PromptExceptions = policy.PromptExceptions ?? [], FileInspection = new(policy.FileInspection?.Chatgpt ?? false, policy.FileInspection?.Gemini ?? false) };
     }
 
     private static async Task AuditPolicyReview(NpgsqlTransaction transaction, RequestIdentity identity, string action,

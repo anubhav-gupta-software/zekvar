@@ -96,6 +96,8 @@ The `privateKeyMode` setting also accepts `off`, `monitor`, `warn`, or `block`. 
 
 The `uploadModes` policy object accepts `chatgpt` and `gemini` settings with `off`, `monitor`, or `block`. An upload-only publish may supply either destination and preserves omitted settings. Older snapshots default to Off for both. Restoring or promoting a policy copies both settings. A heartbeat must supply `uploadControlsApplied: true` to acknowledge a version that enables either destination.
 
+`fileInspection` accepts independent `chatgpt` and `gemini` booleans. An omitted app keeps its current value. Browser v0.24.0 declares support with `X-Zekvar-File-Inspection: 1`. Policies with an enabled app require file inspection delivery and `fileInspectionApplied: true` to count as applied. A file-content match uses its detector's rule ID, `decision=monitor`, and an `uploadMethod`. Control verifies delivery and the app and detector settings for that version. The `ai-file-upload` rule continues to identify file-type or destination policy decisions.
+
 The optional `uploadTypes` object accepts an array of up to 25 selectors per destination. Each selector can be a filename suffix, a media type, or a media type group, such as `[".tar.gz", "application/pdf", "image/*"]`. An empty array applies that mode to every file. An omitted array preserves the previous setting. Off retains the selectors for later use. Control trims, lowercases, deduplicates, and sorts selectors before storing them in the snapshot. Restore, group promotion, and approval preserve the snapshot.
 
 For each active scoped destination, browser policy delivery sets its legacy `uploadModes` entry to `off` and returns its actual mode and selectors in `targetedUploads`. Scoped policies need both `uploadControlsApplied: true` and `uploadTypesApplied: true` in heartbeats to count as applied. Administrative policy responses include the configured modes and selectors.
@@ -141,7 +143,7 @@ History and export accept `appId`, `decision`, `installationId`, and occurrence 
 
 `GET /v1/admin/reports/ai-enforcement` accepts `days=7` (default) or `days=30` and an optional `appId` of `chatgpt`, `claude`, or `gemini`. The authenticated organization determines the scope. The report covers UTC calendar days including the current partial day. `startOn` is the first date. `asOf` is the inclusive cutoff for both occurrence and server receipt. Pass that value as Unix milliseconds in `asOf` to reuse the cutoff for up to 24 hours. Each request applies current retention and reads all counts from one PostgreSQL statement.
 
-`counts`, `daily`, `byApp`, and `byRule` report policy events per decision. The daily series has one row per date, including empty days. The app and rule breakdowns include categories with matching events. A warning and a later override are separate events. The local prompt fixture is excluded. The response contains aggregate counts and report filters. Use the event export for individual decision records.
+`counts`, `daily`, `byApp`, `byRule`, and `bySource` report policy events per decision. The daily series has one row per date, including empty days. The app, rule, and source breakdowns include categories with matching events. The source IDs are `prompt`, `file_policy`, and `file_content`. A warning and a later override are separate events. The local prompt fixture is excluded. The response contains aggregate counts and report filters. Use the event export for individual decision records.
 
 ## Audit log
 

@@ -1,0 +1,14 @@
+import { evaluatePrompt, isMode, type PromptPolicy } from './prompt';
+
+export function fileInspectionDetectors(policy: PromptPolicy): PromptPolicy {
+  return { mode: 'monitor', githubPatMode: isMode(policy.githubPatMode) ? 'monitor' : 'off',
+    paymentCardMode: isMode(policy.paymentCardMode) ? 'monitor' : 'off',
+    privateKeyMode: isMode(policy.privateKeyMode) ? 'monitor' : 'off' };
+}
+
+export function evaluateFileInspection(text: string, detectors: PromptPolicy) {
+  const match = evaluatePrompt(text, detectors);
+  if (match.action === 'allow') return;
+  const { action: _action, reason: _reason, ...rule } = match;
+  return rule;
+}

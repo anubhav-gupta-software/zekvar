@@ -13,7 +13,7 @@ import { classifyAiApp, revokeInstallation, signOut } from './actions';
 import { DomainRulesForm, EnrollmentForm, MutationForm, RefreshSection, SignInForm } from './forms';
 import { PolicyVersionTable, PublishPolicyForm } from './policies';
 import { Brand, DeploymentBadge, Sidebar } from './workspace';
-import { uploadMethods } from '../../../contracts/policy/uploads';
+import { uploadMethods, uploadRule } from '../../../contracts/policy/uploads';
 
 type Search = Record<string, string | string[] | undefined>;
 
@@ -354,8 +354,8 @@ function EventRow({ event, filters }: { event: SecurityEvent; filters: URLSearch
     <td><Timestamp value={event.timestamp} /></td>
     <td className="emphasis">{isPromptApp(event.appId) ? promptAppLabels[event.appId] : event.appId}</td>
     <td><DecisionBadge decision={event.decision} /></td>
-    <td>{event.uploadMethod ? <>File upload <div className="muted">{uploadMethods[event.uploadMethod]}</div></> :
-      ruleLabels[event.ruleId as keyof typeof ruleLabels] ?? event.detectorCategory}</td>
+    <td>{event.ruleId === uploadRule ? 'File upload' : ruleLabels[event.ruleId as keyof typeof ruleLabels] ?? event.detectorCategory}
+      {event.uploadMethod && <div className="muted">{event.ruleId !== uploadRule && 'File content · '}{uploadMethods[event.uploadMethod]}</div>}</td>
     <td>v{event.policyVersion}</td>
     <td><a className="underline" href={`/?${browser}#events`}
       aria-label={`Filter events for installation ${event.installationId}`}><InstallationId value={event.installationId} /></a></td>
