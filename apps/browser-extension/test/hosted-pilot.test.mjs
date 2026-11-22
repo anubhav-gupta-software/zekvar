@@ -12,6 +12,7 @@ import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { preparePreflight } from './preflight-fixture.mjs';
 
 const {
   ZEKVAR_HOSTED_TEST_API_PORT: apiPort, ZEKVAR_HOSTED_TEST_WEB_PORT: webPort,
@@ -44,6 +45,7 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   const profile = join(scratch, 'profile');
   const dashboardHost = 'control.zekvar.test';
   const browserHost = 'browser.zekvar.test';
+  const updatesHost = 'updates.zekvar.test';
   const cert = join(scratch, 'site.pem');
   const key = join(scratch, 'site.key');
   const ca = join(scratch, 'ca.pem');
@@ -62,7 +64,7 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   openssl('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '2', '-subj', '/CN=Zekvar Test CA',
     '-keyout', 'ca.key', '-out', 'ca.pem');
   openssl('req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=' + dashboardHost, '-keyout', 'site.key', '-out', 'site.csr');
-  await writeFile(join(scratch, 'extensions.cnf'), `subjectAltName=DNS:${dashboardHost},DNS:${browserHost}\nextendedKeyUsage=serverAuth\n`);
+  await writeFile(join(scratch, 'extensions.cnf'), `subjectAltName=DNS:${dashboardHost},DNS:${browserHost},DNS:${updatesHost}\nextendedKeyUsage=serverAuth\n`);
   openssl('x509', '-req', '-in', 'site.csr', '-CA', 'ca.pem', '-CAkey', 'ca.key', '-CAcreateserial',
     '-days', '2', '-extfile', 'extensions.cnf', '-out', 'site.pem');
   const trust = await readFile(ca);
@@ -73,8 +75,11 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   const dashboardOrigin = `https://${dashboardHost}:${tlsPort}`;
   const browserOrigin = `https://${browserHost}:${tlsPort}`;
   const source = await readFile(new URL('../../../deploy/pilot/Caddyfile', import.meta.url), 'utf8');
+  // The lab runs on unprivileged ports. Direct each cleartext test host to its full HTTPS origin.
   await writeFile(caddyfile, source.replace('{\n', `{\n\tdefault_bind 127.0.0.1\n\thttp_port ${httpPort}\n\thttps_port ${tlsPort}\n`)
-    .replaceAll(/(\{\$ZEKVAR_(?:DASHBOARD|BROWSER)_HOST\} \{)/g, `$1\n\ttls "${cert}" "${key}"`));
+    .replaceAll(/(\{\$ZEKVAR_(?:DASHBOARD|BROWSER)_HOST\} \{)/g, `$1\n\ttls "${cert}" "${key}"`)
+    + `\nhttp://${dashboardHost} {\n\tredir ${dashboardOrigin}{uri} 308\n}\nhttp://${browserHost} {\n\tredir ${browserOrigin}{uri} 308\n}\n`);
+  const preflight = await preparePreflight(t, { scratch, key, cert, ca, dashboardOrigin, browserOrigin, httpPort, updatesHost });
 
   function call(url, { method = 'GET', headers = {}, body, validate = true } = {}) {
     return new Promise((resolve, reject) => {
@@ -120,12 +125,21 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
 
   await startEdge('192.0.2.10/32');
   assert.equal((await call(dashboardOrigin + '/', { headers: { 'X-Forwarded-For': '192.0.2.10' } })).status, 403);
+  await t.test('preflight proves dashboard denial and public update availability outside the admin allowlist', async () => {
+    const evidence = await preflight.verify('denied');
+    if (artifacts) await writeFile(join(artifacts, 'preflight-denied.json'), JSON.stringify(evidence, null, 2) + '\n');
+  });
   await stopEdge();
   await startEdge('127.0.0.1/32');
   await assert.rejects(call(browserOrigin + '/health', { validate: false }), /certificate|issuer/i);
   const redirect = await call(`http://${browserHost}:${httpPort}/health`);
   assert.equal(redirect.status, 308);
-  assert.equal(redirect.headers.location, `https://${browserHost}/health`);
+  assert.equal(redirect.headers.location, `${browserOrigin}/health`);
+  await t.test('preflight verifies the allowed dashboard and recovers after release and TLS failures', async () => {
+    await preflight.verify('allowed');
+    const evidence = await preflight.failures();
+    if (artifacts) await writeFile(join(artifacts, 'preflight-allowed.json'), JSON.stringify(evidence, null, 2) + '\n');
+  });
   for (const origin of [browserOrigin, dashboardOrigin]) {
     for (const path of ['/v1/admin/session', '/v1/admin/browser-releases', '/v1/admin/browser-health?rolloutGroup=baseline',
       '/v1/admin/enrollment-batches', '/v1/admin/reports/ai-enforcement']) {

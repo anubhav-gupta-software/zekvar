@@ -143,6 +143,16 @@ ZEKVAR_BACKUP_TEST_OFFSITE=1 ZEKVAR_BACKUP_TEST_HEADED=1 \
 
 ## Verify the deployment
 
+Run the deployment preflight after publishing the HTTPS hosts and the signed Browser update channel. Use Node 22.14 or later and the original protected packager output as `--release-dir`. The command checks the two HTTP-to-HTTPS redirects, certificate trust, API readiness, anonymous access boundaries, and public update delivery. It compares the served manifest and CRX with the trusted release and checks that the update manifest requires revalidation. It sends anonymous GET requests and prints a JSON result. A failed check produces a nonzero exit code.
+
+Run once from your allowed administrator network. Repeat the command with `--admin-network denied` from a separate network outside the allowlist, such as a managed test device on its usual connection. Use the same release directory on both runs. Record both results with the release before assigning the signed extension to pilot devices. [Chrome update hosting requirements](https://developer.chrome.com/docs/extensions/how-to/distribute/host-on-linux#update) · [Caddy automatic HTTPS](https://caddyserver.com/docs/automatic-https)
+
+```sh
+node deploy/pilot/preflight.mjs \
+  --dashboard https://control.example.com --browser https://browser.example.com \
+  --admin-network allowed --release-dir /secure/releases/pilot-0.21.0
+```
+
 The hosted verifier builds the standalone dashboard and Release API, then exercises real TLS, managed enrollment, publishing, and enforcement from an isolated Chrome profile. The verifier needs Docker for its disposable database, plus Caddy and OpenSSL on the host. It uses a test certificate and leaves the system trust store alone.
 
 ```sh
