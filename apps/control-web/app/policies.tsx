@@ -2,6 +2,7 @@ import { decisionLabels, detectorModeLabels, detectorModes, modes, promptAppLabe
 import { fileContentMode, uploadApps, uploadModes, uploadTypesHint } from '../../../contracts/policy/uploads';
 import { exceptionKey } from '../../../contracts/policy/prompt-exceptions';
 import { fixtureRule } from '../../../contracts/policy/prompt';
+import { clipboardModes } from '../../../contracts/policy/clipboard';
 import { publishPolicy, restorePolicy } from './actions';
 import { MutationForm } from './forms';
 
@@ -40,6 +41,13 @@ export function PublishPolicyForm({ policy, groupId, review }: { policy?: Policy
       <select key={policy.version} id="ssn-mode" name="ssnMode" defaultValue={policy.ssnMode}>
         {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
       </select>
+    </div>}
+    {policy?.clipboardMode !== undefined && <div className="grid gap-1">
+      <label htmlFor="clipboard-mode">Clipboard paste protection</label>
+      <select key={policy.version} id="clipboard-mode" name="clipboardMode" defaultValue={policy.clipboardMode} aria-describedby="clipboard-hint">
+        {clipboardModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+      </select>
+      <p className="muted" id="clipboard-hint">Inspect text pasted into supported AI composers using enabled detectors.</p>
     </div>}
     <div className="grid gap-1">
       <label htmlFor="discovery-mode">App discovery</label>
@@ -110,7 +118,7 @@ export function PolicyVersionTable({ policies, groupId, writable, review }: {
       <table aria-labelledby="history-heading">
         <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>Payment card number</th><th>Private key</th>
           {ssnAvailable && <th>U.S. SSN</th>}{identifiersAvailable && <th>Organization identifiers</th>}<th>App discovery</th>
-          <th>Extension inventory</th><th>Claude prompt protection</th><th>File uploads</th><th>Navigation rules</th><th>Published (UTC)</th><th>Restore source</th>
+          <th>Extension inventory</th><th>Claude prompt protection</th><th>Clipboard paste</th><th>File uploads</th><th>Navigation rules</th><th>Published (UTC)</th><th>Restore source</th>
           <th>Prompt exceptions</th><th>Action</th></tr></thead>
         <tbody>{policies.map((policy, index) => <PolicyRow key={policy.version} policy={policy} current={index === 0}
           groupId={groupId} writable={writable} review={review} identifiersAvailable={identifiersAvailable} ssnAvailable={ssnAvailable} />)}</tbody>
@@ -146,6 +154,7 @@ function PolicyRow({ policy, current, groupId, writable, review, identifiersAvai
       </details>}</td>
     <td>{policy.extensionInventoryEnabled ? 'On' : 'Off'}</td>
     <td>{policy.claudePromptEnabled ? 'On' : 'Off'}</td>
+    <td>{detectorModeLabels[policy.clipboardMode ?? 'off']}</td>
     <td>{uploadApps.map((app) => {
       const types = policy.uploadTypes?.[app] ?? [];
       return <div key={app}>{promptAppLabels[app]} · {detectorModeLabels[policy.uploadModes?.[app] ?? 'off']}

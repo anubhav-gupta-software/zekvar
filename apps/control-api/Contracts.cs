@@ -25,6 +25,8 @@ internal static class FixtureContract
     public const string FileInspectionUnavailableRule = "file-inspection-unavailable";
     public const string UploadCategory = "file-upload";
     public const string ExceptionApplied = "exception_applied";
+    public const string ClipboardUnavailableRule = "clipboard-inspection-unavailable";
+    public const string ClipboardCategory = "clipboard";
 
     public static bool IsMode(string? mode) => mode is "monitor" or "warn" or "block";
     public static bool IsOptionalDetectorMode(string? mode) => mode is null or "off" || IsMode(mode);
@@ -40,23 +42,27 @@ internal static class FixtureContract
         OrganizationIdentifierRule => OrganizationIdentifierCategory,
         SsnRule => SsnCategory,
         UploadRule or FileInspectionUnavailableRule => UploadCategory,
+        ClipboardUnavailableRule => ClipboardCategory,
         _ => DetectorCategory
     };
 
-    public static bool IsEvent(PolicyEvent request) =>
-        request.EventId != Guid.Empty && request.Timestamp != default && request.PolicyVersion > 0 &&
-        IsApp(request.AppId) && (request.RuleId is UploadRule or FileInspectionUnavailableRule
-            ? request.AppId is ChatGpt or Gemini && request.DetectorCategory == UploadCategory &&
-              (request.Decision == "block" || request.RuleId == UploadRule && request.Decision == "monitor") &&
-              request.UploadMethod is "picker" or "drop" or "paste"
-            : (request.UploadMethod is null && IsDecision(request.Decision) ||
-                (request.AppId is ChatGpt or Gemini) && (request.UploadMethod is "picker" or "drop" or "paste") && request.Decision is "monitor" or "block") &&
-              (request.Decision != ExceptionApplied || request.AppId != AppId) &&
-              ((request.RuleId == RuleId && request.DetectorCategory == DetectorCategory) ||
-               ((request.RuleId is GitHubPatRule or PrivateKeyRule) && request.DetectorCategory == CredentialCategory) ||
-               (request.RuleId == PaymentCardRule && request.DetectorCategory == PaymentCategory) ||
-               (request.RuleId == OrganizationIdentifierRule && request.DetectorCategory == OrganizationIdentifierCategory) ||
-               (request.RuleId == SsnRule && request.DetectorCategory == SsnCategory)));
+    public static bool IsClipboardMode(string? mode) => mode is "off" or "monitor" or "block";
+
+    public static bool IsEvent(PolicyEvent request)
+    {
+        if (request.EventId == Guid.Empty || request.Timestamp == default || request.PolicyVersion <= 0 || !IsApp(request.AppId)) return false;
+        var promptRule = IsPromptRule(request.RuleId) && request.DetectorCategory == CategoryForRule(request.RuleId);
+        if (request.ClipboardPaste)
+            return IsAiPromptApp(request.AppId) && request.UploadMethod is null && request.Decision is "monitor" or "block" &&
+                (promptRule || (request.RuleId == ClipboardUnavailableRule && request.DetectorCategory == ClipboardCategory && request.Decision == "block"));
+        if (request.RuleId is UploadRule or FileInspectionUnavailableRule)
+            return request.AppId is ChatGpt or Gemini && request.DetectorCategory == UploadCategory &&
+                (request.Decision == "block" || request.RuleId == UploadRule && request.Decision == "monitor") &&
+                request.UploadMethod is "picker" or "drop" or "paste";
+        return promptRule && (request.Decision != ExceptionApplied || request.AppId != AppId) &&
+            (request.UploadMethod is null && IsDecision(request.Decision) ||
+                request.AppId is ChatGpt or Gemini && request.UploadMethod is "picker" or "drop" or "paste" && request.Decision is "monitor" or "block");
+    }
 }
 
 internal static class DiscoveryCatalog
@@ -101,7 +107,7 @@ internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode 
     CustomAppSetting?[]? CustomApps = null, PromptException?[]? PromptExceptions = null, bool? ClaudePromptEnabled = null,
     string? PrivateKeyMode = null, FileInspection? FileInspection = null, ExtensionDeployment? ExtensionDeployment = null,
     string[]? BlockedAiAppHosts = null, UploadModes? FileContentModes = null, IdentifierProtection? IdentifierProtection = null,
-    bool? PresetDiscoveryEnabled = null, string? SsnMode = null, BrowserHardening? BrowserHardening = null);
+    bool? PresetDiscoveryEnabled = null, string? SsnMode = null, BrowserHardening? BrowserHardening = null, string? ClipboardMode = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null)
 {
     public bool HasSettings() => Chatgpt is not null || Gemini is not null;
@@ -117,14 +123,14 @@ internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = nu
     bool PathRulesApplied = false, bool UploadTypesApplied = false, bool CustomDiscoveryApplied = false,
     bool PromptExceptionsApplied = false, string? ClaudeCoverage = null, bool ClaudePromptApplied = false, bool PrivateKeyModeApplied = false,
     bool FileInspectionApplied = false, bool AiAppAccessApplied = false, bool FileContentBlockApplied = false, bool IdentifiersApplied = false,
-    bool SsnModeApplied = false)
+    bool SsnModeApplied = false, bool ClipboardModeApplied = false)
 {
     public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported") &&
         (GeminiCoverage is null or "ready" or "unsupported") &&
         (ClaudeCoverage is null or "ready" or "unsupported") && (!FileContentBlockApplied || FileInspectionApplied);
 }
 internal sealed record PolicyEvent(Guid EventId, string AppId, DateTimeOffset Timestamp, string RuleId,
-    string DetectorCategory, int PolicyVersion, string Decision, int AssignmentVersion = 0, string? UploadMethod = null);
+    string DetectorCategory, int PolicyVersion, string Decision, int AssignmentVersion = 0, string? UploadMethod = null, bool ClipboardPaste = false);
 
 internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, int? RestoredFrom, string GithubPatMode,
     bool DiscoveryEnabled, DomainRules DomainRules, string PaymentCardMode, UploadModes UploadModes, PathRules PathRules,
@@ -144,7 +150,8 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IdentifierProtection? IdentifierProtection = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? PresetDiscoveryEnabled = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SsnMode = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] BrowserHardening? BrowserHardening = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] BrowserHardening? BrowserHardening = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ClipboardMode = null)
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => ClaudePromptEnabled
@@ -157,7 +164,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
         new(FileInspection?.Chatgpt == true ? "monitor" : "off", FileInspection?.Gemini == true ? "monitor" : "off");
 
     public Policy ForBrowser(bool claudeAware, bool privateKeyAware, bool fileInspectionAware, bool aiAppAccessAware,
-        bool fileBlockAware, bool identifiersAware, bool presetDiscoveryAware, bool ssnAware)
+        bool fileBlockAware, bool identifiersAware, bool presetDiscoveryAware, bool ssnAware, bool clipboardAware)
     {
         var now = DateTimeOffset.UtcNow;
         var nowMs = now.ToUnixTimeMilliseconds();
@@ -179,6 +186,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
             IdentifierProtection = identifiersAware ? IdentifierProtection : null,
             PresetDiscoveryEnabled = presetDiscoveryAware && DiscoveryEnabled ? PresetDiscoveryEnabled : null,
             SsnMode = ssnAware ? SsnMode : null,
+            ClipboardMode = clipboardAware ? ClipboardMode : null,
             ExtensionDeployment = null,
             BrowserHardening = null,
             BlockedAiAppHosts = aiAppAccessAware ? BlockedAiAppHosts : null,
@@ -216,7 +224,8 @@ internal sealed record Installation(Guid InstallationId, DateTime EnrolledAt, Da
 internal sealed record StoredEvent(Guid EventId, Guid InstallationId, DateTime Timestamp, DateTime ReceivedAt,
     int PolicyVersion, string Decision, string AppId, string RuleId,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? UploadMethod, EventRollout Rollout,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] EventTriage? Triage)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] EventTriage? Triage,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool ClipboardPaste = false)
 {
     public string DetectorCategory => FixtureContract.CategoryForRule(RuleId);
 }

@@ -1,6 +1,8 @@
 import { modes, type DetectorMode, type PolicyMode } from '../../../contracts/policy/prompt';
 export { modes, detectorModes } from '../../../contracts/policy/prompt';
-export { ruleLabels } from '../../../contracts/policy/prompt';
+import { ruleLabels as promptRuleLabels } from '../../../contracts/policy/prompt';
+import { clipboardUnavailableRule, type ClipboardMode } from '../../../contracts/policy/clipboard';
+export const ruleLabels = { ...promptRuleLabels, [clipboardUnavailableRule]: 'Clipboard check unavailable' };
 export type { DetectorMode } from '../../../contracts/policy/prompt';
 export type { DomainRules, PathRules } from '../../../contracts/policy/domains';
 import type { DomainRules, PathRules } from '../../../contracts/policy/domains';
@@ -56,6 +58,7 @@ export type Policy = {
   uploadTypes?: UploadTypes;
   fileInspection?: FileInspection;
   fileContentModes?: UploadModes;
+  clipboardMode?: ClipboardMode;
   discoveryEnabled?: boolean;
   presetDiscoveryEnabled?: boolean;
   customApps?: CustomApp[];
@@ -141,6 +144,7 @@ export type SecurityEvent = {
   policyVersion: number;
   decision: Decision;
   uploadMethod?: UploadMethod;
+  clipboardPaste?: true;
   rollout?: { kind: 'baseline' | 'unattributed' } | { kind: 'group'; groupId: string; groupName: string };
   triage?: import('./triage').EventTriage;
 };

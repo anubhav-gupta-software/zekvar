@@ -95,7 +95,7 @@ internal sealed partial class ControlStore
 
         await using var command = BrowserRead(snapshot, $"""
             SELECT e.event_id, e.installation_id, e.occurred_at, e.received_at, e.policy_version,
-                e.app_id, e.rule_id, e.decision, e.rollout_attributed, e.rollout_group_id, e.upload_method, e.stream_sequence
+                e.app_id, e.rule_id, e.decision, e.rollout_attributed, e.rollout_group_id, e.upload_method, e.stream_sequence, e.clipboard_paste
             FROM security_events e LEFT JOIN retention_cutoffs r ON r.organization_id = e.organization_id
             WHERE e.organization_id = $1 AND e.stream_sequence > $2 AND e.stream_sequence <= $3 AND {EventRetained}
             ORDER BY e.stream_sequence LIMIT $4
@@ -116,7 +116,7 @@ internal sealed partial class ControlStore
             var rollout = !rows.GetBoolean(8) ? new EventRollout("unattributed")
                 : rows.IsDBNull(9) ? new("baseline") : new("group", rows.GetGuid(9));
             entries.Add(new(rows.GetGuid(0), rows.GetGuid(1), rows.GetDateTime(2), rows.GetDateTime(3), rows.GetInt32(4),
-                rows.GetString(5), rows.GetString(6), rows.GetString(7), rollout, rows.IsDBNull(10) ? null : rows.GetString(10)));
+                rows.GetString(5), rows.GetString(6), rows.GetString(7), rollout, rows.IsDBNull(10) ? null : rows.GetString(10), rows.GetBoolean(12)));
             lastRead = rows.GetInt64(11);
         }
         return new(true, new(1, entries, new EventFeedCursor(streamId, next).ToString(), hasMore));

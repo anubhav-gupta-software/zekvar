@@ -419,12 +419,13 @@ browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
     var identifiersAware = http.Request.Headers["X-Zekvar-Identifiers"] == "1";
     var presetDiscoveryAware = aware && http.Request.Headers["X-Zekvar-Preset-Discovery"] == "1";
     var ssnAware = http.Request.Headers["X-Zekvar-SSN"] == "1";
+    var clipboardAware = aware && http.Request.Headers["X-Zekvar-Clipboard-Paste"] == "1";
     var versionHeader = http.Request.Headers["X-Zekvar-Extension-Version"];
     var extensionVersion = versionHeader.Count == 1 ? BrowserRelease.ReadVersion(versionHeader[0]) : null;
     if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, claudeAware, extensionVersion, privateKeyAware,
-        fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware, presetDiscoveryAware, ssnAware, ct) is { } policy)
+        fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware, presetDiscoveryAware, ssnAware, clipboardAware, ct) is { } policy)
         return Results.Ok(policy.ForBrowser(claudeAware, privateKeyAware, fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware,
-            presetDiscoveryAware, ssnAware));
+            presetDiscoveryAware, ssnAware, clipboardAware));
     return aware ? Results.Unauthorized() : Results.Conflict(new { error = "Update the browser to receive the assigned policy." });
 });
 browser.MapPost("/heartbeat", async (Heartbeat request, HttpContext http, CancellationToken ct) =>
@@ -458,7 +459,7 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
               request.FileInspection?.HasSettings() == true || request.ExtensionDeployment is not null ||
               request.BlockedAiAppHosts is not null || request.FileContentModes?.HasSettings() == true ||
               request.IdentifierProtection is not null || request.PresetDiscoveryEnabled.HasValue || request.SsnMode is not null ||
-              request.BrowserHardening is not null)) ||
+              request.BrowserHardening is not null || request.ClipboardMode is not null)) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode) ||
         !FixtureContract.IsOptionalDetectorMode(request.PrivateKeyMode) || !FixtureContract.IsOptionalDetectorMode(request.SsnMode))
         return Results.BadRequest(new { error = "Choose a valid rule mode." });
@@ -466,6 +467,8 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
         return Results.BadRequest(new { error = "Choose Off, Monitor, or Block for each upload destination." });
     if (request.FileContentModes?.IsValid() == false)
         return Results.BadRequest(new { error = "Choose Off, Monitor, or Block for file contents on each supported app." });
+    if (request.ClipboardMode is not null && !FixtureContract.IsClipboardMode(request.ClipboardMode))
+        return Results.BadRequest(new { error = "Choose Off, Monitor, or Block for clipboard paste protection." });
     if (!UploadTypes.TryNormalize(request.UploadTypes, out var uploadTypes))
         return Results.BadRequest(new { error = "Enter up to 25 valid file extensions or media types per app, with at most 64 characters per type." });
     if (!CustomApps.TryNormalize(request.CustomApps, out var customApps))

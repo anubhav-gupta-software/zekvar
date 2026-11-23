@@ -1,6 +1,7 @@
 import type { MatchedDecision } from './policy';
 import { send, type AppId, type Policy, type PolicyEvent, type RuleMetadata } from './protocol';
 import { uploadCategory, uploadRule, type UploadApp, type UploadDecision, type UploadMetadata, type UploadMethod } from '../../../contracts/policy/uploads';
+import type { inspectClipboard } from '../../../contracts/policy/clipboard';
 
 export function recordDecision(appId: AppId, match: MatchedDecision, installationId: string | undefined,
   decision: PolicyEvent['decision'] = match.action, timestamp = new Date().toISOString()) {
@@ -24,6 +25,11 @@ export function recordFileInspection(appId: UploadApp, policy: Policy, installat
   timestamp: string, decision: UploadDecision = 'monitor') {
   report({ eventId: crypto.randomUUID(), appId, timestamp, ...rule,
     policyVersion: policy.version, assignmentVersion: policy.assignmentVersion, decision, uploadMethod }, installationId);
+}
+
+export function recordClipboardDecision(appId: AppId, policy: Policy, installationId: string, result: NonNullable<ReturnType<typeof inspectClipboard>>) {
+  report({ eventId: crypto.randomUUID(), appId, timestamp: new Date().toISOString(), ...result,
+    policyVersion: policy.version, assignmentVersion: policy.assignmentVersion, clipboardPaste: true }, installationId);
 }
 
 function report(event: PolicyEvent, installationId: string | undefined) {

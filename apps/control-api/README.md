@@ -161,6 +161,10 @@ Owners and named administrators publish `browserHardening` through the baseline 
 
 ## Security event history and export
 
+`clipboardMode` in publish requests and dashboard snapshots accepts `off`, `monitor`, or `block`. Browser fetches with assignment awareness and `X-Zekvar-Clipboard-Paste: 1` receive the setting. Control records its delivery for the installation, assignment, and policy version. An enabled policy needs `clipboardModeApplied: true` from a browser that received it before Control marks the version applied.
+
+A detected native text paste uses `clipboardPaste: true` with `monitor` or `block`, an eligible AI app and enabled rule, and no `uploadMethod`. The `clipboard-inspection-unavailable` rule applies to blocked text pastes that cannot be checked. Control rejects evidence from versions without qualifying delivery and payloads with inspected text. The optional paste marker appears in history, event details, JSON exports, and the event feed. Older decisions keep their response shape.
+
 - `GET /v1/admin/events` returns an array of up to 100 events for existing clients.
 - `GET /v1/admin/events/history` returns `{ entries, next }` with up to 100 entries. If `next` is present, pass its `receivedAt`, `eventId`, and `installationId` as `beforeAt`, `beforeEventId`, and `beforeInstallationId` with the same filters. Keep the timestamp as returned to retain sub-millisecond precision.
 - `GET /v1/admin/events/export` streams a single JSON download with the organization, export time, applied filters, and all matching retained entries as of the database query. The result contains policy decision metadata and installation and event IDs.

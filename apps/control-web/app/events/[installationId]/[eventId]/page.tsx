@@ -59,7 +59,8 @@ export default async function ReviewEvent({ params, searchParams }: {
             <div><dt className="muted">Application</dt><dd>{isPromptApp(event.appId) ? promptAppLabels[event.appId] : event.appId}</dd></div>
             <div><dt className="muted">Detector</dt><dd>{event.ruleId === uploadRule ? 'File upload'
               : event.ruleId === fileInspectionUnavailableRule ? fileCheckUnavailableLabel : ruleLabels[event.ruleId as keyof typeof ruleLabels] ?? event.detectorCategory}
-              {event.uploadMethod && <> · {uploadMethods[event.uploadMethod]}</>}</dd></div>
+              {event.uploadMethod && <> · {uploadMethods[event.uploadMethod]}</>}
+              {event.clipboardPaste && <> · Clipboard paste</>}</dd></div>
             <div><dt className="muted">Policy</dt><dd>v{event.policyVersion}</dd></div>
             <div><dt className="muted">Occurred (UTC)</dt><dd><Timestamp value={event.timestamp} /></dd></div>
             <div><dt className="muted">Received (UTC)</dt><dd><Timestamp value={event.receivedAt} /></dd></div>

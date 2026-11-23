@@ -38,6 +38,7 @@ const alertsAdmin = randomBytes(32).toString('hex');
 const webhooksAdmin = randomBytes(32).toString('hex');
 const eventFeedAdmin = randomBytes(32).toString('hex');
 const hardeningAdmin = randomBytes(32).toString('hex');
+const clipboardAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -48,7 +49,14 @@ const undoSsoSchema = `
       DROP COLUMN oidc_issuer, DROP COLUMN oidc_subject, ALTER COLUMN expires_at SET NOT NULL,
       ADD CONSTRAINT control_access_check1 CHECK ((revoked_at IS NULL) = (token_hash IS NOT NULL));
 `;
+const undoClipboardSchema = `
+  DELETE FROM schema_migrations WHERE version = 41;
+  ALTER TABLE policy_versions DROP COLUMN clipboard_mode;
+  ALTER TABLE policy_deliveries DROP COLUMN clipboard_paste;
+  ALTER TABLE security_events DROP COLUMN clipboard_paste;
+`;
 const undoSsnSchema = `
+  ${undoClipboardSchema}
   DELETE FROM schema_migrations WHERE version = 36;
   ALTER TABLE policy_versions DROP COLUMN ssn_mode;
   ALTER TABLE policy_deliveries DROP COLUMN ssn;
@@ -99,13 +107,13 @@ async function retentionFixture(query) {
 
 function browserPolicyOnly({ extensionDeployment: _extensionDeployment, browserHardening: _browserHardening, blockedAiAppHosts: _blockedAiAppHosts,
   fileContentModes: _fileContentModes, identifierProtection: _identifierProtection, presetDiscoveryEnabled: _presetDiscovery,
-  ssnMode: _ssnMode, ...browserPolicy }) {
+  ssnMode: _ssnMode, clipboardMode: _clipboardMode, ...browserPolicy }) {
   return browserPolicy;
 }
 
 async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false,
   extensionVersion, scopedEnrollment = false, composerAware = false, privateKeyAware = false, fileInspectionAware = false,
-  aiAppAccessAware = false, fileBlockAware = false, identifiersAware = false, presetAware = false, ssnAware = false } = {}) {
+  aiAppAccessAware = false, fileBlockAware = false, identifiersAware = false, presetAware = false, ssnAware = false, clipboardAware = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -122,6 +130,7 @@ async function call(path, { token, method = 'GET', body, expect = 200, assignmen
   if (identifiersAware) headers['X-Zekvar-Identifiers'] = '1';
   if (presetAware) headers['X-Zekvar-Preset-Discovery'] = '1';
   if (ssnAware) headers['X-Zekvar-SSN'] = '1';
+  if (clipboardAware) headers['X-Zekvar-Clipboard-Paste'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
@@ -190,6 +199,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__20__AdminToken: eventFeedAdmin,
       Control__Organizations__21__Slug: `hardening-${suffix}`,
       Control__Organizations__21__AdminToken: hardeningAdmin,
+      Control__Organizations__22__Slug: `clipboard-${suffix}`,
+      Control__Organizations__22__AdminToken: clipboardAdmin,
       ...overrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -4114,5 +4125,81 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const restored = await post(`policies/${baseline.version}/restore`);
     assert.deepEqual(restored.browserHardening, initial);
     assert.deepEqual((await admin(path))[0].browserHardening, stricter);
+  });
+
+  await t.test('validates clipboard decisions against delivered policy, isolates metadata, and preserves legacy events', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: clipboardAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant: (await post('enrollment-grants')).grant } });
+    const browserCall = (path, options) => call(`/v1/browser/${path}`, { token: browser.token, ...options });
+    const deliver = () => browserCall('policy', { assignmentAware: true, clipboardAware: true, claudeAware: true });
+    const write = (path, body, expect = 204) => browserCall(path, { method: 'POST', body, expect });
+    const publish = (fields, options) => post('policies', fields, options);
+    const [initial] = await admin('policies');
+    const event = (policy, fields = {}) => ({ ...contract.event, eventId: randomUUID(), appId: 'chatgpt',
+      timestamp: new Date().toISOString(), policyVersion: policy.version, decision: 'monitor', clipboardPaste: true, ...fields });
+    const legacy = event(initial);
+    delete legacy.clipboardPaste;
+    await write('events', legacy);
+    const before = await admin('events');
+    if (postgres) {
+      await stop();
+      await retentionFixture(undoClipboardSchema);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 41'), '1');
+      assert.deepEqual(await admin('events'), before);
+    }
+    assert.equal((await admin('policies'))[0].clipboardMode, 'off');
+    await write('events', event(initial), 400);
+    await publish({ clipboardMode: 'warn' }, { expect: 400 });
+    const monitoring = await publish({ mode: 'block', clipboardMode: 'monitor' });
+    assert.equal((await browserCall('policy', { clipboardAware: true })).clipboardMode, undefined);
+    await write('heartbeat', { policyVersion: monitoring.version });
+    assert.notEqual((await admin('installations'))[0].appliedPolicyVersion, monitoring.version);
+    await write('heartbeat', { policyVersion: monitoring.version, clipboardModeApplied: true }, 400);
+    await write('events', event(monitoring), 400);
+    assert.equal((await deliver()).clipboardMode, 'monitor');
+    await write('heartbeat', { policyVersion: monitoring.version, clipboardModeApplied: true });
+    assert.equal((await admin('installations'))[0].appliedPolicyVersion, monitoring.version);
+
+    const detection = event(monitoring);
+    await Promise.all([write('events', detection), write('events', detection)]);
+    for (const fields of [
+      { decision: 'block' }, { decision: 'warn' }, { decision: 'exception_applied' }, { appId: 'claude' },
+      { appId: 'local-prompt-fixture' }, { uploadMethod: 'paste' }, { content: 'private synthetic clipboard' },
+      { ruleId: 'github-classic-pat', detectorCategory: 'credential' },
+      { ruleId: 'clipboard-inspection-unavailable', detectorCategory: 'clipboard' },
+    ]) await write('events', event(monitoring, fields), 400);
+    const stored = (await admin('events')).filter(({ clipboardPaste }) => clipboardPaste);
+    assert.deepEqual(stored.map(({ eventId }) => eventId), [detection.eventId]);
+    assert.equal(stored[0].uploadMethod, undefined);
+    const path = `events/${browser.installationId}/${detection.eventId}`;
+    assert.equal((await admin(path)).event.clipboardPaste, true);
+    await admin(path, { token: eventFeedAdmin, expect: 404 });
+
+    const { token } = await post('access/event-feed', { name: 'Clipboard collector', days: 1, requestId: randomUUID() });
+    const feed = await call('/v1/integrations/events', { token });
+    assert.equal(feed.entries.find(({ eventId }) => eventId === detection.eventId).clipboardPaste, true);
+    const exported = await admin('events/export');
+    assert.equal(exported.entries.find(({ eventId }) => eventId === detection.eventId).clipboardPaste, true);
+    assert.doesNotMatch(JSON.stringify({ exported, feed }), /private synthetic clipboard|clipboardText|clipboardData/);
+
+    const author = await post('access', { name: 'Clipboard author', role: 'administrator', hours: 1 });
+    const reviewer = await post('access', { name: 'Clipboard reviewer', role: 'administrator', hours: 1 });
+    await post('policy-reviews/setting', { required: true }, { expect: 204 });
+    const { reviewId } = await publish({ clipboardMode: 'block', githubPatMode: 'monitor', claudePromptEnabled: true,
+      expectedVersion: monitoring.version }, { token: author.token, expectReview: true, expect: 202 });
+    assert.equal((await deliver()).clipboardMode, 'monitor');
+    const applied = await post(`policy-reviews/${reviewId}/decision`, { approve: true }, { token: reviewer.token });
+    assert.equal((await deliver()).clipboardMode, 'block');
+    await write('events', event(applied, { appId: 'claude', ruleId: 'github-classic-pat', detectorCategory: 'credential', decision: 'block' }));
+    const incomplete = event(applied, { ruleId: 'clipboard-inspection-unavailable', detectorCategory: 'clipboard', decision: 'block' });
+    await write('events', incomplete);
+    await write('events', { ...incomplete, eventId: randomUUID(), clipboardPaste: false }, 400);
+    await post('policy-reviews/setting', { required: false }, { expect: 204 });
+    const restored = await post(`policies/${initial.version}/restore`);
+    assert.equal((await deliver()).clipboardMode, 'off');
+    await write('events', event(restored), 400);
+    assert.equal((await admin('events')).find(({ eventId }) => eventId === incomplete.eventId).detectorCategory, 'clipboard');
   });
 });

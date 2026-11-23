@@ -95,7 +95,7 @@ export default async function AlertDetail({ params, searchParams }: {
                 <tr><th>Received (UTC)</th><th>Detector</th><th>Event triage</th><th>Event</th></tr>
               </thead><tbody>{evidence.entries.map((event) => <tr key={`${event.installationId}/${event.eventId}`}>
                 <td><time dateTime={event.receivedAt}>{utc.format(new Date(event.receivedAt))}</time></td>
-                <td>{evidenceLabels[event.ruleId] ?? event.ruleId}</td>
+                <td>{evidenceLabels[event.ruleId] ?? event.ruleId}{event.clipboardPaste && <div className="muted">Clipboard paste</div>}</td>
                 <td>{triageStatuses[(event.triage ?? initialTriage).status]}</td>
                 <td><a className="underline" href={eventPath(event.installationId, event.eventId)}>Review event {event.eventId.slice(0, 8)}</a></td>
               </tr>)}</tbody></table>

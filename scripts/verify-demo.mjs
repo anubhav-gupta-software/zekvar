@@ -148,6 +148,7 @@ try {
   const hardeningAdmin = randomBytes(32).toString('hex');
   const aiAccessAdmin = randomBytes(32).toString('hex');
   const identifiersAdmin = randomBytes(32).toString('hex');
+  const clipboardAdmin = randomBytes(32).toString('hex');
   const apiServer = startService('dotnet', ['bin/Debug/net10.0/Control.Api.dll'], api, {
     DOTNET_ENVIRONMENT: 'Development', ASPNETCORE_ENVIRONMENT: 'Development', Control__Port: String(apiPort), ConnectionStrings__Control: db,
     Control__Organizations__0__Slug: 'demo', Control__Organizations__0__AdminToken: token,
@@ -162,6 +163,7 @@ try {
     Control__Organizations__11__Slug: 'ai-app-access', Control__Organizations__11__AdminToken: aiAccessAdmin,
     Control__Organizations__12__Slug: 'organization-identifiers', Control__Organizations__12__AdminToken: identifiersAdmin,
     Control__Organizations__13__Slug: 'chrome-hardening', Control__Organizations__13__AdminToken: hardeningAdmin,
+    Control__Organizations__14__Slug: 'clipboard-paste', Control__Organizations__14__AdminToken: clipboardAdmin,
     ...(flags.has('--pilot') ? {
       Control__Organizations__3__Slug: 'managed-pilot', Control__Organizations__3__AdminToken: pilotAdmin,
       Control__Organizations__4__Slug: 'review-pilot', Control__Organizations__4__AdminToken: reviewAdmin,
@@ -205,6 +207,10 @@ try {
     ZEKVAR_TEST_WEB_ORIGIN: webOrigin, ZEKVAR_TEST_API_ORIGIN: apiOrigin, ZEKVAR_TEST_ADMIN_TOKEN: hardeningAdmin,
     ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0',
     ZEKVAR_TEST_HARDENING_SCREENSHOT: artifacts ? join(artifacts, '40-chrome-hardening.png') : '',
+  });
+  await run(process.execPath, ['--test', 'test/clipboard-paste.test.mjs'], extension, {
+    ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: clipboardAdmin,
+    ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_ARTIFACTS: artifacts ?? '',
   });
   await run(process.execPath, ['--test', 'test/ai-app-access.test.mjs'], extension, {
     ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: aiAccessAdmin,

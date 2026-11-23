@@ -66,7 +66,8 @@ export default async function CaseDetail({ params }: { params: Promise<{ id: str
                 <td>{isPromptApp(event.appId) ? promptAppLabels[event.appId] : event.appId}</td>
                 <td>{event.ruleId === uploadRule ? 'File upload' : event.ruleId === fileInspectionUnavailableRule ? fileCheckUnavailableLabel :
                   ruleLabels[event.ruleId as keyof typeof ruleLabels] ?? event.detectorCategory}
-                  {event.uploadMethod && <div className="muted">{uploadMethods[event.uploadMethod]}</div>}</td>
+                  {event.uploadMethod && <div className="muted">{uploadMethods[event.uploadMethod]}</div>}
+                  {event.clipboardPaste && <div className="muted">Clipboard paste</div>}</td>
                 <td><span className={`badge ${event.decision}`}>{decisionLabels[event.decision]}</span></td>
                 <td>{triageStatuses[event.triage?.status ?? 'needs_review']}</td>
                 <td><a className="underline" href={eventPath(event.installationId, event.eventId)}

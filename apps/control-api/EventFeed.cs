@@ -37,7 +37,8 @@ internal readonly record struct EventFeedCursor(Guid StreamId, long Sequence)
 
 internal sealed record EventFeedEntry(Guid EventId, Guid InstallationId, DateTime Timestamp, DateTime ReceivedAt, int PolicyVersion,
     string AppId, string RuleId, string Decision, EventRollout Rollout,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? UploadMethod)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? UploadMethod,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool ClipboardPaste = false)
 {
     public string DetectorCategory => FixtureContract.CategoryForRule(RuleId);
 }

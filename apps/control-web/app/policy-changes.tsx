@@ -34,6 +34,7 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     ['AI app preset discovery', toggle(reference.presetDiscoveryEnabled ?? false), toggle(candidate.presetDiscoveryEnabled ?? false)],
     ['Extension inventory', toggle(reference.extensionInventoryEnabled), toggle(candidate.extensionInventoryEnabled)],
     ['Claude prompt protection', toggle(reference.claudePromptEnabled), toggle(candidate.claudePromptEnabled)],
+    ['Clipboard paste protection', detectorModeLabels[reference.clipboardMode ?? 'off'], detectorModeLabels[candidate.clipboardMode ?? 'off']],
     ...uploadApps.map((app) => [`${promptAppLabels[app]} file uploads`, detectorModeLabels[reference.uploadModes[app]],
       detectorModeLabels[candidate.uploadModes[app]]]),
     ...uploadApps.map((app) => [`${promptAppLabels[app]} file content protection`, detectorModeLabels[fileContentMode(reference, app)],

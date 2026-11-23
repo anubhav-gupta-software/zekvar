@@ -8,6 +8,7 @@ import type { InventoryStatus } from '../../../contracts/policy/extension-invent
 import { builtInDiscoveryApps, type BuiltInDiscoveryApp, type CustomAppId, type DiscoveryPreset } from '../../../contracts/policy/discovery';
 import { exceptionDecision } from '../../../contracts/policy/prompt-exceptions';
 import type { BrowserLease } from './prompt-exceptions';
+import { clipboardCategory, clipboardUnavailableRule, type ClipboardMode } from '../../../contracts/policy/clipboard';
 
 export { fixtureRule, fixtureDetector, githubPatRule, credentialDetector, isMode, isDetectorMode } from '../../../contracts/policy/prompt';
 export type { PolicyMode, DetectorMode, RuleMetadata } from '../../../contracts/policy/prompt';
@@ -30,6 +31,7 @@ export type Policy = PromptPolicy & {
   fileInspection?: FileInspection;
   fileContentModes?: UploadModes;
   presetDiscovery?: boolean;
+  clipboardMode?: ClipboardMode;
 };
 export type PolicyEvent = {
   eventId: string;
@@ -38,7 +40,9 @@ export type PolicyEvent = {
   policyVersion: number;
   assignmentVersion?: number;
   decision: PolicyMode | 'warn_override' | typeof exceptionDecision;
-} & ((RuleMetadata & { uploadMethod?: UploadMethod }) | UploadMetadata);
+  clipboardPaste?: true;
+} & ((RuleMetadata & { uploadMethod?: UploadMethod }) | UploadMetadata |
+  { ruleId: typeof clipboardUnavailableRule; detectorCategory: typeof clipboardCategory; uploadMethod?: never });
 
 export type Summary = {
   status: 'standalone' | 'connected' | 'offline' | 'revoked';
@@ -126,11 +130,17 @@ export function readMetadata(value: unknown): PolicyEvent | undefined {
       !isPromptApp(value.appId) ||
       !(isMode(value.decision) || value.decision === 'warn_override' || (value.decision === exceptionDecision && value.appId !== fixtureApp)) ||
       typeof value.timestamp !== 'string' || !Number.isFinite(Date.parse(value.timestamp))) return;
+  if (value.clipboardPaste !== undefined && !(value.clipboardPaste === true && value.appId !== fixtureApp &&
+      value.uploadMethod === undefined && (value.decision === 'monitor' || value.decision === 'block'))) return;
 
   const event = {
     eventId: value.eventId, appId: value.appId, timestamp: new Date(value.timestamp).toISOString(),
     policyVersion: value.policyVersion, decision: value.decision, assignmentVersion: value.assignmentVersion,
+    ...(value.clipboardPaste === true && { clipboardPaste: true as const }),
   } as const;
+  if (value.clipboardPaste === true && value.ruleId === clipboardUnavailableRule && value.detectorCategory === clipboardCategory && value.decision === 'block') {
+    return { ...event, ruleId: clipboardUnavailableRule, detectorCategory: clipboardCategory };
+  }
   if ((value.ruleId === uploadRule || value.ruleId === fileInspectionUnavailableRule) &&
       value.detectorCategory === uploadCategory && isUploadApp(value.appId) &&
       (value.decision === 'block' || value.ruleId === uploadRule && value.decision === 'monitor') && isUploadMethod(value.uploadMethod)) {

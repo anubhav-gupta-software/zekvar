@@ -17,6 +17,7 @@ import { exceptionWindowMs, promptExceptionError, promptExceptionLimit, readProm
 import { chatGptApp, type AiPromptApp } from '../../../../contracts/policy/apps';
 import { aiAppAccessCatalog } from '../../../../contracts/policy/ai-app-access';
 import { domainRuleLimit, ruleCount } from '../../../../contracts/policy/domains';
+import { clipboardModes, type ClipboardMode } from '../../../../contracts/policy/clipboard';
 
 const navigationFields = [
   ['allow', 'Draft allowed domains'], ['block', 'Draft blocked domains'],
@@ -30,6 +31,7 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
   return {
     mode: snapshot.mode, githubPatMode: snapshot.githubPatMode, paymentCardMode: snapshot.paymentCardMode, privateKeyMode: snapshot.privateKeyMode,
     ssnMode: snapshot.ssnMode,
+    clipboardMode: snapshot.clipboardMode,
     identifierMode: snapshot.identifierProtection?.mode,
     identifierFormats: snapshot.identifierProtection?.formats.map(({ prefix, digits }) => `${prefix} ${digits}`).join('\n') ?? '',
     discoveryEnabled: snapshot.discoveryEnabled,
@@ -141,9 +143,11 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
     setResult(runComparison(reference, {
       mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode, privateKeyMode: editor.privateKeyMode,
       ssnMode: editor.ssnMode,
+      clipboardMode: editor.clipboardMode,
       identifierProtection: identifiers,
       discoveryEnabled: editor.discoveryEnabled, presetDiscoveryEnabled: editor.presetDiscoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled,
       extensionDeployment: reference.extensionDeployment,
+      browserHardening: reference.browserHardening,
       blockedAiAppHosts: editor.blockedAiAppHosts,
       claudePromptEnabled: editor.claudePromptEnabled, domainRules, pathRules,
       uploadModes: editor.uploadModes, uploadTypes: { chatgpt, gemini }, fileInspection: editor.fileInspection,
@@ -192,6 +196,12 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
           <label htmlFor="draft-ssn">Draft U.S. Social Security number</label>
           <select id="draft-ssn" value={editor.ssnMode} onChange={(event) => edit('ssnMode', event.target.value as DetectorMode)}>
             {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+          </select>
+        </div>}
+        {editor.clipboardMode !== undefined && <div className="grid gap-1">
+          <label htmlFor="draft-clipboard">Draft clipboard paste protection</label>
+          <select id="draft-clipboard" value={editor.clipboardMode} onChange={(event) => edit('clipboardMode', event.target.value as ClipboardMode)}>
+            {clipboardModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
           </select>
         </div>}
         <div className="grid gap-1">
@@ -407,6 +417,7 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         <input type="hidden" name="paymentCardMode" value={candidate.paymentCardMode} />
         {candidate.privateKeyMode !== undefined && <input type="hidden" name="privateKeyMode" value={candidate.privateKeyMode} />}
         {candidate.ssnMode !== undefined && <input type="hidden" name="ssnMode" value={candidate.ssnMode} />}
+        {candidate.clipboardMode !== undefined && <input type="hidden" name="clipboardMode" value={candidate.clipboardMode} />}
         {candidate.identifierProtection && <input type="hidden" name="identifierProtection" value={JSON.stringify(candidate.identifierProtection)} />}
         <input type="hidden" name="discoveryEnabled" value={candidate.discoveryEnabled ? 'on' : 'off'} />
         {candidate.presetDiscoveryEnabled !== undefined &&

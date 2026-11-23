@@ -1,5 +1,5 @@
 import { redactPrompt } from '../../../contracts/policy/prompt';
-import { recordDecision, recordFileInspection, recordUploadDecision } from './decisions';
+import { recordClipboardDecision, recordDecision, recordFileInspection, recordUploadDecision } from './decisions';
 import { evaluatePrompt, withPolicyVersion, type MatchedDecision } from './policy';
 import { isMode, send, type AiPromptApp, type Coverage, type Summary } from './protocol';
 import { promptAppLabels } from '../../../contracts/policy/apps';
@@ -10,6 +10,7 @@ import { promptText, replacePromptText, supportsRedaction, type Composer, type C
 import { leaseTime } from './prompt-exceptions';
 import { evaluatePromptWithExceptions, exceptionDecision } from '../../../contracts/policy/prompt-exceptions';
 import type { Policy } from './protocol';
+import { clipboardUnavailableRule, inspectClipboard } from '../../../contracts/policy/clipboard';
 
 type PromptAdapter = {
   appId: AiPromptApp;
@@ -33,8 +34,8 @@ function controls(appId: AiPromptApp) {
       background: #101927; box-shadow: 0 1px 8px #0004; }
     p { margin: 0; }
     #status { color: #8aecc8; }
-    #notice, #upload-notice { margin-top: .4rem; }
-    #notice:empty, #upload-notice:empty, [hidden] { display: none; }
+    #notice, #upload-notice, #clipboard-notice { margin-top: .4rem; }
+    #notice:empty, #upload-notice:empty, #clipboard-notice:empty, [hidden] { display: none; }
     button { margin: .55rem .35rem 0 0; padding: .3rem .55rem; border: 1px solid #627b8b;
       border-radius: .35rem; color: #fff; background: #203045; cursor: pointer; font: inherit; }
     button:focus-visible { outline: 2px solid #59e6b5; outline-offset: 2px; }
@@ -53,6 +54,9 @@ function controls(appId: AiPromptApp) {
   const uploadNotice = document.createElement('p');
   uploadNotice.id = 'upload-notice';
   uploadNotice.setAttribute('role', 'alert');
+  const clipboardNotice = document.createElement('p');
+  clipboardNotice.id = 'clipboard-notice';
+  clipboardNotice.setAttribute('role', 'alert');
   const actions = document.createElement('div');
   const redact = document.createElement('button');
   redact.type = 'button';
@@ -70,9 +74,9 @@ function controls(appId: AiPromptApp) {
   diagnostics.readOnly = true;
   diagnostics.hidden = true;
   diagnostics.setAttribute('aria-label', 'Composer diagnostics');
-  panel.append(status, uploadNotice, notice, actions, copy, diagnostics);
+  panel.append(status, uploadNotice, clipboardNotice, notice, actions, copy, diagnostics);
   root.append(style, panel);
-  return { host, status, notice, uploadNotice, actions, redact, edit, proceed, copy, diagnostics };
+  return { host, status, notice, uploadNotice, clipboardNotice, actions, redact, edit, proceed, copy, diagnostics };
 }
 
 export function bindPromptGuard(adapter: PromptAdapter) {
@@ -99,6 +103,7 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     if (adapter.hideWhenDisabled && (!supported() || !control?.installationId || !enabled(control))) {
       ui.host.remove();
       clearInterruption();
+      ui.clipboardNotice.textContent = '';
       lastCoverage = undefined;
       unsupportedSince = 0;
       unsupportedInput = undefined;
@@ -108,6 +113,7 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     if (!supported()) {
       clearInterruption();
       ui.uploadNotice.textContent = '';
+      ui.clipboardNotice.textContent = '';
       ui.status.textContent = `Zekvar · Unsupported ${appName} page`;
       lastCoverage = undefined;
       unsupportedSince = 0;
@@ -132,6 +138,7 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     const card = managedPolicy?.paymentCardMode;
     const privateKey = managedPolicy?.privateKeyMode;
     const ssn = managedPolicy?.ssnMode;
+    const clipboard = managedPolicy?.clipboardMode;
     const identifiers = managedPolicy?.identifierProtection?.mode;
     const targetedUpload = uploadApp && managedPolicy?.targetedUploads?.[uploadApp];
     const upload = targetedUpload?.mode ?? (uploadApp && managedPolicy?.uploadModes?.[uploadApp]);
@@ -142,7 +149,8 @@ export function bindPromptGuard(adapter: PromptAdapter) {
       (isMode(ssn) ? ` · U.S. SSN ${ssn}` : '') +
       (isMode(identifiers) ? ` · Organization identifiers ${identifiers}` : '') +
       (upload && upload !== 'off' ? ` · File uploads ${upload}${targetedUpload ? ' (selected types)' : ''}` : '') +
-      (content !== 'off' ? ` · File content ${content}` : '');
+      (content !== 'off' ? ` · File content ${content}` : '') +
+      (clipboard && clipboard !== 'off' ? ` · Clipboard ${clipboard}` : '');
     const label = !managedPolicy ? `Zekvar · ${appName} policy unavailable` : coverage === 'unsupported' ?
       `Zekvar · Unsupported composer (${inspection.gap ?? 'Send control missing'})` : !coverage && !waiting ? 'Zekvar · Checking composer…' :
         `Zekvar · ${managedPolicy.mode.toUpperCase()} v${managedPolicy.version}${detectors}${control?.status === 'offline' ? ' · Offline policy' : ''}${current?.button ? '' : ' · Waiting for Send control'}`;
@@ -171,6 +179,7 @@ export function bindPromptGuard(adapter: PromptAdapter) {
           control?.policy?.mode !== reply.summary.policy?.mode || enabled(control) !== enabled(reply.summary)) {
         clearInterruption();
         ui.uploadNotice.textContent = '';
+        ui.clipboardNotice.textContent = '';
       }
       control = reply.summary;
     } catch {
@@ -258,6 +267,8 @@ export function bindPromptGuard(adapter: PromptAdapter) {
 
   window.addEventListener('input', (event) => {
     if (pending && event.target instanceof Node && pending.input.contains(event.target)) clearInterruption();
+    if (ui.clipboardNotice.textContent && event.isTrusted && event.target instanceof Node &&
+        adapter.inspect().composer?.input.contains(event.target)) ui.clipboardNotice.textContent = '';
   }, { capture: true });
 
   ui.edit.addEventListener('click', (event) => {
@@ -331,6 +342,31 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     wasSupportedPage = supportedPage;
     observe();
   }
+
+  window.addEventListener('paste', (event) => {
+    const policy = control?.policy;
+    const installationId = control?.installationId;
+    const mode = policy?.clipboardMode;
+    if (!event.isTrusted || !event.cancelable || event.defaultPrevented || !supported() || !enabled(control) ||
+        !policy || !installationId || !mode || mode === 'off' || !(event.target instanceof Node)) return;
+    const composer = adapter.inspect().composer;
+    if (!composer?.input.contains(event.target)) return;
+    ui.clipboardNotice.textContent = '';
+    const data = event.clipboardData;
+    // File-only clipboard input belongs to the independent file upload policy.
+    if (data && !data.types.includes('text/plain') && (!data.types.includes('text/html') || data.files.length > 0)) return;
+    const text = data?.types.includes('text/plain') ? data.getData('text/plain') : undefined;
+    const result = inspectClipboard(text, policy, mode);
+    if (!result) return;
+    if (result.decision === 'block') {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      ui.clipboardNotice.textContent = result.ruleId === clipboardUnavailableRule
+        ? 'Paste blocked because Zekvar could not check the clipboard text. Try a shorter plain-text excerpt.'
+        : 'Paste blocked because sensitive text was detected. Remove sensitive values from the source and try again.';
+    }
+    recordClipboardDecision(adapter.appId, policy, installationId, result);
+  }, { capture: true });
 
   let scansInProgress = 0;
   async function checkFileContent(files: readonly UploadFile[], policy: Policy): Promise<UploadCheck> {

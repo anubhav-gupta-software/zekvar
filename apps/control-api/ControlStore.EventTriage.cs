@@ -9,7 +9,7 @@ internal sealed partial class ControlStore
     private const string EventFields = """
         e.event_id, e.installation_id, e.occurred_at, e.received_at, e.policy_version, e.decision, e.app_id, e.rule_id, e.upload_method,
         e.rollout_attributed, e.rollout_group_id, g.name, t.revision, t.status, t.disposition, t.updated_at,
-        a.id, a.display_name, a.revoked_at IS NULL AND (a.expires_at IS NULL OR a.expires_at > now())
+        a.id, a.display_name, a.revoked_at IS NULL AND (a.expires_at IS NULL OR a.expires_at > now()), e.clipboard_paste
         """;
     private const string EventSources = """
         security_events e LEFT JOIN retention_cutoffs r ON e.organization_id = r.organization_id
@@ -31,7 +31,7 @@ internal sealed partial class ControlStore
         rows.GetString(6), rows.GetString(7), rows.IsDBNull(8) ? null : rows.GetString(8),
         rows.GetBoolean(9) ? rows.IsDBNull(10) ? new("baseline") : new("group", rows.GetGuid(10), rows.GetString(11)) : new("unattributed"),
         rows.IsDBNull(12) ? null : new(rows.GetInt32(12), rows.GetString(13), rows.IsDBNull(14) ? null : rows.GetString(14),
-            rows.IsDBNull(16) ? null : new(rows.GetGuid(16), rows.GetString(17), rows.GetBoolean(18)), rows.GetDateTime(15)));
+            rows.IsDBNull(16) ? null : new(rows.GetGuid(16), rows.GetString(17), rows.GetBoolean(18)), rows.GetDateTime(15)), rows.GetBoolean(19));
 
     public async Task<TriageAssignee[]> EventTriageAssignees(Guid organizationId, CancellationToken ct)
     {

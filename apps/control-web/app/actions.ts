@@ -16,6 +16,7 @@ import { customAppError, isCustomAppId, parseCustomApps } from '../../../contrac
 import { promptExceptionError, readPromptExceptions } from '../../../contracts/policy/prompt-exceptions';
 import { parseExtensionDeployment } from '../lib/extension-deployment';
 import { parseBrowserHardening } from '../lib/browser-hardening';
+import { isClipboardMode } from '../../../contracts/policy/clipboard';
 import { aiAppAccessCatalog, readBlockedAiAppHosts } from '../../../contracts/policy/ai-app-access';
 import { domainRuleLimit, ruleCount } from '../../../contracts/policy/domains';
 import { eventPath, isTriageDisposition, isTriageId, isTriageStatus } from '../lib/triage';
@@ -313,6 +314,7 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
   const paymentCardMode = form.get('paymentCardMode');
   const privateKeyMode = form.get('privateKeyMode');
   const ssnMode = form.get('ssnMode');
+  const clipboardMode = form.get('clipboardMode');
   const uploadModes = readUploadSettings(form);
   const uploadTypes = readUploadTypes(form);
   const fileContent = readFileContentSettings(form);
@@ -326,7 +328,8 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
     return { error: 'Reload the current policy before saving changes.' };
   }
   if (!modes.includes(mode) || !detectorModes.includes(githubPatMode) || !isDetectorMode(paymentCardMode) ||
-      (privateKeyMode !== null && !isDetectorMode(privateKeyMode)) || (ssnMode !== null && !isDetectorMode(ssnMode)) || !uploadModes || !fileContent ||
+      (privateKeyMode !== null && !isDetectorMode(privateKeyMode)) || (ssnMode !== null && !isDetectorMode(ssnMode)) ||
+      (clipboardMode !== null && !isClipboardMode(clipboardMode)) || !uploadModes || !fileContent ||
       (discovery !== 'on' && discovery !== 'off') || (presetDiscovery !== null && presetDiscovery !== 'on' && presetDiscovery !== 'off') ||
       (inventory !== 'on' && inventory !== 'off') || (claude !== 'on' && claude !== 'off')) {
     return { error: 'Choose a setting for each policy control.' };
@@ -335,7 +338,7 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
   return perform(async (token) => {
     try {
       const policy = await controlApi.publish(token, { mode, githubPatMode, paymentCardMode, privateKeyMode: privateKeyMode ?? undefined,
-        ssnMode: ssnMode ?? undefined,
+        ssnMode: ssnMode ?? undefined, clipboardMode: clipboardMode ?? undefined,
         uploadModes, uploadTypes, ...fileContent,
         discoveryEnabled: discovery === 'on', presetDiscoveryEnabled: presetDiscovery === null ? undefined : presetDiscovery === 'on',
         extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on', expectedVersion },
@@ -405,6 +408,7 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   const paymentCardMode = form.get('paymentCardMode');
   const privateKeyMode = form.get('privateKeyMode');
   const ssnMode = form.get('ssnMode');
+  const clipboardMode = form.get('clipboardMode');
   const uploadModes = readUploadSettings(form);
   const uploadTypes = readUploadTypes(form);
   const fileContent = readFileContentSettings(form);
@@ -415,7 +419,8 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   const groupId = form.get('groupId');
   const expectedVersion = Number(form.get('expectedVersion'));
   if (!isMode(mode) || !isDetectorMode(githubPatMode) || !isDetectorMode(paymentCardMode) ||
-      (privateKeyMode !== null && !isDetectorMode(privateKeyMode)) || (ssnMode !== null && !isDetectorMode(ssnMode)) || !uploadModes || !fileContent ||
+      (privateKeyMode !== null && !isDetectorMode(privateKeyMode)) || (ssnMode !== null && !isDetectorMode(ssnMode)) ||
+      (clipboardMode !== null && !isClipboardMode(clipboardMode)) || !uploadModes || !fileContent ||
       (discovery !== 'on' && discovery !== 'off') || (presetDiscovery !== null && presetDiscovery !== 'on' && presetDiscovery !== 'off') ||
       (inventory !== 'on' && inventory !== 'off') ||
       (claude !== 'on' && claude !== 'off') ||
@@ -457,7 +462,7 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   return perform(async (token) => {
     try {
       const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, privateKeyMode: privateKeyMode ?? undefined,
-        ssnMode: ssnMode ?? undefined,
+        ssnMode: ssnMode ?? undefined, clipboardMode: clipboardMode ?? undefined,
         uploadModes, uploadTypes, ...fileContent,
         discoveryEnabled: discovery === 'on', presetDiscoveryEnabled: presetDiscovery === null ? undefined : presetDiscovery === 'on',
         extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on',

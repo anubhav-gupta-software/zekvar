@@ -424,7 +424,8 @@ function EventRow({ event, filters, returnQuery, showRollout, showTriage }: {
     <td><DecisionBadge decision={event.decision} /></td>
     <td>{event.ruleId === uploadRule ? 'File upload' : event.ruleId === fileInspectionUnavailableRule ? fileCheckUnavailableLabel :
       ruleLabels[event.ruleId as keyof typeof ruleLabels] ?? event.detectorCategory}
-      {event.uploadMethod && <div className="muted">{event.ruleId !== uploadRule && 'File content · '}{uploadMethods[event.uploadMethod]}</div>}</td>
+      {event.uploadMethod && <div className="muted">{event.ruleId !== uploadRule && 'File content · '}{uploadMethods[event.uploadMethod]}</div>}
+      {event.clipboardPaste && <div className="muted">Clipboard paste</div>}</td>
     <td>v{event.policyVersion}</td>
     {showRollout && <td>{rollout ? <a className="underline" href={`/?${rolloutQuery}#events`}>
       {rollout.kind === 'group' ? rollout.groupName : rollout.kind === 'baseline' ? 'Organization baseline' : 'Unattributed'}</a> : '—'}</td>}

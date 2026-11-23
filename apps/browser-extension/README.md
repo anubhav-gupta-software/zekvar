@@ -112,6 +112,14 @@ The upload policy covers the supported top-level ChatGPT home and conversation r
 
 Update enrolled Chrome profiles to v0.15.0 before publishing scoped file types. Older builds skip the scoped portion and Control leaves the policy version unacknowledged. Other enabled controls and any unscoped upload mode continue to apply.
 
+## Protect text pasted into AI composers
+
+1. Install Browser v0.31.0 or later. Under **Publish a policy** in Control, set **Clipboard paste protection** to **Monitor** for your test group, or use **Policy preview** to compare paste and Send independently on the same text sample.
+2. Publish, sync the profile, and wait for **Clipboard monitor** on a supported ChatGPT or Gemini composer. Claude needs the experimental Claude prompt adapter enabled. Paste the synthetic `ZEKVAR_TEST_SECRET` marker. Monitor lets it reach the draft and records **Clipboard paste** in **Security events**.
+3. Publish **Block** and sync again. Paste the marker into the same composer. Browser holds the paste before the page receives the event. A clean retry still works. Existing Send policies apply when the user submits a draft. Change the clipboard setting to **Off** or restore an earlier policy to stop inspecting new pastes.
+
+The extension reads the plain-text representation on a native paste into the recognized composer. It uses the test marker and any enabled content detectors, with up to 64,000 UTF-16 code units per paste. Block holds oversized text and HTML-only paste with a separate check-unavailable reason. File-only paste uses the file upload policy. The extension uses Chrome's paste event and records only rule and decision metadata. Coverage is limited to the recognized composer and the text supplied with its paste event. Prompt exceptions apply to Send. [Clipboard API and events](https://www.w3.org/TR/clipboard-apis/)
+
 ## Monitor file contents
 
 1. Upgrade the test profile to Browser v0.24.0 or later. In Control, set **ChatGPT file content protection** or **Gemini file content protection** to **Monitor** in the baseline or a rollout group. **Policy preview** includes a synthetic text file for each app. Each setting starts Off.

@@ -12,6 +12,8 @@ import { evaluatePromptWithExceptions, exceptionDecision, samePromptExceptions, 
 import { sameExtensionDeployment, type ExtensionDeployment } from './extension-deployment';
 import { hardeningDifferences, type BrowserHardening } from './browser-hardening';
 import { blockedAiAppAt } from '../../../contracts/policy/ai-app-access';
+import { inspectClipboard, type ClipboardMode } from '../../../contracts/policy/clipboard';
+import { ruleLabels as decisionRuleLabels } from './control';
 
 export type PreviewPolicy = {
   mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; privateKeyMode?: DetectorMode; discoveryEnabled: boolean;
@@ -25,6 +27,7 @@ export type PreviewPolicy = {
   claudePromptEnabled: boolean;
   fileInspection?: FileInspection;
   fileContentModes?: UploadModes;
+  clipboardMode?: ClipboardMode;
   domainRules: DomainRules; pathRules: PathRules; uploadModes: UploadModes; uploadTypes: UploadTypes;
   customApps: CustomAppSetting[];
   promptExceptions: PromptException[];
@@ -56,11 +59,13 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     uploadTypes: policy.uploadTypes ?? allUploadTypes,
     fileInspection: policy.fileInspection,
     fileContentModes: policy.fileContentModes,
+    clipboardMode: policy.clipboardMode,
   };
 }
 
 export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
   return a.mode === b.mode && a.githubPatMode === b.githubPatMode && a.paymentCardMode === b.paymentCardMode &&
+    (a.clipboardMode ?? 'off') === (b.clipboardMode ?? 'off') &&
     a.privateKeyMode === b.privateKeyMode && a.ssnMode === b.ssnMode &&
     sameIdentifierProtection(a.identifierProtection, b.identifierProtection) &&
     a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
@@ -114,6 +119,12 @@ function navigationOutcome(url: URL, policy: PreviewPolicy): PreviewDecision {
   return { action: outcome.action, rule: outcome.pathRule ?? outcome.domain };
 }
 
+function clipboardOutcome(text: string | undefined, policy: PreviewPolicy, app: AiPromptApp): PreviewDecision {
+  if (app === claudeApp && !policy.claudePromptEnabled) return { action: 'allow' };
+  const result = inspectClipboard(text, policy, policy.clipboardMode ?? 'off');
+  return result ? { action: result.decision, rule: result.ruleId === fixtureRule ? 'Test marker' : decisionRuleLabels[result.ruleId] } : { action: 'allow' };
+}
+
 function uploadOutcome(mode: UploadMode, types: string[], file: UploadFile): PreviewDecision {
   if (mode === 'off' || (types.length && !matchesUploadType(file, types))) return { action: 'allow' };
   return { action: mode, rule: 'File upload policy' };
@@ -145,6 +156,14 @@ export function runComparison(reference: PreviewSnapshot, candidate: PreviewPoli
   }
   if (prompt.trim()) rows.push({ name: 'Custom prompt', current: promptOutcome(prompt, reference, app, now),
     draft: promptOutcome(prompt, candidate, app, now) });
+  if ((reference.clipboardMode ?? 'off') !== 'off' || (candidate.clipboardMode ?? 'off') !== 'off') {
+    for (const [name, sample] of [
+      ['test marker paste', testMarker], ['clean text paste', 'Quarterly planning notes.'], ['paste without inspectable text', undefined],
+      ...(prompt.trim() ? [['custom text paste', prompt] as const] : []),
+    ] as const) {
+      rows.push({ name: `${promptAppLabels[app]} ${name}`, current: clipboardOutcome(sample, reference, app), draft: clipboardOutcome(sample, candidate, app) });
+    }
+  }
   for (const { name, content } of navigations) {
     const url = new URL(content);
     rows.push({ name, current: navigationOutcome(url, reference), draft: navigationOutcome(url, candidate) });

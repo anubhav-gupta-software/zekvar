@@ -134,6 +134,12 @@ Open **Policy preview** for the intended scope and add an entry under **Temporar
 3. Paste the target device group's current **ExtensionSettings** JSON. Control merges it locally and retains the original for rollback. If you select **Block unlisted**, enter the pinned Zekvar Browser ID and keep its existing force-install rule in the source. The wildcard default applies alongside explicit settings for listed extensions. Review **Chrome policy changes** and **Review merged JSON** before downloading.
 4. Download the Chrome policy and the rollback file. Apply the Chrome policy's `ExtensionSettings` through the target group's device manager. Keep enrollment and other device policy settings in place. On a canary browser, reload policies at `chrome://policy` and verify installation behavior at `chrome://extensions`. Apply the saved rollback file's `ExtensionSettings` through the device manager if needed. Compare Chrome's effective configuration if other extension policies are present.
 
+## Configure clipboard paste protection
+
+Use **Clipboard paste protection** in the baseline or a rollout group's publish form. Start in **Monitor** to see detections while allowing paste. **Block** holds matching clipboard text and supported text pastes that cannot be inspected. **Policy preview** shows what happens at Paste and Send, including a clean paste and a check-unavailable sample. Review and restore work through the existing policy lifecycle.
+
+In **Security events**, look for **Clipboard paste** below the detector. The event, related case, JSON export, and SIEM feed include that source without the clipboard contents. Older Browser builds cannot acknowledge an enabled clipboard policy as fully applied. [Test clipboard protection](../browser-extension/README.md#protect-text-pasted-into-ai-composers)
+
 ## Deploy a Chrome hardening plan
 
 1. Open **Chrome hardening** and select an organization baseline or rollout group. Choose minimum Safe Browsing and download protections, whether users can proceed from a Safe Browsing warning, and whether to disable Guest, Incognito, built-in password saving, or Chrome Sync. Review the change and publish it or request independent approval.
