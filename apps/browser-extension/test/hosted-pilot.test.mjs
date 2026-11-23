@@ -143,7 +143,8 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   });
   for (const origin of [browserOrigin, dashboardOrigin]) {
     for (const path of ['/v1/admin/session', '/v1/admin/browser-releases', '/v1/admin/browser-health?rolloutGroup=baseline',
-      '/v1/admin/enrollment-batches', '/v1/admin/reports/ai-enforcement', '/v1/admin/events/triage-assignees', '/v1/admin/cases']) {
+      '/v1/admin/enrollment-batches', '/v1/admin/reports/ai-enforcement', '/v1/admin/reports/composer-readiness',
+      '/v1/admin/events/triage-assignees', '/v1/admin/cases']) {
       const blocked = await call(origin + path, { headers: { Authorization: `Bearer ${owner}` } });
       assert.equal(blocked.status, 404);
       assert.equal(blocked.headers['cache-control'], 'no-store');
@@ -380,6 +381,30 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
     return health.composerReadiness.activeInstallations === 1 &&
       health.composerReadiness.apps.find(({ appId }) => appId === 'claude').counts.detected === 1;
   }, 'The managed Chrome profile did not report fresh Claude readiness through HTTPS.');
+
+  await t.test('downloads fresh composer coverage from a managed profile using the selected cohort', async () => {
+    const filters = new URLSearchParams({ rolloutGroup: group.id, browserVersion: extensionVersion });
+    await dashboard.goto(`${dashboardOrigin}/?${filters}#browsers`);
+    const link = dashboard.getByRole('link', { name: 'Export composer readiness (JSON)', exact: true });
+    const [download] = await Promise.all([dashboard.waitForEvent('download'), link.click()]);
+    assert.equal(download.suggestedFilename(), 'zekvar-composer-readiness.json');
+    const data = await readFile(await download.path(), 'utf8');
+    const capture = JSON.parse(data);
+    assert.equal(capture.activeInstallations, 1);
+    assert.deepEqual(capture.scope, { rolloutGroup: group.id, rolloutGroupName: group.name,
+      browserVersion: extensionVersion, targetPolicyVersion: claudePolicy.version });
+    assert.equal(capture.apps.find(({ appId }) => appId === 'claude').counts.detected, 1);
+    assert.equal(capture.apps.find(({ appId }) => appId === 'gemini').counts.unobserved, 1);
+    assert.doesNotMatch(data, /Synthetic TLS Claude draft|ZEKVAR_TEST_SECRET|installationId|checkedAt|BEGIN ENCRYPTED/);
+    assert.ok(!data.includes(newId));
+    const path = await link.getAttribute('href');
+    assert.equal((await call(dashboardOrigin + path)).status, 401);
+    assert.equal((await call(browserOrigin + path)).status, 404);
+    if (artifacts) {
+      await dashboard.locator('details').filter({ has: link }).screenshot({ path: join(artifacts, 'composer-readiness-export.png') });
+      await writeFile(join(artifacts, 'composer-readiness-report.json'), JSON.stringify(capture, null, 2) + '\n');
+    }
+  });
 
   const attachment = await browser.newPage();
   const attachmentFixture = await readFile(new URL('./upload-composer.html', import.meta.url), 'utf8');

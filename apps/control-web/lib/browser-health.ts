@@ -20,11 +20,13 @@ export async function loadBrowserHealth(token: string, filters: URLSearchParams)
       const [installations, releases] = await Promise.all([controlApi.installations(token), controlApi.browserReleases(token)]);
       const activeInstallations = releases?.reduce((total, row) => total + row.installations, 0)
         ?? installations.filter(({ revokedAt }) => !revokedAt).length;
-      return { activeInstallations, releases, installations, composerReadiness: undefined, filtersAvailable: false, groups: [], error: undefined,
+      return { activeInstallations, releases, installations, composerReadiness: undefined, composerReadinessExportAvailable: false,
+        filtersAvailable: false, groups: [], error: undefined,
         cappedTotal: !releases && installations.length === 100 };
     }
     const groups = await controlApi.groups(token);
-    return { activeInstallations: undefined, releases: undefined, installations: [], composerReadiness: undefined, groups, filtersAvailable: true, cappedTotal: false,
+    return { activeInstallations: undefined, releases: undefined, installations: [], composerReadiness: undefined,
+      composerReadinessExportAvailable: false, groups, filtersAvailable: true, cappedTotal: false,
       error: error.status === 400 ? 'Choose a rollout group and enter an exact extension version or unreported.'
         : 'This browser rollout view is unavailable. Choose a rollout group from the list or clear the filters.' };
   }

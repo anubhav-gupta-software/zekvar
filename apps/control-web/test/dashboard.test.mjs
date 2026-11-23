@@ -51,6 +51,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
     const report = await context.request.get(`${dashboard}/reports/export`);
     assert.equal(report.status(), 401);
     assert.equal(report.headers()['cache-control'], 'no-store');
+    assert.equal((await context.request.get(`${dashboard}/reports/composer-readiness/export`)).status(), 401);
     assert.equal(new URL((await context.request.get(`${dashboard}/reports`)).url()).pathname, '/');
     await page.getByLabel('Control token').fill('0'.repeat(64));
     await page.getByRole('button', { name: 'Sign in' }).click();
@@ -153,6 +154,24 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
     await page.waitForURL((url) => url.searchParams.get('app') === 'chatgpt' && url.searchParams.get('rolloutGroup') === group.id);
     await browsers.getByText(candidateId, { exact: true }).waitFor();
+    const coverageLink = browserSection.getByRole('link', { name: 'Export composer readiness (JSON)', exact: true });
+    const exportPath = await coverageLink.getAttribute('href');
+    const coverageUrl = new URL(exportPath, dashboard);
+    assert.deepEqual(Object.fromEntries(coverageUrl.searchParams), { rolloutGroup: group.id, browserVersion: '0.20.1' });
+    const [coverageFile] = await Promise.all([page.waitForEvent('download'), coverageLink.click()]);
+    assert.equal(coverageFile.suggestedFilename(), 'zekvar-composer-readiness.json');
+    const data = await readFile(await coverageFile.path(), 'utf8');
+    const captured = JSON.parse(data);
+    assert.equal(captured.activeInstallations, 1);
+    assert.equal(captured.apps.find(({ appId }) => appId === 'chatgpt').counts.policy_pending, 1);
+    assert.deepEqual(captured.scope, { rolloutGroup: group.id, rolloutGroupName: group.name,
+      browserVersion: '0.20.1', targetPolicyVersion: policyVersion });
+    assert.ok(!data.includes(candidate.installationId) && !data.includes(candidate.token));
+    const repeat = await context.request.get(coverageUrl.href);
+    assert.equal(repeat.status(), 200);
+    assert.equal(repeat.headers()['cache-control'], 'no-store');
+    assert.deepEqual((await repeat.json()).apps, captured.apps);
+    assert.equal((await context.request.get(`${coverageUrl.href}&browserVersion=0.20.2`)).status(), 400);
     const screenshot = process.env.ZEKVAR_TEST_BROWSER_GROUP_SCREENSHOT;
     if (screenshot) await browserSection.screenshot({ path: screenshot });
 
@@ -160,6 +179,8 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await browserSection.getByRole('button', { name: 'Apply browser filters', exact: true }).click();
     await browserSection.getByText('No installations match these browser filters.', { exact: true }).waitFor();
     await browserSection.getByText('No active browsers match these filters.', { exact: true }).waitFor();
+    const emptyReport = await context.request.get(new URL(await coverageLink.getAttribute('href'), dashboard).href);
+    assert.equal((await emptyReport.json()).activeInstallations, 0);
     await page.getByRole('table', { name: 'Extension rollout' }).getByRole('link', { name: '0.20.1', exact: true }).waitFor();
     await selectedGroup.selectOption('baseline');
     await browserSection.getByRole('button', { name: 'Apply browser filters', exact: true }).click();
@@ -170,10 +191,12 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await page.goto(`${dashboard}/?rolloutGroup=${group.id}&browserVersion=ZEKVAR_TEST_SECRET#browsers`);
     await browserSection.getByRole('alert').filter({ hasText: 'enter an exact extension' }).waitFor();
     assert.equal(await browsers.count(), 0);
+    assert.equal(await coverageLink.count(), 0);
     assert.equal(await browserSection.getByLabel('Reported extension version', { exact: true }).inputValue(), '');
     assert.equal(await page.locator('#events input[name="browserVersion"]').count(), 0);
     await page.goto(`${dashboard}/?rolloutGroup=${randomUUID()}#browsers`);
     await browserSection.getByRole('alert').filter({ hasText: 'This browser rollout view is unavailable.' }).waitFor();
+    assert.equal(await coverageLink.count(), 0);
     await browserSection.getByRole('link', { name: 'Clear browser filters' }).click();
     await browsers.getByText(baselineId, { exact: true }).waitFor();
     await browsers.getByText(candidateId, { exact: true }).waitFor();

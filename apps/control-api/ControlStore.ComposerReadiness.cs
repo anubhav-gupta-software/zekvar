@@ -1,3 +1,4 @@
+using System.Data;
 using System.Text.Json;
 using Npgsql;
 
@@ -6,9 +7,44 @@ namespace Control;
 internal sealed record ComposerCheck(string State, DateTimeOffset? CheckedAt);
 internal sealed record ComposerCounts(string AppId, Dictionary<string, long> Counts);
 internal sealed record BrowserComposerReadiness(long ActiveInstallations, IReadOnlyList<ComposerCounts> Apps);
+internal sealed record ComposerReadinessScope(string RolloutGroup, string? RolloutGroupName, string? BrowserVersion, int? TargetPolicyVersion);
+internal sealed record ComposerReadinessFreshness(int HeartbeatSeconds, int ObservationSeconds);
+internal sealed record ComposerReadinessReport(DateTimeOffset AsOf, ComposerReadinessScope Scope, ComposerReadinessFreshness Freshness,
+    long ActiveInstallations, IReadOnlyList<ComposerCounts> Apps)
+{
+    public int SchemaVersion => 1;
+}
 
 internal sealed partial class ControlStore
 {
+    private const int ReadinessHeartbeatSeconds = 90;
+    private const int ReadinessObservationSeconds = 24 * 60 * 60;
+
+    public async Task<ComposerReadinessReport?> ReadComposerReadinessReport(Guid organizationId, BrowserHealthFilter filter, CancellationToken ct)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await using var snapshot = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
+        await using var scopeQuery = BrowserRead(snapshot, """
+            SELECT now(), g.name, CASE WHEN $2 THEN COALESCE(g.policy_version, org.policy_version) END
+            FROM organizations org
+            LEFT JOIN policy_groups g ON g.organization_id = org.id AND g.id = $3::uuid
+            WHERE org.id = $1 AND ($3::uuid IS NULL OR g.id IS NOT NULL)
+            """, organizationId, filter.Scoped, (object?)filter.GroupId ?? DBNull.Value);
+        DateTimeOffset asOf;
+        ComposerReadinessScope scope;
+        await using (var scopeRow = await scopeQuery.ExecuteReaderAsync(ct))
+        {
+            if (!await scopeRow.ReadAsync(ct)) return null;
+            asOf = scopeRow.GetFieldValue<DateTimeOffset>(0);
+            scope = new(filter.GroupId?.ToString() ?? (filter.Scoped ? "baseline" : "all"),
+                scopeRow.IsDBNull(1) ? null : scopeRow.GetString(1), filter.Version,
+                scopeRow.IsDBNull(2) ? null : scopeRow.GetInt32(2));
+        }
+        var (readiness, _) = await BrowserComposerReadiness(organizationId, filter, [], snapshot, ct);
+        await snapshot.CommitAsync(ct);
+        return new(asOf, scope, new(ReadinessHeartbeatSeconds, ReadinessObservationSeconds), readiness.ActiveInstallations, readiness.Apps);
+    }
+
     private async Task<(BrowserComposerReadiness Summary, Dictionary<Guid, Dictionary<string, ComposerCheck>> Checks)> BrowserComposerReadiness(
         Guid organizationId, BrowserHealthFilter filter, IReadOnlyList<Installation> detail, NpgsqlTransaction snapshot, CancellationToken ct)
     {
@@ -19,7 +55,8 @@ internal sealed partial class ControlStore
                     CASE WHEN NOT app.enabled THEN 'off'
                         WHEN i.applied_policy_version IS DISTINCT FROM p.version THEN 'policy_pending'
                         WHEN o.checked_at IS NULL THEN 'unobserved'
-                        WHEN i.last_seen_at <= now() - interval '90 seconds' OR o.checked_at <= now() - interval '24 hours' THEN 'stale'
+                        WHEN i.last_seen_at <= now() - make_interval(secs => $6)
+                            OR o.checked_at <= now() - make_interval(secs => $7) THEN 'stale'
                         WHEN o.coverage = 'ready' THEN 'detected' ELSE 'unsupported' END AS state,
                     CASE WHEN app.enabled AND i.applied_policy_version = p.version THEN o.checked_at END AS checked_at
                 FROM installations i JOIN organizations org ON org.id = i.organization_id
@@ -33,7 +70,8 @@ internal sealed partial class ControlStore
             )
             SELECT app_id, state, count(*), jsonb_object_agg(id, checked_at) FILTER (WHERE id = ANY($5))
             FROM states GROUP BY app_id, state
-            """, organizationId, filter.Scoped, (object?)filter.GroupId ?? DBNull.Value, (object?)filter.Version ?? DBNull.Value, visible);
+            """, organizationId, filter.Scoped, (object?)filter.GroupId ?? DBNull.Value, (object?)filter.Version ?? DBNull.Value, visible,
+            ReadinessHeartbeatSeconds, ReadinessObservationSeconds);
         var counts = DiscoveryCatalog.AppIds.ToDictionary(app => app, _ => new Dictionary<string, long>(StringComparer.Ordinal)
         {
             ["detected"] = 0, ["unsupported"] = 0, ["stale"] = 0, ["unobserved"] = 0, ["policy_pending"] = 0, ["off"] = 0,

@@ -5,7 +5,10 @@ namespace Control;
 
 internal sealed record BrowserReleaseCount(string Kind, string? ExtensionVersion, long Installations, long RecentReports);
 internal sealed record BrowserHealthView(long ActiveInstallations, IReadOnlyList<BrowserReleaseCount> Releases,
-    IReadOnlyList<Installation> Installations, BrowserComposerReadiness ComposerReadiness);
+    IReadOnlyList<Installation> Installations, BrowserComposerReadiness ComposerReadiness)
+{
+    public bool ComposerReadinessExportAvailable => true;
+}
 
 internal readonly record struct BrowserHealthFilter(bool Scoped, Guid? GroupId, string? Version)
 {

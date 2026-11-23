@@ -148,12 +148,17 @@ admin.MapGet("/browser-releases", async (HttpContext http, CancellationToken ct)
     Results.Ok(await store.BrowserReleases(Identity(http).OrganizationId, ct)));
 admin.MapGet("/browser-health", async (HttpContext http, CancellationToken ct) =>
 {
-    var group = http.Request.Query["rolloutGroup"];
-    var version = http.Request.Query["browserVersion"];
-    if (group.Count > 1 || version.Count > 1 || !BrowserHealthFilter.TryParse(group.FirstOrDefault(), version.FirstOrDefault(), out var filter))
-        return Results.BadRequest(new { error = "Choose a rollout group and enter an exact extension version or unreported." });
+    if (!TryParseBrowserHealthFilter(http.Request.Query, out var filter)) return InvalidBrowserHealthFilter();
     return await store.BrowserHealth(Identity(http).OrganizationId, filter, ct) is { } health
         ? Results.Ok(health) : Results.NotFound();
+});
+admin.MapGet("/reports/composer-readiness", async (HttpContext http, CancellationToken ct) =>
+{
+    var query = http.Request.Query;
+    if (query.Keys.Any(key => key is not ("rolloutGroup" or "browserVersion")) ||
+        !TryParseBrowserHealthFilter(query, out var filter)) return InvalidBrowserHealthFilter();
+    return await store.ReadComposerReadinessReport(Identity(http).OrganizationId, filter, ct) is { } report
+        ? Results.Ok(report) : Results.NotFound();
 });
 admin.MapGet("/extension-inventory", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.ExtensionInventory(Identity(http).OrganizationId, null, ct)));
@@ -416,6 +421,17 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
 
 static bool ExpectsReview(HttpContext http) => http.Request.Headers["X-Zekvar-Expect-Review"] == "1";
 static bool RepeatedTriageFilters(IQueryCollection query) => query["triageStatus"].Count > 1 || query["triageAssignee"].Count > 1;
+
+static bool TryParseBrowserHealthFilter(IQueryCollection query, out BrowserHealthFilter filter)
+{
+    var group = query["rolloutGroup"];
+    var version = query["browserVersion"];
+    return BrowserHealthFilter.TryParse(group.FirstOrDefault(), version.FirstOrDefault(), out filter) &&
+        group.Count <= 1 && version.Count <= 1;
+}
+
+static IResult InvalidBrowserHealthFilter() =>
+    Results.BadRequest(new { error = "Choose a rollout group and enter an exact extension version or unreported." });
 
 static IResult CaseOutcome(IncidentCaseResult result) => result switch
 {

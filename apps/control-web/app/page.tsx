@@ -152,7 +152,8 @@ export default async function Control({ searchParams }: { searchParams: Promise<
           {browserHealth.error ? <p className="empty" role="alert">{browserHealth.error}</p> : <>
           {releases && releases.length > 0 && <BrowserReleases releases={releases}
             links={browserHealth.filtersAvailable ? releaseLinks : undefined} />}
-          {composerReadiness && <ComposerReadiness readiness={composerReadiness} />}
+          {composerReadiness && <ComposerReadiness readiness={composerReadiness}
+            exportQuery={browserHealth.composerReadinessExportAvailable ? browserFilters : undefined} />}
           <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="browsers-heading">
             <table aria-labelledby="browsers-heading">
               <thead><tr><th>Installation</th><th>Rollout group</th><th>Reporting</th><th>Extension version</th><th>Policy status</th><th>Applied policy</th><th>ChatGPT composer</th><th>Gemini composer</th><th>Claude composer</th><th>Last seen (UTC)</th><th>Action</th></tr></thead>
@@ -335,10 +336,10 @@ function BrowserReleases({ releases, links }: { releases: BrowserReleaseCount[];
 
 const composerStates = Object.keys(composerStateLabels) as ComposerState[];
 
-function ComposerReadiness({ readiness }: { readiness: BrowserComposerReadiness }) {
+function ComposerReadiness({ readiness, exportQuery }: { readiness: BrowserComposerReadiness; exportQuery?: URLSearchParams }) {
   return <details className="browser-releases" open>
     <summary id="composer-readiness-heading">Composer readiness</summary>
-    {readiness.activeInstallations ? <>
+    {readiness.activeInstallations ?
       <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="composer-readiness-heading">
         <table aria-labelledby="composer-readiness-heading">
           <thead><tr><th scope="col">Application</th><th scope="col">Matching active browsers</th>
@@ -349,10 +350,12 @@ function ComposerReadiness({ readiness }: { readiness: BrowserComposerReadiness 
             {composerStates.map((state) => <td key={state}>{counts[state]}</td>)}
           </tr>)}</tbody>
         </table>
-      </div>
-      <div className="table-footer"><p className="table-note">Browser v0.22.0 or later reports composers for the applied policy.
-        An observation becomes stale after 24 hours or 90 seconds without a heartbeat.</p></div>
-    </> : <p className="empty">No active browsers match these filters.</p>}
+      </div> : <p className="empty">No active browsers match these filters.</p>}
+    {(readiness.activeInstallations > 0 || exportQuery) && <div className="table-footer">
+      {readiness.activeInstallations > 0 && <p className="table-note">Browser v0.22.0 or later reports composers for the applied policy.
+        An observation becomes stale after 24 hours or 90 seconds without a heartbeat.</p>}
+      {exportQuery && <a className="button small" href={`/reports/composer-readiness/export?${exportQuery}`} download>Export composer readiness (JSON)</a>}
+    </div>}
   </details>;
 }
 

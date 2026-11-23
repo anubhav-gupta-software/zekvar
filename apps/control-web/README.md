@@ -36,6 +36,8 @@ Open **Browser health** and choose the rollout group and, if needed, a reported 
 - **Policy pending** means Control is waiting for acknowledgment of the assigned policy. **Off** means that policy disables Claude prompt protection.
 - **Stale** means the observation is at least 24 hours old or the browser has missed 90 seconds of heartbeats. Ask the user to reopen the app and refresh Browser health.
 
+Select **Export composer readiness (JSON)** to save a fresh snapshot for those Browser health filters. The download includes the capture time, selected group and extension version, current target policy for a specific group or the baseline, and counts for every matching active browser. Keep that file with the pilot's enforcement report and hands-on workflow checks. A composer detected under the current policy is a coverage signal. Exercise the actual submit and attachment paths before enabling enforcement for the cohort.
+
 ## Enroll a rollout group
 
 1. Publish or verify the group's policy in **Rollout groups**, then open **Enroll browsers in group**. **Enrollment batches** also lets you choose the group or organization baseline directly.

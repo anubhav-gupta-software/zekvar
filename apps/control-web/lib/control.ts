@@ -95,6 +95,7 @@ export type BrowserHealthView = {
   releases: BrowserReleaseCount[];
   installations: Installation[];
   composerReadiness?: BrowserComposerReadiness;
+  composerReadinessExportAvailable?: boolean;
 };
 
 export const composerStateLabels = {
@@ -106,6 +107,17 @@ export type ComposerCheck = { state: ComposerState; checkedAt: string | null };
 export type BrowserComposerReadiness = {
   activeInstallations: number;
   apps: { appId: AiAppId; counts: Record<ComposerState, number> }[];
+};
+export type ComposerReadinessReport = BrowserComposerReadiness & {
+  schemaVersion: 1;
+  asOf: string;
+  scope: {
+    rolloutGroup: string;
+    rolloutGroupName: string | null;
+    browserVersion: string | null;
+    targetPolicyVersion: number | null;
+  };
+  freshness: { heartbeatSeconds: number; observationSeconds: number };
 };
 
 export type SecurityEvent = {

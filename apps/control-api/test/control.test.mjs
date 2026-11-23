@@ -1991,6 +1991,9 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       assert.equal(capped.installations.length, 100);
       assert.equal(capped.composerReadiness.activeInstallations, 101);
       assert.equal(capped.composerReadiness.apps.find(({ appId }) => appId === 'chatgpt').counts.policy_pending, 101);
+      const report = await admin(`reports/composer-readiness?${scope}&browserVersion=0.20.0`);
+      assert.equal(report.activeInstallations, 101);
+      assert.deepEqual(report.apps, capped.composerReadiness.apps);
       const older = await health(`${scope}&browserVersion=0.20.1`);
       assert.deepEqual(ids(older), [candidate.installationId]);
       assert.deepEqual(older.releases, [{ kind: 'release', extensionVersion: '0.20.0', installations: 101, recentReports: 0 }]);
@@ -2213,6 +2216,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: coverageAdmin, ...options });
     const post = (path, body, expect = 200) => admin(path, { method: 'POST', body, expect });
     const health = (filter = '', options) => admin(`browser-health?${filter}`, options);
+    const report = (filter = '', options) => admin(`reports/composer-readiness?${filter}`, options);
     const appCount = (view, app, state) => view.composerReadiness.apps.find(({ appId }) => appId === app).counts[state];
     const check = (view, browser, app) => view.installations.find(({ installationId }) => installationId === browser.installationId).composerReadiness[app];
     const policy = (browser, extensionVersion) => call('/v1/browser/policy', { token: browser.token, assignmentAware: true,
@@ -2251,6 +2255,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(appCount(before, 'chatgpt', 'unobserved'), 1);
     assert.equal(appCount(before, 'gemini', 'unsupported'), 1);
     assert.equal(appCount(before, 'claude', 'off'), 2);
+    assert.equal(before.composerReadinessExportAvailable, true);
     assert.equal(check(before, legacy, 'chatgpt').state, 'unobserved');
     assert.ok(Date.parse(check(before, current, 'chatgpt').checkedAt));
     assert.equal(check(await health(), pending, 'chatgpt').state, 'policy_pending');
@@ -2259,6 +2264,32 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(appCount(await health('rolloutGroup=baseline&browserVersion=unreported'), 'chatgpt', 'policy_pending'), 1);
     await health(scope, { token: current.token, expect: 401 });
     await health(scope, { token: second, expect: 404 });
+    const captured = await report(`${scope}&browserVersion=0.22.0`);
+    assert.deepEqual(Object.keys(captured).sort(), ['activeInstallations', 'apps', 'asOf', 'freshness', 'schemaVersion', 'scope']);
+    assert.equal(captured.schemaVersion, 1);
+    assert.ok(Date.parse(captured.asOf) >= Date.parse(check(before, current, 'chatgpt').checkedAt));
+    assert.deepEqual(captured.freshness, { heartbeatSeconds: 90, observationSeconds: 86_400 });
+    assert.deepEqual(captured.scope, { rolloutGroup: group.id, rolloutGroupName: group.name,
+      browserVersion: '0.22.0', targetPolicyVersion: v1.version });
+    assert.deepEqual(captured.apps, (await health(`${scope}&browserVersion=0.22.0`)).composerReadiness.apps);
+    assert.equal(captured.activeInstallations, 1);
+    assert.doesNotMatch(JSON.stringify(captured), /installationId|checkedAt|token/);
+    assert.ok(!JSON.stringify(captured).includes(current.installationId));
+    assert.deepEqual((await report()).scope, { rolloutGroup: 'all', rolloutGroupName: null, browserVersion: null, targetPolicyVersion: null });
+    const baselineReport = await report('rolloutGroup=baseline&browserVersion=unreported');
+    assert.deepEqual(baselineReport.scope, { rolloutGroup: 'baseline', rolloutGroupName: null, browserVersion: 'unreported', targetPolicyVersion: v1.version });
+    assert.equal(baselineReport.activeInstallations, 1);
+    const noMatches = await report(`${scope}&browserVersion=99.0`);
+    assert.equal(noMatches.activeInstallations, 0);
+    assert.ok(noMatches.apps.every(({ counts }) => Object.values(counts).every((count) => count === 0)));
+    for (const query of ['rolloutGroup=unknown', `${scope}&rolloutGroup=baseline`, 'browserVersion=ZEKVAR_TEST_SECRET',
+      'browserVersion=&browserVersion=', 'appId=chatgpt']) {
+      assert.doesNotMatch(JSON.stringify(await report(query, { expect: 400 })), /ZEKVAR_TEST_SECRET/);
+    }
+    await report(scope, { token: current.token, expect: 401 });
+    await report(scope, { token: undefined, expect: 401 });
+    await report(scope, { token: second, expect: 404 });
+    assert.equal((await report('browserVersion=0.22.0', { token: second })).activeInstallations, 0);
 
     await assign(current, sibling.id);
     const samePolicy = await policy(current);
@@ -2275,6 +2306,9 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(appCount(waiting, 'chatgpt', 'policy_pending'), 2);
     assert.equal(appCount(waiting, 'claude', 'policy_pending'), 2);
     const v2 = await policy(current);
+    const pendingReport = await report(scope);
+    assert.equal(pendingReport.scope.targetPolicyVersion, v2.version);
+    assert.deepEqual(pendingReport.apps, waiting.composerReadiness.apps);
     await heartbeat(current, v2, { chatGptCoverage: 'ready', claudeCoverage: 'ready' }, { expect: 400 });
     await heartbeat(current, v2, { chatGptCoverage: 'ready', claudePromptApplied: true, claudeCoverage: 'ready' });
     await heartbeat(current, v1, { chatGptCoverage: 'unsupported', geminiCoverage: 'ready' });
@@ -2293,6 +2327,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       const older = await health(scope);
       assert.equal(check(older, current, 'chatgpt').state, 'stale');
       assert.equal(check(older, current, 'claude').state, 'detected');
+      assert.deepEqual((await report(scope)).apps, older.composerReadiness.apps);
       await retentionFixture(`UPDATE installations SET last_seen_at = now() - interval '91 seconds' WHERE id = '${current.installationId}';`);
       assert.equal(appCount(await health(scope), 'claude', 'stale'), 1);
       await heartbeat(current, v2, { claudePromptApplied: true, chatGptCoverage: 'ready' });
@@ -2301,9 +2336,13 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
 
     const auditor = await post('access', { name: 'Coverage auditor', role: 'auditor', hours: 1 });
     assert.deepEqual((await health(scope, { token: auditor.token })).composerReadiness, (await health(scope)).composerReadiness);
+    const auditorReport = await report(scope, { token: auditor.token });
+    assert.deepEqual(auditorReport.apps, (await report(scope)).apps);
+    assert.equal(auditorReport.activeInstallations, 2);
     await post(`installations/${current.installationId}/revoke`, {}, 204);
     const revoked = await health(scope);
     assert.equal(revoked.composerReadiness.activeInstallations, 1);
+    assert.deepEqual((await report(scope)).apps, revoked.composerReadiness.apps);
     assert.equal(appCount(revoked, 'chatgpt', 'detected'), 0);
     assert.equal(revoked.installations.find(({ installationId }) => installationId === current.installationId).composerReadiness, undefined);
     if (postgres) assert.equal(await retentionFixture(`SELECT count(*) FROM composer_observations WHERE installation_id = '${current.installationId}'`), '0');
