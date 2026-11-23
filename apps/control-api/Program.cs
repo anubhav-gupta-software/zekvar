@@ -287,10 +287,12 @@ browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
     var claudeAware = http.Request.Headers["X-Zekvar-Claude-Prompt"] == "1";
     var privateKeyAware = http.Request.Headers["X-Zekvar-Private-Key"] == "1";
     var fileInspectionAware = http.Request.Headers["X-Zekvar-File-Inspection"] == "1";
+    var aiAppAccessAware = http.Request.Headers["X-Zekvar-AI-App-Access"] == "1";
     var versionHeader = http.Request.Headers["X-Zekvar-Extension-Version"];
     var extensionVersion = versionHeader.Count == 1 ? BrowserRelease.ReadVersion(versionHeader[0]) : null;
-    if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, claudeAware, extensionVersion, privateKeyAware, fileInspectionAware, ct) is { } policy)
-        return Results.Ok(policy.ForBrowser(claudeAware, privateKeyAware, fileInspectionAware));
+    if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, claudeAware, extensionVersion, privateKeyAware,
+        fileInspectionAware, aiAppAccessAware, ct) is { } policy)
+        return Results.Ok(policy.ForBrowser(claudeAware, privateKeyAware, fileInspectionAware, aiAppAccessAware));
     return aware ? Results.Unauthorized() : Results.Conflict(new { error = "Update the browser to receive the assigned policy." });
 });
 browser.MapPost("/heartbeat", async (Heartbeat request, HttpContext http, CancellationToken ct) =>
@@ -321,7 +323,8 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
               request.PathRules is not null || request.UploadModes?.HasSettings() == true ||
               request.UploadTypes?.HasSettings() == true || request.ExtensionInventoryEnabled.HasValue || request.CustomApps is not null ||
               request.PromptExceptions is not null || request.ClaudePromptEnabled.HasValue || request.PrivateKeyMode is not null ||
-              request.FileInspection?.HasSettings() == true || request.ExtensionDeployment is not null)) ||
+              request.FileInspection?.HasSettings() == true || request.ExtensionDeployment is not null ||
+              request.BlockedAiAppHosts is not null)) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode) ||
         !FixtureContract.IsOptionalDetectorMode(request.PrivateKeyMode))
         return Results.BadRequest(new { error = "Choose a valid rule mode." });
@@ -340,7 +343,10 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
     if (!ExtensionDeployment.TryNormalize(request.ExtensionDeployment, out var extensionDeployment) ||
         (extensionDeployment is not null && request.ExpectedVersion is null))
         return Results.BadRequest(new { error = "Use a current policy version, distinct Chrome extension IDs, and HTTPS update manifest URLs for force installs." });
-    var normalized = request with { DomainRules = domainRules, PathRules = pathRules, UploadTypes = uploadTypes, ExtensionDeployment = extensionDeployment };
+    if (!AiAppAccess.TryNormalize(request.BlockedAiAppHosts, out var blockedAiAppHosts))
+        return Results.BadRequest(new { error = "Select distinct AI app hostnames from the policy catalog." });
+    var normalized = request with { DomainRules = domainRules, PathRules = pathRules, UploadTypes = uploadTypes,
+        ExtensionDeployment = extensionDeployment, BlockedAiAppHosts = blockedAiAppHosts };
     var result = await store.ChangePolicy(Identity(http), normalized, null, ExpectsReview(http), ct, groupId,
         customApps: customApps, promptExceptions: exceptions);
     return PolicyOutcome(result, request.ExpectedVersion.HasValue
@@ -356,7 +362,8 @@ static IResult PolicyOutcome(PolicyChangeResult result, IResult fallback)
     var code = result.Error;
     return code switch
     {
-        "navigation_rule_limit" => Results.BadRequest(new { error = "A policy can contain up to 50 domain and path rules combined." }),
+        "navigation_rule_limit" => Results.BadRequest(new { error = "A policy can contain up to 50 domain, path, and AI app access rules combined.", code }),
+        "ai_app_access_unknown_host" => Results.BadRequest(new { error = "Clear the access block for each removed AI app host or keep it in the policy catalog.", code }),
         "exception_expired" => Results.BadRequest(new { error = "Choose a future expiry for each new or changed exception.", code }),
         "review_unavailable" => Results.NotFound(),
         "named_administrator_required" or "self_approval" => Results.Json(new { code }, statusCode: StatusCodes.Status403Forbidden),

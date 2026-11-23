@@ -39,6 +39,10 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     {fields.filter(([, before, after]) => before !== after).map(([field, before, after]) =>
       <li key={field}>{field} · {before} → {after}</li>)}
     <ExtensionDeploymentChanges reference={reference.extensionDeployment} candidate={candidate.extensionDeployment} />
+    {(candidate.blockedAiAppHosts ?? []).filter((host) => !reference.blockedAiAppHosts?.includes(host))
+      .map((host) => <li key={`block-${host}`}>Block AI app host <code>{host}</code></li>)}
+    {(reference.blockedAiAppHosts ?? []).filter((host) => !candidate.blockedAiAppHosts?.includes(host))
+      .map((host) => <li key={`restore-${host}`}>Return <code>{host}</code> to navigation rules</li>)}
     {candidate.customApps.map(({ host, name }) => {
       const before = reference.customApps.find((app) => app.host === host);
       if (!before) return <li key={host}>Add {name} · <code>{host}</code></li>;

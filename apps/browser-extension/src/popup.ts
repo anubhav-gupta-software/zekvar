@@ -14,6 +14,7 @@ const indicator = document.querySelector<HTMLElement>('#status')!;
 const delivery = document.querySelector<HTMLElement>('#delivery')!;
 const domains = document.querySelector<HTMLElement>('#domain-rules')!;
 const paths = document.querySelector<HTMLElement>('#path-rules')!;
+const aiAppAccess = document.querySelector<HTMLElement>('#ai-app-access-rules')!;
 const managed = document.querySelector<HTMLElement>('#managed-enrollment')!;
 const errorMessage = document.querySelector<HTMLElement>('#error')!;
 const sync = document.querySelector<HTMLButtonElement>('#sync')!;
@@ -72,6 +73,8 @@ function render(summary: Summary) {
   if (domains.textContent !== domainStatus) domains.textContent = domainStatus;
   const pathStatus = summary.pathRuleCount ? `Active path rules: ${summary.pathRuleCount}` : '';
   if (paths.textContent !== pathStatus) paths.textContent = pathStatus;
+  const aiAccessStatus = summary.aiAppAccessRuleCount ? `Blocked AI app hosts: ${summary.aiAppAccessRuleCount}` : '';
+  if (aiAppAccess.textContent !== aiAccessStatus) aiAppAccess.textContent = aiAccessStatus;
   delivery.textContent = summary.queued || summary.discarded
     ? `${summary.queued} queued${summary.discarded ? ` · ${summary.discarded} discarded` : ''}` : '';
   const onboarding = {

@@ -51,6 +51,7 @@ export type Policy = {
   promptExceptions?: PromptException[];
   extensionInventoryEnabled?: boolean;
   extensionDeployment?: import('./extension-deployment').ExtensionDeployment;
+  blockedAiAppHosts?: string[];
   claudePromptEnabled?: boolean;
   domainRules?: DomainRules;
   pathRules?: PathRules;

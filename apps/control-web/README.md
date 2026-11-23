@@ -100,6 +100,12 @@ Enable **Claude prompt protection** in a rollout group and sync Browser v0.19.0 
 
 Choose **App inventory → Edit app catalog** for the baseline or **Preview group policy** for a rollout group. Enable **App discovery** and enter custom sites in the form `workspace.example.test, Example Workspace`. Run the preview, review the catalog changes, then publish or request approval. Enrolled Chrome browsers with the discovery permission report visits to the exact configured HTTPS sites. Use **App inventory** to inspect observed browser counts and classify each app. [Browser permission and test guide](../browser-extension/README.md#app-discovery)
 
+## Block access to AI sites
+
+1. Open **App inventory → Manage AI app access**. Choose the baseline or a rollout group in **Policy preview**. Select the exact hostnames to block. The list includes preset AI sites and the draft scope's custom app catalog.
+2. Select **Run preview**. Review the app access rows or try a URL in **Custom navigation URL**. AI app blocks take precedence over hostname and path rules. Classifications in **App inventory** can inform which rules you publish.
+3. Publish or request approval. In a managed Chrome profile on Browser v0.26.0 or later, select **Sync now** and check the blocked host count. Try a new top-level visit and confirm that the expected version is applied in **Browser health**. To restore access, clear the relevant block and publish a new version or restore the prior policy. [Browser verification](../browser-extension/README.md#ai-app-access)
+
 ## Grant a temporary prompt exception
 
 Open **Policy preview** for the intended scope and add an entry under **Temporary prompt exceptions**. Choose the app, detector, UTC expiry, and reason. Compare outcomes for that destination, then publish or request review. Edit or remove an entry through the same workflow. **Policy history** records the scope's configured entries. Filter **Security events** to **Exception applied** for observed uses. [Browser test guide](../browser-extension/README.md#test-temporary-prompt-exceptions)

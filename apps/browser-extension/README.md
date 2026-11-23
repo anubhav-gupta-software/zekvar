@@ -130,13 +130,17 @@ Custom discovery uses Chrome's navigation permission and checks only top-level c
 2. Enter a hostname such as `example.com` in **Blocked domains** and enter `example.com/work` in **Allowed paths** to keep that section accessible. Choose **Publish navigation rules**, then **Sync now** in the extension popup. The popup shows the active counts.
 3. Open the site root and the allowed path in new tabs. Chrome should block the root and allow `/work` and its matching descendants. Restore a previous version in **Policy history**, or clear the four lists and publish to remove the rules.
 
-Enter one rule per line. Control accepts up to 50 rules across the four lists, normalizes hostname case and a trailing dot, and accepts internationalized hostnames in Punycode. A hostname or hostname/path can belong to one action list. Rules include subdomains. The most specific hostname wins first, then the longest matching path. Unmatched URLs remain accessible.
+Enter one rule per line. Control accepts up to 50 rules across the four lists and the AI app access list, normalizes hostname case and a trailing dot, and accepts internationalized hostnames in Punycode. A hostname or hostname/path can belong to one action list. Domain and path rules include subdomains. The most specific hostname wins first, then the longest matching path. Unmatched URLs remain accessible.
 
 Enter paths as `hostname/path` with up to 64 characters after the hostname, including the leading slash. Use letters, digits, periods, hyphens, underscores, tildes, and slash-separated segments. Rules match literal, case-sensitive path prefixes as Chrome sends them. Query strings and fragments don’t affect the decision. If a site uses URL aliases or rewrites, test the application’s URLs in a pilot. For an allow exception on a blocked domain, the path and its descendants must use the supported literal characters.
 
 Chrome enforces the rules on top-level HTTP and HTTPS network requests and checks redirect destinations. In-page route changes and pages served directly by a site’s service worker fall outside this coverage. The extension applies the rules locally without sending visited URLs or navigation events to Control. [Chrome declarative network rules](https://developer.chrome.com/docs/extensions/reference/api/declarativeNetRequest)
 
 Chrome keeps the last applied navigation rules during connection interruptions. Control shows a version with path rules as applied after Browser v0.13.0 or later acknowledges the update. Revoking enrollment removes the rules when the browser receives confirmation from Control.
+
+## AI app access
+
+In Control, select **App inventory → Manage AI app access** and publish blocks for the intended scope. In an enrolled Browser v0.26.0 profile, select **Sync now** and check **Blocked AI app hosts**. Open a new top-level tab and navigate to one of those exact hostnames. Chrome should display its blocked page. Hostname aliases appear as separate options. Existing tabs are evaluated when they make a new top-level request. Prompt or file protection on supported composers continues to follow its own policy settings. [Control workflow](../control-web/README.md#block-access-to-ai-sites)
 
 ## Test rollout groups
 

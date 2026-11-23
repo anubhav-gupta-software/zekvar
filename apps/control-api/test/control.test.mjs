@@ -27,6 +27,7 @@ const keyAdmin = randomBytes(32).toString('hex');
 const fileAdmin = randomBytes(32).toString('hex');
 const rolloutHistoryAdmin = randomBytes(32).toString('hex');
 const deploymentAdmin = randomBytes(32).toString('hex');
+const aiAppAccessAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -44,12 +45,13 @@ async function retentionFixture(query) {
   return stdout.trim();
 }
 
-function browserPolicyOnly({ extensionDeployment: _extensionDeployment, ...browserPolicy }) {
+function browserPolicyOnly({ extensionDeployment: _extensionDeployment, blockedAiAppHosts: _blockedAiAppHosts, ...browserPolicy }) {
   return browserPolicy;
 }
 
 async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false,
-  extensionVersion, scopedEnrollment = false, composerAware = false, privateKeyAware = false, fileInspectionAware = false } = {}) {
+  extensionVersion, scopedEnrollment = false, composerAware = false, privateKeyAware = false, fileInspectionAware = false,
+  aiAppAccessAware = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -61,6 +63,7 @@ async function call(path, { token, method = 'GET', body, expect = 200, assignmen
   if (composerAware) headers['X-Zekvar-Composer-Coverage'] = '1';
   if (privateKeyAware) headers['X-Zekvar-Private-Key'] = '1';
   if (fileInspectionAware) headers['X-Zekvar-File-Inspection'] = '1';
+  if (aiAppAccessAware) headers['X-Zekvar-AI-App-Access'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
@@ -109,6 +112,8 @@ async function start(sweepSeconds = 3600) {
       Control__Organizations__10__AdminToken: rolloutHistoryAdmin,
       Control__Organizations__11__Slug: `extension-deployment-${suffix}`,
       Control__Organizations__11__AdminToken: deploymentAdmin,
+      Control__Organizations__12__Slug: `ai-app-access-${suffix}`,
+      Control__Organizations__12__AdminToken: aiAppAccessAdmin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -2675,5 +2680,85 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.doesNotMatch(JSON.stringify(applied), /updates\.fixture\.test/);
     const audit = (await admin('audit?action=policy_published')).entries.find(({ policyVersion }) => policyVersion === approved.version);
     assert.equal(audit.actorAccess.id, reviewer.access.id);
+  });
+
+  await t.test('versions cataloged AI app access and acknowledges only a delivered browser policy', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: aiAppAccessAdmin, ...options });
+    const post = (path, body, options = {}) => admin(path, { method: 'POST', body, ...options });
+    const [initial] = await admin('policies');
+    assert.deepEqual(initial.blockedAiAppHosts, []);
+    if (postgres) {
+      await stop();
+      await retentionFixture(`DELETE FROM schema_migrations WHERE version = 30;
+        ALTER TABLE policy_versions DROP COLUMN blocked_ai_app_hosts;
+        ALTER TABLE policy_deliveries DROP COLUMN ai_app_access;`);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 30'), '1');
+      assert.deepEqual((await admin('policies'))[0], initial);
+    }
+    const host = 'chat.application.test';
+    const catalog = [{ host, name: 'Application fixture' }];
+    for (const blockedAiAppHosts of [[null], ['.chatgpt.com'], ['https://chatgpt.com/'], ['chatgpt.com:443'], ['*.ai'],
+      ['chatgpt.com', 'ChatGPT.COM.'], [host], ['unlisted.application.test']]) {
+      await post('policies', { blockedAiAppHosts }, { expect: 400 });
+    }
+    const tooMany = Array.from({ length: 50 }, (_, index) => `app-${index}.fixture.test`);
+    await post('policies', { blockedAiAppHosts: ['chatgpt.com'], domainRules: { allow: tooMany, block: [] } }, { expect: 400 });
+    const baseline = await post('policies', { customApps: catalog, blockedAiAppHosts: ['COPILOT.COM.', ' ChatGPT.com ', host],
+      pathRules: { allow: [`${host}/allowed`], block: [] }, discoveryEnabled: false });
+    assert.deepEqual(baseline.blockedAiAppHosts, [host, 'chatgpt.com', 'copilot.com']);
+    await post('policies', { customApps: [] }, { expect: 400 });
+    await post('policies', { expectedVersion: initial.version, blockedAiAppHosts: [] }, { expect: 409 });
+    assert.deepEqual((await admin('policies', { token: deploymentAdmin }))[0].blockedAiAppHosts, []);
+
+    async function enroll() {
+      const { grant } = await post('enrollment-grants', {});
+      return call('/v1/enroll', { method: 'POST', body: { grant } });
+    }
+    const [fresh, secondBrowser] = await Promise.all([enroll(), enroll()]);
+    const policy = (browser, aiAppAccessAware) => call('/v1/browser/policy', {
+      token: browser.token, assignmentAware: true, aiAppAccessAware,
+    });
+    const heartbeat = (browser, current, aiAppAccessApplied, expect = 204) => call('/v1/browser/heartbeat', {
+      method: 'POST', token: browser.token, expect,
+      body: { policyVersion: current.version, assignmentVersion: current.assignmentVersion, pathRulesApplied: true, aiAppAccessApplied },
+    });
+    const seen = async (browser) => (await admin('installations')).find(({ installationId }) =>
+      installationId === browser.installationId).appliedPolicyVersion;
+    const legacy = await policy(fresh, false);
+    assert.equal(legacy.version, baseline.version);
+    assert.equal(Object.hasOwn(legacy, 'blockedAiAppHosts'), false);
+    await heartbeat(fresh, legacy);
+    assert.equal(await seen(fresh), null);
+    await heartbeat(fresh, legacy, true, 400);
+    const delivered = await policy(fresh, true);
+    assert.deepEqual(delivered.blockedAiAppHosts, baseline.blockedAiAppHosts);
+    await heartbeat(fresh, delivered, true);
+    assert.equal(await seen(fresh), delivered.version);
+    await heartbeat(secondBrowser, delivered, true, 400);
+    await heartbeat(fresh, legacy);
+    assert.equal(await seen(fresh), null);
+    await heartbeat(fresh, delivered, true);
+
+    const group = await post('policy-groups', { name: 'AI access canary' });
+    const groupPath = `policy-groups/${group.id}`;
+    const groupPolicy = await post(`${groupPath}/policies`, { blockedAiAppHosts: ['www.perplexity.ai'] });
+    assert.deepEqual(groupPolicy.blockedAiAppHosts, ['www.perplexity.ai']);
+    assert.deepEqual(groupPolicy.customApps, baseline.customApps);
+    await post(`installations/${fresh.installationId}/policy-group`, { groupId: group.id }, { expect: 204 });
+    const grouped = await policy(fresh, true);
+    assert.equal(grouped.version, groupPolicy.version);
+    assert.deepEqual(grouped.blockedAiAppHosts, groupPolicy.blockedAiAppHosts);
+    await heartbeat(fresh, delivered, true, 400);
+    await heartbeat(fresh, grouped, true);
+    assert.equal(await seen(fresh), grouped.version);
+    assert.deepEqual((await policy(secondBrowser, true)).blockedAiAppHosts, baseline.blockedAiAppHosts);
+    const promoted = await post(`${groupPath}/promote`, { expectedVersion: groupPolicy.version });
+    assert.deepEqual(promoted.blockedAiAppHosts, groupPolicy.blockedAiAppHosts);
+    const restored = await post(`policies/${initial.version}/restore`, undefined);
+    assert.deepEqual(restored.blockedAiAppHosts, []);
+    assert.deepEqual((await policy(secondBrowser, true)).blockedAiAppHosts, []);
+    await post(`installations/${fresh.installationId}/revoke`, {}, { expect: 204 });
+    await heartbeat(fresh, grouped, true, 401);
   });
 });

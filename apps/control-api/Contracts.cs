@@ -69,7 +69,8 @@ internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode 
     DomainRules? DomainRules = null, int? ExpectedVersion = null, string? PaymentCardMode = null, UploadModes? UploadModes = null,
     PathRules? PathRules = null, bool? ExtensionInventoryEnabled = null, UploadTypes? UploadTypes = null,
     CustomAppSetting?[]? CustomApps = null, PromptException?[]? PromptExceptions = null, bool? ClaudePromptEnabled = null,
-    string? PrivateKeyMode = null, FileInspection? FileInspection = null, ExtensionDeployment? ExtensionDeployment = null);
+    string? PrivateKeyMode = null, FileInspection? FileInspection = null, ExtensionDeployment? ExtensionDeployment = null,
+    string[]? BlockedAiAppHosts = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null)
 {
     public bool HasSettings() => Chatgpt is not null || Gemini is not null;
@@ -84,7 +85,7 @@ internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = nu
     int AssignmentVersion = 0, string? GeminiCoverage = null, bool PaymentCardModeApplied = false, bool UploadControlsApplied = false,
     bool PathRulesApplied = false, bool UploadTypesApplied = false, bool CustomDiscoveryApplied = false,
     bool PromptExceptionsApplied = false, string? ClaudeCoverage = null, bool ClaudePromptApplied = false, bool PrivateKeyModeApplied = false,
-    bool FileInspectionApplied = false)
+    bool FileInspectionApplied = false, bool AiAppAccessApplied = false)
 {
     public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported") &&
         (GeminiCoverage is null or "ready" or "unsupported") &&
@@ -105,7 +106,8 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     bool ClaudePromptEnabled = false,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? PrivateKeyMode = "off",
     FileInspection? FileInspection = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ExtensionDeployment? ExtensionDeployment = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ExtensionDeployment? ExtensionDeployment = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string[]? BlockedAiAppHosts = null)
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => ClaudePromptEnabled
@@ -114,7 +116,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     public string RuleId => FixtureContract.RuleId;
     public string DetectorCategory => FixtureContract.DetectorCategory;
 
-    public Policy ForBrowser(bool claudeAware, bool privateKeyAware, bool fileInspectionAware)
+    public Policy ForBrowser(bool claudeAware, bool privateKeyAware, bool fileInspectionAware, bool aiAppAccessAware)
     {
         var now = DateTimeOffset.UtcNow;
         var nowMs = now.ToUnixTimeMilliseconds();
@@ -129,6 +131,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
             PrivateKeyMode = privateKeyAware ? PrivateKeyMode : "off",
             FileInspection = fileInspectionAware ? FileInspection : new(false, false),
             ExtensionDeployment = null,
+            BlockedAiAppHosts = aiAppAccessAware ? BlockedAiAppHosts : null,
             PromptExceptions = PromptExceptions is { Length: > 0 } ? null : PromptExceptions,
             PromptExceptionLease = exceptions is { Length: > 0 } ? new(nowMs, exceptions) : null
         };

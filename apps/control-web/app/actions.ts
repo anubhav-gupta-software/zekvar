@@ -8,12 +8,14 @@ import { aiApps, classifications, decisionLabels, detectorModes, isId, modes,
   type AppClassification, type DetectorMode, type DiscoveredAppId, type Feedback, type Mode } from '../lib/control';
 import { endSession, sessionToken, startSession } from '../lib/session';
 import { cleanupCounts, retentionFields, type RetentionField, type RetentionPolicy } from '../lib/retention';
-import { readNavigationRules } from '../lib/navigation';
+import { navigationRuleLimitError, readNavigationRules } from '../lib/navigation';
 import { isDetectorMode, isMode } from '../../../contracts/policy/prompt';
 import { isUploadMode, parseUploadTypes, uploadTypesError } from '../../../contracts/policy/uploads';
 import { customAppError, isCustomAppId, parseCustomApps } from '../../../contracts/policy/discovery';
 import { promptExceptionError, readPromptExceptions } from '../../../contracts/policy/prompt-exceptions';
 import { parseExtensionDeployment } from '../lib/extension-deployment';
+import { aiAppAccessCatalog, readBlockedAiAppHosts } from '../../../contracts/policy/ai-app-access';
+import { domainRuleLimit, ruleCount } from '../../../contracts/policy/domains';
 
 export async function signIn(_previous: Feedback, form: FormData): Promise<Feedback> {
   const token = form.get('token');
@@ -235,6 +237,7 @@ export async function publishDomainRules(_previous: Feedback, form: FormData): P
       return { message: `Navigation rules published as version ${policy.version}.` };
     } catch (error) {
       if (error instanceof ApiError && error.status === 409 && !error.code) return { error: 'The policy changed. Reload and review the navigation rules again.' };
+      if (error instanceof ApiError && error.code === 'navigation_rule_limit') return { error: navigationRuleLimitError };
       throw error;
     }
   });
@@ -266,6 +269,15 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   if (!uploadTypes) return { error: uploadTypesError };
   const customApps = parseCustomApps(String(form.get('customApps') ?? ''));
   if (!customApps) return { error: customAppError };
+  const submittedHosts = form.getAll('blockedAiAppHost');
+  const accessSettings = form.get('aiAppAccess') === 'present';
+  const blockedAiAppHosts = accessSettings ? readBlockedAiAppHosts(submittedHosts) : undefined;
+  if (accessSettings && (!blockedAiAppHosts || blockedAiAppHosts.some((host) => !aiAppAccessCatalog(customApps).some((app) => app.host === host)))) {
+    return { error: 'Keep each blocked AI app in the draft catalog or clear its access block.' };
+  }
+  if (ruleCount(domainRules) + ruleCount(pathRules) + (blockedAiAppHosts?.length ?? 0) > domainRuleLimit) {
+    return { error: navigationRuleLimitError };
+  }
   let promptExceptions;
   try {
     promptExceptions = readPromptExceptions(JSON.parse(String(form.get('promptExceptions') ?? '[]')));
@@ -278,7 +290,7 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
       const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, privateKeyMode: privateKeyMode ?? undefined,
         uploadModes, uploadTypes, fileInspection,
         discoveryEnabled: discovery === 'on', extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on',
-        domainRules, pathRules, customApps, promptExceptions },
+        domainRules, pathRules, customApps, promptExceptions, blockedAiAppHosts },
         expectedVersion, form.get('expectReview') === 'on', groupId ?? undefined);
       if ('reviewId' in published) return queued(published.reviewId);
       refreshPolicyViews();
@@ -286,6 +298,10 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
     } catch (error) {
       if (error instanceof ApiError && error.code === 'exception_expired') {
         return { error: 'An exception expired. Choose a future expiry and run the preview again.' };
+      }
+      if (error instanceof ApiError && error.code === 'navigation_rule_limit') return { error: navigationRuleLimitError };
+      if (error instanceof ApiError && error.code === 'ai_app_access_unknown_host') {
+        return { error: 'Keep each blocked AI app in the draft catalog or clear its access block.' };
       }
       if (error instanceof ApiError && error.status === 409 && !error.code) return { error: 'The policy changed after this preview. Reload and run the comparison again.' };
       throw error;

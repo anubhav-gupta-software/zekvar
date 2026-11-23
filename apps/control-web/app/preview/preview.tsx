@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { readNavigationRules } from '../../lib/navigation';
+import { navigationRuleLimitError, readNavigationRules } from '../../lib/navigation';
 import { detectorModes, fixtureRule, modes, privateKeyRule, ruleLabels, type DetectorMode, type PolicyMode, type PromptRuleId } from '../../../../contracts/policy/prompt';
 import { parseUploadTypes, uploadApps, uploadModes, uploadTypesError, uploadTypesHint, type UploadApp, type UploadMode } from '../../../../contracts/policy/uploads';
 import { aiPromptApps, decisionLabels, detectorModeLabels, promptAppLabels } from '../../lib/control';
@@ -13,6 +13,8 @@ import { PolicyChanges } from '../policy-changes';
 import { customAppError, parseCustomApps } from '../../../../contracts/policy/discovery';
 import { exceptionWindowMs, promptExceptionError, promptExceptionLimit, readPromptExceptions, samePromptExceptions, type PromptException } from '../../../../contracts/policy/prompt-exceptions';
 import { chatGptApp, type AiPromptApp } from '../../../../contracts/policy/apps';
+import { aiAppAccessCatalog } from '../../../../contracts/policy/ai-app-access';
+import { domainRuleLimit, ruleCount } from '../../../../contracts/policy/domains';
 
 const navigationFields = [
   ['allow', 'Draft allowed domains'], ['block', 'Draft blocked domains'],
@@ -26,6 +28,7 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
     mode: snapshot.mode, githubPatMode: snapshot.githubPatMode, paymentCardMode: snapshot.paymentCardMode, privateKeyMode: snapshot.privateKeyMode,
     discoveryEnabled: snapshot.discoveryEnabled,
     extensionInventoryEnabled: snapshot.extensionInventoryEnabled,
+    blockedAiAppHosts: snapshot.blockedAiAppHosts,
     claudePromptEnabled: snapshot.claudePromptEnabled,
     uploadModes: snapshot.uploadModes,
     fileInspection: snapshot.fileInspection,
@@ -49,6 +52,9 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
   const [result, setResult] = useState<PreviewResult>();
   const [error, setError] = useState('');
   const [ready, setReady] = useState(false);
+  const selectedAccess = editor.blockedAiAppHosts;
+  const catalog = aiAppAccessCatalog(parseCustomApps(editor.catalog) ?? []);
+  const orphanedAccess = (selectedAccess ?? []).filter((host) => !catalog.some((app) => app.host === host));
 
   useEffect(() => setReady(true), []);
 
@@ -96,6 +102,14 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
       setError(customAppError);
       return;
     }
+    if (orphanedAccess.length) {
+      setError('Keep each blocked AI app in the draft catalog or clear its access block.');
+      return;
+    }
+    if (ruleCount(domainRules) + ruleCount(pathRules) + (editor.blockedAiAppHosts?.length ?? 0) > domainRuleLimit) {
+      setError(navigationRuleLimitError);
+      return;
+    }
     const promptExceptions = readPromptExceptions(editor.promptExceptions.map((entry) => ({ ...entry, expiresAt: entry.expiresAt + 'Z' })));
     if (!promptExceptions) {
       setError(promptExceptionError);
@@ -113,6 +127,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
       mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode, privateKeyMode: editor.privateKeyMode,
       discoveryEnabled: editor.discoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled,
       extensionDeployment: reference.extensionDeployment,
+      blockedAiAppHosts: editor.blockedAiAppHosts,
       claudePromptEnabled: editor.claudePromptEnabled, domainRules, pathRules,
       uploadModes: editor.uploadModes, uploadTypes: { chatgpt, gemini }, fileInspection: editor.fileInspection, customApps, promptExceptions,
     }, customPrompt, address, file, promptApp));
@@ -213,6 +228,20 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
         </div>)}
       </div>
     </section>
+    {selectedAccess && <section className="panel" id="draft-ai-app-access" aria-labelledby="ai-app-access-heading">
+      <h2 id="ai-app-access-heading">AI app access</h2>
+      <p className="muted">Block selected hosts for new top-level web requests in Browser v0.26.0 or later. These blocks take precedence over domain and path rules.</p>
+      <div className="ai-app-access-options">
+        {[...catalog, ...orphanedAccess.map((host) => ({ host, name: 'Removed from draft catalog' }))].map(({ host, name }) =>
+          <label key={host} className="ai-app-access-option">
+            <input type="checkbox" aria-label={`Block ${host}`} checked={selectedAccess.includes(host)}
+              onChange={(event) => edit('blockedAiAppHosts', event.target.checked
+                ? [...selectedAccess, host].sort()
+                : selectedAccess.filter((selected) => selected !== host))} />
+            <span><strong>{name}</strong><code>{host}</code></span>
+          </label>)}
+      </div>
+    </section>}
     <section className="panel" aria-labelledby="prompt-exceptions-heading">
       <h2 id="prompt-exceptions-heading">Temporary prompt exceptions</h2>
       <p className="muted">An exception can allow a flagged prompt for one detector and app until its UTC expiry. Other matching detectors still apply.</p>
@@ -323,6 +352,10 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         {candidate.privateKeyMode !== undefined && <input type="hidden" name="privateKeyMode" value={candidate.privateKeyMode} />}
         <input type="hidden" name="discoveryEnabled" value={candidate.discoveryEnabled ? 'on' : 'off'} />
         <input type="hidden" name="customApps" value={candidate.customApps.map(({ host, name }) => `${host}, ${name}`).join('\n')} />
+        {candidate.blockedAiAppHosts && <>
+          <input type="hidden" name="aiAppAccess" value="present" />
+          {candidate.blockedAiAppHosts.map((host) => <input key={host} type="hidden" name="blockedAiAppHost" value={host} />)}
+        </>}
         <input type="hidden" name="promptExceptions" value={JSON.stringify(candidate.promptExceptions)} />
         <input type="hidden" name="extensionInventoryEnabled" value={candidate.extensionInventoryEnabled ? 'on' : 'off'} />
         <input type="hidden" name="claudePromptEnabled" value={candidate.claudePromptEnabled ? 'on' : 'off'} />

@@ -145,6 +145,7 @@ try {
   const claudeAdmin = randomBytes(32).toString('hex');
   const officeAdmin = randomBytes(32).toString('hex');
   const deploymentAdmin = randomBytes(32).toString('hex');
+  const aiAccessAdmin = randomBytes(32).toString('hex');
   const apiServer = startService('dotnet', ['bin/Debug/net10.0/Control.Api.dll'], api, {
     DOTNET_ENVIRONMENT: 'Development', ASPNETCORE_ENVIRONMENT: 'Development', Control__Port: String(apiPort), ConnectionStrings__Control: db,
     Control__Organizations__0__Slug: 'demo', Control__Organizations__0__AdminToken: token,
@@ -156,6 +157,7 @@ try {
     Control__Organizations__8__Slug: 'claude-pilot', Control__Organizations__8__AdminToken: claudeAdmin,
     Control__Organizations__9__Slug: 'office-uploads', Control__Organizations__9__AdminToken: officeAdmin,
     Control__Organizations__10__Slug: 'extension-deployment', Control__Organizations__10__AdminToken: deploymentAdmin,
+    Control__Organizations__11__Slug: 'ai-app-access', Control__Organizations__11__AdminToken: aiAccessAdmin,
     ...(flags.has('--pilot') ? {
       Control__Organizations__3__Slug: 'managed-pilot', Control__Organizations__3__AdminToken: pilotAdmin,
       Control__Organizations__4__Slug: 'review-pilot', Control__Organizations__4__AdminToken: reviewAdmin,
@@ -194,6 +196,11 @@ try {
     ZEKVAR_TEST_WEB_ORIGIN: webOrigin, ZEKVAR_TEST_API_ORIGIN: apiOrigin, ZEKVAR_TEST_ADMIN_TOKEN: deploymentAdmin,
     ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0',
     ZEKVAR_TEST_DEPLOYMENT_SCREENSHOT: artifacts ? join(artifacts, '35-chrome-extension-deployment.png') : '',
+  });
+  await run(process.execPath, ['--test', 'test/ai-app-access.test.mjs'], extension, {
+    ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: aiAccessAdmin,
+    ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0',
+    ZEKVAR_TEST_AI_ACCESS_SCREENSHOT: artifacts ? join(artifacts, '36-ai-app-access.png') : '',
   });
   await run(process.execPath, ['--test', 'test/office-upload.test.mjs'], extension, {
     ZEKVAR_EXTENSION_TEST_API: apiOrigin, ZEKVAR_EXTENSION_TEST_ADMIN_TOKEN: officeAdmin,

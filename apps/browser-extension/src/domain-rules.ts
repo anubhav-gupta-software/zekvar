@@ -1,4 +1,5 @@
 import { isRecord } from './protocol';
+import { aiAppBlockPattern } from '../../../contracts/policy/ai-app-access';
 import { canonicalizePathRules, domainActions, domainRuleLimit, domainRulePriority, emptyDomainRules, emptyPathRules,
   isCanonicalDomain, pathRuleRegex, sameDomainRules, splitPathRule, type DomainRules, type PathRules } from '../../../contracts/policy/domains';
 
@@ -6,6 +7,8 @@ export { domainRuleLimit, emptyDomainRules, emptyPathRules, ruleCount, sameDomai
 export type { DomainRules, PathRules } from '../../../contracts/policy/domains';
 
 const firstDomainRuleId = 1;
+// The access decision takes precedence over every hostname or path rule.
+const aiAppAccessPriority = 100_000;
 
 export function readDomainRules(value: unknown): DomainRules | undefined {
   if (value === undefined) return emptyDomainRules;
@@ -25,7 +28,7 @@ export function readPathRules(value: unknown): PathRules | undefined {
   if (normalized && sameDomainRules(normalized, submitted)) return normalized;
 }
 
-export async function installDomainRules(rules: DomainRules, paths: PathRules) {
+export async function installDomainRules(rules: DomainRules, paths: PathRules, blockedAiAppHosts: readonly string[]) {
   const dnr = chrome.declarativeNetRequest;
   const addRules: chrome.declarativeNetRequest.Rule[] = [];
   for (const action of domainActions) {
@@ -49,6 +52,12 @@ export async function installDomainRules(rules: DomainRules, paths: PathRules) {
       });
     }
   }
+  for (const host of blockedAiAppHosts) {
+    addRules.push({
+      id: firstDomainRuleId + addRules.length, priority: aiAppAccessPriority, action: { type: dnr.RuleActionType.BLOCK },
+      condition: { regexFilter: aiAppBlockPattern(host), resourceTypes: [dnr.ResourceType.MAIN_FRAME] },
+    });
+  }
   const ruleIds = Array.from({ length: domainRuleLimit }, (_, index) => firstDomainRuleId + index);
   const current = await dnr.getDynamicRules({ ruleIds });
   const byId = new Map(current.map((rule) => [rule.id, rule]));
@@ -57,13 +66,13 @@ export async function installDomainRules(rules: DomainRules, paths: PathRules) {
     return installed !== undefined && installed.priority === rule.priority && installed.action.type === rule.action.type &&
       installed.condition.regexFilter === rule.condition.regexFilter &&
       (installed.condition.isUrlFilterCaseSensitive ?? false) === (rule.condition.isUrlFilterCaseSensitive ?? false) &&
-      installed.condition.requestDomains?.length === 1 && installed.condition.requestDomains[0] === rule.condition.requestDomains?.[0] &&
+      (installed.condition.requestDomains ?? []).join(',') === (rule.condition.requestDomains ?? []).join(',') &&
       installed.condition.resourceTypes?.length === 1 && installed.condition.resourceTypes[0] === dnr.ResourceType.MAIN_FRAME;
   })) return;
 
-  await Promise.all(addRules.map(async ({ condition: { regexFilter } }) => {
-    if (regexFilter && !(await dnr.isRegexSupported({ regex: regexFilter, isCaseSensitive: true })).isSupported) {
-      throw new Error('Chrome rejected a URL path rule');
+  await Promise.all(addRules.map(async ({ condition: { regexFilter, isUrlFilterCaseSensitive } }) => {
+    if (regexFilter && !(await dnr.isRegexSupported({ regex: regexFilter, isCaseSensitive: isUrlFilterCaseSensitive ?? false })).isSupported) {
+      throw new Error('Chrome rejected a navigation rule');
     }
   }));
   await dnr.updateDynamicRules({ removeRuleIds: current.map(({ id }) => id), addRules });

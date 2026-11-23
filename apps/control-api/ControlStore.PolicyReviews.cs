@@ -49,8 +49,9 @@ internal sealed partial class ControlStore
         }
         if (candidate is null) return new();
         if (request is null) candidate = candidate with { PromptExceptions = before.PromptExceptions };
-        if (candidate.DomainRules.Allow.Length + candidate.DomainRules.Block.Length +
-            candidate.PathRules.Allow.Length + candidate.PathRules.Block.Length > 50) return new(Error: "navigation_rule_limit");
+        if (candidate.DomainRules.Allow.Length + candidate.DomainRules.Block.Length + candidate.PathRules.Allow.Length +
+            candidate.PathRules.Block.Length + (candidate.BlockedAiAppHosts?.Length ?? 0) > 50) return new(Error: "navigation_rule_limit");
+        if (!AiAppAccess.InCatalog(candidate.BlockedAiAppHosts, candidate.CustomApps)) return new(Error: "ai_app_access_unknown_host");
 
         if (!required)
         {
@@ -219,7 +220,7 @@ internal sealed partial class ControlStore
                 p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
                 p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, p.private_key_mode, p.chatgpt_file_inspection, p.gemini_file_inspection,
-                p.extension_deployment
+                p.blocked_ai_app_hosts, p.extension_deployment
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.version = $2 AND (NOT $3 OR p.policy_group_id IS NOT DISTINCT FROM $4::uuid)
             """, transaction.Connection, transaction);
@@ -245,6 +246,7 @@ internal sealed partial class ControlStore
         ClaudePromptEnabled = request.ClaudePromptEnabled ?? current.ClaudePromptEnabled,
         PrivateKeyMode = request.PrivateKeyMode ?? current.PrivateKeyMode,
         ExtensionDeployment = request.ExtensionDeployment ?? current.ExtensionDeployment,
+        BlockedAiAppHosts = request.BlockedAiAppHosts ?? current.BlockedAiAppHosts,
         FileInspection = new(request.FileInspection?.Chatgpt ?? current.FileInspection?.Chatgpt ?? false,
             request.FileInspection?.Gemini ?? current.FileInspection?.Gemini ?? false)
     };
@@ -261,8 +263,8 @@ internal sealed partial class ControlStore
                 INSERT INTO policy_versions (organization_id, version, policy_group_id, mode, github_pat_mode, discovery_enabled,
                     allowed_domains, blocked_domains, payment_card_mode, chatgpt_upload_mode, gemini_upload_mode, allowed_paths, blocked_paths,
                     extension_inventory_enabled, chatgpt_upload_types, gemini_upload_types, custom_apps, prompt_exceptions, claude_prompt_enabled,
-                    private_key_mode, chatgpt_file_inspection, gemini_file_inspection, extension_deployment)
-                SELECT id, policy_sequence, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $16, $17, $18, $19::jsonb, $20::jsonb, $21, $22, $23, $24, $25::jsonb
+                    private_key_mode, chatgpt_file_inspection, gemini_file_inspection, extension_deployment, blocked_ai_app_hosts)
+                SELECT id, policy_sequence, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $16, $17, $18, $19::jsonb, $20::jsonb, $21, $22, $23, $24, $25::jsonb, $26
                 FROM next_version
                 RETURNING organization_id, version, published_at
             ), group_pointer AS (
@@ -286,13 +288,13 @@ internal sealed partial class ControlStore
             JsonSerializer.Serialize(policy.CustomApps ?? [], JsonSerializerOptions.Web),
             JsonSerializer.Serialize(policy.PromptExceptions ?? [], JsonSerializerOptions.Web), policy.ClaudePromptEnabled, policy.PrivateKeyMode ?? "off",
             policy.FileInspection?.Chatgpt ?? false, policy.FileInspection?.Gemini ?? false,
-            JsonSerializer.Serialize(policy.ExtensionDeployment ?? ExtensionDeployment.Empty, JsonSerializerOptions.Web));
+            JsonSerializer.Serialize(policy.ExtensionDeployment ?? ExtensionDeployment.Empty, JsonSerializerOptions.Web), policy.BlockedAiAppHosts ?? []);
         await using var rows = await command.ExecuteReaderAsync(ct);
         await rows.ReadAsync(ct);
         return policy with { Version = rows.GetInt32(0), PublishedAt = rows.GetDateTime(1), RestoredFrom = restoredFrom,
             UploadTypes = new(policy.UploadTypes?.Chatgpt ?? [], policy.UploadTypes?.Gemini ?? []), CustomApps = policy.CustomApps ?? [],
             PromptExceptions = policy.PromptExceptions ?? [], FileInspection = new(policy.FileInspection?.Chatgpt ?? false, policy.FileInspection?.Gemini ?? false),
-            ExtensionDeployment = policy.ExtensionDeployment ?? ExtensionDeployment.Empty };
+            ExtensionDeployment = policy.ExtensionDeployment ?? ExtensionDeployment.Empty, BlockedAiAppHosts = policy.BlockedAiAppHosts ?? [] };
     }
 
     private static async Task AuditPolicyReview(NpgsqlTransaction transaction, RequestIdentity identity, string action,

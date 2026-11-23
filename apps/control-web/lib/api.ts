@@ -34,7 +34,7 @@ async function apiResponse(path: string, token: string, options: RequestInit = {
     throw new ApiError(503);
   }
   if (!response.ok) {
-    const detail = response.status === 409 || response.status === 403 ? await response.json().catch(() => null) : null;
+    const detail = [400, 403, 409].includes(response.status) ? await response.json().catch(() => null) : null;
     throw new ApiError(response.status, typeof detail?.code === 'string' ? detail.code : undefined);
   }
   return response;

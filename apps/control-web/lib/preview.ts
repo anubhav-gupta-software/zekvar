@@ -9,11 +9,13 @@ import type { Policy } from './control';
 import { sameCustomApps, type CustomAppSetting } from '../../../contracts/policy/discovery';
 import { evaluatePromptWithExceptions, exceptionDecision, samePromptExceptions, type PromptException } from '../../../contracts/policy/prompt-exceptions';
 import { sameExtensionDeployment, type ExtensionDeployment } from './extension-deployment';
+import { blockedAiAppAt } from '../../../contracts/policy/ai-app-access';
 
 export type PreviewPolicy = {
   mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; privateKeyMode?: DetectorMode; discoveryEnabled: boolean;
   extensionInventoryEnabled: boolean;
   extensionDeployment?: ExtensionDeployment;
+  blockedAiAppHosts?: string[];
   claudePromptEnabled: boolean;
   fileInspection?: FileInspection;
   domainRules: DomainRules; pathRules: PathRules; uploadModes: UploadModes; uploadTypes: UploadTypes;
@@ -35,6 +37,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     promptExceptions: policy.promptExceptions ?? [],
     extensionInventoryEnabled: policy.extensionInventoryEnabled ?? false,
     extensionDeployment: policy.extensionDeployment,
+    blockedAiAppHosts: policy.blockedAiAppHosts,
     claudePromptEnabled: policy.claudePromptEnabled ?? false,
     domainRules: policy.domainRules ?? emptyDomainRules,
     pathRules: policy.pathRules ?? emptyPathRules,
@@ -49,6 +52,7 @@ export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
     a.privateKeyMode === b.privateKeyMode &&
     a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
     sameExtensionDeployment(a.extensionDeployment, b.extensionDeployment) &&
+    (a.blockedAiAppHosts ?? []).join(',') === (b.blockedAiAppHosts ?? []).join(',') &&
     a.claudePromptEnabled === b.claudePromptEnabled &&
     uploadApps.every((app) => a.uploadModes[app] === b.uploadModes[app] && sameUploadTypes(a.uploadTypes[app], b.uploadTypes[app]) &&
       a.fileInspection?.[app] === b.fileInspection?.[app]) &&
@@ -88,6 +92,8 @@ function promptOutcome(content: string, policy: PreviewPolicy, app: AiPromptApp,
 }
 
 function navigationOutcome(url: URL, policy: PreviewPolicy): PreviewDecision {
+  const blockedHost = blockedAiAppAt(url, policy.blockedAiAppHosts ?? []);
+  if (blockedHost) return { action: 'block', rule: `AI app access · ${blockedHost}` };
   const outcome = evaluateNavigation(url, policy.domainRules, policy.pathRules);
   return { action: outcome.action, rule: outcome.pathRule ?? outcome.domain };
 }
@@ -115,6 +121,11 @@ export function runComparison(reference: PreviewSnapshot, candidate: PreviewPoli
   for (const { name, content } of navigations) {
     const url = new URL(content);
     rows.push({ name, current: navigationOutcome(url, reference), draft: navigationOutcome(url, candidate) });
+  }
+  const appHosts = new Set([...(reference.blockedAiAppHosts ?? []), ...(candidate.blockedAiAppHosts ?? [])]);
+  for (const host of appHosts) {
+    const url = new URL(`https://${host}/`);
+    rows.push({ name: `AI access · ${host}`, current: navigationOutcome(url, reference), draft: navigationOutcome(url, candidate) });
   }
   if (address) rows.push({ name: 'Custom navigation', current: navigationOutcome(address, reference), draft: navigationOutcome(address, candidate) });
   for (const app of uploadApps) {

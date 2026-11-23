@@ -8,6 +8,8 @@ export function readNavigationRules(allow: string, block: string, allowPaths: st
   if (!domainRules) return { error: 'Enter up to 50 hostnames, one per line. A hostname can appear in only one list.' };
   const pathRules = canonicalizePathRules(paths);
   if (!pathRules) return { error: 'Enter distinct hostname/path prefixes such as example.com/work. Each path can contain up to 64 characters.' };
-  if (ruleCount(domains) + ruleCount(paths) > domainRuleLimit) return { error: 'Enter up to 50 domain and path rules combined.' };
+  if (ruleCount(domains) + ruleCount(paths) > domainRuleLimit) return { error: navigationRuleLimitError };
   return { domainRules, pathRules };
 }
+
+export const navigationRuleLimitError = 'Use up to 50 domain, path, and AI app access rules combined.';

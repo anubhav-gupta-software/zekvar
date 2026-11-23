@@ -87,6 +87,10 @@ label { font-size: .9rem; font-weight: 600; }
 .preview-rule { overflow-wrap: anywhere; }
 .preview-changes { margin: 0 0 1rem; padding-inline-start: 1.25rem; list-style: disc; font-size: .875rem; overflow-wrap: anywhere; }
 .deployment-json { max-height: 24rem; overflow: auto; background: var(--field); padding: .75rem; border-radius: .38rem; font-size: .8rem; }
+.ai-app-access-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: .5rem; margin-top: .75rem; }
+.ai-app-access-option { display: flex; gap: .65rem; align-items: center; padding: .55rem .7rem; border: 1px solid var(--line); border-radius: .38rem; cursor: pointer; }
+.ai-app-access-option input { min-height: 0; margin: 0; }
+.ai-app-access-option code { display: block; color: var(--muted); font-size: .8rem; overflow-wrap: anywhere; }
 .domain-rule-history summary { cursor: pointer; white-space: nowrap; }
 .domain-rule-history code { white-space: normal; overflow-wrap: anywhere; }
 .feedback { margin-top: .5rem; color: #a3edcf; font-size: .875rem; }

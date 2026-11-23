@@ -100,7 +100,10 @@ export default async function Control({ searchParams }: { searchParams: Promise<
 
         <section className="panel table-panel" id="ai-apps" aria-labelledby="ai-apps-heading">
           <div className="panel-heading"><h2 id="ai-apps-heading">App inventory</h2><div className="form-row">
-            {policyWritable && <a className="button small" href="/preview#draft-app-catalog">Edit app catalog</a>}
+            {policyWritable && <div className="form-row">
+              <a className="button small" href="/preview#draft-app-catalog">Edit app catalog</a>
+              {current?.blockedAiAppHosts && <a className="button small" href="/preview#draft-ai-app-access">Manage AI app access</a>}
+            </div>}
             <RefreshSection label="Refresh app inventory" /></div></div>
           <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="ai-apps-heading">
             <table aria-labelledby="ai-apps-heading">

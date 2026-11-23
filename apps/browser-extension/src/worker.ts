@@ -11,6 +11,7 @@ import { collectExtensionInventory } from './extension-inventory';
 import type { InventoryStatus } from '../../../contracts/policy/extension-inventory';
 import { isCustomAppId, readCustomApps, type CustomApp } from '../../../contracts/policy/discovery';
 import { leaseTime, readExceptionLease, sampleClock, type BrowserLease } from './prompt-exceptions';
+import { readBlockedAiAppHosts } from '../../../contracts/policy/ai-app-access';
 
 declare const CONTROL_ORIGIN: string;
 
@@ -24,6 +25,7 @@ type State = {
   policy?: Policy & { customApps?: CustomApp[] };
   domainRules?: DomainRules;
   pathRules?: PathRules;
+  blockedAiAppHosts?: string[];
   domainRulesError?: boolean;
   chatGptEnabled?: boolean;
   coveragePending?: PendingCoverage | Coverage;
@@ -108,6 +110,7 @@ function summary(state: State): Summary {
     managedEnrollment: state.managedEnrollment, domainRulesError: state.domainRulesError,
     domainRuleCount: state.domainRules && ruleCount(state.domainRules),
     pathRuleCount: state.pathRules && ruleCount(state.pathRules),
+    aiAppAccessRuleCount: state.blockedAiAppHosts?.length,
     inventoryStatus: state.inventoryStatus,
     customDiscoveryCount: state.policy?.discoveryEnabled ? customApps?.length : undefined,
     promptExceptionLease: state.status === 'connected' ? currentPromptLease(state) : undefined,
@@ -138,7 +141,8 @@ async function request(path: string, token?: string, body?: object): Promise<unk
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(path === 'browser/policy' ? { 'X-Zekvar-Assignment-Aware': '1', 'X-Zekvar-Claude-Prompt': '1',
-        'X-Zekvar-Private-Key': '1', 'X-Zekvar-File-Inspection': '1', 'X-Zekvar-Extension-Version': extensionVersion } : {}),
+        'X-Zekvar-Private-Key': '1', 'X-Zekvar-File-Inspection': '1', 'X-Zekvar-AI-App-Access': '1',
+        'X-Zekvar-Extension-Version': extensionVersion } : {}),
       ...(path === 'browser/heartbeat' ? { 'X-Zekvar-Composer-Coverage': '1' } : {}),
       ...(path === 'enroll' ? { 'X-Zekvar-Scoped-Enrollment': '1' } : {}),
       ...(body ? { 'Content-Type': 'application/json' } : {}),
@@ -149,11 +153,12 @@ async function request(path: string, token?: string, body?: object): Promise<unk
   return response.status === 204 ? undefined : response.json();
 }
 
-async function applyDomainRules(state: State, rules: DomainRules, paths = emptyPathRules) {
+async function applyDomainRules(state: State, rules: DomainRules, paths = emptyPathRules, blockedAiAppHosts: string[] = []) {
   try {
-    await installDomainRules(rules, paths);
+    await installDomainRules(rules, paths, blockedAiAppHosts);
     state.domainRules = rules;
     state.pathRules = paths;
+    state.blockedAiAppHosts = blockedAiAppHosts;
     state.domainRulesError = undefined;
   } catch (error) {
     state.domainRulesError = true;
@@ -279,7 +284,9 @@ async function sync(state: State) {
     const claudePromptEnabled = policy.claudePromptEnabled === true && Array.isArray(policy.appIds) && policy.appIds.includes(claudeApp);
     const domainRules = readDomainRules(policy.domainRules);
     const pathRules = readPathRules(policy.pathRules);
-    if (!domainRules || !pathRules || ruleCount(domainRules) + ruleCount(pathRules) > domainRuleLimit) {
+    const blockedAiAppHosts = readBlockedAiAppHosts(policy.blockedAiAppHosts === undefined ? [] : policy.blockedAiAppHosts);
+    if (!domainRules || !pathRules || !blockedAiAppHosts ||
+        ruleCount(domainRules) + ruleCount(pathRules) + blockedAiAppHosts.length > domainRuleLimit) {
       throw new Error('Invalid navigation rules');
     }
     const assignment = policy.assignmentVersion ?? 0;
@@ -300,8 +307,9 @@ async function sync(state: State) {
         (state.policy.extensionInventoryEnabled === undefined || extensionInventoryEnabled === state.policy.extensionInventoryEnabled) &&
         (state.policy.claudePromptEnabled === undefined || claudePromptEnabled === state.policy.claudePromptEnabled) &&
         sameDomainRules(domainRules, state.domainRules ?? emptyDomainRules) &&
-        (!state.pathRules || sameDomainRules(pathRules, state.pathRules)))))) {
-      await applyDomainRules(state, domainRules, pathRules);
+        (!state.pathRules || sameDomainRules(pathRules, state.pathRules)) &&
+        (!state.blockedAiAppHosts || blockedAiAppHosts.join(',') === state.blockedAiAppHosts.join(',')))))) {
+      await applyDomainRules(state, domainRules, pathRules, blockedAiAppHosts);
       if (policy.version !== state.policy?.version || assignment !== previousAssignment) clearCoverage(state);
       state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, privateKeyMode, fileInspection,
         discoveryEnabled, customApps, extensionInventoryEnabled, claudePromptEnabled,
@@ -386,6 +394,7 @@ async function heartbeat(state: State) {
     promptExceptionsApplied: currentPromptLease(state) ? true : undefined,
     domainRulesApplied: state.domainRules && ruleCount(state.domainRules) ? true : undefined,
     pathRulesApplied: state.pathRules && ruleCount(state.pathRules) ? true : undefined,
+    aiAppAccessApplied: state.blockedAiAppHosts?.length ? true : undefined,
   });
   clearCoverage(state);
 }

@@ -47,6 +47,7 @@ export type Summary = {
   originChanged?: boolean;
   domainRuleCount?: number;
   pathRuleCount?: number;
+  aiAppAccessRuleCount?: number;
   domainRulesError?: boolean;
   inventoryStatus?: InventoryStatus;
   customDiscoveryCount?: number;
