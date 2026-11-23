@@ -1,7 +1,8 @@
 import { decisions, isId, isPromptApp, rolloutFilter, type SecurityEvent } from './control';
+import { triageAssigneeFilter, triageStatusFilter } from './triage';
 
 export type EventCursor = { receivedAt: string; eventId: string; installationId: string };
-export type EventPage = { entries: SecurityEvent[]; next: EventCursor | null; rolloutAvailable?: boolean };
+export type EventPage = { entries: SecurityEvent[]; next: EventCursor | null; rolloutAvailable: boolean; triageAvailable: boolean };
 type Search = Record<string, string | string[] | undefined>;
 const emptyId = '00000000-0000-0000-0000-000000000000';
 
@@ -29,6 +30,9 @@ export function eventFilters(search: Search) {
   const installation = nonEmptyId(search.installation) ?? '';
   const invalidInstallation = search.installation !== undefined && search.installation !== '' && !installation;
   const rolloutGroup = rolloutFilter(search.eventGroup);
+  const triageStatus = triageStatusFilter(search.triageStatus);
+  const triageAssignee = triageAssigneeFilter(search.triageAssignee);
+  const invalidTriage = triageStatus === undefined || triageAssignee === undefined;
   if (app) {
     page.set('app', app);
     query.set('appId', app);
@@ -45,6 +49,12 @@ export function eventFilters(search: Search) {
     page.set('eventGroup', rolloutGroup);
     query.set('rolloutGroup', rolloutGroup);
   }
+  for (const [key, value] of Object.entries({ triageStatus, triageAssignee })) {
+    if (value) {
+      page.set(key, value);
+      query.set(key, value);
+    }
+  }
   if (period) {
     const since = timestamp(search.since) ? search.since
       : new Date(Date.now() - (period === 'day' ? 1 : 7) * 86_400_000).toISOString();
@@ -58,5 +68,6 @@ export function eventFilters(search: Search) {
   const cursor = timestamp(beforeAt) && eventId && browserId
     ? { receivedAt: beforeAt, eventId, installationId: browserId } : undefined;
   const invalidCursor = !cursor && [beforeAt, beforeEventId, beforeInstallationId].some((value) => value !== undefined);
-  return { app, decision, period, installation, rolloutGroup, invalidInstallation, invalidCursor, cursor, page, query };
+  return { app, decision, period, installation, rolloutGroup, triageStatus, triageAssignee,
+    invalidInstallation, invalidTriage, invalidCursor, cursor, page, query };
 }

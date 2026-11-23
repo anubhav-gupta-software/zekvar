@@ -165,7 +165,8 @@ internal sealed record Installation(Guid InstallationId, DateTime EnrolledAt, Da
 
 internal sealed record StoredEvent(Guid EventId, Guid InstallationId, DateTime Timestamp, DateTime ReceivedAt,
     int PolicyVersion, string Decision, string AppId, string RuleId,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? UploadMethod, EventRollout Rollout)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? UploadMethod, EventRollout Rollout,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] EventTriage? Triage)
 {
     public string DetectorCategory => RuleId switch
     {
@@ -193,13 +194,18 @@ internal readonly record struct EventRolloutFilter(bool? Attributed, Guid? Group
 }
 
 internal sealed record EventFilters(string? AppId, string? Decision, DateTimeOffset? Since, DateTimeOffset? Until, Guid? InstallationId,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? RolloutGroup = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? RolloutGroup = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? TriageStatus = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? TriageAssignee = null)
 {
     public bool Valid() =>
         (AppId is null || FixtureContract.IsApp(AppId)) &&
         (Decision is null || FixtureContract.IsDecision(Decision)) &&
         (Since is null || Until is null || Since < Until) && InstallationId != Guid.Empty &&
-        EventRolloutFilter.Parse(RolloutGroup) is not null;
+        EventRolloutFilter.Parse(RolloutGroup) is not null && ValidTriage();
+
+    public bool ValidTriage() => (TriageStatus is null or "" || Control.TriageStatus.IsValid(TriageStatus)) &&
+        TriageAssigneeFilter.Parse(TriageAssignee) is not null;
 }
 
 internal sealed record EventCursor(DateTimeOffset ReceivedAt, Guid EventId, Guid InstallationId);

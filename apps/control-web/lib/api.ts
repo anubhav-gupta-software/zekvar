@@ -9,6 +9,7 @@ import type { InventoryInstallation } from './extension-inventory';
 import type { EnrollmentBatch, IssuedEnrollmentBatch } from './enrollment';
 import type { AiEnforcementReport } from './reports';
 import type { ExtensionDeployment } from './extension-deployment';
+import { eventPath, type EventDetails, type EventTriage, type TriageAssignee, type TriageUpdate } from './triage';
 
 const port = Number(process.env.ZEKVAR_CONTROL_PORT ?? 5187);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid Control loopback port.');
@@ -60,6 +61,10 @@ async function eventResponse(path: string, token: string, filters: URLSearchPara
     await response.body?.cancel();
     throw new ApiError(409, 'event_rollout_unavailable');
   }
+  if ((filters.get('triageStatus') || filters.get('triageAssignee')) && response.headers.get('X-Zekvar-Event-Triage') !== '1') {
+    await response.body?.cancel();
+    throw new ApiError(409, 'event_triage_unavailable');
+  }
   return response;
 }
 
@@ -95,8 +100,14 @@ export const controlApi = {
   browserExtensionInventory: (token: string, id: string) => request<InventoryInstallation>(`/extension-inventory/${id}`, token),
   events: async (token: string, filters: URLSearchParams): Promise<EventPage> => {
     const response = await eventResponse('/events/history', token, filters);
-    return { ...await response.json(), rolloutAvailable: response.headers.get('X-Zekvar-Event-Rollout') === '1' };
+    return { ...await response.json(), rolloutAvailable: response.headers.get('X-Zekvar-Event-Rollout') === '1',
+      triageAvailable: response.headers.get('X-Zekvar-Event-Triage') === '1' };
   },
+  event: (token: string, installationId: string, eventId: string) =>
+    request<EventDetails>(eventPath(installationId, eventId), token),
+  triageAssignees: (token: string) => request<TriageAssignee[]>('/events/triage-assignees', token),
+  saveEventTriage: (token: string, installationId: string, eventId: string, change: TriageUpdate) =>
+    request<EventTriage>(`${eventPath(installationId, eventId)}/triage`, token, 'POST', change),
   exportEvents: (token: string, filters: URLSearchParams, signal: AbortSignal) =>
     eventResponse('/events/export', token, filters, signal),
   aiEnforcement: (token: string, filters: URLSearchParams) => request<AiEnforcementReport>(`/reports/ai-enforcement?${filters}`, token),

@@ -40,7 +40,7 @@ async function until(check, message) {
   assert.fail(message);
 }
 
-test('the TLS pilot keeps administration private and enrolls Chrome on its configured origin', { timeout: 100_000 }, async (t) => {
+test('the TLS pilot keeps administration private and enrolls Chrome on its configured origin', { timeout: 120_000 }, async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), 'zekvar-pilot-tls-'));
   const extension = join(scratch, 'extension');
   const profile = join(scratch, 'profile');
@@ -143,7 +143,7 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   });
   for (const origin of [browserOrigin, dashboardOrigin]) {
     for (const path of ['/v1/admin/session', '/v1/admin/browser-releases', '/v1/admin/browser-health?rolloutGroup=baseline',
-      '/v1/admin/enrollment-batches', '/v1/admin/reports/ai-enforcement']) {
+      '/v1/admin/enrollment-batches', '/v1/admin/reports/ai-enforcement', '/v1/admin/events/triage-assignees']) {
       const blocked = await call(origin + path, { headers: { Authorization: `Bearer ${owner}` } });
       assert.equal(blocked.status, 404);
       assert.equal(blocked.headers['cache-control'], 'no-store');
@@ -341,7 +341,8 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   await chat.getByRole('button', { name: 'Send message', exact: true }).click();
   await chat.getByRole('alert').filter({ hasText: 'Submission blocked' }).waitFor();
   assert.equal(await chat.locator('#fixture-sends').textContent(), '0');
-  await until(async () => (await admin(`events?rolloutGroup=${group.id}`)).find(({ installationId, decision }) => installationId === newId && decision === 'block'),
+  const detected = await until(async () => (await admin(`events?rolloutGroup=${group.id}`)).find(({ installationId, decision }) =>
+    installationId === newId && decision === 'block'),
     'The hosted browser did not report a decision.');
   await dashboard.reload();
   await dashboard.getByRole('table', { name: 'Security events', exact: true }).getByText('ChatGPT', { exact: true }).waitFor();
@@ -451,6 +452,85 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   await dashboard.getByRole('link', { name: 'Investigate security events', exact: true }).click();
   await dashboard.waitForURL((url) => url.searchParams.get('eventGroup') === group.id);
   assert.equal(await policyEvents.locator('tbody tr').count(), 4);
+  await t.test('an owner, investigator, and auditor triage a real browser detection through the hosted dashboard', async () => {
+    const reviewPath = `/events/${detected.installationId}/${detected.eventId}`;
+    const investigator = await admin('access', { name: 'Hosted investigator', role: 'administrator', hours: 1 });
+    const auditor = await admin('access', { name: 'Hosted auditor', role: 'auditor', hours: 1 });
+    const triage = dashboard.getByRole('region', { name: 'Triage', exact: true });
+    const activity = dashboard.getByRole('table', { name: 'Triage activity', exact: true });
+    const save = triage.getByRole('button', { name: 'Save triage', exact: true });
+    const status = triage.getByLabel('Status', { exact: true });
+    const saved = () => triage.getByRole('status').getByText('Event triage saved.', { exact: true }).waitFor();
+    async function signInAs(token) {
+      await dashboard.getByRole('button', { name: 'Sign out', exact: true }).click();
+      await dashboard.getByLabel('Control token').fill(token);
+      await dashboard.getByRole('button', { name: 'Sign in', exact: true }).click();
+      await dashboard.getByRole('heading', { name: 'Security overview', exact: true }).waitFor();
+    }
+    await dashboard.locator(`a[href^="${reviewPath}?"]`).click();
+    await dashboard.waitForURL((url) => url.pathname === reviewPath);
+    await dashboard.getByRole('region', { name: 'Detection details' }).getByText('ChatGPT', { exact: true }).waitFor();
+    assert.equal(await status.inputValue(), 'needs_review');
+    await status.selectOption('investigating');
+    await triage.getByLabel('Assignee', { exact: true }).selectOption(investigator.access.id);
+    await save.click();
+    await saved();
+    await activity.getByText('Organization admin', { exact: true }).waitFor();
+    await dashboard.getByRole('link', { name: 'Back to security events', exact: true }).click();
+    await dashboard.waitForURL((url) => url.searchParams.get('eventGroup') === group.id);
+    await dashboard.getByLabel('Triage status', { exact: true }).selectOption('investigating');
+    await dashboard.getByLabel('Triage assignee', { exact: true }).selectOption(investigator.access.id);
+    await dashboard.locator('#events').getByRole('button', { name: 'Apply filters', exact: true }).click();
+    await dashboard.waitForURL((url) => url.searchParams.get('triageAssignee') === investigator.access.id);
+    assert.equal(await policyEvents.locator('tbody tr').count(), 1);
+    const filteredExport = await dashboard.getByRole('link', { name: 'Export security events (JSON)', exact: true }).getAttribute('href');
+    const report = await dashboard.evaluate(async (path) => (await fetch(path)).json(), filteredExport);
+    assert.equal(report.filters.triageStatus, 'investigating');
+    assert.equal(report.entries.length, 1);
+    assert.equal(report.entries[0].eventId, detected.eventId);
+    assert.doesNotMatch(JSON.stringify(report), /Synthetic pilot draft|ZEKVAR_TEST_SECRET/);
+    for (const query of ['triageStatus=investigating&triageStatus=resolved', 'triageAssignee=someone']) {
+      assert.equal(await dashboard.evaluate(async (value) => (await fetch(`/events/export?${value}`)).status, query), 400);
+    }
+    await signInAs(investigator.token);
+    assert.match(await dashboard.getByLabel('Triage assignee', { exact: true }).locator(`option[value="${investigator.access.id}"]`).textContent(),
+      /Assigned to me/);
+    await dashboard.goto(dashboardOrigin + reviewPath);
+    await status.selectOption('resolved');
+    const resolution = triage.getByLabel('Resolution', { exact: true });
+    await resolution.waitFor();
+    await save.click();
+    assert.equal(await resolution.evaluate((element) => element.validity.valueMissing), true);
+    await resolution.selectOption('confirmed_violation');
+    await admin(`events/${detected.installationId}/${detected.eventId}/triage`,
+      { expectedRevision: 1, status: 'needs_review', disposition: null, assigneeId: investigator.access.id });
+    await save.click();
+    await triage.getByRole('alert').getByText(/Someone updated this event/).waitFor();
+    assert.equal(await resolution.inputValue(), 'confirmed_violation');
+    await dashboard.reload();
+    assert.equal(await status.inputValue(), 'needs_review');
+    await status.selectOption('resolved');
+    await resolution.selectOption('false_positive');
+    await save.click();
+    await saved();
+    await activity.getByRole('row').filter({ hasText: 'Hosted investigator' }).getByText(/Resolved · False positive/).waitFor();
+    if (artifacts) await dashboard.screenshot({ path: join(artifacts, '35-event-triage.png'), fullPage: true });
+    await signInAs(auditor.token);
+    await dashboard.goto(dashboardOrigin + reviewPath);
+    await triage.getByText('Resolved', { exact: true }).waitFor();
+    assert.equal(await save.count(), 0);
+    assert.equal(await status.count(), 0);
+    await dashboard.getByRole('link', { name: 'Open audit log', exact: true }).click();
+    await dashboard.getByRole('heading', { name: 'Audit log', exact: true }).waitFor();
+    const audit = dashboard.getByRole('table', { name: 'Control activity', exact: true });
+    const finalEntry = audit.getByRole('row').filter({ hasText: 'False positive' });
+    await finalEntry.getByText('Hosted investigator', { exact: true }).waitFor();
+    assert.equal(await finalEntry.getByRole('link', { name: 'Review event', exact: true }).getAttribute('href'), reviewPath);
+    await finalEntry.getByRole('link', { name: 'Review event', exact: true }).click();
+    await dashboard.waitForURL((url) => url.pathname === reviewPath);
+    await activity.getByText(/Resolved · False positive/).waitFor();
+    assert.equal((await call(browserOrigin + '/v1/admin' + reviewPath, { headers: { Authorization: `Bearer ${owner}` } })).status, 404);
+  });
   await dashboard.getByRole('button', { name: 'Sign out', exact: true }).click();
   await dashboard.getByRole('heading', { name: 'Sign in to Control', exact: true }).waitFor();
   assert.equal((await browser.cookies(dashboardOrigin)).some(({ name }) => name === session.name), false);

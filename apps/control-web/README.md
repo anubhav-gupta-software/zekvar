@@ -119,11 +119,15 @@ Open **Policy preview** for the intended scope and add an entry under **Temporar
 
 ## Investigate and export security events
 
-Open **Events** in the sidebar. Filter by application, decision, time range, browser installation ID, or **Recorded rollout group**, then select **Apply filters**. Select an installation ID or recorded rollout in a result to narrow the current view. Use **Older events** and **Newest events** to review the matching records.
+Open **Events** in the sidebar. Filter by application, decision, time range, browser installation ID, recorded rollout group, triage status, or assignee, then select **Apply filters**. Select an installation, rollout, or assignee in a result to narrow the current view. Use **Older events** and **Newest events** to review the matching records.
 
 The **Recorded rollout** column shows the assignment associated with the event, including when a group inherits the baseline policy. **Organization baseline** means the browser was outside a group for that event. **Unattributed** means the earlier record lacks enough information to determine its assignment. Use **Browser health** to check a browser's current assignment.
 
-**Export security events (JSON)** downloads all retained records matching the applied filters, even when you are viewing an older page. Both the view and the download use the same cutoff for relative time filters. The file includes organization, filter, and decision metadata. Prompt text, matched values, and tokens stay out of the download. Treat installation IDs and decision history as organization data.
+Select **Needs review**, **Investigating**, or **Resolved** in a row to open the event. Owners and administrators can assign it to an active named administrator, set the status, and select a resolution when closing it. Use **Assigned to me** in the assignee filter to find your queue. An inactive assignment remains visible until someone changes it. If another administrator saves first, reload and review their update before trying again. Auditors can read triage and activity.
+
+**Triage activity** shows up to 50 retained changes with the actor and before-and-after values. Use **Audit log → Security event triaged** for organization-wide review. Event data and audit history follow their respective retention windows.
+
+**Export security events (JSON)** downloads all retained records matching the applied filters, even when you are viewing an older page. Both the view and the download use the same cutoff for relative time filters. The file includes organization, filter, decision, and any saved triage metadata. Prompt text, matched values, and tokens stay out of the download. Treat installation IDs, assignment names, and decision history as organization data.
 
 ## Review AI enforcement
 

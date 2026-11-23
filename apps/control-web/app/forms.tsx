@@ -59,17 +59,18 @@ export function SignInForm({ invalid }: { invalid?: boolean }) {
   </form>;
 }
 
-export function MutationForm({ action, children, label, appearance = '', confirmation, accessibleLabel }: {
+export function MutationForm({ action, children, label, appearance = '', confirmation, accessibleLabel, preserveValues = false }: {
   action: (state: Feedback, data: FormData) => Promise<Feedback>;
   children?: ReactNode;
   label: string;
   appearance?: string;
   confirmation?: string;
   accessibleLabel?: string;
+  preserveValues?: boolean;
 }) {
   const [state, submit, busy] = useActionState(action, {});
   return <div>
-    <form action={submit} className="form-row" onSubmit={(event) => {
+    <form action={submit} className="form-row" onReset={preserveValues ? (event) => event.preventDefault() : undefined} onSubmit={(event) => {
       if (confirmation && !window.confirm(confirmation)) event.preventDefault();
     }}>
       {children}

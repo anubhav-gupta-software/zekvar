@@ -7,6 +7,7 @@ import { aiApps, classificationLabels, utc } from '../../lib/control';
 import { cleanupCounts, retentionFields, type RetentionField } from '../../lib/retention';
 import { sessionToken } from '../../lib/session';
 import { DeploymentBadge, Sidebar } from '../workspace';
+import { eventPath, triageDispositions, triageStatuses } from '../../lib/triage';
 
 export default async function Audit({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const token = await sessionToken();
@@ -83,6 +84,12 @@ const actorLabels = { organization_admin: 'Organization admin', named_administra
   sso_identity: 'Single sign-on identity', browser_enrollment: 'Browser enrollment', system: 'Scheduled cleanup' };
 
 function auditDetails(entry: AuditEntry) {
+  const triage = entry.eventTriageChange;
+  if (triage) return <><a className="underline" href={eventPath(triage.installationId, triage.eventId)}>Review event</a>
+    {' · '}{triageStatuses[triage.before.status]} → {triageStatuses[triage.after.status]}
+    {triage.after.disposition && <> · {triageDispositions[triage.after.disposition]}</>}
+    {triage.before.assigneeId !== triage.after.assigneeId && <> · Assignment changed</>}
+  </>;
   const batch = entry.enrollmentBatchChange;
   if (batch) return <>{entry.installationId && <><code title={entry.installationId}>{entry.installationId.slice(0, 13)}</code> · </>}
     {batch.groupName ?? 'Organization baseline'} · {batch.count} {batch.count === 1 ? 'grant' : 'grants'} ·

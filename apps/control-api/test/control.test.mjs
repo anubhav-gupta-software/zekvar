@@ -28,6 +28,7 @@ const fileAdmin = randomBytes(32).toString('hex');
 const rolloutHistoryAdmin = randomBytes(32).toString('hex');
 const deploymentAdmin = randomBytes(32).toString('hex');
 const aiAppAccessAdmin = randomBytes(32).toString('hex');
+const eventTriageAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -114,6 +115,8 @@ async function start(sweepSeconds = 3600) {
       Control__Organizations__11__AdminToken: deploymentAdmin,
       Control__Organizations__12__Slug: `ai-app-access-${suffix}`,
       Control__Organizations__12__AdminToken: aiAppAccessAdmin,
+      Control__Organizations__13__Slug: `event-triage-${suffix}`,
+      Control__Organizations__13__AdminToken: eventTriageAdmin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -1098,11 +1101,13 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     if (postgres) {
       await stop();
       await retentionFixture(`
-        DELETE FROM schema_migrations WHERE version IN (14, 15, 21);
+        DELETE FROM schema_migrations WHERE version IN (14, 15, 21, 31);
         DROP TABLE control_sso_sessions;
         DROP TABLE policy_reviews;
+        DROP TABLE event_triage;
         ALTER TABLE organizations DROP COLUMN require_policy_review;
-        ALTER TABLE control_audit DROP COLUMN review_change, DROP COLUMN actor_access_id, DROP COLUMN subject_access_id;
+        ALTER TABLE control_audit DROP COLUMN review_change, DROP COLUMN actor_access_id, DROP COLUMN subject_access_id,
+          DROP COLUMN event_triage_change;
         DROP TABLE control_access;
       `);
       await start();
@@ -2760,5 +2765,159 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual((await policy(secondBrowser, true)).blockedAiAppHosts, []);
     await post(`installations/${fresh.installationId}/revoke`, {}, { expect: 204 });
     await heartbeat(fresh, grouped, true, 401);
+  });
+
+  await t.test('triages retained events with isolated assignees, atomic revisions, and audit history', async (triage) => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: eventTriageAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const issue = (name, role = 'administrator', token = eventTriageAdmin) => post('access', { name, role, hours: 1 }, { token });
+    const enroll = async () => {
+      const { grant } = await post('enrollment-grants');
+      return call('/v1/enroll', { method: 'POST', body: { grant } });
+    };
+    const eventId = randomUUID();
+    const payload = { ...contract.event, eventId, timestamp: new Date().toISOString() };
+    const [one, two] = await Promise.all([enroll(), enroll()]);
+    const record = (browser, body = payload) =>
+      call('/v1/browser/events', { method: 'POST', token: browser.token, body, expect: 204 });
+    await Promise.all([record(one), record(two)]);
+    const path = (browser, id = eventId) => `events/${browser.installationId}/${id}`;
+    const review = path(one);
+    const entries = (query, options) => admin(`events/history?${query}`, options).then((result) => result.entries);
+    const activity = () => admin('audit?action=event_triage_changed').then((result) => result.entries);
+    const initial = await admin(review);
+    assert.equal(initial.event.eventId, eventId);
+    assert.equal(initial.event.triage, undefined);
+    assert.deepEqual(initial.activity, []);
+
+    await triage.test('migrates an existing event from schema 30 and exposes it as unassigned and needing review', async () => {
+      if (postgres) {
+        await stop();
+        await retentionFixture(`
+          DELETE FROM schema_migrations WHERE version = 31;
+          DROP TABLE event_triage;
+          ALTER TABLE control_audit DROP COLUMN event_triage_change;
+        `);
+        await start();
+        assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 31'), '1');
+      }
+      assert.deepEqual(await admin(review), initial);
+      const list = await entries('triageStatus=needs_review&triageAssignee=unassigned');
+      assert.deepEqual(list.map(({ installationId }) => installationId).sort(), [one.installationId, two.installationId].sort());
+      assert.deepEqual(await entries('triageStatus=resolved'), []);
+      assert.deepEqual(await entries('triageStatus=investigating'), []);
+      const headers = { Authorization: `Bearer ${eventTriageAdmin}` };
+      for (const route of ['history', 'export']) {
+        const response = await fetch(`${baseUrl}/v1/admin/events/${route}?triageStatus=needs_review`, { headers });
+        assert.equal(response.headers.get('X-Zekvar-Event-Triage'), '1');
+        assert.equal((await response.json()).entries.length, 2);
+        for (const invalid of ['triageStatus=complete', 'triageStatus=resolved&triageStatus=needs_review',
+          'triageAssignee=other', 'triageAssignee=unassigned&triageAssignee=unassigned',
+          'triageAssignee=00000000-0000-0000-0000-000000000000']) {
+          await admin(`events/${route}?${invalid}`, { expect: 400 });
+        }
+      }
+    });
+
+    const [operator, alternate, auditor, foreign] = await Promise.all([
+      issue('Triage operator'), issue('Triage backup'), issue('Triage auditor', 'auditor'), issue('Outside organization', 'administrator', second),
+    ]);
+    const investigating = { expectedRevision: 0, status: 'investigating', disposition: null, assigneeId: operator.access.id };
+    const change = (body, options) => post(`${review}/triage`, body, options);
+    await triage.test('enforces permissions, rejects extra data, and serializes overlapping and repeated saves', async () => {
+      const roster = await admin('events/triage-assignees', { token: auditor.token });
+      assert.deepEqual(roster.map(({ id }) => id), [alternate.access.id, operator.access.id]);
+      await admin(review, { token: one.token, expect: 401 });
+      await admin('events/triage-assignees', { token: one.token, expect: 401 });
+      await admin(review, { token: second, expect: 404 });
+      await admin(path(two, randomUUID()), { expect: 404 });
+      await change(investigating, { token: second, expect: 404 });
+      await change(investigating, { token: auditor.token, expect: 403 });
+      assert.deepEqual(await admin(review, { token: auditor.token }), initial);
+      for (const parameters of [{ expectedRevision: null }, { expectedRevision: -1 }, { status: null },
+        { status: 'resolved' }, { disposition: 'false_positive' }, { note: 'SYNTHETIC_PROMPT_VALUE' }]) {
+        await change({ ...investigating, ...parameters }, { expect: 400 });
+      }
+      for (const assigneeId of [foreign.access.id, auditor.access.id, randomUUID()]) {
+        assert.deepEqual(await change({ ...investigating, assigneeId }, { expect: 400 }), { code: 'event_assignee_unavailable' });
+      }
+      assert.deepEqual(await activity(), []);
+      const requests = [
+        { body: investigating, token: operator.token },
+        { body: { ...investigating, status: 'resolved', disposition: 'false_positive', assigneeId: alternate.access.id }, token: alternate.token },
+      ];
+      const responses = await Promise.all(requests.map(({ token, body }) => fetch(`${baseUrl}/v1/admin/${review}/triage`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        signal: AbortSignal.timeout(5000),
+      })));
+      const outcomes = await Promise.all(responses.map((response) => response.json()));
+      assert.deepEqual(responses.map(({ status }) => status).sort(), [200, 409], JSON.stringify(outcomes));
+      const winner = responses.findIndex(({ ok }) => ok);
+      const saved = outcomes[winner];
+      assert.deepEqual(outcomes[1 - winner], { code: 'event_triage_stale' });
+      assert.equal(saved.revision, 1);
+      assert.equal(saved.assignee.id, requests[winner].body.assigneeId);
+      assert.deepEqual(await change(requests[winner].body), saved);
+      assert.deepEqual(await change({ ...requests[winner].body, expectedRevision: 1 }), saved);
+      assert.deepEqual((await admin(review)).event.triage, saved);
+      const [entry] = await activity();
+      assert.equal((await activity()).length, 1);
+      assert.equal(entry.actorAccess.id, saved.assignee.id);
+      assert.deepEqual(entry.eventTriageChange, {
+        installationId: one.installationId, eventId, revision: 1,
+        before: { status: 'needs_review', disposition: null, assigneeId: null },
+        after: { status: saved.status, disposition: saved.disposition, assigneeId: saved.assignee.id },
+      });
+      assert.deepEqual((await admin(review)).activity[0].change, entry.eventTriageChange);
+      assert.equal((await admin(path(two))).event.triage, undefined);
+      await record(one);
+      assert.equal((await entries(`triageAssignee=${saved.assignee.id}`)).length, 1);
+      assert.deepEqual(await entries(`triageAssignee=${foreign.access.id}`), []);
+      const filtered = `triageAssignee=${saved.assignee.id}&triageStatus=${saved.status}&appId=${payload.appId}`;
+      assert.deepEqual((await admin(`events/export?${filtered}`)).entries, await entries(filtered));
+    });
+
+    await triage.test('retains inactive assignments and cleans expired events independently of their audit evidence', async () => {
+      const current = (await admin(review)).event.triage;
+      const inactive = current.assignee.id;
+      const backup = [operator, alternate].find(({ access }) => access.id !== inactive);
+      await post(`access/${inactive}/revoke`, undefined, { expect: 204 });
+      assert.equal((await admin(review)).event.triage.assignee.active, false);
+      assert.ok(!(await admin('events/triage-assignees')).some(({ id }) => id === inactive));
+      const staleOwner = { expectedRevision: 0, status: 'investigating', disposition: null, assigneeId: inactive };
+      await post(`${path(two)}/triage`, staleOwner, { expect: 400 });
+      const reopened = await change({ ...staleOwner, expectedRevision: 1, status: 'needs_review' }, { token: backup.token });
+      assert.equal(reopened.revision, 2);
+      assert.equal(reopened.assignee.active, false);
+      const resolved = await change({ ...staleOwner, expectedRevision: 2, status: 'resolved', disposition: 'expected_activity', assigneeId: null });
+      assert.equal(resolved.assignee, null);
+      assert.equal(resolved.revision, 3);
+      assert.equal((await entries('triageStatus=resolved&triageAssignee=unassigned')).length, 1);
+      assert.equal((await entries('triageStatus=needs_review&triageAssignee=unassigned')).length, 1);
+      assert.deepEqual((await admin(review)).activity.map(({ change }) => change.revision), [3, 2, 1]);
+      assert.deepEqual(await admin('audit?action=event_triage_changed', { token: second }), { entries: [], next: null });
+      assert.doesNotMatch(JSON.stringify(await activity()), /SYNTHETIC_PROMPT_VALUE|tokenHash|rawText/);
+      if (!postgres) return;
+
+      await retentionFixture(`
+        UPDATE control_audit SET occurred_at = now() - interval '3 days'
+        WHERE action = 'event_triage_changed' AND event_triage_change->>'eventId' = '${eventId}' AND event_triage_change->>'revision' = '1';
+      `);
+      await post('retention', { securityEventDays: 1, aiObservationDays: null, auditDays: 1 }, { expect: 204 });
+      assert.deepEqual((await admin(review)).activity.map(({ change }) => change.revision), [3, 2]);
+      assert.equal((await admin(review)).event.triage.revision, 3);
+      await retentionFixture(`UPDATE security_events SET occurred_at = now() - interval '3 days'
+        WHERE installation_id = '${one.installationId}' AND event_id = '${eventId}';`);
+      assert.deepEqual(await entries('triageStatus=resolved'), []);
+      assert.deepEqual((await admin('events/export?triageStatus=resolved')).entries, []);
+      await admin(review, { expect: 404 });
+      await change({ ...investigating, expectedRevision: 3 }, { expect: 404 });
+      assert.equal(await retentionFixture(`SELECT count(*) FROM event_triage WHERE event_id = '${eventId}'`), '1');
+      const removed = await post('retention/cleanup');
+      assert.deepEqual([removed.securityEvents, removed.auditEntries], [1, 1]);
+      assert.equal(await retentionFixture(`SELECT count(*) FROM event_triage WHERE event_id = '${eventId}'`), '0');
+      assert.deepEqual((await activity()).map(({ eventTriageChange }) => eventTriageChange.revision), [3, 2]);
+      assert.equal((await admin(path(two))).event.eventId, eventId);
+    });
   });
 });

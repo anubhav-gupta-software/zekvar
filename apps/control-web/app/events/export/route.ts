@@ -1,16 +1,19 @@
 import { ApiError, controlApi } from '../../../lib/api';
 import { rolloutFilter } from '../../../lib/control';
 import { sessionToken } from '../../../lib/session';
+import { triageAssigneeFilter, triageStatusFilter } from '../../../lib/triage';
 
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Cross-Origin-Resource-Policy': 'same-origin' };
-const filterKeys = new Set(['appId', 'decision', 'since', 'until', 'installationId', 'rolloutGroup']);
+const filterKeys = new Set(['appId', 'decision', 'since', 'until', 'installationId', 'rolloutGroup', 'triageStatus', 'triageAssignee']);
 
 export async function GET(request: Request) {
   const token = await sessionToken();
   if (!token) return new Response('Sign in to export security events.', { status: 401, headers });
   const filters = new URL(request.url).searchParams;
   if ([...filters.keys()].some((key) => !filterKeys.has(key) || filters.getAll(key).length > 1) ||
-      rolloutFilter(filters.get('rolloutGroup') ?? undefined) === undefined) {
+      rolloutFilter(filters.get('rolloutGroup') ?? undefined) === undefined ||
+      triageStatusFilter(filters.get('triageStatus') ?? undefined) === undefined ||
+      triageAssigneeFilter(filters.get('triageAssignee') ?? undefined) === undefined) {
     return new Response('Invalid security event filters.', { status: 400, headers });
   }
   try {

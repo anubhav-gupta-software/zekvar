@@ -118,6 +118,7 @@ export type SecurityEvent = {
   decision: Decision;
   uploadMethod?: UploadMethod;
   rollout?: { kind: 'baseline' | 'unattributed' } | { kind: 'group'; groupId: string; groupName: string };
+  triage?: import('./triage').EventTriage;
 };
 
 export type Grant = { grant: string; expiresAt: string };

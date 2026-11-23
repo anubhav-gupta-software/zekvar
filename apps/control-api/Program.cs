@@ -213,34 +213,59 @@ admin.MapPost("/installations/{id:guid}/policy-group", async (Guid id, AssignPol
         "upgrade_required" => Results.Conflict(new { error = "Update this browser to Zekvar Browser v0.8.0 before moving it." }),
         _ => Results.NotFound()
     });
-admin.MapGet("/events", async (string? appId, string? decision, DateTimeOffset? since, string? rolloutGroup, HttpContext http, CancellationToken ct) =>
+admin.MapGet("/events", async (string? appId, string? decision, DateTimeOffset? since, string? rolloutGroup,
+    string? triageStatus, string? triageAssignee, HttpContext http, CancellationToken ct) =>
 {
     if (http.Request.Query["rolloutGroup"].Count > 1 || EventRolloutFilter.Parse(rolloutGroup) is null)
         return Results.BadRequest(new { error = "Choose a valid event rollout group." });
-    return Results.Ok((await store.EventHistory(Identity(http).OrganizationId, new(appId, decision, since, null, null, rolloutGroup), null, ct)).Entries);
+    var filters = new EventFilters(appId, decision, since, null, null, rolloutGroup, triageStatus, triageAssignee);
+    if (!filters.ValidTriage() || RepeatedTriageFilters(http.Request.Query))
+        return Results.BadRequest(new { error = "Choose valid event triage filters." });
+    http.Response.Headers["X-Zekvar-Event-Triage"] = "1";
+    return Results.Ok((await store.EventHistory(Identity(http).OrganizationId, filters, null, ct)).Entries);
 });
 admin.MapGet("/events/history", async ([AsParameters] EventFilters filters, DateTimeOffset? beforeAt,
     Guid? beforeEventId, Guid? beforeInstallationId, HttpContext http, CancellationToken ct) =>
 {
-    if (!filters.Valid() || http.Request.Query["rolloutGroup"].Count > 1 ||
+    if (!filters.Valid() || http.Request.Query["rolloutGroup"].Count > 1 || RepeatedTriageFilters(http.Request.Query) ||
         beforeAt.HasValue != beforeEventId.HasValue || beforeAt.HasValue != beforeInstallationId.HasValue ||
         beforeEventId == Guid.Empty || beforeInstallationId == Guid.Empty)
         return Results.BadRequest(new { error = "Choose valid event filters and a complete history cursor." });
     var cursor = beforeAt is { } at && beforeEventId is { } id && beforeInstallationId is { } installationId
         ? new EventCursor(at, id, installationId) : null;
     http.Response.Headers["X-Zekvar-Event-Rollout"] = "1";
+    http.Response.Headers["X-Zekvar-Event-Triage"] = "1";
     return Results.Ok(await store.EventHistory(Identity(http).OrganizationId, filters, cursor, ct));
 });
 admin.MapGet("/events/export", ([AsParameters] EventFilters filters, HttpContext http, CancellationToken ct) =>
 {
-    if (!filters.Valid() || http.Request.Query["rolloutGroup"].Count > 1)
+    if (!filters.Valid() || http.Request.Query["rolloutGroup"].Count > 1 || RepeatedTriageFilters(http.Request.Query))
         return Results.BadRequest(new { error = "Choose valid event filters." });
     var identity = Identity(http);
     http.Response.Headers.ContentDisposition = "attachment; filename=\"zekvar-security-events.json\"";
     http.Response.Headers.XContentTypeOptions = "nosniff";
     http.Response.Headers["X-Zekvar-Event-Rollout"] = "1";
+    http.Response.Headers["X-Zekvar-Event-Triage"] = "1";
     return Results.Ok(new EventExport(identity.OrganizationSlug!, DateTime.UtcNow, filters,
         store.ReadEvents(identity.OrganizationId, filters, null, null, ct)));
+});
+admin.MapGet("/events/triage-assignees", async (HttpContext http, CancellationToken ct) =>
+    Results.Ok(await store.EventTriageAssignees(Identity(http).OrganizationId, ct)));
+admin.MapGet("/events/{installationId:guid}/{eventId:guid}", async (Guid installationId, Guid eventId, HttpContext http, CancellationToken ct) =>
+    await store.EventDetail(Identity(http).OrganizationId, installationId, eventId, ct) is { } detail
+        ? Results.Ok(detail) : Results.NotFound());
+admin.MapPost("/events/{installationId:guid}/{eventId:guid}/triage",
+    async (Guid installationId, Guid eventId, SetEventTriage request, HttpContext http, CancellationToken ct) =>
+{
+    if (!request.IsValid()) return Results.BadRequest(new { error = "Choose a valid triage status, resolution, and revision." });
+    var result = await store.ChangeEventTriage(Identity(http), installationId, eventId, request, ct);
+    return result switch
+    {
+        { Error: "event_triage_stale" } => Results.Conflict(new { code = result.Error }),
+        { Error: "event_assignee_unavailable" } => Results.BadRequest(new { code = result.Error }),
+        { Triage: { } triage } => Results.Ok(triage),
+        _ => Results.NotFound()
+    };
 });
 admin.MapGet("/reports/ai-enforcement", async (HttpContext http, CancellationToken ct) =>
 {
@@ -354,6 +379,7 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
 }
 
 static bool ExpectsReview(HttpContext http) => http.Request.Headers["X-Zekvar-Expect-Review"] == "1";
+static bool RepeatedTriageFilters(IQueryCollection query) => query["triageStatus"].Count > 1 || query["triageAssignee"].Count > 1;
 
 static IResult PolicyOutcome(PolicyChangeResult result, IResult fallback)
 {

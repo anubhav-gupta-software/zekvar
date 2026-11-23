@@ -53,6 +53,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 28, "028_event_rollout_attribution.sql", ct);
         await ApplyMigration(connection, 29, "029_extension_deployment.sql", ct);
         await ApplyMigration(connection, 30, "030_ai_app_access.sql", ct);
+        await ApplyMigration(connection, 31, "031_event_triage.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -447,33 +448,34 @@ internal sealed partial class ControlStore
         int? limit, [EnumeratorCancellation] CancellationToken ct)
     {
         var rollout = EventRolloutFilter.Parse(filters.RolloutGroup) ?? throw new ArgumentException("Invalid event rollout filter.");
-        await using var command = Command("""
-            SELECT e.event_id, e.installation_id, e.occurred_at, e.received_at, e.policy_version, e.decision, e.app_id, e.rule_id, e.upload_method,
-                e.rollout_attributed, e.rollout_group_id, g.name
-            FROM security_events e LEFT JOIN retention_cutoffs r ON e.organization_id = r.organization_id
-            LEFT JOIN policy_groups g ON e.organization_id = g.organization_id AND e.rollout_group_id = g.id
-            WHERE e.organization_id = $1
-                AND (r.event_cutoff IS NULL OR LEAST(occurred_at, received_at) >= r.event_cutoff)
-                AND ($2::text IS NULL OR decision = $2)
-                AND ($3::timestamptz IS NULL OR occurred_at >= $3)
-                AND ($4::text IS NULL OR app_id = $4)
-                AND ($5::timestamptz IS NULL OR occurred_at < $5)
-                AND ($6::uuid IS NULL OR installation_id = $6)
-                AND ($7::timestamptz IS NULL OR (received_at, event_id, installation_id) < ($7, $8::uuid, $9::uuid))
+        var assignee = TriageAssigneeFilter.Parse(filters.TriageAssignee) ?? throw new ArgumentException("Invalid triage assignee filter.");
+        var status = string.IsNullOrEmpty(filters.TriageStatus) ? null : filters.TriageStatus;
+        var triageJoin = status is TriageStatus.Investigating or TriageStatus.Resolved || assignee.Id.HasValue
+            ? EventTriageJoin : $"LEFT {EventTriageJoin}";
+        await using var command = Command($"""
+            SELECT {EventFields}
+            FROM {EventSources} {triageJoin}
+            WHERE e.organization_id = $1 AND {EventRetained}
+                AND ($2::text IS NULL OR e.decision = $2)
+                AND ($3::timestamptz IS NULL OR e.occurred_at >= $3)
+                AND ($4::text IS NULL OR e.app_id = $4)
+                AND ($5::timestamptz IS NULL OR e.occurred_at < $5)
+                AND ($6::uuid IS NULL OR e.installation_id = $6)
+                AND ($7::timestamptz IS NULL OR (e.received_at, e.event_id, e.installation_id) < ($7, $8::uuid, $9::uuid))
                 AND ($11::boolean IS NULL OR e.rollout_attributed = $11
                     AND (e.rollout_group_id = $12::uuid OR ($12 IS NULL AND e.rollout_group_id IS NULL)))
-            ORDER BY received_at DESC, event_id DESC, installation_id DESC LIMIT $10::integer
+                AND ($13::text IS NULL OR t.status = $13 OR ($13 = 'needs_review' AND t.status IS NULL))
+                AND (NOT $14 OR t.assignee_id IS NULL)
+                AND ($15::uuid IS NULL OR t.assignee_id = $15)
+            ORDER BY e.received_at DESC, e.event_id DESC, e.installation_id DESC LIMIT $10::integer
             """, organizationId, (object?)filters.Decision ?? DBNull.Value, (object?)filters.Since?.UtcDateTime ?? DBNull.Value,
             (object?)filters.AppId ?? DBNull.Value, (object?)filters.Until?.UtcDateTime ?? DBNull.Value,
             (object?)filters.InstallationId ?? DBNull.Value, (object?)cursor?.ReceivedAt.UtcDateTime ?? DBNull.Value,
             (object?)cursor?.EventId ?? DBNull.Value, (object?)cursor?.InstallationId ?? DBNull.Value, (object?)limit ?? DBNull.Value,
-            (object?)rollout.Attributed ?? DBNull.Value, (object?)rollout.GroupId ?? DBNull.Value);
+            (object?)rollout.Attributed ?? DBNull.Value, (object?)rollout.GroupId ?? DBNull.Value,
+            (object?)status ?? DBNull.Value, assignee.RequireUnassigned, (object?)assignee.Id ?? DBNull.Value);
         await using var rows = await command.ExecuteReaderAsync(ct);
-        while (await rows.ReadAsync(ct))
-            yield return new(rows.GetGuid(0), rows.GetGuid(1), rows.GetDateTime(2), rows.GetDateTime(3),
-                rows.GetInt32(4), rows.GetString(5), rows.GetString(6), rows.GetString(7), rows.IsDBNull(8) ? null : rows.GetString(8),
-                rows.GetBoolean(9) ? rows.IsDBNull(10) ? new("baseline") : new("group", rows.GetGuid(10), rows.GetString(11))
-                    : new("unattributed"));
+        while (await rows.ReadAsync(ct)) yield return ReadEvent(rows);
     }
 
     public async Task<bool> ObserveApp(Guid installationId, AppObservation observation, CancellationToken ct)
@@ -571,7 +573,8 @@ internal sealed partial class ControlStore
     {
         await using var command = Command("""
             SELECT a.id, occurred_at, action, policy_version, restored_from, installation_id, app_id, classification, retention, cleanup, group_change,
-                actor.id, actor.display_name, actor.role, subject.id, subject.display_name, subject.role, a.review_change, a.enrollment_batch_change
+                actor.id, actor.display_name, actor.role, subject.id, subject.display_name, subject.role, a.review_change, a.enrollment_batch_change,
+                a.event_triage_change
             FROM control_audit a LEFT JOIN retention_cutoffs r ON a.organization_id = r.organization_id
             LEFT JOIN control_access actor ON actor.organization_id = a.organization_id AND actor.id = a.actor_access_id
             LEFT JOIN control_access subject ON subject.organization_id = a.organization_id AND subject.id = a.subject_access_id
@@ -596,7 +599,8 @@ internal sealed partial class ControlStore
                 rows.IsDBNull(10) ? null : JsonSerializer.Deserialize<PolicyGroupChange>(rows.GetString(10), JsonSerializerOptions.Web),
                 ReadAccessIdentity(rows, 11), ReadAccessIdentity(rows, 14),
                 rows.IsDBNull(17) ? null : JsonSerializer.Deserialize<PolicyReviewAudit>(rows.GetString(17), JsonSerializerOptions.Web),
-                rows.IsDBNull(18) ? null : JsonSerializer.Deserialize<EnrollmentBatchChange>(rows.GetString(18), JsonSerializerOptions.Web)));
+                rows.IsDBNull(18) ? null : JsonSerializer.Deserialize<EnrollmentBatchChange>(rows.GetString(18), JsonSerializerOptions.Web),
+                rows.IsDBNull(19) ? null : JsonSerializer.Deserialize<EventTriageChange>(rows.GetString(19), JsonSerializerOptions.Web)));
         if (entries.Count <= filters.Limit) return new(entries, null);
         entries.RemoveAt(filters.Limit);
         var last = entries[^1];

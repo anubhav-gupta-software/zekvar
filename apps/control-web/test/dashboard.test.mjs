@@ -589,6 +589,8 @@ test('Control dashboard signs in and manages a real browser installation and eve
     assert.equal(await link.count(), 0);
     await page.getByLabel('Recorded rollout group', { exact: true }).selectOption('baseline');
     await installation.fill(browser.installationId);
+    await page.getByLabel('Triage status', { exact: true }).selectOption('needs_review');
+    await page.getByLabel('Triage assignee', { exact: true }).selectOption('unassigned');
     await page.getByRole('button', { name: 'Apply filters' }).click();
     const older = page.getByRole('link', { name: 'Older events', exact: true });
     await older.waitFor();
@@ -599,6 +601,8 @@ test('Control dashboard signs in and manages a real browser installation and eve
     assert.equal(filters.get('appId'), 'chatgpt');
     assert.equal(filters.get('decision'), policy.mode);
     assert.equal(filters.get('rolloutGroup'), 'baseline');
+    assert.equal(filters.get('triageStatus'), 'needs_review');
+    assert.equal(filters.get('triageAssignee'), 'unassigned');
     assert.ok(filters.get('since'));
     await older.click();
     const newest = page.getByRole('link', { name: 'Newest events', exact: true });
@@ -606,6 +610,17 @@ test('Control dashboard signs in and manages a real browser installation and eve
     assert.equal(new URL(page.url()).searchParams.get('since'), filters.get('since'));
     assert.equal(new URL(page.url()).searchParams.get('eventGroup'), 'baseline');
     assert.equal(await link.getAttribute('href'), href);
+    assert.equal(await events.locator('tbody tr').count(), 2);
+    const cursor = new URL(page.url()).searchParams.get('beforeEventId');
+    await events.getByRole('link', { name: 'Needs review', exact: true }).first().click();
+    await page.getByRole('heading', { name: 'Security event', exact: true }).waitFor();
+    const desktop = page.viewportSize();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await assertFitsViewport(page);
+    await page.setViewportSize(desktop);
+    await page.getByRole('link', { name: 'Back to security events', exact: true }).click();
+    await newest.waitFor();
+    assert.equal(new URL(page.url()).searchParams.get('beforeEventId'), cursor);
     assert.equal(await events.locator('tbody tr').count(), 2);
     const screenshot = process.env.ZEKVAR_TEST_EVENTS_SCREENSHOT;
     if (screenshot) await page.locator('#events').screenshot({ path: screenshot });
@@ -623,6 +638,8 @@ test('Control dashboard signs in and manages a real browser installation and eve
     assert.equal(organization, await page.locator('.eyebrow').textContent());
     assert.equal(Date.parse(reported.since), Date.parse(filters.get('since')));
     assert.equal(reported.rolloutGroup, 'baseline');
+    assert.equal(reported.triageStatus, 'needs_review');
+    assert.equal(reported.triageAssignee, 'unassigned');
     assert.deepEqual(entries.map(({ eventId }) => eventId).sort(), ids.sort());
     assert.ok(entries.every((entry) => entry.installationId === browser.installationId && entry.appId === 'chatgpt'));
     assert.ok(entries.every(({ rollout }) => rollout.kind === 'baseline'));

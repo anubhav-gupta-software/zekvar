@@ -14,6 +14,7 @@ import { DomainRulesForm, EnrollmentForm, MutationForm, RefreshSection, SignInFo
 import { PolicyVersionTable, PublishPolicyForm } from './policies';
 import { Brand, DeploymentBadge, RecordedRolloutOptions, Sidebar } from './workspace';
 import { uploadMethods, uploadRule } from '../../../contracts/policy/uploads';
+import { eventPath, initialTriage, triageDispositions, triageStatuses } from '../lib/triage';
 
 type Search = Record<string, string | string[] | undefined>;
 
@@ -26,24 +27,37 @@ export default async function Control({ searchParams }: { searchParams: Promise<
   const eventPage = new URLSearchParams(filters.page);
   const historyQuery = new URLSearchParams(filters.query);
   if (filters.cursor) setEventCursor(historyQuery, filters.cursor);
-  const validHistory = !filters.invalidInstallation && !filters.invalidCursor && filters.rolloutGroup !== undefined;
+  const validHistory = !filters.invalidInstallation && !filters.invalidCursor && !filters.invalidTriage && filters.rolloutGroup !== undefined;
 
   try {
+    let historyError: string | undefined;
     const [session, policies, browserHealth, history, discoveredApps] = await Promise.all([
       controlApi.session(token), controlApi.policies(token),
       loadBrowserHealth(token, browserFilters),
       validHistory ? controlApi.events(token, historyQuery).catch((error: unknown) => {
-        if (error instanceof ApiError && error.code === 'event_rollout_unavailable') return undefined;
+        if (error instanceof ApiError && ['event_rollout_unavailable', 'event_triage_unavailable'].includes(error.code ?? '')) {
+          historyError = error.code;
+          return undefined;
+        }
         throw error;
       }) : undefined,
       controlApi.aiApps(token),
     ]);
     const events = history?.entries ?? [];
+    const roster = history?.triageAvailable || !validHistory ? await controlApi.triageAssignees(token).catch((error: unknown) => {
+      if (error instanceof ApiError && error.status === 404) return undefined;
+      throw error;
+    }) : undefined;
+    const assignees = roster ?? [];
     const selectedBrowserFilters = browserHealth.error ? new URLSearchParams() : browserFilters;
     const overviewPage = new URLSearchParams([...eventPage, ...selectedBrowserFilters]);
     const older = new URLSearchParams(overviewPage);
     if (history?.next) setEventCursor(older, history.next);
-    if (filters.cursor) setEventCursor(eventPage, filters.cursor);
+    const eventReturn = new URLSearchParams(overviewPage);
+    if (filters.cursor) {
+      setEventCursor(eventPage, filters.cursor);
+      setEventCursor(eventReturn, filters.cursor);
+    }
     const current = policies[0];
     const writable = canWrite(session);
     const policyWritable = canChangePolicy(session);
@@ -183,20 +197,43 @@ export default async function Control({ searchParams }: { searchParams: Promise<
                   <RecordedRolloutOptions groups={groups} selected={filters.rolloutGroup ?? ''} />
                 </select>
               </div>}
+            {(roster || filters.triageStatus || filters.triageAssignee || filters.invalidTriage) && <>
+              <div><label htmlFor="event-triage-status">Triage status</label>
+                <select id="event-triage-status" name="triageStatus" defaultValue={filters.triageStatus ?? ''}>
+                  <option value="">All statuses</option>
+                  {Object.entries(triageStatuses).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+              </div>
+              <div><label htmlFor="event-triage-assignee">Triage assignee</label>
+                <select id="event-triage-assignee" name="triageAssignee" defaultValue={filters.triageAssignee ?? ''}>
+                  <option value="">All assignees</option>
+                  <option value="unassigned">Unassigned</option>
+                  {assignees.map(({ id, name }) => <option key={id} value={id}>
+                    {id === session.access?.id ? `Assigned to me (${name})` : `${name} (${id.slice(0, 8)})`}
+                  </option>)}
+                  {filters.triageAssignee && filters.triageAssignee !== 'unassigned' && !assignees.some(({ id }) => id === filters.triageAssignee) &&
+                    <option value={filters.triageAssignee}>Selected assignee ({filters.triageAssignee.slice(0, 8)})</option>}
+                </select>
+              </div>
+            </>}
             <button className="button">Apply filters</button>
             {(filters.query.size > 0 || filters.cursor || !history) && <a className="clear-link" href={`/?${selectedBrowserFilters}#events`}>Clear filters</a>}
           </form>
-          {!history ? <p className="empty" role="alert">{validHistory ? 'This Control API version does not support recorded rollout filters.'
-            : filters.invalidInstallation ? 'Enter a complete browser installation ID.'
-              : filters.rolloutGroup === undefined ? 'Choose a valid recorded rollout group.'
-                : 'This event history link is invalid. Clear the filters to open the newest events.'}</p>
+          {!history ? <p className="empty" role="alert">{
+            historyError === 'event_triage_unavailable' ? 'This Control API version does not support event triage filters.'
+              : historyError === 'event_rollout_unavailable' ? 'This Control API version does not support recorded rollout filters.'
+                : filters.invalidTriage ? 'Choose a valid triage status and assignee.'
+                  : filters.invalidInstallation ? 'Enter a complete browser installation ID.'
+                    : filters.rolloutGroup === undefined ? 'Choose a valid recorded rollout group.'
+                      : 'This event history link is invalid. Clear the filters to open the newest events.'}</p>
             : <>
               <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="events-heading">
                 <table aria-labelledby="events-heading">
                   <thead><tr><th>Occurred (UTC)</th><th>Application</th><th>Decision</th><th>Detector</th><th>Policy</th>
-                    {history.rolloutAvailable && <th>Recorded rollout</th>}<th>Installation</th></tr></thead>
+                    {history.rolloutAvailable && <th>Recorded rollout</th>}<th>Installation</th>
+                    {history.triageAvailable && <th>Triage</th>}</tr></thead>
                   <tbody>{events.map((event) => <EventRow key={`${event.installationId}:${event.eventId}`} event={event}
-                    filters={overviewPage} showRollout={history.rolloutAvailable} />)}</tbody>
+                    filters={overviewPage} returnQuery={eventReturn} showRollout={history.rolloutAvailable} showTriage={history.triageAvailable} />)}</tbody>
                 </table>
                 {events.length === 0 && <p className="empty">{filters.query.size ? 'No events match these filters.' : 'No security events recorded yet.'}</p>}
               </div>
@@ -364,12 +401,17 @@ function CoverageCell({ coverage, checkedAt, enabled = true }: { coverage?: 'rea
   </span>{checkedAt && <div className="muted"><Timestamp value={checkedAt} /> UTC</div>}</td>;
 }
 
-function EventRow({ event, filters, showRollout }: { event: SecurityEvent; filters: URLSearchParams; showRollout?: boolean }) {
+function EventRow({ event, filters, returnQuery, showRollout, showTriage }: {
+  event: SecurityEvent; filters: URLSearchParams; returnQuery: URLSearchParams; showRollout: boolean; showTriage: boolean;
+}) {
   const browser = new URLSearchParams(filters);
   browser.set('installation', event.installationId);
   const rolloutQuery = new URLSearchParams(filters);
   const rollout = event.rollout;
   if (rollout) rolloutQuery.set('eventGroup', rollout.kind === 'group' ? rollout.groupId : rollout.kind);
+  const triage = event.triage ?? initialTriage;
+  const assignment = new URLSearchParams(filters);
+  if (triage.assignee) assignment.set('triageAssignee', triage.assignee.id);
   return <tr>
     <td><Timestamp value={event.timestamp} /></td>
     <td className="emphasis">{isPromptApp(event.appId) ? promptAppLabels[event.appId] : event.appId}</td>
@@ -381,5 +423,13 @@ function EventRow({ event, filters, showRollout }: { event: SecurityEvent; filte
       {rollout.kind === 'group' ? rollout.groupName : rollout.kind === 'baseline' ? 'Organization baseline' : 'Unattributed'}</a> : '—'}</td>}
     <td><a className="underline" href={`/?${browser}#events`}
       aria-label={`Filter events for installation ${event.installationId}`}><InstallationId value={event.installationId} /></a></td>
+    {showTriage && <td>
+      <a className="underline" href={`${eventPath(event.installationId, event.eventId)}?${returnQuery}`}>
+        {triageStatuses[triage.status]}
+      </a>
+      {triage.disposition && <div className="muted">{triageDispositions[triage.disposition]}</div>}
+      {triage.assignee && <div><a className="underline" href={`/?${assignment}#events`}
+        title={`Filter by ${triage.assignee.name}`}>{triage.assignee.name}{!triage.assignee.active && ' (inactive)'}</a></div>}
+    </td>}
   </tr>;
 }

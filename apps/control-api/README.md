@@ -149,6 +149,16 @@ History and export accept `appId`, `decision`, `installationId`, `rolloutGroup`,
 
 Pass `rolloutGroup=baseline`, `rolloutGroup=unattributed`, or a rollout group UUID. All three event routes support this filter. A valid group ID outside the current organization yields no entries. Each decision includes a `rollout.kind` of `baseline`, `unattributed`, or `group`, with `groupId` and `groupName` for group assignments. Events keep their recorded scope after reassignment, revocation, or retry. Migration 028 backfills cases where a group-specific policy or a never-reassigned installation identifies the scope. Other older events remain unattributed. History and export advertise this support with `X-Zekvar-Event-Rollout: 1`.
 
+### Security event triage
+
+Filter any of the three event routes with `triageStatus=needs_review|investigating|resolved` and `triageAssignee=unassigned` or a named administrator UUID. A record with no saved triage starts at revision 0, needs review, and is unassigned. History and export advertise filter support with `X-Zekvar-Event-Triage: 1`.
+
+- `GET /v1/admin/events/{installationId}/{eventId}` returns the retained event and up to 50 retained changes. Use both identifiers because each browser can report its own event IDs.
+- `GET /v1/admin/events/triage-assignees` lists active named administrators in the authenticated organization.
+- `POST /v1/admin/events/{installationId}/{eventId}/triage` accepts `expectedRevision`, `status`, `assigneeId` (UUID or null), and `disposition`. Use `confirmed_violation`, `false_positive`, `expected_activity`, or `insufficient_evidence` for a resolved event. Use null for other statuses. Owners and administrators can write, including retaining an inactive assignment or selecting a new active assignee. An auditor can read and export.
+
+Each accepted change increments the revision and writes one `event_triage_changed` audit entry atomically. Repeating the identical update against the current or immediately preceding revision returns the current state without another write. A conflicting revision returns HTTP 409 with `event_triage_stale`. An invalid new assignee returns HTTP 400 with `event_assignee_unavailable`. Unknown, foreign, or expired events return HTTP 404. Migration 031 adds triage without modifying earlier event records. Event cleanup cascades to current triage, and audit changes follow the independent audit retention window.
+
 ## AI enforcement report
 
 `GET /v1/admin/reports/ai-enforcement` accepts `days=7` (default) or `days=30`, an optional `appId` of `chatgpt`, `claude`, or `gemini`, and the same `rolloutGroup` filter as security events. The authenticated organization determines the scope. The report covers UTC calendar days including the current partial day. `startOn` is the first date. `asOf` is the inclusive cutoff for both occurrence and server receipt. Pass that value as Unix milliseconds in `asOf` to reuse the cutoff for up to 24 hours. Each request applies current retention and reads all counts from one PostgreSQL statement.
@@ -157,7 +167,7 @@ Pass `rolloutGroup=baseline`, `rolloutGroup=unattributed`, or a rollout group UU
 
 ## Audit log
 
-`GET /v1/admin/audit` returns the authenticated organization's activity as `{ entries, next }`. Use `action` to filter by `policy_published`, `policy_restored`, `grant_issued`, `browser_enrolled`, `browser_revoked`, `app_classified`, `retention_changed`, `retention_cleanup`, `policy_group_created`, `policy_group_assigned`, `access_issued`, `access_revoked`, `policy_review_setting_changed`, `policy_review_requested`, or `policy_review_decided`. `since` is inclusive and `until` is exclusive. `limit` defaults to 100 and accepts up to 1,000. When `next` is present, send its `occurredAt` as `beforeAt` and its `id` as `beforeId` with the same filters to get older entries.
+`GET /v1/admin/audit` returns the authenticated organization's activity as `{ entries, next }`. Use `action` to filter by `policy_published`, `policy_restored`, `grant_issued`, `browser_enrolled`, `browser_revoked`, `app_classified`, `retention_changed`, `retention_cleanup`, `policy_group_created`, `policy_group_assigned`, `access_issued`, `access_revoked`, `control_sso_signed_in`, `policy_review_setting_changed`, `policy_review_requested`, `policy_review_decided`, `enrollment_batch_issued`, `enrollment_batch_cancelled`, or `event_triage_changed`. `since` is inclusive and `until` is exclusive. `limit` defaults to 100 and accepts up to 1,000. When `next` is present, send its `occurredAt` as `beforeAt` and its `id` as `beforeId` with the same filters to get older entries.
 
 Audited changes and their records are written together. Repeating a revocation or saving the same classification preserves one entry for the change. Migration 006 backfills policy and installation history. Migration 014 adds `actorAccess` for named administrator activity and `subjectAccess` for issuance and revocation. Both objects contain an ID, name, and role. Earlier records keep their original actor category. Credential values, hashes, prompts, grant values, and policy content stay out of the audit payload.
 

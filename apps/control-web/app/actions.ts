@@ -16,6 +16,7 @@ import { promptExceptionError, readPromptExceptions } from '../../../contracts/p
 import { parseExtensionDeployment } from '../lib/extension-deployment';
 import { aiAppAccessCatalog, readBlockedAiAppHosts } from '../../../contracts/policy/ai-app-access';
 import { domainRuleLimit, ruleCount } from '../../../contracts/policy/domains';
+import { eventPath, isTriageDisposition, isTriageId, isTriageStatus } from '../lib/triage';
 
 export async function signIn(_previous: Feedback, form: FormData): Promise<Feedback> {
   const token = form.get('token');
@@ -36,6 +37,39 @@ export async function signIn(_previous: Feedback, form: FormData): Promise<Feedb
 export async function signOut() {
   await endSession();
   redirect('/');
+}
+
+export async function saveEventTriage(installationId: string, eventId: string, _previous: Feedback, form: FormData): Promise<Feedback> {
+  const rawRevision = form.get('revision');
+  const expectedRevision = Number(rawRevision);
+  const status = form.get('status');
+  const disposition = form.get('disposition');
+  const assignee = form.get('assignee');
+  if (!isTriageId(installationId) || !isTriageId(eventId) || typeof rawRevision !== 'string' || !/^\d+$/.test(rawRevision) ||
+      expectedRevision > 2_147_483_647 || !isTriageStatus(status) || (assignee !== '' && !isTriageId(assignee)) ||
+      (status === 'resolved' ? !isTriageDisposition(disposition) : disposition !== null)) {
+    return { error: 'Choose a valid triage status, resolution, and assignee.' };
+  }
+  return perform(async (token) => {
+    try {
+      await controlApi.saveEventTriage(token, installationId, eventId, {
+        expectedRevision, status, disposition: isTriageDisposition(disposition) ? disposition : null,
+        assigneeId: assignee || null,
+      });
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'event_triage_stale') {
+        return { error: 'Someone updated this event. Reload the event and review the latest triage before saving.' };
+      }
+      if (error instanceof ApiError && error.code === 'event_assignee_unavailable') {
+        return { error: 'That administrator is unavailable. Reload the event and choose an active assignee.' };
+      }
+      throw error;
+    }
+    revalidatePath(eventPath(installationId, eventId));
+    revalidatePath('/');
+    revalidatePath('/audit');
+    return { message: 'Event triage saved.' };
+  });
 }
 
 async function perform(change: (token: string) => Promise<Feedback>): Promise<Feedback> {
