@@ -1,6 +1,7 @@
 import { containsPaymentCard, redactPaymentCards } from './payment-card';
 import { containsPrivateKey, redactPrivateKeys } from './private-key';
 import { containsIdentifier, readIdentifierFormats, redactIdentifiers, sameIdentifierFormats, type IdentifierFormat } from './organization-identifiers';
+import { containsSsn, redactSsns } from './social-security-number';
 
 export const modes = ['monitor', 'warn', 'block'] as const;
 export type PolicyMode = typeof modes[number];
@@ -16,22 +17,26 @@ export const paymentDetector = 'payment-card';
 export const privateKeyRule = 'pem-private-key';
 export const identifierRule = 'organization-identifier';
 export const identifierDetector = 'internal-identifier';
+export const ssnRule = 'us-social-security-number';
+export const ssnDetector = 'government-identifier';
 export const testMarker = 'ZEKVAR_TEST_SECRET';
 export const ruleLabels = {
   [fixtureRule]: 'Synthetic secret', [githubPatRule]: 'GitHub classic PAT', [paymentCardRule]: 'Payment card number',
   [privateKeyRule]: 'Private key',
   [identifierRule]: 'Organization identifier',
+  [ssnRule]: 'U.S. Social Security number',
 } as const;
 
 export type RuleMetadata = { ruleId: typeof fixtureRule; detectorCategory: typeof fixtureDetector } |
   { ruleId: typeof githubPatRule; detectorCategory: typeof credentialDetector } |
   { ruleId: typeof paymentCardRule; detectorCategory: typeof paymentDetector } |
   { ruleId: typeof privateKeyRule; detectorCategory: typeof credentialDetector } |
-  { ruleId: typeof identifierRule; detectorCategory: typeof identifierDetector };
+  { ruleId: typeof identifierRule; detectorCategory: typeof identifierDetector } |
+  { ruleId: typeof ssnRule; detectorCategory: typeof ssnDetector };
 export type PromptRuleId = RuleMetadata['ruleId'];
 export type IdentifierProtection = { mode: DetectorMode; formats: IdentifierFormat[] };
 export type PromptPolicy = { mode: PolicyMode; githubPatMode?: DetectorMode; paymentCardMode?: DetectorMode; privateKeyMode?: DetectorMode;
-  identifierProtection?: IdentifierProtection };
+  identifierProtection?: IdentifierProtection; ssnMode?: DetectorMode };
 export type PromptMatch = { action: PolicyMode; reason: string } & RuleMetadata;
 
 const severity: Record<PolicyMode, number> = { monitor: 1, warn: 2, block: 3 };
@@ -78,6 +83,10 @@ export function evaluatePrompt(prompt: string, policy: PromptPolicy, except?: Re
       reason: 'This prompt contains text that looks like a GitHub classic personal access token.',
     };
   }
+  if (!except?.has(ssnRule) && isMode(policy.ssnMode) && (!match || severity[policy.ssnMode] >= severity[match.action]) && containsSsn(prompt)) {
+    match = { action: policy.ssnMode, ruleId: ssnRule, detectorCategory: ssnDetector,
+      reason: 'This prompt contains a possible U.S. Social Security number.' };
+  }
   if (!except?.has(paymentCardRule) && isMode(policy.paymentCardMode) && (!match || severity[policy.paymentCardMode] >= severity[match.action]) &&
       containsPaymentCard(prompt)) {
     match = {
@@ -100,6 +109,7 @@ export function redactPrompt(prompt: string, policy: PromptPolicy): string {
   const withoutMarkers = withoutPrivateKeys.replaceAll(testMarker, redacted);
   const withoutCredentials = isMode(policy.githubPatMode) ? withoutMarkers.replaceAll(allClassicGithubPats, redacted) : withoutMarkers;
   const withoutCards = isMode(policy.paymentCardMode) ? redactPaymentCards(withoutCredentials, redacted) : withoutCredentials;
+  const withoutSsns = isMode(policy.ssnMode) ? redactSsns(withoutCards, redacted) : withoutCards;
   const identifiers = policy.identifierProtection;
-  return isMode(identifiers?.mode) ? redactIdentifiers(withoutCards, identifiers.formats, redacted) : withoutCards;
+  return isMode(identifiers?.mode) ? redactIdentifiers(withoutSsns, identifiers.formats, redacted) : withoutSsns;
 }

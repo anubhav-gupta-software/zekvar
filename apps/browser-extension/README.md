@@ -72,6 +72,14 @@ The detector combines supported issuer ranges and lengths with the Luhn checksum
 
 Use **Monitor** to measure false positives before enforcing the rule. Browser health shows a payment policy as current after an updated browser acknowledges the detector. Coverage of card numbers in files, unsupported separators and issuer formats, CVVs, and expiry dates remains open.
 
+## Protect U.S. Social Security numbers
+
+1. In Control, open **Policy preview** for the baseline or a rollout group. Set **Draft U.S. Social Security number** to **Monitor**, then run the preview. The **Synthetic U.S. SSN** row and two synthetic file rows show how the draft handles the test values. Publish the reviewed policy.
+2. Sync Browser v0.30.0 or later. Supported ChatGPT, Gemini, and enabled Claude composers can monitor, warn, or block a possible number. For Warn or Block, **Redact detected values** replaces the matching number in an eligible draft for employee review before a separate Send.
+3. Set **File content protection** separately for ChatGPT and Gemini to monitor or block a matching number in supported UTF-8 and Office files. Find **U.S. Social Security number** under **Security events** and in the AI enforcement report.
+
+The detector recognizes standalone ASCII hyphenated values and compact or single-space-separated values immediately following an SSN label. It filters the ranges SSA identifies as impossible and starts Off. Use the built-in preview samples and measure false alerts in Monitor. Zekvar evaluates the input locally and reports the detector and action metadata. Unlabeled compact values, values split across document fields, and image-based identifiers need separate coverage. [SSA guidance on impossible SSNs](https://secure.ssa.gov/apps10/poms.nsf/lnx/0110201035)
+
 ## Test private key protection
 
 1. Start the updated Control services and sync Browser v0.23.0 or later. In **Policy preview**, set **Draft private key** to Monitor, Warn, or Block and run the **Synthetic private key block** sample. Publish the baseline or a rollout group when you are ready to test in a supported composer. The setting starts Off.

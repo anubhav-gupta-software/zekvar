@@ -1,5 +1,5 @@
 import { credentialDetector, fixtureDetector, fixtureRule, githubPatRule, identifierDetector, identifierRule, isMode,
-  paymentCardRule, paymentDetector, privateKeyRule, type PolicyMode,
+  paymentCardRule, paymentDetector, privateKeyRule, ssnDetector, ssnRule, type PolicyMode,
   type PromptPolicy, type RuleMetadata } from '../../../contracts/policy/prompt';
 import { chatGptApp, claudeApp, fixtureApp, geminiApp, isPromptApp, type AiPromptApp, type AppId } from '../../../contracts/policy/apps';
 import { fileInspectionUnavailableRule, isUploadApp, isUploadMethod, uploadCategory, uploadRule, type FileInspection, type TargetedUploads,
@@ -153,5 +153,8 @@ export function readMetadata(value: unknown): PolicyEvent | undefined {
   }
   if (value.ruleId === identifierRule && value.detectorCategory === identifierDetector) {
     return { ...event, ...source, ruleId: identifierRule, detectorCategory: identifierDetector };
+  }
+  if (value.ruleId === ssnRule && value.detectorCategory === ssnDetector) {
+    return { ...event, ...source, ruleId: ssnRule, detectorCategory: ssnDetector };
   }
 }

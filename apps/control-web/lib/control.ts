@@ -50,6 +50,7 @@ export type Policy = {
   githubPatMode?: DetectorMode;
   paymentCardMode?: DetectorMode;
   privateKeyMode?: DetectorMode;
+  ssnMode?: DetectorMode;
   identifierProtection?: import('../../../contracts/policy/prompt').IdentifierProtection;
   uploadModes?: UploadModes;
   uploadTypes?: UploadTypes;

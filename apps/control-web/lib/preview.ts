@@ -16,6 +16,7 @@ export type PreviewPolicy = {
   mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; privateKeyMode?: DetectorMode; discoveryEnabled: boolean;
   presetDiscoveryEnabled?: boolean;
   identifierProtection?: IdentifierProtection;
+  ssnMode?: DetectorMode;
   extensionInventoryEnabled: boolean;
   extensionDeployment?: ExtensionDeployment;
   blockedAiAppHosts?: string[];
@@ -36,6 +37,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     version: policy.version, label: `${scope} v${policy.version}`,
     mode: policy.mode, githubPatMode: policy.githubPatMode ?? 'off', paymentCardMode: policy.paymentCardMode ?? 'off',
     privateKeyMode: policy.privateKeyMode,
+    ssnMode: policy.ssnMode,
     identifierProtection: policy.identifierProtection,
     discoveryEnabled: policy.discoveryEnabled ?? false,
     presetDiscoveryEnabled: policy.presetDiscoveryEnabled,
@@ -56,7 +58,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
 
 export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
   return a.mode === b.mode && a.githubPatMode === b.githubPatMode && a.paymentCardMode === b.paymentCardMode &&
-    a.privateKeyMode === b.privateKeyMode &&
+    a.privateKeyMode === b.privateKeyMode && a.ssnMode === b.ssnMode &&
     sameIdentifierProtection(a.identifierProtection, b.identifierProtection) &&
     a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
     a.presetDiscoveryEnabled === b.presetDiscoveryEnabled &&
@@ -83,6 +85,7 @@ const prompts = [
   { name: 'Synthetic payment card', content: 'Test card 4242 4242 4242 4242' },
   { name: 'Payment card with invalid checksum', content: 'Test card 4242 4242 4242 4243' },
   { name: 'Synthetic private key block', content: ['-----BEGIN PRIVATE KEY-----', 'A'.repeat(64), '-----END PRIVATE KEY-----'].join('\n') },
+  { name: 'Synthetic U.S. SSN', content: 'Social Security number: 899 97 4321' },
 ];
 const navigations = [
   { name: 'Sample domain', content: 'https://pilot.example.test/start' },
@@ -153,6 +156,7 @@ export function runComparison(reference: PreviewSnapshot, candidate: PreviewPoli
       const textFile = { name: 'synthetic.txt', type: 'text/plain' };
       const samples = [{ name: 'synthetic text file', file: textFile, text: testMarker },
         { name: 'clean text file', file: textFile, text: 'Quarterly planning notes.' },
+        { name: 'synthetic SSN file', file: textFile, text: 'SSN: 899-97-4321' },
         { name: 'unscannable PDF sample', file: { name: 'synthetic.pdf', type: 'application/pdf' }, text: undefined }];
       for (const { name, file, text } of samples) rows.push({ name: `${promptAppLabels[app]} ${name}`,
         current: fileInspectionOutcome(reference, app, file, text), draft: fileInspectionOutcome(candidate, app, file, text) });

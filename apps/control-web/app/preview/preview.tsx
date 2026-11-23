@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { navigationRuleLimitError, readNavigationRules } from '../../lib/navigation';
-import { detectorModes, fixtureRule, identifierRule, modes, privateKeyRule, readIdentifierProtection, ruleLabels,
+import { detectorModes, fixtureRule, identifierRule, modes, privateKeyRule, readIdentifierProtection, ruleLabels, ssnRule,
   type DetectorMode, type PolicyMode, type PromptRuleId } from '../../../../contracts/policy/prompt';
 import { identifierFormatError, identifierFormatHint, parseIdentifierFormats } from '../../../../contracts/policy/organization-identifiers';
 import { parseUploadTypes, uploadApps, uploadModes, uploadTypesError, uploadTypesHint, type UploadApp, type UploadMode } from '../../../../contracts/policy/uploads';
@@ -29,6 +29,7 @@ type Editor = Omit<PreviewPolicy, 'domainRules' | 'pathRules' | 'uploadTypes' | 
 function editorFor(snapshot: PreviewSnapshot): Editor {
   return {
     mode: snapshot.mode, githubPatMode: snapshot.githubPatMode, paymentCardMode: snapshot.paymentCardMode, privateKeyMode: snapshot.privateKeyMode,
+    ssnMode: snapshot.ssnMode,
     identifierMode: snapshot.identifierProtection?.mode,
     identifierFormats: snapshot.identifierProtection?.formats.map(({ prefix, digits }) => `${prefix} ${digits}`).join('\n') ?? '',
     discoveryEnabled: snapshot.discoveryEnabled,
@@ -139,6 +140,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
     setError('');
     setResult(runComparison(reference, {
       mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode, privateKeyMode: editor.privateKeyMode,
+      ssnMode: editor.ssnMode,
       identifierProtection: identifiers,
       discoveryEnabled: editor.discoveryEnabled, presetDiscoveryEnabled: editor.presetDiscoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled,
       extensionDeployment: reference.extensionDeployment,
@@ -183,6 +185,12 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
           <label htmlFor="draft-private-key">Draft private key</label>
           <select id="draft-private-key" value={editor.privateKeyMode}
             onChange={(event) => edit('privateKeyMode', event.target.value as DetectorMode)}>
+            {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+          </select>
+        </div>}
+        {editor.ssnMode !== undefined && <div className="grid gap-1">
+          <label htmlFor="draft-ssn">Draft U.S. Social Security number</label>
+          <select id="draft-ssn" value={editor.ssnMode} onChange={(event) => edit('ssnMode', event.target.value as DetectorMode)}>
             {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
           </select>
         </div>}
@@ -306,7 +314,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
           <select id={`exception-rule-${index}`} value={entry.ruleId}
             onChange={(event) => editException(index, { ruleId: event.target.value as PromptRuleId })}>
             {Object.entries(ruleLabels).map(([rule, label]) => (rule === privateKeyRule && editor.privateKeyMode === undefined ||
-              rule === identifierRule && editor.identifierMode === undefined) ? null :
+              rule === identifierRule && editor.identifierMode === undefined || rule === ssnRule && editor.ssnMode === undefined) ? null :
               <option key={rule} value={rule}>{rule === fixtureRule ? 'Test marker' : label}</option>)}
           </select>
         </div>
@@ -398,6 +406,7 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         <input type="hidden" name="githubPatMode" value={candidate.githubPatMode} />
         <input type="hidden" name="paymentCardMode" value={candidate.paymentCardMode} />
         {candidate.privateKeyMode !== undefined && <input type="hidden" name="privateKeyMode" value={candidate.privateKeyMode} />}
+        {candidate.ssnMode !== undefined && <input type="hidden" name="ssnMode" value={candidate.ssnMode} />}
         {candidate.identifierProtection && <input type="hidden" name="identifierProtection" value={JSON.stringify(candidate.identifierProtection)} />}
         <input type="hidden" name="discoveryEnabled" value={candidate.discoveryEnabled ? 'on' : 'off'} />
         {candidate.presetDiscoveryEnabled !== undefined &&

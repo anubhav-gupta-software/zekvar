@@ -25,6 +25,7 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     ['GitHub classic PAT', detectorModeLabels[reference.githubPatMode], detectorModeLabels[candidate.githubPatMode]],
     ['Payment card number', detectorModeLabels[reference.paymentCardMode], detectorModeLabels[candidate.paymentCardMode]],
     ['Private key', detectorModeLabels[reference.privateKeyMode ?? 'off'], detectorModeLabels[candidate.privateKeyMode ?? 'off']],
+    ['U.S. Social Security number', detectorModeLabels[reference.ssnMode ?? 'off'], detectorModeLabels[candidate.ssnMode ?? 'off']],
     ['Organization identifier detection', detectorModeLabels[reference.identifierProtection?.mode ?? 'off'],
       detectorModeLabels[candidate.identifierProtection?.mode ?? 'off']],
     ['Identifier formats', identifierFormats(reference), identifierFormats(candidate)],

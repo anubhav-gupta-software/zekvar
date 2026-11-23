@@ -143,7 +143,7 @@ async function request(path: string, token?: string, body?: object): Promise<unk
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(path === 'browser/policy' ? { 'X-Zekvar-Assignment-Aware': '1', 'X-Zekvar-Claude-Prompt': '1',
         'X-Zekvar-Private-Key': '1', 'X-Zekvar-File-Inspection': '1', 'X-Zekvar-File-Content-Block': '1', 'X-Zekvar-AI-App-Access': '1',
-        'X-Zekvar-Identifiers': '1', 'X-Zekvar-Preset-Discovery': '1',
+        'X-Zekvar-Identifiers': '1', 'X-Zekvar-Preset-Discovery': '1', 'X-Zekvar-SSN': '1',
         'X-Zekvar-Extension-Version': extensionVersion } : {}),
       ...(path === 'browser/heartbeat' ? { 'X-Zekvar-Composer-Coverage': '1' } : {}),
       ...(path === 'enroll' ? { 'X-Zekvar-Scoped-Enrollment': '1' } : {}),
@@ -261,6 +261,7 @@ async function sync(state: State) {
         (policy.githubPatMode !== undefined && !isDetectorMode(policy.githubPatMode)) ||
         (policy.paymentCardMode !== undefined && !isDetectorMode(policy.paymentCardMode)) ||
         (policy.privateKeyMode !== undefined && !isDetectorMode(policy.privateKeyMode)) ||
+        (policy.ssnMode !== undefined && !isDetectorMode(policy.ssnMode)) ||
         (policy.fileInspection !== undefined && !isFileInspection(policy.fileInspection)) ||
         (policy.fileContentModes !== undefined && !isUploadModes(policy.fileContentModes)) ||
         (policy.uploadModes !== undefined && !isUploadModes(policy.uploadModes)) ||
@@ -274,6 +275,7 @@ async function sync(state: State) {
     const githubPatMode = policy.githubPatMode ?? 'off';
     const paymentCardMode = policy.paymentCardMode ?? 'off';
     const privateKeyMode = policy.privateKeyMode;
+    const ssnMode = policy.ssnMode ?? 'off';
     const identifierProtection = readIdentifierProtection(policy.identifierProtection);
     if (policy.identifierProtection !== undefined && !identifierProtection) throw new Error('Invalid organization identifier policy');
     const fileInspection = policy.fileInspection;
@@ -312,6 +314,7 @@ async function sync(state: State) {
         policy.mode === state.policy.mode && githubPatMode === (state.policy.githubPatMode ?? 'off') &&
         (state.policy.paymentCardMode === undefined || paymentCardMode === state.policy.paymentCardMode) &&
         (state.policy.privateKeyMode === undefined || privateKeyMode === state.policy.privateKeyMode) &&
+        (state.policy.ssnMode === undefined || ssnMode === state.policy.ssnMode) &&
         (!state.policy.identifierProtection || sameIdentifierProtection(state.policy.identifierProtection, identifierProtection)) &&
         (state.policy.fileInspection === undefined || fileInspection !== undefined &&
           uploadApps.every((app) => state.policy?.fileInspection?.[app] === fileInspection[app])) &&
@@ -329,7 +332,7 @@ async function sync(state: State) {
         (!state.blockedAiAppHosts || blockedAiAppHosts.join(',') === state.blockedAiAppHosts.join(',')))))) {
       await applyDomainRules(state, domainRules, pathRules, blockedAiAppHosts);
       if (policy.version !== state.policy?.version || assignment !== previousAssignment) clearCoverage(state);
-      state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, privateKeyMode, identifierProtection, fileInspection, fileContentModes,
+      state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, privateKeyMode, ssnMode, identifierProtection, fileInspection, fileContentModes,
         discoveryEnabled, presetDiscovery, customApps, extensionInventoryEnabled, claudePromptEnabled,
         assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini }, targetedUploads };
       promptLease = lease ? { installationId: state.enrollment.installationId, version: policy.version,
@@ -404,6 +407,7 @@ async function heartbeat(state: State) {
     claudePromptApplied: state.policy.claudePromptEnabled || undefined,
     paymentCardModeApplied: isMode(state.policy.paymentCardMode) ? true : undefined,
     privateKeyModeApplied: isMode(state.policy.privateKeyMode) ? true : undefined,
+    ssnModeApplied: isMode(state.policy.ssnMode) ? true : undefined,
     identifiersApplied: isMode(state.policy.identifierProtection?.mode) ? true : undefined,
     fileInspectionApplied: uploadApps.some((app) => state.policy?.fileInspection?.[app]) ? true : undefined,
     fileContentBlockApplied: uploadApps.some((app) => fileContentMode(state.policy, app) === 'block') ? true : undefined,

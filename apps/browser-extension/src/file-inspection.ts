@@ -1,5 +1,5 @@
 import { evaluateFileInspection, fileInspectionDetectors } from '../../../contracts/policy/file-inspection';
-import { fixtureRule, githubPatRule, identifierRule, paymentCardRule, privateKeyRule, type PromptPolicy, type RuleMetadata } from '../../../contracts/policy/prompt';
+import { fixtureRule, githubPatRule, identifierRule, paymentCardRule, privateKeyRule, ssnRule, type PromptPolicy, type RuleMetadata } from '../../../contracts/policy/prompt';
 import { readOfficeText } from './office-text';
 import { hasZipHeader, type OfficeReadBudget } from './office-zip';
 
@@ -8,7 +8,7 @@ const maxBatchBytes = 1024 * 1024;
 const maxExpandedOfficeBytes = 1024 * 1024;
 const maxFiles = 16;
 const binaryControls = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/;
-const priority = [fixtureRule, identifierRule, githubPatRule, paymentCardRule, privateKeyRule];
+const priority = [fixtureRule, identifierRule, githubPatRule, ssnRule, paymentCardRule, privateKeyRule];
 
 type FileScan = { match?: RuleMetadata; complete: boolean; snapshots: File[] };
 type ScanOptions = { signal?: AbortSignal; snapshot?: boolean };

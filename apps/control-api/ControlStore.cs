@@ -58,6 +58,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 33, "033_organization_identifiers.sql", ct);
         await ApplyMigration(connection, 34, "034_incident_cases.sql", ct);
         await ApplyMigration(connection, 35, "035_ai_discovery_presets.sql", ct);
+        await ApplyMigration(connection, 36, "036_social_security_number.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -152,7 +153,7 @@ internal sealed partial class ControlStore
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
                 p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, p.private_key_mode, p.chatgpt_file_inspection, p.gemini_file_inspection,
                 p.blocked_ai_app_hosts, p.chatgpt_file_content_block, p.gemini_file_content_block, p.identifier_protection, p.extension_deployment,
-                p.preset_discovery_enabled
+                p.preset_discovery_enabled, p.ssn_mode
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.policy_group_id IS NOT DISTINCT FROM $2::uuid ORDER BY p.version DESC LIMIT 100
             """, organizationId, (object?)groupId ?? DBNull.Value);
@@ -163,7 +164,8 @@ internal sealed partial class ControlStore
     }
 
     public async Task<Policy?> CurrentPolicy(Guid installationId, bool assignmentAware, bool claudeAware, string? extensionVersion, bool privateKeyAware,
-        bool fileInspectionAware, bool aiAppAccessAware, bool fileBlockAware, bool identifiersAware, bool presetDiscoveryAware, CancellationToken ct)
+        bool fileInspectionAware, bool aiAppAccessAware, bool fileBlockAware, bool identifiersAware, bool presetDiscoveryAware,
+        bool ssnAware, CancellationToken ct)
     {
         await using var command = Command("""
             WITH active AS (
@@ -183,13 +185,14 @@ internal sealed partial class ControlStore
             ), delivery AS (
                 INSERT INTO policy_deliveries (organization_id, installation_id, assignment_version, policy_version,
                     exception_scope, claude_prompt, private_key, file_inspection, rollout_group_id, rollout_attributed, ai_app_access, file_content_block,
-                    identifiers, preset_discovery)
+                    identifiers, preset_discovery, ssn)
                 SELECT e.organization_id, e.id, e.assignment_version, e.version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id,
                     $3 AND p.claude_prompt_enabled, $5 AND p.private_key_mode <> 'off',
                     $6 AND (p.chatgpt_file_inspection AND (NOT p.chatgpt_file_content_block OR $8)
                         OR p.gemini_file_inspection AND (NOT p.gemini_file_content_block OR $8)), e.policy_group_id, true,
                     $7 AND cardinality(p.blocked_ai_app_hosts) > 0, $8 AND (p.chatgpt_file_content_block OR p.gemini_file_content_block),
-                    $9 AND p.identifier_protection->>'mode' <> 'off', $10 AND p.discovery_enabled AND p.preset_discovery_enabled
+                    $9 AND p.identifier_protection->>'mode' <> 'off', $10 AND p.discovery_enabled AND p.preset_discovery_enabled,
+                    $11 AND p.ssn_mode <> 'off'
                 FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
                 ON CONFLICT (installation_id, assignment_version, policy_version) DO UPDATE
                 SET claude_prompt = policy_deliveries.claude_prompt OR EXCLUDED.claude_prompt,
@@ -199,6 +202,7 @@ internal sealed partial class ControlStore
                     file_content_block = policy_deliveries.file_content_block OR EXCLUDED.file_content_block,
                     identifiers = policy_deliveries.identifiers OR EXCLUDED.identifiers,
                     preset_discovery = policy_deliveries.preset_discovery OR EXCLUDED.preset_discovery,
+                    ssn = policy_deliveries.ssn OR EXCLUDED.ssn,
                     rollout_group_id = CASE WHEN policy_deliveries.rollout_attributed THEN policy_deliveries.rollout_group_id
                         ELSE EXCLUDED.rollout_group_id END,
                     rollout_attributed = true
@@ -209,6 +213,7 @@ internal sealed partial class ControlStore
                     OR (EXCLUDED.file_content_block AND NOT policy_deliveries.file_content_block)
                     OR (EXCLUDED.identifiers AND NOT policy_deliveries.identifiers)
                     OR (EXCLUDED.preset_discovery AND NOT policy_deliveries.preset_discovery)
+                    OR (EXCLUDED.ssn AND NOT policy_deliveries.ssn)
                     OR NOT policy_deliveries.rollout_attributed
             )
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
@@ -216,11 +221,11 @@ internal sealed partial class ControlStore
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
                 p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, p.private_key_mode, p.chatgpt_file_inspection, p.gemini_file_inspection,
                 p.blocked_ai_app_hosts, p.chatgpt_file_content_block, p.gemini_file_content_block, p.identifier_protection,
-                e.assignment_version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id, p.preset_discovery_enabled
+                e.assignment_version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id, p.preset_discovery_enabled, p.ssn_mode
             FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
             LEFT JOIN policy_audit a ON a.organization_id = p.organization_id AND a.version = p.version
             """, installationId, assignmentAware, claudeAware, (object?)extensionVersion ?? DBNull.Value, privateKeyAware,
-            fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware, presetDiscoveryAware);
+            fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware, presetDiscoveryAware, ssnAware);
         await using var rows = await command.ExecuteReaderAsync(ct);
         if (!await rows.ReadAsync(ct)) return null;
         var policy = ReadPolicy(rows, includeDeployment: false);
@@ -244,12 +249,14 @@ internal sealed partial class ControlStore
                     AND (cardinality(p.blocked_ai_app_hosts) = 0 OR $18)
                     AND (NOT (p.chatgpt_file_content_block OR p.gemini_file_content_block) OR $19)
                     AND (p.identifier_protection->>'mode' = 'off' OR $20)
+                    AND (p.ssn_mode = 'off' OR $21)
                     AND ($12 OR i.policy_group_id IS DISTINCT FROM p.policy_group_id OR NOT EXISTS (
                         SELECT 1 FROM jsonb_array_elements(p.prompt_exceptions) AS entries(entry)
                         WHERE (entry->>'expiresAt')::timestamptz > now()
                             AND (entry->>'appId' <> 'claude' OR p.claude_prompt_enabled)
                             AND (entry->>'ruleId' <> 'pem-private-key' OR p.private_key_mode IN ('warn', 'block'))
-                            AND (entry->>'ruleId' <> 'organization-identifier' OR p.identifier_protection->>'mode' IN ('warn', 'block'))))
+                            AND (entry->>'ruleId' <> 'organization-identifier' OR p.identifier_protection->>'mode' IN ('warn', 'block'))
+                            AND (entry->>'ruleId' <> 'us-social-security-number' OR p.ssn_mode IN ('warn', 'block'))))
                     THEN GREATEST(i.applied_policy_version, $2)
                     WHEN i.applied_policy_version = $2 THEN NULL ELSE i.applied_policy_version END,
                 chatgpt_coverage = COALESCE($3::text, i.chatgpt_coverage),
@@ -267,11 +274,12 @@ internal sealed partial class ControlStore
                 AND p.organization_id = i.organization_id AND p.version = $2
                 AND ($4 OR cardinality(p.allowed_domains) + cardinality(p.blocked_domains) = 0)
                 AND ($13::text IS NULL OR p.claude_prompt_enabled AND $14)
-                AND (($5 = 0 AND p.policy_group_id IS NULL AND NOT $14 AND NOT $16 AND NOT $17 AND NOT $18 AND NOT $19 AND NOT $20)
+                AND (($5 = 0 AND p.policy_group_id IS NULL AND NOT $14 AND NOT $16 AND NOT $17 AND NOT $18 AND NOT $19 AND NOT $20 AND NOT $21)
                     OR EXISTS (SELECT 1 FROM policy_deliveries d
                     WHERE d.installation_id = i.id AND d.assignment_version = $5 AND d.policy_version = $2
                         AND (NOT $14 OR d.claude_prompt) AND (NOT $16 OR d.private_key) AND (NOT $17 OR d.file_inspection)
-                        AND (NOT $18 OR d.ai_app_access) AND (NOT $19 OR d.file_content_block) AND (NOT $20 OR d.identifiers)))
+                        AND (NOT $18 OR d.ai_app_access) AND (NOT $19 OR d.file_content_block) AND (NOT $20 OR d.identifiers)
+                        AND (NOT $21 OR d.ssn)))
             RETURNING i.id, i.organization_id
             ), observed AS (
                 INSERT INTO composer_observations (organization_id, installation_id, app_id, policy_version, assignment_version, coverage)
@@ -290,7 +298,7 @@ internal sealed partial class ControlStore
             request.PaymentCardModeApplied, request.UploadControlsApplied, request.PathRulesApplied, request.UploadTypesApplied,
             request.CustomDiscoveryApplied, request.PromptExceptionsApplied, (object?)request.ClaudeCoverage ?? DBNull.Value,
             request.ClaudePromptApplied, scopedCoverage, request.PrivateKeyModeApplied, request.FileInspectionApplied, request.AiAppAccessApplied,
-            request.FileContentBlockApplied, request.IdentifiersApplied);
+            request.FileContentBlockApplied, request.IdentifiersApplied, request.SsnModeApplied);
         return (bool)(await command.ExecuteScalarAsync(ct))!;
     }
 
@@ -423,6 +431,7 @@ internal sealed partial class ControlStore
                     WHEN 'payment-card-number' THEN p.payment_card_mode
                     WHEN 'pem-private-key' THEN p.private_key_mode
                     WHEN 'organization-identifier' THEN p.identifier_protection->>'mode'
+                    WHEN 'us-social-security-number' THEN p.ssn_mode
                     WHEN 'ai-file-upload' THEN CASE $6 WHEN 'chatgpt' THEN p.chatgpt_upload_mode WHEN 'gemini' THEN p.gemini_upload_mode END
                     ELSE p.mode END AS mode, $9::text IS NOT NULL AND $7 <> 'ai-file-upload' AS file_content) AS detector
                 WHERE (detector.file_content AND (detector.mode <> 'off' OR $7 = 'file-inspection-unavailable') AND
@@ -436,12 +445,13 @@ internal sealed partial class ControlStore
                   AND (r.event_cutoff IS NULL OR $3 >= r.event_cutoff)
                   AND ($6 <> 'claude' OR p.claude_prompt_enabled)
                   AND (($8 = 0 AND p.policy_group_id IS NULL AND $5 <> 'exception_applied' AND $6 <> 'claude'
-                        AND $7 NOT IN ('pem-private-key', 'organization-identifier')
+                        AND $7 NOT IN ('pem-private-key', 'organization-identifier', 'us-social-security-number')
                         AND NOT detector.file_content)
                     OR (d.installation_id IS NOT NULL
                         AND ($6 <> 'claude' OR d.claude_prompt)
                         AND ($7 <> 'pem-private-key' OR d.private_key)
                         AND ($7 <> 'organization-identifier' OR d.identifiers)
+                        AND ($7 <> 'us-social-security-number' OR d.ssn)
                         AND (NOT detector.file_content OR d.file_inspection AND ($5 <> 'block' OR d.file_content_block))
                         AND ($5 <> 'exception_applied' OR d.exception_scope)))
             ), written AS (
@@ -665,7 +675,7 @@ internal sealed partial class ControlStore
         FileContentModes: new(FileContentMode(rows.GetBoolean(20), rows.GetBoolean(23)), FileContentMode(rows.GetBoolean(21), rows.GetBoolean(24))),
         IdentifierProtection: JsonSerializer.Deserialize<IdentifierProtection>(rows.GetString(25), JsonSerializerOptions.Web),
         ExtensionDeployment: includeDeployment ? JsonSerializer.Deserialize<ExtensionDeployment>(rows.GetString(26), JsonSerializerOptions.Web) : null,
-        PresetDiscoveryEnabled: rows.GetBoolean(rows.GetOrdinal("preset_discovery_enabled")));
+        PresetDiscoveryEnabled: rows.GetBoolean(rows.GetOrdinal("preset_discovery_enabled")), SsnMode: rows.GetString(rows.GetOrdinal("ssn_mode")));
 
     private static string FileContentMode(bool enabled, bool block) => block ? "block" : enabled ? "monitor" : "off";
 }

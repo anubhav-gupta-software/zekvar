@@ -35,6 +35,12 @@ export function PublishPolicyForm({ policy, groupId, review }: { policy?: Policy
         {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
       </select>
     </div>}
+    {policy?.ssnMode !== undefined && <div className="grid gap-1">
+      <label htmlFor="ssn-mode">U.S. Social Security number</label>
+      <select key={policy.version} id="ssn-mode" name="ssnMode" defaultValue={policy.ssnMode}>
+        {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+      </select>
+    </div>}
     <div className="grid gap-1">
       <label htmlFor="discovery-mode">App discovery</label>
       <select key={policy?.version} id="discovery-mode" name="discoveryEnabled" defaultValue={policy?.discoveryEnabled ? 'on' : 'off'}>
@@ -96,25 +102,26 @@ export function PolicyVersionTable({ policies, groupId, writable, review }: {
   policies: Policy[]; groupId?: string; writable: boolean; review: boolean;
 }) {
   const identifiersAvailable = policies.some((policy) => policy.identifierProtection !== undefined);
+  const ssnAvailable = policies.some((policy) => policy.ssnMode !== undefined);
   return <section className="panel table-panel" id="policy-history" aria-labelledby="history-heading">
     <div className="panel-heading"><h2 id="history-heading">{groupId ? 'Group policy history' : 'Policy history'}</h2>
       <span className="table-note">Latest 100 versions</span></div>
     <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="history-heading">
       <table aria-labelledby="history-heading">
         <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>Payment card number</th><th>Private key</th>
-          {identifiersAvailable && <th>Organization identifiers</th>}<th>App discovery</th>
+          {ssnAvailable && <th>U.S. SSN</th>}{identifiersAvailable && <th>Organization identifiers</th>}<th>App discovery</th>
           <th>Extension inventory</th><th>Claude prompt protection</th><th>File uploads</th><th>Navigation rules</th><th>Published (UTC)</th><th>Restore source</th>
           <th>Prompt exceptions</th><th>Action</th></tr></thead>
         <tbody>{policies.map((policy, index) => <PolicyRow key={policy.version} policy={policy} current={index === 0}
-          groupId={groupId} writable={writable} review={review} identifiersAvailable={identifiersAvailable} />)}</tbody>
+          groupId={groupId} writable={writable} review={review} identifiersAvailable={identifiersAvailable} ssnAvailable={ssnAvailable} />)}</tbody>
       </table>
       {policies.length === 0 && <p className="empty">No policy versions have been published in this scope.</p>}
     </div>
   </section>;
 }
 
-function PolicyRow({ policy, current, groupId, writable, review, identifiersAvailable }: {
-  policy: Policy; current: boolean; groupId?: string; writable: boolean; review: boolean; identifiersAvailable: boolean;
+function PolicyRow({ policy, current, groupId, writable, review, identifiersAvailable, ssnAvailable }: {
+  policy: Policy; current: boolean; groupId?: string; writable: boolean; review: boolean; identifiersAvailable: boolean; ssnAvailable: boolean;
 }) {
   const { allow = [], block = [] } = policy.domainRules ?? {};
   const { allow: allowPaths = [], block: blockPaths = [] } = policy.pathRules ?? {};
@@ -124,6 +131,7 @@ function PolicyRow({ policy, current, groupId, writable, review, identifiersAvai
     <td>{detectorModeLabels[policy.githubPatMode ?? 'off']}</td>
     <td>{detectorModeLabels[policy.paymentCardMode ?? 'off']}</td>
     <td>{detectorModeLabels[policy.privateKeyMode ?? 'off']}</td>
+    {ssnAvailable && <td>{detectorModeLabels[policy.ssnMode ?? 'off']}</td>}
     {identifiersAvailable && <td>{detectorModeLabels[policy.identifierProtection?.mode ?? 'off']}
       {formats.length > 0 && <details className="domain-rule-history">
         <summary>{formats.length} {formats.length === 1 ? 'format' : 'formats'}</summary>

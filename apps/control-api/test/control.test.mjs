@@ -32,6 +32,7 @@ const eventTriageAdmin = randomBytes(32).toString('hex');
 const identifiersAdmin = randomBytes(32).toString('hex');
 const casesAdmin = randomBytes(32).toString('hex');
 const presetsAdmin = randomBytes(32).toString('hex');
+const ssnAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -42,7 +43,13 @@ const undoSsoSchema = `
       DROP COLUMN oidc_issuer, DROP COLUMN oidc_subject, ALTER COLUMN expires_at SET NOT NULL,
       ADD CONSTRAINT control_access_check1 CHECK ((revoked_at IS NULL) = (token_hash IS NOT NULL));
 `;
+const undoSsnSchema = `
+  DELETE FROM schema_migrations WHERE version = 36;
+  ALTER TABLE policy_versions DROP COLUMN ssn_mode;
+  ALTER TABLE policy_deliveries DROP COLUMN ssn;
+`;
 const undoIdentifierSchema = `
+  ${undoSsnSchema}
   DELETE FROM schema_migrations WHERE version = 33;
   ALTER TABLE policy_versions DROP COLUMN identifier_protection;
   ALTER TABLE policy_deliveries DROP COLUMN identifiers;
@@ -66,13 +73,14 @@ async function retentionFixture(query) {
 }
 
 function browserPolicyOnly({ extensionDeployment: _extensionDeployment, blockedAiAppHosts: _blockedAiAppHosts,
-  fileContentModes: _fileContentModes, identifierProtection: _identifierProtection, presetDiscoveryEnabled: _presetDiscovery, ...browserPolicy }) {
+  fileContentModes: _fileContentModes, identifierProtection: _identifierProtection, presetDiscoveryEnabled: _presetDiscovery,
+  ssnMode: _ssnMode, ...browserPolicy }) {
   return browserPolicy;
 }
 
 async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false,
   extensionVersion, scopedEnrollment = false, composerAware = false, privateKeyAware = false, fileInspectionAware = false,
-  aiAppAccessAware = false, fileBlockAware = false, identifiersAware = false, presetAware = false } = {}) {
+  aiAppAccessAware = false, fileBlockAware = false, identifiersAware = false, presetAware = false, ssnAware = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -88,6 +96,7 @@ async function call(path, { token, method = 'GET', body, expect = 200, assignmen
   if (fileBlockAware) headers['X-Zekvar-File-Content-Block'] = '1';
   if (identifiersAware) headers['X-Zekvar-Identifiers'] = '1';
   if (presetAware) headers['X-Zekvar-Preset-Discovery'] = '1';
+  if (ssnAware) headers['X-Zekvar-SSN'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
@@ -146,6 +155,8 @@ async function start(sweepSeconds = 3600) {
       Control__Organizations__15__AdminToken: casesAdmin,
       Control__Organizations__16__Slug: `presets-${suffix}`,
       Control__Organizations__16__AdminToken: presetsAdmin,
+      Control__Organizations__17__Slug: `ssn-${suffix}`,
+      Control__Organizations__17__AdminToken: ssnAdmin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -857,6 +868,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     if (postgres) {
       await stop();
       await retentionFixture(`
+        ${undoSsnSchema}
         DELETE FROM schema_migrations WHERE version IN (11, 12);
         ALTER TABLE policy_versions DROP COLUMN payment_card_mode, DROP COLUMN chatgpt_upload_mode, DROP COLUMN gemini_upload_mode;
         ALTER TABLE security_events DROP CONSTRAINT security_events_upload_method_check, DROP COLUMN upload_method;
@@ -922,6 +934,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     if (postgres) {
       await stop();
       await retentionFixture(`
+        ${undoSsnSchema}
         DELETE FROM schema_migrations WHERE version = 12;
         ALTER TABLE policy_versions DROP COLUMN chatgpt_upload_mode, DROP COLUMN gemini_upload_mode;
         ALTER TABLE security_events DROP CONSTRAINT security_events_upload_method_check, DROP COLUMN upload_method,
@@ -3252,6 +3265,97 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal((await post(`${groupPath}/policies/${approved.version}/restore`)).presetDiscoveryEnabled, true);
     await post(`installations/${browser.installationId}/revoke`, {}, { expect: 204 });
     await observe('copilot', delivered, { expect: 401 });
+  });
+
+  await t.test('validates SSN enforcement, historical evidence, review, and privacy by policy version', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: ssnAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const { grant } = await post('enrollment-grants');
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const policy = (ssnAware = true) => call('/v1/browser/policy', { token: browser.token, assignmentAware: true, ssnAware,
+      fileInspectionAware: true, fileBlockAware: true });
+    const confirm = (config, flags, expect = 204) => call('/v1/browser/heartbeat', { token: browser.token, method: 'POST', expect,
+      body: { policyVersion: config.version, assignmentVersion: config.assignmentVersion, ...flags } });
+    const ruleId = 'us-social-security-number';
+    const detectorCategory = 'government-identifier';
+    const signal = (config, extra) => ({ eventId: randomUUID(), appId: 'chatgpt', timestamp: new Date().toISOString(),
+      policyVersion: config.version, assignmentVersion: config.assignmentVersion, decision: 'monitor', ruleId, detectorCategory, ...extra });
+    const submit = (body, expect = 204) => call('/v1/browser/events', { token: browser.token, method: 'POST', body, expect });
+    const [initial] = await admin('policies');
+    assert.equal(initial.ssnMode, 'off');
+    await submit(signal(initial), 400);
+    await submit(signal(initial, { ruleId: contract.event.ruleId, detectorCategory: contract.event.detectorCategory }));
+    if (postgres) {
+      const before = await admin('events');
+      await stop();
+      await retentionFixture(undoSsnSchema);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 36'), '1');
+      assert.deepEqual(await admin('events'), before);
+      assert.equal((await admin('policies'))[0].ssnMode, 'off');
+    }
+    await post('policies', { ssnMode: 'on' }, { expect: 400 });
+    const monitored = await post('policies', { ssnMode: 'monitor' });
+    assert.equal((await policy(false)).ssnMode, undefined);
+    await confirm(monitored, { ssnModeApplied: true }, 400);
+    await confirm(monitored, {});
+    assert.equal((await admin('installations'))[0].appliedPolicyVersion, null);
+    await submit(signal(monitored), 400);
+    assert.equal((await policy()).ssnMode, 'monitor');
+    await confirm(monitored, { ssnModeApplied: true });
+    assert.equal((await admin('installations'))[0].appliedPolicyVersion, monitored.version);
+    const detected = signal(monitored);
+    await Promise.all([submit(detected), submit(detected)]);
+    await submit(signal(monitored, { decision: 'warn_override' }), 400);
+    await submit(signal(monitored, { detectorCategory: 'credential' }), 400);
+    await submit(signal(monitored, { prompt: 'synthetic SSN fixture' }), 400);
+    const warning = await post('policies', { ssnMode: 'warn', fileContentModes: { chatgpt: 'block', gemini: 'monitor' } });
+    assert.equal((await policy()).ssnMode, 'warn');
+    await confirm(warning, { ssnModeApplied: true, fileInspectionApplied: true, fileContentBlockApplied: true });
+    await submit(signal(warning, { decision: 'warn' }));
+    await submit(signal(warning, { decision: 'warn_override' }));
+    await submit(signal(warning, { decision: 'block', uploadMethod: 'picker' }));
+    await submit(signal(warning, { appId: 'gemini', uploadMethod: 'drop' }));
+    await submit(signal(warning, { decision: 'monitor', uploadMethod: 'picker' }), 400);
+    await submit(signal(warning, { appId: 'gemini', uploadMethod: 'drop', decision: 'block' }), 400);
+
+    const group = await post('policy-groups', { name: 'Privacy canary' });
+    const path = `policy-groups/${group.id}`;
+    const { token: author } = await post('access', { name: 'Privacy author', role: 'administrator', hours: 1 });
+    const { token: reviewer } = await post('access', { name: 'Privacy reviewer', role: 'administrator', hours: 1 });
+    await post('policy-reviews/setting', { required: true }, { expect: 204 });
+    const validUntil = new Date(Date.now() + 60_000).toISOString();
+    const exception = { appId: 'chatgpt', ruleId, expiresAt: validUntil, reason: 'Controlled test' };
+    const proposed = await post(`${path}/policies`, { ssnMode: 'block', expectedVersion: warning.version, promptExceptions: [exception] },
+      { token: author, expect: 202, expectReview: true });
+    assert.equal((await policy()).ssnMode, 'warn');
+    await post(`policy-reviews/${proposed.reviewId}/decision`, { approve: true }, { token: author, expect: 403 });
+    const approved = await post(`policy-reviews/${proposed.reviewId}/decision`, { approve: true }, { token: reviewer });
+    assert.equal(approved.ssnMode, 'block');
+    await post(`installations/${browser.installationId}/policy-group`, { groupId: group.id }, { expect: 204 });
+    assert.equal((await policy(false)).promptExceptionLease, undefined);
+    const scoped = await policy();
+    assert.equal(scoped.ssnMode, 'block');
+    assert.equal(scoped.promptExceptionLease.grants[0].ruleId, ruleId);
+    await confirm(scoped, { ssnModeApplied: true, fileInspectionApplied: true, fileContentBlockApplied: true, promptExceptionsApplied: true });
+    await submit(signal(scoped, { decision: 'exception_applied' }));
+    await submit(signal(scoped, { appId: 'gemini', decision: 'exception_applied' }), 400);
+    await submit(signal(scoped, { decision: 'exception_applied', timestamp: new Date(Date.parse(validUntil) + 1000).toISOString() }), 400);
+    await submit(signal(scoped, { decision: 'block', uploadMethod: 'picker' }));
+    const entries = await admin('events');
+    assert.equal(entries.filter(({ eventId }) => eventId === detected.eventId).length, 1);
+    assert.equal(entries.find(({ eventId }) => eventId === detected.eventId).detectorCategory, detectorCategory);
+    assert.doesNotMatch(JSON.stringify(entries), /synthetic SSN fixture|Controlled test/);
+    assert.ok(!(await admin('events', { token: second })).some((event) => event.ruleId === ruleId));
+    const report = await admin('reports/ai-enforcement?days=7');
+    assert.equal(report.byRule.find(({ id }) => id === ruleId).counts.block, 2);
+
+    await post('policy-reviews/setting', { required: false }, { expect: 204 });
+    const promoted = await post(`${path}/promote`, { expectedVersion: approved.version });
+    assert.equal(promoted.ssnMode, 'block');
+    const restored = await post(`policies/${initial.version}/restore`);
+    assert.equal(restored.ssnMode, 'off');
+    assert.equal((await policy()).ssnMode, 'block');
   });
 
   await t.test('groups retained events into audited cases with tenant isolation and bounded, retryable membership', async () => {
