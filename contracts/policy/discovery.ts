@@ -5,6 +5,28 @@ export const builtInDiscoveryApps = {
 } as const;
 
 export type BuiltInDiscoveryApp = typeof builtInDiscoveryApps[keyof typeof builtInDiscoveryApps];
+export const discoveryPresets = {
+  copilot: { name: 'Microsoft Copilot', hosts: ['copilot.microsoft.com', 'copilot.com'] },
+  perplexity: { name: 'Perplexity', hosts: ['perplexity.ai', 'www.perplexity.ai'] },
+  grok: { name: 'Grok', hosts: ['grok.com'] },
+  'meta-ai': { name: 'Meta AI', hosts: ['meta.ai', 'www.meta.ai'] },
+  deepseek: { name: 'DeepSeek', hosts: ['chat.deepseek.com'] },
+} as const;
+export type DiscoveryPreset = keyof typeof discoveryPresets;
+
+export function isDiscoveryPreset(value: string): value is DiscoveryPreset {
+  return Object.hasOwn(discoveryPresets, value);
+}
+
+const presetsByHost = new Map<string, DiscoveryPreset>();
+for (const id of Object.keys(discoveryPresets).filter(isDiscoveryPreset)) {
+  for (const host of discoveryPresets[id].hosts) presetsByHost.set(host, id);
+}
+
+export function discoveryPresetAt(host: string) {
+  return presetsByHost.get(host);
+}
+
 export type CustomAppId = `saas:${string}`;
 export type CustomAppSetting = { host: string; name: string };
 export type CustomApp = CustomAppSetting & { id: CustomAppId };

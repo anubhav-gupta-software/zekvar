@@ -29,6 +29,7 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
       detectorModeLabels[candidate.identifierProtection?.mode ?? 'off']],
     ['Identifier formats', identifierFormats(reference), identifierFormats(candidate)],
     ['App discovery', toggle(reference.discoveryEnabled), toggle(candidate.discoveryEnabled)],
+    ['AI app preset discovery', toggle(reference.presetDiscoveryEnabled ?? false), toggle(candidate.presetDiscoveryEnabled ?? false)],
     ['Extension inventory', toggle(reference.extensionInventoryEnabled), toggle(candidate.extensionInventoryEnabled)],
     ['Claude prompt protection', toggle(reference.claudePromptEnabled), toggle(candidate.claudePromptEnabled)],
     ...uploadApps.map((app) => [`${promptAppLabels[app]} file uploads`, detectorModeLabels[reference.uploadModes[app]],

@@ -30,6 +30,7 @@ let inventoryEnabled = false;
 let inventoryAllowed = false;
 let inventoryStatus: Summary['inventoryStatus'];
 let discoveryCount = 0;
+let presetDiscoveryEnabled = false;
 let discoveryAllowed = false;
 
 function renderInventory() {
@@ -50,10 +51,12 @@ async function refreshInventoryPermission() {
 }
 
 function renderDiscovery() {
-  discovery.hidden = !discoveryCount && !discoveryAllowed;
-  discoveryButton.textContent = discoveryAllowed ? 'Remove custom app discovery permission' : 'Allow custom app discovery';
-  const label = !discoveryCount ? 'Custom app discovery is off in Control.' : discoveryAllowed ?
-    `Custom app discovery enabled for ${discoveryCount} cataloged ${discoveryCount === 1 ? 'site' : 'sites'}.` :
+  const enabled = discoveryCount > 0 || presetDiscoveryEnabled;
+  discovery.hidden = !enabled && !discoveryAllowed;
+  discoveryButton.textContent = discoveryAllowed ? 'Remove catalog discovery permission' : 'Allow catalog discovery';
+  const label = !enabled ? 'Catalog discovery is off in Control.' : discoveryAllowed ?
+    (presetDiscoveryEnabled ? 'AI app preset discovery is on.' :
+      `Custom app discovery enabled for ${discoveryCount} cataloged ${discoveryCount === 1 ? 'site' : 'sites'}.`) :
     'Control requests permission to report visits to the sites in your organization’s app catalog.';
   if (discoverySummary.textContent !== label) discoverySummary.textContent = label;
 }
@@ -91,6 +94,7 @@ function render(summary: Summary) {
   inventoryEnabled = Boolean(summary.installationId && summary.policy?.extensionInventoryEnabled);
   inventoryStatus = summary.inventoryStatus;
   discoveryCount = summary.installationId ? summary.customDiscoveryCount ?? 0 : 0;
+  presetDiscoveryEnabled = Boolean(summary.installationId && summary.policy?.presetDiscovery);
   renderInventory();
   renderDiscovery();
 }
@@ -140,13 +144,13 @@ discoveryButton.addEventListener('click', async () => {
   errorMessage.textContent = '';
   try {
     if (discoveryAllowed) await chrome.permissions.remove(discoveryPermission);
-    else if (discoveryCount && !await chrome.permissions.request(discoveryPermission)) {
-      errorMessage.textContent = 'Custom app discovery permission was not granted.';
+    else if ((discoveryCount || presetDiscoveryEnabled) && !await chrome.permissions.request(discoveryPermission)) {
+      errorMessage.textContent = 'Catalog discovery permission was not granted.';
     }
     await refreshDiscoveryPermission();
     if (!errorMessage.textContent) await update('sync');
   } catch {
-    errorMessage.textContent = 'Chrome could not change the custom app discovery permission.';
+    errorMessage.textContent = 'Chrome could not change the catalog discovery permission.';
   } finally {
     discoveryButton.disabled = false;
   }

@@ -1,6 +1,6 @@
 import { ApiError, controlApi } from '../lib/api';
 import {
-  aiApps, classifications, classificationLabels, composerStateLabels, decisionLabels, decisions, fileCheckUnavailableLabel,
+  aiApps, classifications, classificationLabels, composerStateLabels, decisionLabels, decisions, discoveryAppName, fileCheckUnavailableLabel,
   isPromptApp, promptAppLabels, ruleLabels, utc,
   type BrowserComposerReadiness, type BrowserReleaseCount, type ComposerCheck, type ComposerState, type Decision, type DiscoveredApp,
   type Installation, type SecurityEvent,
@@ -295,7 +295,7 @@ function InstallationId({ value }: { value: string }) {
 }
 
 function DiscoveredAppRow({ app, writable }: { app: DiscoveredApp; writable: boolean }) {
-  const name = app.name ?? aiApps[app.appId as keyof typeof aiApps];
+  const name = app.name ?? discoveryAppName(app.appId);
   const caption = app.host ? `${name} at ${app.host}` : name;
   return <tr>
     <th scope="row" className="emphasis">{name}{app.host && <div className="muted">{app.host}</div>}</th>

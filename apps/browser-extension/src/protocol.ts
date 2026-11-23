@@ -5,7 +5,7 @@ import { chatGptApp, claudeApp, fixtureApp, geminiApp, isPromptApp, type AiPromp
 import { fileInspectionUnavailableRule, isUploadApp, isUploadMethod, uploadCategory, uploadRule, type FileInspection, type TargetedUploads,
   type UploadMetadata, type UploadMethod, type UploadModes } from '../../../contracts/policy/uploads';
 import type { InventoryStatus } from '../../../contracts/policy/extension-inventory';
-import { builtInDiscoveryApps, type BuiltInDiscoveryApp, type CustomAppId } from '../../../contracts/policy/discovery';
+import { builtInDiscoveryApps, type BuiltInDiscoveryApp, type CustomAppId, type DiscoveryPreset } from '../../../contracts/policy/discovery';
 import { exceptionDecision } from '../../../contracts/policy/prompt-exceptions';
 import type { BrowserLease } from './prompt-exceptions';
 
@@ -16,7 +16,7 @@ export type { AiPromptApp, AppId } from '../../../contracts/policy/apps';
 
 export const fixtureUrl = 'http://127.0.0.1:4173/zekvar-fixture/';
 export const discoveryPermission: chrome.permissions.Permissions = { permissions: ['webNavigation'] };
-export type DiscoveryApp = BuiltInDiscoveryApp | CustomAppId;
+export type DiscoveryApp = BuiltInDiscoveryApp | CustomAppId | DiscoveryPreset;
 export type AppObservation = { appId: DiscoveryApp; observedAt: string; policyVersion: number; assignmentVersion?: number };
 
 export function discoveredApp(url: string | undefined): BuiltInDiscoveryApp | undefined {
@@ -29,6 +29,7 @@ export type Policy = PromptPolicy & {
   targetedUploads?: TargetedUploads; extensionInventoryEnabled?: boolean; claudePromptEnabled?: boolean;
   fileInspection?: FileInspection;
   fileContentModes?: UploadModes;
+  presetDiscovery?: boolean;
 };
 export type PolicyEvent = {
   eventId: string;

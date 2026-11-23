@@ -2,10 +2,9 @@ namespace Control;
 
 internal static class AiAppAccess
 {
-    private static readonly HashSet<string> Presets = new(StringComparer.Ordinal)
+    private static readonly HashSet<string> ComposerHosts = new(StringComparer.Ordinal)
     {
-        "chat.deepseek.com", "chat.openai.com", "chatgpt.com", "claude.ai", "copilot.com", "copilot.microsoft.com",
-        "gemini.google.com", "grok.com", "meta.ai", "perplexity.ai", "www.meta.ai", "www.perplexity.ai"
+        "chat.openai.com", "chatgpt.com", "claude.ai", "gemini.google.com"
     };
 
     public static bool TryNormalize(string[]? input, out string[]? hosts)
@@ -21,5 +20,5 @@ internal static class AiAppAccess
     }
 
     public static bool InCatalog(string[]? hosts, CustomApp[]? apps) => hosts is null ||
-        hosts.All(host => Presets.Contains(host) || (apps ?? []).Any(app => app.Host == host));
+        hosts.All(host => ComposerHosts.Contains(host) || DiscoveryCatalog.IsPresetHost(host) || (apps ?? []).Any(app => app.Host == host));
 }

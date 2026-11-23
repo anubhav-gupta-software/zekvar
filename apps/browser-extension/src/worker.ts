@@ -9,7 +9,7 @@ import { domainRuleLimit, emptyDomainRules, emptyPathRules, installDomainRules, 
 import { fileContentMode, isFileInspection, isUploadModes, readTargetedUpload, sameUploadTypes, uploadApps, uploadsOff, type TargetedUploads } from '../../../contracts/policy/uploads';
 import { collectExtensionInventory } from './extension-inventory';
 import type { InventoryStatus } from '../../../contracts/policy/extension-inventory';
-import { isCustomAppId, readCustomApps, type CustomApp } from '../../../contracts/policy/discovery';
+import { discoveryPresetAt, isCustomAppId, isDiscoveryPreset, readCustomApps, type CustomApp } from '../../../contracts/policy/discovery';
 import { leaseTime, readExceptionLease, sampleClock, type BrowserLease } from './prompt-exceptions';
 import { readBlockedAiAppHosts } from '../../../contracts/policy/ai-app-access';
 import { readIdentifierProtection, sameIdentifierProtection } from '../../../contracts/policy/prompt';
@@ -143,7 +143,7 @@ async function request(path: string, token?: string, body?: object): Promise<unk
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(path === 'browser/policy' ? { 'X-Zekvar-Assignment-Aware': '1', 'X-Zekvar-Claude-Prompt': '1',
         'X-Zekvar-Private-Key': '1', 'X-Zekvar-File-Inspection': '1', 'X-Zekvar-File-Content-Block': '1', 'X-Zekvar-AI-App-Access': '1',
-        'X-Zekvar-Identifiers': '1',
+        'X-Zekvar-Identifiers': '1', 'X-Zekvar-Preset-Discovery': '1',
         'X-Zekvar-Extension-Version': extensionVersion } : {}),
       ...(path === 'browser/heartbeat' ? { 'X-Zekvar-Composer-Coverage': '1' } : {}),
       ...(path === 'enroll' ? { 'X-Zekvar-Scoped-Enrollment': '1' } : {}),
@@ -209,8 +209,12 @@ async function deliverObservations(state: State) {
   if (!state.enrollment || state.status !== 'connected' || !state.observations) return;
   for (const observation of Object.values(state.observations)) {
     if (!observation) continue;
-    if (isCustomAppId(observation.appId) &&
-        (!state.policy?.customApps?.some(({ id }) => id === observation.appId) || !await canDiscoverCustomApps())) {
+    const app = observation.appId;
+    const custom = isCustomAppId(app);
+    const preset = isDiscoveryPreset(app);
+    if ((custom || preset) && (!await canDiscoverCatalogApps() ||
+        (custom && !state.policy?.customApps?.some(({ id }) => id === app)) ||
+        (preset && !state.policy?.presetDiscovery))) {
       delete state.observations[observation.appId];
       continue;
     }
@@ -261,6 +265,7 @@ async function sync(state: State) {
         (policy.fileContentModes !== undefined && !isUploadModes(policy.fileContentModes)) ||
         (policy.uploadModes !== undefined && !isUploadModes(policy.uploadModes)) ||
         (policy.discoveryEnabled !== undefined && typeof policy.discoveryEnabled !== 'boolean') ||
+        (policy.presetDiscoveryEnabled !== undefined && typeof policy.presetDiscoveryEnabled !== 'boolean') ||
         (policy.extensionInventoryEnabled !== undefined && typeof policy.extensionInventoryEnabled !== 'boolean') ||
         (policy.claudePromptEnabled !== undefined && typeof policy.claudePromptEnabled !== 'boolean') ||
         policy.appId !== fixtureApp || policy.ruleId !== fixtureRule || policy.detectorCategory !== fixtureDetector) {
@@ -284,6 +289,7 @@ async function sync(state: State) {
       throw new Error('Invalid combination of file upload rules');
     }
     const discoveryEnabled = policy.discoveryEnabled ?? false;
+    const presetDiscovery = discoveryEnabled && policy.presetDiscoveryEnabled === true;
     const customApps = readCustomApps(policy.customApps);
     if (!customApps) throw new Error('Invalid custom app catalog');
     const previousCatalog = state.policy?.customApps;
@@ -324,7 +330,7 @@ async function sync(state: State) {
       await applyDomainRules(state, domainRules, pathRules, blockedAiAppHosts);
       if (policy.version !== state.policy?.version || assignment !== previousAssignment) clearCoverage(state);
       state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, privateKeyMode, identifierProtection, fileInspection, fileContentModes,
-        discoveryEnabled, customApps, extensionInventoryEnabled, claudePromptEnabled,
+        discoveryEnabled, presetDiscovery, customApps, extensionInventoryEnabled, claudePromptEnabled,
         assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini }, targetedUploads };
       promptLease = lease ? { installationId: state.enrollment.installationId, version: policy.version,
         assignment: policy.assignmentVersion, lease } : undefined;
@@ -404,7 +410,7 @@ async function heartbeat(state: State) {
     uploadControlsApplied: scopedUploads || (state.policy.uploadModes &&
       uploadApps.some((app) => state.policy?.uploadModes?.[app] !== 'off')) ? true : undefined,
     uploadTypesApplied: scopedUploads ? true : undefined,
-    customDiscoveryApplied: state.policy.discoveryEnabled && state.policy.customApps?.length && await canDiscoverCustomApps() ? true : undefined,
+    customDiscoveryApplied: state.policy.discoveryEnabled && state.policy.customApps?.length && await canDiscoverCatalogApps() ? true : undefined,
     promptExceptionsApplied: currentPromptLease(state) ? true : undefined,
     domainRulesApplied: state.domainRules && ruleCount(state.domainRules) ? true : undefined,
     pathRulesApplied: state.pathRules && ruleCount(state.pathRules) ? true : undefined,
@@ -539,7 +545,7 @@ async function observeApp(state: State, appId: DiscoveryApp, observedAt: string)
   return {};
 }
 
-function observeCustomApp(details: chrome.webNavigation.WebNavigationTransitionCallbackDetails) {
+function observeCatalogNavigation(details: chrome.webNavigation.WebNavigationTransitionCallbackDetails) {
   if (details.frameId !== 0 || details.documentLifecycle !== 'active') return;
   const url = new URL(details.url);
   if (url.protocol !== 'https:' || url.port) return;
@@ -547,20 +553,22 @@ function observeCustomApp(details: chrome.webNavigation.WebNavigationTransitionC
   const observedAt = new Date().toISOString();
   void serial(async () => {
     const state = await readState();
-    const app = state.policy?.customApps?.find((entry) => entry.host === host);
-    if (app && await canDiscoverCustomApps()) await observeApp(state, app.id, observedAt);
+    if (!state.enrollment || !state.policy?.discoveryEnabled) return;
+    const custom = state.policy.customApps?.find((entry) => entry.host === host);
+    const appId = custom?.id ?? (state.policy.presetDiscovery ? discoveryPresetAt(host) : undefined);
+    if (appId && await canDiscoverCatalogApps()) await observeApp(state, appId, observedAt);
   }).catch(() => undefined);
 }
 
-function listenForCustomApps() {
+function listenForCatalogApps() {
   const event = chrome.webNavigation?.onCommitted;
-  if (event && !event.hasListener(observeCustomApp)) {
-    event.addListener(observeCustomApp, { url: [{ schemes: ['https'], ports: [443] }] });
+  if (event && !event.hasListener(observeCatalogNavigation)) {
+    event.addListener(observeCatalogNavigation, { url: [{ schemes: ['https'], ports: [443] }] });
   }
 }
 
-async function canDiscoverCustomApps() {
-  return chrome.webNavigation?.onCommitted.hasListener(observeCustomApp) === true &&
+async function canDiscoverCatalogApps() {
+  return chrome.webNavigation?.onCommitted.hasListener(observeCatalogNavigation) === true &&
     await chrome.permissions.contains(discoveryPermission);
 }
 
@@ -595,7 +603,7 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
   if (reason === 'update') synchronizeInBackground();
 });
 chrome.permissions.onAdded.addListener(({ permissions }) => {
-  if (permissions?.includes('webNavigation')) listenForCustomApps();
+  if (permissions?.includes('webNavigation')) listenForCatalogApps();
   if (permissions?.some((permission) => permission === 'management' || permission === 'webNavigation')) synchronizeInBackground();
 });
 chrome.permissions.onRemoved.addListener(({ permissions }) => {
@@ -603,13 +611,13 @@ chrome.permissions.onRemoved.addListener(({ permissions }) => {
     const state = await readState();
     if (!state.observations) return;
     for (const appId of Object.keys(state.observations)) {
-      if (isCustomAppId(appId)) delete state.observations[appId];
+      if (isCustomAppId(appId) || isDiscoveryPreset(appId)) delete state.observations[appId];
     }
     await save(state);
   }).catch(() => undefined);
   if (permissions?.some((permission) => permission === 'management' || permission === 'webNavigation')) synchronizeInBackground();
 });
-listenForCustomApps();
+listenForCatalogApps();
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'managed' && (managedGrantKey in changes || managedOriginKey in changes)) synchronizeInBackground();
 });

@@ -44,6 +44,7 @@ test('Control custom app catalog reports only assigned HTTPS sites with optional
         headers: {
           ...(request.headers.authorization ? { Authorization: request.headers.authorization } : {}),
           ...(request.headers['x-zekvar-assignment-aware'] ? { 'X-Zekvar-Assignment-Aware': '1' } : {}),
+          ...(request.headers['x-zekvar-preset-discovery'] ? { 'X-Zekvar-Preset-Discovery': '1' } : {}),
           ...(body.length ? { 'Content-Type': 'application/json' } : {}),
         },
         body: body.length ? body : undefined,
@@ -146,7 +147,7 @@ test('Control custom app catalog reports only assigned HTTPS sites with optional
   }
   const installationId = await enroll(enrolled);
   const unconsentedId = await enroll(unconsented);
-  await unconsented.popup.getByRole('button', { name: 'Allow custom app discovery', exact: true }).waitFor();
+  await unconsented.popup.getByRole('button', { name: 'Allow catalog discovery', exact: true }).waitFor();
   await enrolled.popup.getByText('Custom app discovery enabled for 1 cataloged site.', { exact: true }).waitFor();
   await until(async () => (await admin('installations')).find((row) => row.installationId === installationId).appliedPolicyVersion === 2,
     'The permitted browser did not acknowledge custom discovery.');
@@ -171,6 +172,7 @@ test('Control custom app catalog reports only assigned HTTPS sites with optional
   await visit(enrolled, 'http://' + host + privatePath);
   await visit(enrolled, target + ':8443' + privatePath);
   await visit(enrolled, 'https://unlisted.example.test/', `<h1>Unlisted page</h1><iframe src="${target}${privatePath}"></iframe>`);
+  await visit(enrolled, 'https://grok.com' + privatePath);
   await sync(unconsented);
   await sync(enrolled);
   assert.deepEqual(submissions, []);
@@ -240,8 +242,100 @@ test('Control custom app catalog reports only assigned HTTPS sites with optional
     } finally { await tab.close(); }
   });
 
-  await enrolled.popup.getByRole('button', { name: 'Remove custom app discovery permission', exact: true }).click();
-  await enrolled.popup.getByRole('button', { name: 'Allow custom app discovery', exact: true }).waitFor();
+  await t.test('observes selected AI presets only with policy and Chrome permission', async (presetsTest) => {
+    const dashboard = await enrolled.browser.newPage();
+    await dashboard.setViewportSize({ width: 1280, height: 900 });
+    await dashboard.goto(web);
+    await dashboard.getByRole('heading', { name: 'Security overview', exact: true }).waitFor();
+    await dashboard.getByRole('link', { name: 'Edit app catalog', exact: true }).click();
+    const presets = dashboard.getByLabel('Draft AI app preset discovery', { exact: true });
+    await presets.selectOption('on');
+    await dashboard.getByLabel('Custom app catalog', { exact: true }).fill(`${host}, Example Workspace\ncopilot.com, Managed Copilot`);
+    await dashboard.getByRole('button', { name: 'Run preview', exact: true }).click();
+    const changes = dashboard.getByRole('list', { name: 'Policy setting changes' });
+    await changes.getByText('AI app preset discovery · Off → On', { exact: true }).waitFor();
+    dashboard.once('dialog', (dialog) => dialog.accept());
+    await dashboard.getByRole('button', { name: 'Publish previewed policy', exact: true }).click();
+    await dashboard.getByText(/Previewed policy published as version/).waitFor();
+    const [withPresets] = await admin('policies');
+    assert.equal(withPresets.presetDiscoveryEnabled, true);
+    const customCopilot = withPresets.customApps.find(({ host }) => host === 'copilot.com').id;
+    await sync(enrolled);
+    await sync(unconsented);
+    await enrolled.popup.getByText('AI app preset discovery is on.', { exact: true }).waitFor();
+    const ignored = submissions.length;
+    await visit(unconsented, 'https://copilot.microsoft.com' + privatePath);
+    for (const url of ['https://www.grok.com/', 'https://grok.com.other.test/', 'http://grok.com/', 'https://grok.com:8443/']) {
+      await visit(enrolled, url);
+    }
+    await visit(enrolled, 'https://unlisted.example.test/', '<h1>Unlisted page</h1><iframe src="https://grok.com/"></iframe>');
+    await sync(enrolled);
+    await sync(unconsented);
+    assert.equal(submissions.length, ignored);
+    await visit(enrolled, 'https://copilot.com' + privatePath);
+    const preset = async (id) => (await admin('ai-apps')).find(({ appId }) => appId === id);
+    await until(async () => (await preset(customCopilot))?.browsersSeen === 1, 'The saved custom alias was not reported.');
+    assert.equal((await preset('copilot')).browsersSeen, 0);
+    const sites = [
+      ['copilot.microsoft.com', 'copilot'], ['perplexity.ai', 'perplexity'], ['www.perplexity.ai', 'perplexity'],
+      ['grok.com', 'grok'], ['meta.ai', 'meta-ai'], ['www.meta.ai', 'meta-ai'], ['chat.deepseek.com', 'deepseek'],
+    ];
+    for (const [domain, appId] of sites) {
+      const sent = submissions.length;
+      await visit(enrolled, 'https://' + domain + privatePath);
+      await until(() => submissions.slice(sent).some((entry) => entry.appId === appId), `Expected a report for ${appId}.`);
+      await until(async () => (await preset(appId)).browsersSeen === 1, `Expected one installation for ${appId}.`);
+    }
+    const expanded = submissions.slice(ignored);
+    assert.ok(expanded.every((value) => Object.keys(value).sort().join(',') === 'appId,observedAt,policyVersion'));
+    assert.doesNotMatch(JSON.stringify(expanded), /\.com|\.ai|local-private|synthetic-private-account/);
+    await dashboard.getByRole('link', { name: 'Overview', exact: true }).click();
+    const inventory = dashboard.getByRole('table', { name: 'App inventory', exact: true });
+    const copilot = inventory.getByRole('row').filter({ has: dashboard.getByRole('rowheader', { name: 'Microsoft Copilot', exact: true }) });
+    await copilot.getByText('1', { exact: true }).waitFor();
+    await copilot.getByLabel('Microsoft Copilot classification', { exact: true }).selectOption('unapproved');
+    await copilot.getByRole('button', { name: 'Save Microsoft Copilot classification' }).click();
+    await copilot.getByText('Microsoft Copilot classification saved.', { exact: true }).waitFor();
+    if (artifacts) await inventory.screenshot({ path: join(artifacts, 'ai-discovery-presets.png') });
+    await dashboard.getByRole('link', { name: 'Audit log', exact: true }).click();
+    await dashboard.getByText('Microsoft Copilot · Unapproved', { exact: true }).waitFor();
+
+    await presetsTest.test('reports the public Perplexity homepage without its URL', {
+      skip: process.env.ZEKVAR_DEMO_LIVE !== '1',
+    }, async (live) => {
+      const before = await preset('perplexity');
+      const tab = await enrolled.browser.newPage();
+      try {
+        const response = await tab.goto('https://www.perplexity.ai/', { waitUntil: 'domcontentloaded', timeout: 12_000 })
+          .catch(() => undefined);
+        if (!response?.ok() || !['perplexity.ai', 'www.perplexity.ai'].includes(new URL(tab.url()).hostname)) {
+          return live.skip('The public homepage was unavailable or redirected outside the preset.');
+        }
+        await until(async () => Date.parse((await preset('perplexity')).lastObservedAt) > Date.parse(before.lastObservedAt),
+          'The public Perplexity homepage did not report.');
+        assert.equal((await preset('perplexity')).browsersSeen, 1);
+        assert.doesNotMatch(JSON.stringify(submissions), /https?:|perplexity\.ai/);
+      } finally { await tab.close(); }
+    });
+
+    offline = true;
+    await sync(enrolled);
+    await visit(enrolled, 'https://grok.com/offline' + privatePath);
+    const pendingGrok = () => enrolled.worker.evaluate(() =>
+      chrome.storage.local.get('controlState').then(({ controlState }) => Boolean(controlState.observations?.grok)));
+    await until(pendingGrok, 'Chrome did not queue the discovered preset offline.');
+    await enrolled.popup.getByRole('button', { name: 'Remove catalog discovery permission', exact: true }).click();
+    await enrolled.popup.getByRole('button', { name: 'Allow catalog discovery', exact: true }).waitFor();
+    await until(async () => !await pendingGrok(), 'Queued preset observation survived permission removal.');
+    offline = false;
+    const removed = submissions.length;
+    await sync(enrolled);
+    await visit(enrolled, 'https://grok.com/after-removal');
+    await sync(enrolled);
+    assert.equal(submissions.length, removed);
+  });
+
+  await enrolled.popup.getByRole('button', { name: 'Allow catalog discovery', exact: true }).waitFor();
   await until(async () => (await admin('installations')).find((row) => row.installationId === installationId).appliedPolicyVersion === null,
     'Control still considers discovery applied after permission removal.');
   const count = submissions.length;

@@ -1,18 +1,12 @@
 import { isCanonicalDomain } from './domains';
+import { discoveryPresets } from './discovery';
 
 const presets = {
   'chatgpt.com': 'ChatGPT',
   'chat.openai.com': 'ChatGPT',
   'claude.ai': 'Claude',
   'gemini.google.com': 'Gemini',
-  'copilot.microsoft.com': 'Microsoft Copilot',
-  'copilot.com': 'Microsoft Copilot',
-  'perplexity.ai': 'Perplexity',
-  'www.perplexity.ai': 'Perplexity',
-  'grok.com': 'Grok',
-  'meta.ai': 'Meta AI',
-  'www.meta.ai': 'Meta AI',
-  'chat.deepseek.com': 'DeepSeek',
+  ...Object.fromEntries(Object.values(discoveryPresets).flatMap(({ name, hosts }) => hosts.map((host) => [host, name]))),
 } as const;
 
 export function aiAppAccessCatalog(customApps: readonly { host: string; name: string }[]) {

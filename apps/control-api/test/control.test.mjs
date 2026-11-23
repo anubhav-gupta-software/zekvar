@@ -31,6 +31,7 @@ const aiAppAccessAdmin = randomBytes(32).toString('hex');
 const eventTriageAdmin = randomBytes(32).toString('hex');
 const identifiersAdmin = randomBytes(32).toString('hex');
 const casesAdmin = randomBytes(32).toString('hex');
+const presetsAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -52,6 +53,11 @@ const undoIncidentSchema = `
   DROP TABLE incident_cases;
   ALTER TABLE control_audit DROP COLUMN incident_case_change;
 `;
+const undoPresetSchema = `
+  DELETE FROM schema_migrations WHERE version = 35;
+  ALTER TABLE policy_versions DROP COLUMN preset_discovery_enabled;
+  ALTER TABLE policy_deliveries DROP COLUMN preset_discovery;
+`;
 
 async function retentionFixture(query) {
   assert.match(postgres ?? '', /^zekvar-demo-[a-f0-9]{10}$/);
@@ -60,13 +66,13 @@ async function retentionFixture(query) {
 }
 
 function browserPolicyOnly({ extensionDeployment: _extensionDeployment, blockedAiAppHosts: _blockedAiAppHosts,
-  fileContentModes: _fileContentModes, identifierProtection: _identifierProtection, ...browserPolicy }) {
+  fileContentModes: _fileContentModes, identifierProtection: _identifierProtection, presetDiscoveryEnabled: _presetDiscovery, ...browserPolicy }) {
   return browserPolicy;
 }
 
 async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false,
   extensionVersion, scopedEnrollment = false, composerAware = false, privateKeyAware = false, fileInspectionAware = false,
-  aiAppAccessAware = false, fileBlockAware = false, identifiersAware = false } = {}) {
+  aiAppAccessAware = false, fileBlockAware = false, identifiersAware = false, presetAware = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -81,6 +87,7 @@ async function call(path, { token, method = 'GET', body, expect = 200, assignmen
   if (aiAppAccessAware) headers['X-Zekvar-AI-App-Access'] = '1';
   if (fileBlockAware) headers['X-Zekvar-File-Content-Block'] = '1';
   if (identifiersAware) headers['X-Zekvar-Identifiers'] = '1';
+  if (presetAware) headers['X-Zekvar-Preset-Discovery'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
@@ -137,6 +144,8 @@ async function start(sweepSeconds = 3600) {
       Control__Organizations__14__AdminToken: identifiersAdmin,
       Control__Organizations__15__Slug: `incident-cases-${suffix}`,
       Control__Organizations__15__AdminToken: casesAdmin,
+      Control__Organizations__16__Slug: `presets-${suffix}`,
+      Control__Organizations__16__AdminToken: presetsAdmin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -313,7 +322,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const observation = { appId: 'claude', observedAt: observedAt.toISOString(), policyVersion: initial.version };
 
     assert.equal(initial.discoveryEnabled, false);
-    assert.deepEqual((await inventory()).map((app) => app.appId), ['chatgpt', 'claude', 'gemini']);
+    assert.deepEqual((await inventory()).map((app) => app.appId), ['chatgpt', 'claude', 'gemini', 'copilot', 'perplexity', 'grok', 'meta-ai', 'deepseek']);
     await call('/v1/admin/ai-apps', { token: browser.token, expect: 401 });
     await classify('claude', 'approved', browser.token, 401);
     await classify('claude', 'unknown', second, 400);
@@ -514,7 +523,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual((await admin('events')).map(({ eventId }) => eventId), [recent.eventId]);
     assert.deepEqual((await admin('events/history')).entries.map(({ eventId }) => eventId), [recent.eventId]);
     assert.deepEqual((await admin('events/export')).entries.map(({ eventId }) => eventId), [recent.eventId]);
-    assert.deepEqual((await admin('ai-apps')).map(({ browsersSeen }) => browsersSeen), [1, 0, 0]);
+    assert.deepEqual((await admin('ai-apps')).map(({ browsersSeen }) => browsersSeen), [1, 0, 0, 0, 0, 0, 0, 0]);
     assert.deepEqual((await admin('audit?action=grant_issued')).entries, []);
     const retentionChanges = (await admin('audit?action=retention_changed')).entries;
     assert.equal(retentionChanges.length, 1);
@@ -1534,6 +1543,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
           ADD CONSTRAINT ${table}_app_id_check CHECK (app_id IN ('chatgpt', 'claude', 'gemini'));
       `).join('\n');
       await retentionFixture(`
+        ${undoPresetSchema}
         DELETE FROM schema_migrations WHERE version = 18;
         ALTER TABLE policy_versions DROP COLUMN custom_apps;
         ${constraints}
@@ -3162,6 +3172,86 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const restored = await post(`policies/${initial.version}/restore`);
     assert.deepEqual(restored.identifierProtection, empty);
     assert.deepEqual((await admin('policies'))[0].identifierProtection, empty);
+  });
+
+  await t.test('enables expanded AI discovery only after an approved scoped policy and matching browser delivery', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: presetsAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const inventory = (token) => admin('ai-apps', token ? { token } : undefined);
+    const { grant } = await post('enrollment-grants');
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const policy = (presetAware = true) => call('/v1/browser/policy', { token: browser.token, assignmentAware: true, presetAware });
+    const observe = (appId, version, { expect = 204, extra } = {}) => call('/v1/browser/ai-app-observations', {
+      token: browser.token, method: 'POST', expect,
+      body: { appId, observedAt: new Date().toISOString(), policyVersion: version.version, assignmentVersion: version.assignmentVersion, ...extra },
+    });
+    const initial = await post('policies', { mode: 'monitor', discoveryEnabled: true,
+      customApps: [{ host: 'copilot.com', name: 'Company Copilot' }] });
+    assert.equal(initial.presetDiscoveryEnabled, false);
+    await observe(initial.customApps[0].id, initial);
+    await observe('chatgpt', initial);
+    await post('ai-apps/chatgpt/classification', { status: 'approved' }, { expect: 204 });
+    const existing = await inventory();
+    if (postgres) {
+      await stop();
+      await retentionFixture(undoPresetSchema);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 35'), '1');
+      assert.deepEqual(await inventory(), existing);
+    }
+    await observe('copilot', await policy(), { expect: 400 });
+    const group = await post('policy-groups', { name: 'AI discovery pilot' });
+    await post(`installations/${browser.installationId}/policy-group`, { groupId: group.id }, { expect: 204 });
+    const groupPath = `policy-groups/${group.id}`;
+    const { token: author } = await post('access', { name: 'Preset author', role: 'administrator', hours: 1 });
+    const { token: reviewer } = await post('access', { name: 'Preset reviewer', role: 'administrator', hours: 1 });
+    const { token: auditor } = await post('access', { name: 'Preset auditor', role: 'auditor', hours: 1 });
+    await post('policy-reviews/setting', { required: true }, { expect: 204 });
+    const requested = await post(`${groupPath}/policies`, { expectedVersion: initial.version, presetDiscoveryEnabled: true },
+      { token: author, expect: 202, expectReview: true });
+    assert.equal((await policy()).presetDiscoveryEnabled, false);
+    await post(`policy-reviews/${requested.reviewId}/decision`, { approve: true }, { token: author, expect: 403 });
+    const approved = await post(`policy-reviews/${requested.reviewId}/decision`, { approve: true }, { token: reviewer });
+    assert.equal(approved.presetDiscoveryEnabled, true);
+    assert.equal((await admin('policies'))[0].presetDiscoveryEnabled, false);
+    const legacy = await policy(false);
+    assert.equal(legacy.presetDiscoveryEnabled, undefined);
+    await observe('copilot', legacy, { expect: 400 });
+    const delivered = await policy();
+    assert.equal(delivered.presetDiscoveryEnabled, true);
+    assert.equal(delivered.version, approved.version);
+    for (const appId of ['copilot', 'perplexity', 'grok', 'meta-ai', 'deepseek']) {
+      await observe(appId, delivered, { expect: 400, extra: { url: 'https://example.test/synthetic-private-path' } });
+      await Promise.all([observe(appId, delivered), observe(appId, delivered)]);
+    }
+    await post('ai-apps/copilot/classification', { status: 'approved' }, { token: auditor, expect: 403 });
+    await post('ai-apps/copilot/classification', { status: 'approved' }, { token: reviewer, expect: 204 });
+    const entries = await inventory(auditor);
+    const copilot = entries.find(({ appId }) => appId === 'copilot');
+    assert.equal(copilot.browsersSeen, 1);
+    assert.equal(copilot.name, 'Microsoft Copilot');
+    assert.equal(copilot.status, 'approved');
+    assert.equal(entries.find(({ appId }) => appId === initial.customApps[0].id).browsersSeen, 1);
+    assert.doesNotMatch(JSON.stringify(entries), /synthetic-private-path|installationId/);
+    assert.equal((await inventory(second)).find(({ appId }) => appId === 'copilot').browsersSeen, 0);
+    assert.equal((await admin('audit?action=app_classified')).entries.some((entry) =>
+      entry.appId === 'copilot' && entry.classification === 'approved'), true);
+    await post('policy-reviews/setting', { required: false }, { expect: 204 });
+    await post(`${groupPath}/policies`, { customApps: [{ host: 'grok.com', name: 'Managed Grok' }] });
+    const overridden = await policy();
+    await observe('grok', delivered, { expect: 400 });
+    await observe('grok', overridden, { expect: 400 });
+    await observe(overridden.customApps[0].id, overridden);
+    const disabled = await post(`${groupPath}/policies`, { presetDiscoveryEnabled: false });
+    assert.equal(disabled.discoveryEnabled, true);
+    await observe('deepseek', overridden, { expect: 400 });
+    await observe('chatgpt', await policy());
+    await post(`installations/${browser.installationId}/policy-group`, { groupId: null }, { expect: 204 });
+    await observe('copilot', delivered, { expect: 400 });
+    assert.equal((await policy()).presetDiscoveryEnabled, false);
+    assert.equal((await post(`${groupPath}/policies/${approved.version}/restore`)).presetDiscoveryEnabled, true);
+    await post(`installations/${browser.installationId}/revoke`, {}, { expect: 204 });
+    await observe('copilot', delivered, { expect: 401 });
   });
 
   await t.test('groups retained events into audited cases with tenant isolation and bounded, retryable membership', async () => {

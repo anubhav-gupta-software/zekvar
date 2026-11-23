@@ -5,7 +5,7 @@ export type { DetectorMode } from '../../../contracts/policy/prompt';
 export type { DomainRules, PathRules } from '../../../contracts/policy/domains';
 import type { DomainRules, PathRules } from '../../../contracts/policy/domains';
 import type { FileInspection, UploadMethod, UploadModes, UploadTypes } from '../../../contracts/policy/uploads';
-import type { CustomApp, CustomAppId } from '../../../contracts/policy/discovery';
+import { discoveryPresets, isCustomAppId, isDiscoveryPreset, type CustomApp, type CustomAppId, type DiscoveryPreset } from '../../../contracts/policy/discovery';
 import { exceptionDecision, type PromptException } from '../../../contracts/policy/prompt-exceptions';
 
 export const decisions = [...modes, 'warn_override', exceptionDecision] as const;
@@ -25,7 +25,14 @@ export { aiPromptApps, promptAppLabels, isPromptApp } from '../../../contracts/p
 
 export const aiApps = { chatgpt: 'ChatGPT', claude: 'Claude', gemini: 'Gemini' } as const;
 export type AiAppId = keyof typeof aiApps;
-export type DiscoveredAppId = AiAppId | CustomAppId;
+export type DiscoveredAppId = AiAppId | DiscoveryPreset | CustomAppId;
+export function isDiscoveredAppId(value: unknown): value is DiscoveredAppId {
+  return typeof value === 'string' && (isCustomAppId(value) || isDiscoveryPreset(value) || Object.hasOwn(aiApps, value));
+}
+export function discoveryAppName(appId: DiscoveredAppId) {
+  if (isDiscoveryPreset(appId)) return discoveryPresets[appId].name;
+  return Object.hasOwn(aiApps, appId) ? aiApps[appId as AiAppId] : 'Custom app';
+}
 export const classifications = ['unreviewed', 'approved', 'unapproved'] as const;
 export type AppClassification = typeof classifications[number];
 export const classificationLabels: Record<AppClassification, string> = {
@@ -49,6 +56,7 @@ export type Policy = {
   fileInspection?: FileInspection;
   fileContentModes?: UploadModes;
   discoveryEnabled?: boolean;
+  presetDiscoveryEnabled?: boolean;
   customApps?: CustomApp[];
   promptExceptions?: PromptException[];
   extensionInventoryEnabled?: boolean;

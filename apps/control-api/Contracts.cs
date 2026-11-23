@@ -48,9 +48,21 @@ internal static class FixtureContract
 
 internal static class DiscoveryCatalog
 {
-    public static readonly string[] AppIds = [FixtureContract.ChatGpt, FixtureContract.Claude, FixtureContract.Gemini];
+    public static readonly string[] ComposerAppIds = [FixtureContract.ChatGpt, FixtureContract.Claude, FixtureContract.Gemini];
+    private static readonly Dictionary<string, (string Name, string[] Hosts)> Presets = new(StringComparer.Ordinal)
+    {
+        ["copilot"] = ("Microsoft Copilot", ["copilot.microsoft.com", "copilot.com"]),
+        ["perplexity"] = ("Perplexity", ["perplexity.ai", "www.perplexity.ai"]),
+        ["grok"] = ("Grok", ["grok.com"]),
+        ["meta-ai"] = ("Meta AI", ["meta.ai", "www.meta.ai"]),
+        ["deepseek"] = ("DeepSeek", ["chat.deepseek.com"]),
+    };
+    public static readonly string[] AppIds = [..ComposerAppIds, ..Presets.Keys];
 
     public static bool IsBuiltIn(string? appId) => appId is not null && AppIds.Contains(appId);
+    public static string[] PresetHosts(string appId) => Presets.TryGetValue(appId, out var preset) ? preset.Hosts : [];
+    public static string? PresetName(string appId) => Presets.TryGetValue(appId, out var preset) ? preset.Name : null;
+    public static bool IsPresetHost(string host) => Presets.Values.Any(preset => preset.Hosts.Contains(host));
     public static bool IsApp(string? appId) => IsBuiltIn(appId) || CustomApps.IsId(appId);
     public static bool IsStatus(string? status) => status is "unreviewed" or "approved" or "unapproved";
 }
@@ -75,7 +87,8 @@ internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode 
     PathRules? PathRules = null, bool? ExtensionInventoryEnabled = null, UploadTypes? UploadTypes = null,
     CustomAppSetting?[]? CustomApps = null, PromptException?[]? PromptExceptions = null, bool? ClaudePromptEnabled = null,
     string? PrivateKeyMode = null, FileInspection? FileInspection = null, ExtensionDeployment? ExtensionDeployment = null,
-    string[]? BlockedAiAppHosts = null, UploadModes? FileContentModes = null, IdentifierProtection? IdentifierProtection = null);
+    string[]? BlockedAiAppHosts = null, UploadModes? FileContentModes = null, IdentifierProtection? IdentifierProtection = null,
+    bool? PresetDiscoveryEnabled = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null)
 {
     public bool HasSettings() => Chatgpt is not null || Gemini is not null;
@@ -114,7 +127,8 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ExtensionDeployment? ExtensionDeployment = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string[]? BlockedAiAppHosts = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] UploadModes? FileContentModes = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IdentifierProtection? IdentifierProtection = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IdentifierProtection? IdentifierProtection = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? PresetDiscoveryEnabled = null)
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => ClaudePromptEnabled
@@ -127,7 +141,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
         new(FileInspection?.Chatgpt == true ? "monitor" : "off", FileInspection?.Gemini == true ? "monitor" : "off");
 
     public Policy ForBrowser(bool claudeAware, bool privateKeyAware, bool fileInspectionAware, bool aiAppAccessAware,
-        bool fileBlockAware, bool identifiersAware)
+        bool fileBlockAware, bool identifiersAware, bool presetDiscoveryAware)
     {
         var now = DateTimeOffset.UtcNow;
         var nowMs = now.ToUnixTimeMilliseconds();
@@ -146,6 +160,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
                 fileInspectionAware && (content.Gemini == "monitor" || fileBlockAware && content.Gemini == "block")),
             FileContentModes = fileBlockAware ? content : null,
             IdentifierProtection = identifiersAware ? IdentifierProtection : null,
+            PresetDiscoveryEnabled = presetDiscoveryAware && DiscoveryEnabled ? PresetDiscoveryEnabled : null,
             ExtensionDeployment = null,
             BlockedAiAppHosts = aiAppAccessAware ? BlockedAiAppHosts : null,
             PromptExceptions = PromptExceptions is { Length: > 0 } ? null : PromptExceptions,

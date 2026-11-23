@@ -72,7 +72,7 @@ internal sealed partial class ControlStore
             FROM states GROUP BY app_id, state
             """, organizationId, filter.Scoped, (object?)filter.GroupId ?? DBNull.Value, (object?)filter.Version ?? DBNull.Value, visible,
             ReadinessHeartbeatSeconds, ReadinessObservationSeconds);
-        var counts = DiscoveryCatalog.AppIds.ToDictionary(app => app, _ => new Dictionary<string, long>(StringComparer.Ordinal)
+        var counts = DiscoveryCatalog.ComposerAppIds.ToDictionary(app => app, _ => new Dictionary<string, long>(StringComparer.Ordinal)
         {
             ["detected"] = 0, ["unsupported"] = 0, ["stale"] = 0, ["unobserved"] = 0, ["policy_pending"] = 0, ["off"] = 0,
         });
@@ -87,7 +87,7 @@ internal sealed partial class ControlStore
             var details = JsonSerializer.Deserialize<Dictionary<Guid, DateTimeOffset?>>(rows.GetString(3))!;
             foreach (var (id, checkedAt) in details) checks[id].Add(app, new(state, checkedAt));
         }
-        var apps = DiscoveryCatalog.AppIds.Select(app => new ComposerCounts(app, counts[app])).ToArray();
+        var apps = DiscoveryCatalog.ComposerAppIds.Select(app => new ComposerCounts(app, counts[app])).ToArray();
         return (new(apps[0].Counts.Values.Sum(), apps), checks);
     }
 }

@@ -4,8 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../lib/api';
-import { aiApps, classifications, decisionLabels, detectorModes, isId, modes,
-  type AppClassification, type DetectorMode, type DiscoveredAppId, type Feedback, type Mode } from '../lib/control';
+import { classifications, decisionLabels, detectorModes, discoveryAppName, isDiscoveredAppId, isId, modes,
+  type AppClassification, type DetectorMode, type Feedback, type Mode } from '../lib/control';
 import { endSession, sessionToken, startSession } from '../lib/session';
 import { cleanupCounts, retentionFields, type RetentionField, type RetentionPolicy } from '../lib/retention';
 import { navigationRuleLimitError, readNavigationRules } from '../lib/navigation';
@@ -277,6 +277,7 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
   const uploadTypes = readUploadTypes(form);
   const fileContent = readFileContentSettings(form);
   const discovery = form.get('discoveryEnabled');
+  const presetDiscovery = form.get('presetDiscoveryEnabled');
   const inventory = form.get('extensionInventoryEnabled');
   const claude = form.get('claudePromptEnabled');
   const groupId = form.get('groupId');
@@ -286,7 +287,8 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
   }
   if (!modes.includes(mode) || !detectorModes.includes(githubPatMode) || !isDetectorMode(paymentCardMode) ||
       (privateKeyMode !== null && !isDetectorMode(privateKeyMode)) || !uploadModes || !fileContent ||
-      (discovery !== 'on' && discovery !== 'off') || (inventory !== 'on' && inventory !== 'off') || (claude !== 'on' && claude !== 'off')) {
+      (discovery !== 'on' && discovery !== 'off') || (presetDiscovery !== null && presetDiscovery !== 'on' && presetDiscovery !== 'off') ||
+      (inventory !== 'on' && inventory !== 'off') || (claude !== 'on' && claude !== 'off')) {
     return { error: 'Choose a setting for each policy control.' };
   }
   if (!uploadTypes) return { error: uploadTypesError };
@@ -294,7 +296,8 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
     try {
       const policy = await controlApi.publish(token, { mode, githubPatMode, paymentCardMode, privateKeyMode: privateKeyMode ?? undefined,
         uploadModes, uploadTypes, ...fileContent,
-        discoveryEnabled: discovery === 'on', extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on', expectedVersion },
+        discoveryEnabled: discovery === 'on', presetDiscoveryEnabled: presetDiscovery === null ? undefined : presetDiscovery === 'on',
+        extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on', expectedVersion },
         review, groupId ?? undefined);
       if ('reviewId' in policy) return queued(policy.reviewId);
       refreshPolicyViews();
@@ -311,13 +314,13 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
 export async function classifyAiApp(_previous: Feedback, form: FormData): Promise<Feedback> {
   const app = form.get('appId');
   const status = form.get('status') as AppClassification;
-  if (typeof app !== 'string' || (!isCustomAppId(app) && !Object.hasOwn(aiApps, app)) || !classifications.includes(status)) {
+  if (!isDiscoveredAppId(app) || !classifications.includes(status)) {
     return { error: 'Choose a cataloged app and a valid classification.' };
   }
   return perform(async (token) => {
-    await controlApi.classifyApp(token, app as DiscoveredAppId, status);
+    await controlApi.classifyApp(token, app, status);
     revalidatePath('/');
-    return { message: `${isCustomAppId(app) ? 'App' : aiApps[app as keyof typeof aiApps]} classification saved.` };
+    return { message: `${isCustomAppId(app) ? 'App' : discoveryAppName(app)} classification saved.` };
   });
 }
 
@@ -364,13 +367,15 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   const uploadTypes = readUploadTypes(form);
   const fileContent = readFileContentSettings(form);
   const discovery = form.get('discoveryEnabled');
+  const presetDiscovery = form.get('presetDiscoveryEnabled');
   const inventory = form.get('extensionInventoryEnabled');
   const claude = form.get('claudePromptEnabled');
   const groupId = form.get('groupId');
   const expectedVersion = Number(form.get('expectedVersion'));
   if (!isMode(mode) || !isDetectorMode(githubPatMode) || !isDetectorMode(paymentCardMode) ||
       (privateKeyMode !== null && !isDetectorMode(privateKeyMode)) || !uploadModes || !fileContent ||
-      (discovery !== 'on' && discovery !== 'off') || (inventory !== 'on' && inventory !== 'off') ||
+      (discovery !== 'on' && discovery !== 'off') || (presetDiscovery !== null && presetDiscovery !== 'on' && presetDiscovery !== 'off') ||
+      (inventory !== 'on' && inventory !== 'off') ||
       (claude !== 'on' && claude !== 'off') ||
       (groupId !== null && !isId(groupId)) || !Number.isInteger(expectedVersion) || expectedVersion < 1 ||
       expectedVersion > 2147483647) {
@@ -411,7 +416,8 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
     try {
       const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, privateKeyMode: privateKeyMode ?? undefined,
         uploadModes, uploadTypes, ...fileContent,
-        discoveryEnabled: discovery === 'on', extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on',
+        discoveryEnabled: discovery === 'on', presetDiscoveryEnabled: presetDiscovery === null ? undefined : presetDiscovery === 'on',
+        extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on',
         domainRules, pathRules, customApps, promptExceptions, blockedAiAppHosts, identifierProtection },
         expectedVersion, form.get('expectReview') === 'on', groupId ?? undefined);
       if ('reviewId' in published) return queued(published.reviewId);

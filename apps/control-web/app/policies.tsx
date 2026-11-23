@@ -41,6 +41,13 @@ export function PublishPolicyForm({ policy, groupId, review }: { policy?: Policy
         <option value="off">Off</option><option value="on">On</option>
       </select>
     </div>
+    {policy?.presetDiscoveryEnabled !== undefined && <div className="grid gap-1">
+      <label htmlFor="preset-discovery-mode">AI app preset discovery</label>
+      <select key={policy.version} id="preset-discovery-mode" name="presetDiscoveryEnabled"
+        defaultValue={policy.presetDiscoveryEnabled ? 'on' : 'off'}>
+        <option value="off">Off</option><option value="on">On</option>
+      </select>
+    </div>}
     <div className="grid gap-1">
       <label htmlFor="extension-inventory-mode">Extension inventory</label>
       <select key={policy?.version} id="extension-inventory-mode" name="extensionInventoryEnabled"
@@ -124,6 +131,7 @@ function PolicyRow({ policy, current, groupId, writable, review, identifiersAvai
       </details>}
     </td>}
     <td>{policy.discoveryEnabled ? 'On' : 'Off'}
+      {policy.presetDiscoveryEnabled && <div className="muted">AI app presets enabled</div>}
       {!!policy.customApps?.length && <details className="domain-rule-history">
         <summary>{policy.customApps.length} custom {policy.customApps.length === 1 ? 'site' : 'sites'}</summary>
         {policy.customApps.map(({ id, host, name }) => <p key={id}>{name} · <code>{host}</code></p>)}

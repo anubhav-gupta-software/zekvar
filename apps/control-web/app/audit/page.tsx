@@ -3,7 +3,7 @@ import { ApiError, controlApi } from '../../lib/api';
 import { roleLabels } from '../../lib/access';
 import { reviewOperations, reviewStatuses } from '../../lib/reviews';
 import { auditActions, auditFilters, type AuditEntry } from '../../lib/audit';
-import { aiApps, classificationLabels, utc } from '../../lib/control';
+import { classificationLabels, discoveryAppName, utc } from '../../lib/control';
 import { cleanupCounts, retentionFields, type RetentionField } from '../../lib/retention';
 import { sessionToken } from '../../lib/session';
 import { DeploymentBadge, Sidebar } from '../workspace';
@@ -110,7 +110,7 @@ function auditDetails(entry: AuditEntry) {
   if (entry.policyVersion) return `v${entry.policyVersion}${entry.restoredFrom ? ` from v${entry.restoredFrom}` : ''}`;
   if (entry.installationId) return <code title={entry.installationId}>{entry.installationId.slice(0, 13)}</code>;
   if (entry.appId && entry.classification) {
-    return `${aiApps[entry.appId as keyof typeof aiApps] ?? 'Custom app'} · ${classificationLabels[entry.classification]}`;
+    return `${discoveryAppName(entry.appId)} · ${classificationLabels[entry.classification]}`;
   }
   if (entry.cleanup) return cleanupCounts(entry.cleanup);
   if (entry.retention) {

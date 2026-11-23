@@ -32,6 +32,7 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
     identifierMode: snapshot.identifierProtection?.mode,
     identifierFormats: snapshot.identifierProtection?.formats.map(({ prefix, digits }) => `${prefix} ${digits}`).join('\n') ?? '',
     discoveryEnabled: snapshot.discoveryEnabled,
+    presetDiscoveryEnabled: snapshot.presetDiscoveryEnabled,
     extensionInventoryEnabled: snapshot.extensionInventoryEnabled,
     blockedAiAppHosts: snapshot.blockedAiAppHosts,
     claudePromptEnabled: snapshot.claudePromptEnabled,
@@ -139,7 +140,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
     setResult(runComparison(reference, {
       mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode, privateKeyMode: editor.privateKeyMode,
       identifierProtection: identifiers,
-      discoveryEnabled: editor.discoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled,
+      discoveryEnabled: editor.discoveryEnabled, presetDiscoveryEnabled: editor.presetDiscoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled,
       extensionDeployment: reference.extensionDeployment,
       blockedAiAppHosts: editor.blockedAiAppHosts,
       claudePromptEnabled: editor.claudePromptEnabled, domainRules, pathRules,
@@ -191,6 +192,13 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
             <option value="off">Off</option><option value="on">On</option>
           </select>
         </div>
+        {editor.presetDiscoveryEnabled !== undefined && <div className="grid gap-1">
+          <label htmlFor="draft-preset-discovery">Draft AI app preset discovery</label>
+          <select id="draft-preset-discovery" value={editor.presetDiscoveryEnabled ? 'on' : 'off'}
+            onChange={(event) => edit('presetDiscoveryEnabled', event.target.value === 'on')}>
+            <option value="off">Off</option><option value="on">On</option>
+          </select>
+        </div>}
         <div className="grid gap-1">
           <label htmlFor="draft-extension-inventory">Draft extension inventory</label>
           <select id="draft-extension-inventory" value={editor.extensionInventoryEnabled ? 'on' : 'off'}
@@ -392,6 +400,8 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         {candidate.privateKeyMode !== undefined && <input type="hidden" name="privateKeyMode" value={candidate.privateKeyMode} />}
         {candidate.identifierProtection && <input type="hidden" name="identifierProtection" value={JSON.stringify(candidate.identifierProtection)} />}
         <input type="hidden" name="discoveryEnabled" value={candidate.discoveryEnabled ? 'on' : 'off'} />
+        {candidate.presetDiscoveryEnabled !== undefined &&
+          <input type="hidden" name="presetDiscoveryEnabled" value={candidate.presetDiscoveryEnabled ? 'on' : 'off'} />}
         <input type="hidden" name="customApps" value={candidate.customApps.map(({ host, name }) => `${host}, ${name}`).join('\n')} />
         {candidate.blockedAiAppHosts && <>
           <input type="hidden" name="aiAppAccess" value="present" />

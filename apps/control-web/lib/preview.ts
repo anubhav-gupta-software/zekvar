@@ -14,6 +14,7 @@ import { blockedAiAppAt } from '../../../contracts/policy/ai-app-access';
 
 export type PreviewPolicy = {
   mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; privateKeyMode?: DetectorMode; discoveryEnabled: boolean;
+  presetDiscoveryEnabled?: boolean;
   identifierProtection?: IdentifierProtection;
   extensionInventoryEnabled: boolean;
   extensionDeployment?: ExtensionDeployment;
@@ -37,6 +38,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     privateKeyMode: policy.privateKeyMode,
     identifierProtection: policy.identifierProtection,
     discoveryEnabled: policy.discoveryEnabled ?? false,
+    presetDiscoveryEnabled: policy.presetDiscoveryEnabled,
     customApps: (policy.customApps ?? []).map(({ host, name }) => ({ host, name })),
     promptExceptions: policy.promptExceptions ?? [],
     extensionInventoryEnabled: policy.extensionInventoryEnabled ?? false,
@@ -57,6 +59,7 @@ export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
     a.privateKeyMode === b.privateKeyMode &&
     sameIdentifierProtection(a.identifierProtection, b.identifierProtection) &&
     a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
+    a.presetDiscoveryEnabled === b.presetDiscoveryEnabled &&
     sameExtensionDeployment(a.extensionDeployment, b.extensionDeployment) &&
     (a.blockedAiAppHosts ?? []).join(',') === (b.blockedAiAppHosts ?? []).join(',') &&
     a.claudePromptEnabled === b.claudePromptEnabled &&
