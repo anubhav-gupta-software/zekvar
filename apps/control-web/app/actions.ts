@@ -18,6 +18,7 @@ import { parseExtensionDeployment } from '../lib/extension-deployment';
 import { aiAppAccessCatalog, readBlockedAiAppHosts } from '../../../contracts/policy/ai-app-access';
 import { domainRuleLimit, ruleCount } from '../../../contracts/policy/domains';
 import { eventPath, isTriageDisposition, isTriageId, isTriageStatus } from '../lib/triage';
+import { casePath, isCaseCategory, type EventReference } from '../lib/cases';
 
 export async function signIn(_previous: Feedback, form: FormData): Promise<Feedback> {
   const token = form.get('token');
@@ -40,23 +41,28 @@ export async function signOut() {
   redirect('/');
 }
 
-export async function saveEventTriage(installationId: string, eventId: string, _previous: Feedback, form: FormData): Promise<Feedback> {
+function readTriageUpdate(form: FormData) {
   const rawRevision = form.get('revision');
   const expectedRevision = Number(rawRevision);
   const status = form.get('status');
   const disposition = form.get('disposition');
   const assignee = form.get('assignee');
-  if (!isTriageId(installationId) || !isTriageId(eventId) || typeof rawRevision !== 'string' || !/^\d+$/.test(rawRevision) ||
+  if (typeof rawRevision !== 'string' || !/^\d+$/.test(rawRevision) ||
       expectedRevision > 2_147_483_647 || !isTriageStatus(status) || (assignee !== '' && !isTriageId(assignee)) ||
       (status === 'resolved' ? !isTriageDisposition(disposition) : disposition !== null)) {
+    return;
+  }
+  return { expectedRevision, status, disposition: isTriageDisposition(disposition) ? disposition : null, assigneeId: assignee || null };
+}
+
+export async function saveEventTriage(installationId: string, eventId: string, _previous: Feedback, form: FormData): Promise<Feedback> {
+  const change = readTriageUpdate(form);
+  if (!isTriageId(installationId) || !isTriageId(eventId) || !change) {
     return { error: 'Choose a valid triage status, resolution, and assignee.' };
   }
   return perform(async (token) => {
     try {
-      await controlApi.saveEventTriage(token, installationId, eventId, {
-        expectedRevision, status, disposition: isTriageDisposition(disposition) ? disposition : null,
-        assigneeId: assignee || null,
-      });
+      await controlApi.saveEventTriage(token, installationId, eventId, change);
     } catch (error) {
       if (error instanceof ApiError && error.code === 'event_triage_stale') {
         return { error: 'Someone updated this event. Reload the event and review the latest triage before saving.' };
@@ -71,6 +77,71 @@ export async function saveEventTriage(installationId: string, eventId: string, _
     revalidatePath('/audit');
     return { message: 'Event triage saved.' };
   });
+}
+
+function caseChangeError(error: unknown): Feedback {
+  if (error instanceof ApiError) {
+    switch (error.code) {
+      case 'case_stale': return { error: 'Someone changed this case. Reload to review the current case before trying again.' };
+      case 'case_resolved': return { error: 'Reopen the case before changing its linked events.' };
+      case 'case_event_limit': return { error: 'This case already contains 100 retained events.' };
+      case 'event_in_case': return { error: 'This event is already linked to another case. Open the event to see its current case.' };
+      case 'case_request_conflict': return { error: 'This request was already used. Reload the event before creating a case.' };
+      case 'event_assignee_unavailable': return { error: 'That administrator is unavailable. Reload the case and choose an active assignee.' };
+    }
+  }
+  throw error;
+}
+
+function validCaseEvent(event: EventReference) {
+  return isTriageId(event?.installationId) && isTriageId(event?.eventId);
+}
+
+export async function createIncidentCase(event: EventReference, _previous: Feedback, form: FormData): Promise<Feedback> {
+  const requestId = form.get('requestId');
+  const category = form.get('category');
+  if (!validCaseEvent(event) || !isTriageId(requestId) || !isCaseCategory(category)) return { error: 'Choose a case category.' };
+  const result = await perform(async (token) => {
+    try { await controlApi.createCase(token, requestId, category, event); }
+    catch (error) { return caseChangeError(error); }
+    revalidatePath('/cases');
+    revalidatePath('/audit');
+    revalidatePath(eventPath(event.installationId, event.eventId));
+    return {};
+  });
+  if (!result.error) redirect(casePath(requestId));
+  return result;
+}
+
+export async function saveIncidentCase(id: string, _previous: Feedback, form: FormData): Promise<Feedback> {
+  const change = readTriageUpdate(form);
+  if (!isTriageId(id) || !change || change.expectedRevision < 1) return { error: 'Choose a valid case status, resolution, and assignee.' };
+  return perform(async (token) => {
+    try { await controlApi.saveCaseTriage(token, id, change); }
+    catch (error) { return caseChangeError(error); }
+    revalidatePath(casePath(id));
+    revalidatePath('/cases');
+    revalidatePath('/audit');
+    return { message: 'Case triage saved.' };
+  });
+}
+
+export async function linkIncidentEvent(id: string, event: EventReference, expectedRevision: number, linked: boolean): Promise<Feedback> {
+  if (!isTriageId(id) || !validCaseEvent(event) || typeof linked !== 'boolean' ||
+      !Number.isInteger(expectedRevision) || expectedRevision < 1 || expectedRevision > 2_147_483_647) {
+    return { error: 'Choose a valid case and event.' };
+  }
+  const result = await perform(async (token) => {
+    try { await controlApi.changeCaseMembership(token, id, event, expectedRevision, linked); }
+    catch (error) { return caseChangeError(error); }
+    revalidatePath(casePath(id));
+    revalidatePath('/cases');
+    revalidatePath('/audit');
+    revalidatePath(eventPath(event.installationId, event.eventId));
+    return { message: linked ? 'Event linked to case.' : 'Event unlinked from case.' };
+  });
+  if (linked && !result.error) redirect(casePath(id));
+  return result;
 }
 
 async function perform(change: (token: string) => Promise<Feedback>): Promise<Feedback> {
@@ -528,7 +599,7 @@ export async function cleanupRetention(): Promise<Feedback> {
   return perform(async (token) => {
     const result = await controlApi.cleanupRetention(token);
     revalidatePath('/retention');
-    return { message: result.securityEvents || result.aiObservations || result.auditEntries
+    return { message: result.securityEvents || result.aiObservations || result.auditEntries || result.incidentCases
       ? `Deleted ${cleanupCounts(result)}.` : 'No expired records found.' };
   });
 }

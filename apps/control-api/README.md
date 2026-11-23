@@ -173,6 +173,16 @@ Each accepted change increments the revision and writes one `event_triage_change
 
 `counts`, `daily`, `byApp`, `byRule`, and `bySource` report policy events per decision. The daily series has one row per date, including empty days. The app, rule, and source breakdowns include categories with matching events. The source IDs are `prompt`, `file_policy`, and `file_content`. A warning and a later override are separate events. The local prompt fixture is excluded. The response contains aggregate counts and report filters. Use the event export for individual decision records.
 
+## Incident cases
+
+- `GET /v1/admin/cases` lists up to 100 retained cases for the organization, newest first by creation time. Filter by `status` or `openOnly=true`. Use the returned `createdAt` and `id` as `beforeAt` and `beforeId` for the next page.
+- `POST /v1/admin/cases` opens a case and links the supplied `installationId` and `eventId`. Supply a UUID `requestId` and a `category` of `suspected_data_exposure`, `repeated_policy_blocks`, `unexpected_ai_use`, or `other`. Reuse the same request ID and payload on retry. The response contains `caseId`.
+- `GET /v1/admin/cases/{id}` returns the case, retained linked events, and up to 50 retained changes. The `/export` suffix downloads the same scope as JSON.
+- `POST /v1/admin/cases/{id}/triage` accepts `expectedRevision`, `status`, `assigneeId`, and `disposition` using the same values as event triage. New cases start at revision 1.
+- `POST /v1/admin/cases/{id}/membership` accepts `expectedRevision`, `installationId`, `eventId`, and `linked`. An event can join one case. Reopen a resolved case before changing links. Each case can contain up to 100 retained events.
+
+Owners and named administrators can make changes, and auditors can read and export. Mutations write an `incident_case_changed` audit record atomically with state changes and advance the revision. Repeating an identical update using the current or immediately preceding revision is idempotent. Conflicting or stale changes return HTTP 409. Missing, expired, or foreign case and event references return HTTP 404. Event detail includes `incidentCase` when the event is linked to a retained case.
+
 ## Audit log
 
 `GET /v1/admin/audit` returns the authenticated organization's activity as `{ entries, next }`. Use `action` to filter by `policy_published`, `policy_restored`, `grant_issued`, `browser_enrolled`, `browser_revoked`, `app_classified`, `retention_changed`, `retention_cleanup`, `policy_group_created`, `policy_group_assigned`, `access_issued`, `access_revoked`, `control_sso_signed_in`, `policy_review_setting_changed`, `policy_review_requested`, `policy_review_decided`, `enrollment_batch_issued`, `enrollment_batch_cancelled`, or `event_triage_changed`. `since` is inclusive and `until` is exclusive. `limit` defaults to 100 and accepts up to 1,000. When `next` is present, send its `occurredAt` as `beforeAt` and its `id` as `beforeId` with the same filters to get older entries.
@@ -184,6 +194,8 @@ Audited changes and their records are written together. Repeating a revocation o
 `GET /v1/admin/retention` reads the authenticated organization's settings. `POST /v1/admin/retention` replaces the three windows and requires `securityEventDays`, `aiObservationDays`, and `auditDays`. Each value is a whole number from 1 to 3,650 or `null` for no expiry. Organizations start with no expiry until an administrator sets a window. The 30-day AI inventory view still caps the date range for observations it displays.
 
 Windows use 24-hour periods. Security events age from the earlier of occurrence and server receipt. Observations age from the last observed time, and audit records from their recorded time. Expired records are excluded immediately from results. A subsequent policy change preserves the former cutoff so widening or clearing a window cannot revive records. The browser API rejects queued events and observations whose timestamps are outside the active cutoff.
+
+`auditDays` also applies to resolved incident cases based on their last case update. Linked events keep their normal retention windows. Expired event and case links are removed on cleanup, and audit records follow their own recorded time. Open cases stay visible when linked events expire.
 
 `POST /v1/admin/retention/cleanup` deletes up to 1,000 expired rows per dataset for the authenticated organization. The service also runs at startup and on a timer set by `Control__RetentionSweepSeconds`, which defaults to 3,600. It drains expired rows in batches. Successful removal produces an audit entry with counts and a manual or scheduled source. Database backup expiry, previously downloaded files, and customer deletion requests follow their own lifecycle.
 

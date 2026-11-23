@@ -12,9 +12,10 @@ internal sealed record RetentionPolicy(
     private static bool ValidDays(int? days) => days is null or >= 1 and <= 3650;
 }
 
-internal sealed record RetentionCleanup(int SecurityEvents, int AiObservations, int AuditEntries, string Source)
+internal sealed record RetentionCleanup(int SecurityEvents, int AiObservations, int AuditEntries, string Source,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int IncidentCases = 0)
 {
-    public int Count() => SecurityEvents + AiObservations + AuditEntries;
+    public int Count() => SecurityEvents + AiObservations + AuditEntries + IncidentCases;
 }
 
 internal sealed class RetentionSweep(ControlStore store, ILogger<RetentionSweep> logger, TimeSpan interval) : BackgroundService

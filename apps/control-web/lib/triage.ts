@@ -1,5 +1,6 @@
 import type { AccessIdentity } from './access';
 import { isId, type SecurityEvent } from './control';
+import type { CaseReference } from './cases';
 
 export const triageStatuses = {
   needs_review: 'Needs review',
@@ -25,6 +26,7 @@ export type EventTriageChange = { installationId: string; eventId: string; revis
 export type EventDetails = {
   event: SecurityEvent;
   activity: { id: string; occurredAt: string; actorAccess: AccessIdentity | null; change: EventTriageChange }[];
+  incidentCase?: CaseReference | null;
 };
 export type TriageUpdate = TriageState & { expectedRevision: number };
 

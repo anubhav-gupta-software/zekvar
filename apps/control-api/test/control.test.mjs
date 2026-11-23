@@ -30,6 +30,7 @@ const deploymentAdmin = randomBytes(32).toString('hex');
 const aiAppAccessAdmin = randomBytes(32).toString('hex');
 const eventTriageAdmin = randomBytes(32).toString('hex');
 const identifiersAdmin = randomBytes(32).toString('hex');
+const casesAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -44,6 +45,12 @@ const undoIdentifierSchema = `
   DELETE FROM schema_migrations WHERE version = 33;
   ALTER TABLE policy_versions DROP COLUMN identifier_protection;
   ALTER TABLE policy_deliveries DROP COLUMN identifiers;
+`;
+const undoIncidentSchema = `
+  DELETE FROM schema_migrations WHERE version = 34;
+  DROP TABLE incident_case_events;
+  DROP TABLE incident_cases;
+  ALTER TABLE control_audit DROP COLUMN incident_case_change;
 `;
 
 async function retentionFixture(query) {
@@ -128,6 +135,8 @@ async function start(sweepSeconds = 3600) {
       Control__Organizations__13__AdminToken: eventTriageAdmin,
       Control__Organizations__14__Slug: `identifiers-${suffix}`,
       Control__Organizations__14__AdminToken: identifiersAdmin,
+      Control__Organizations__15__Slug: `incident-cases-${suffix}`,
+      Control__Organizations__15__AdminToken: casesAdmin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -1112,6 +1121,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     if (postgres) {
       await stop();
       await retentionFixture(`
+        ${undoIncidentSchema}
         DELETE FROM schema_migrations WHERE version IN (14, 15, 21, 31);
         DROP TABLE control_sso_sessions;
         DROP TABLE policy_reviews;
@@ -2881,6 +2891,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       if (postgres) {
         await stop();
         await retentionFixture(`
+          ${undoIncidentSchema}
           DELETE FROM schema_migrations WHERE version = 31;
           DROP TABLE event_triage;
           ALTER TABLE control_audit DROP COLUMN event_triage_change;
@@ -3112,5 +3123,144 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const restored = await post(`policies/${initial.version}/restore`);
     assert.deepEqual(restored.identifierProtection, empty);
     assert.deepEqual((await admin('policies'))[0].identifierProtection, empty);
+  });
+
+  await t.test('groups retained events into audited cases with tenant isolation and bounded, retryable membership', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: casesAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const enroll = async () => {
+      const { grant } = await post('enrollment-grants');
+      return call('/v1/enroll', { method: 'POST', body: { grant } });
+    };
+    const [alpha, beta] = await Promise.all([enroll(), enroll()]);
+    const identity = (browser, eventId = randomUUID()) => ({ installationId: browser.installationId, eventId });
+    const firstEvent = identity(alpha);
+    const secondEvent = identity(beta, firstEvent.eventId);
+    const thirdEvent = identity(alpha);
+    const spare = identity(beta);
+    for (const [browser, record] of [[alpha, firstEvent], [beta, secondEvent], [alpha, thirdEvent], [beta, spare]]) {
+      await call('/v1/browser/events', { token: browser.token, method: 'POST', expect: 204,
+        body: { ...event, eventId: record.eventId, timestamp: new Date().toISOString() } });
+    }
+    const eventPath = (record) => `events/${record.installationId}/${record.eventId}`;
+    assert.equal((await admin(eventPath(firstEvent))).incidentCase, null);
+    if (postgres) {
+      await stop();
+      await retentionFixture(undoIncidentSchema);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 34'), '1');
+    }
+    const roster = await Promise.all([['Case operator', 'administrator'], ['Case auditor', 'auditor']].map(([name, role]) =>
+      post('access', { name, role, hours: 1 })));
+    const [operator, auditor] = roster;
+    const category = 'suspected_data_exposure';
+    const id = randomUUID();
+    const create = { requestId: id, category, ...firstEvent };
+    const path = `cases/${id}`;
+    await post('cases', { ...create, category: 'custom' }, { expect: 400 });
+    await post('cases', { ...create, title: 'SYNTHETIC_PROMPT' }, { expect: 400 });
+    await post('cases', create, { token: auditor.token, expect: 403 });
+    await post('cases', create, { token: second, expect: 404 });
+    await admin('cases', { token: alpha.token, expect: 401 });
+    const retry = () => post('cases', create, { token: operator.token });
+    assert.deepEqual(await Promise.all([retry(), retry()]), [{ caseId: id }, { caseId: id }]);
+    assert.deepEqual(await post('cases', { ...create, category: 'other' }, { expect: 409 }), { code: 'case_request_conflict' });
+    assert.deepEqual(await post('cases', { ...create, requestId: randomUUID() }, { expect: 409 }), { code: 'event_in_case' });
+    await admin(path, { token: second, expect: 404 });
+    await admin(`${path}/export`, { token: second, expect: 404 });
+    assert.deepEqual(await admin('cases', { token: second }), { entries: [], next: null });
+    const opened = await admin(path, { token: auditor.token });
+    assert.equal(opened.case.eventCount, 1);
+    assert.equal(opened.case.triage.revision, 1);
+    assert.deepEqual(opened.events.map(({ installationId, eventId }) => ({ installationId, eventId })), [firstEvent]);
+    assert.deepEqual(opened.activity.map(({ change, actorAccess }) => [change.operation, actorAccess.name]), [['created', 'Case operator']]);
+
+    const membership = (record, expectedRevision, linked, options) => post(`${path}/membership`, { ...record, expectedRevision, linked }, options);
+    await membership(secondEvent, 1, true, { token: auditor.token, expect: 403 });
+    await membership(identity(beta), 1, true, { expect: 404 });
+    const responses = await Promise.all([secondEvent, thirdEvent].map((record) => fetch(`${baseUrl}/v1/admin/${path}/membership`, {
+      method: 'POST', headers: { Authorization: `Bearer ${operator.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...record, expectedRevision: 1, linked: true }), signal: AbortSignal.timeout(5000),
+    })));
+    const outcomes = await Promise.all(responses.map((response) => response.json()));
+    assert.deepEqual(responses.map(({ status }) => status).sort(), [200, 409], JSON.stringify(outcomes));
+    const winner = responses.findIndex(({ ok }) => ok);
+    const joined = [secondEvent, thirdEvent][winner];
+    const pendingLink = [secondEvent, thirdEvent][1 - winner];
+    assert.deepEqual(outcomes[1 - winner], { code: 'case_stale' });
+    await membership(joined, 1, true);
+    await membership(pendingLink, 2, true);
+    assert.deepEqual((await admin(path)).activity.map(({ change }) => change.revision), [3, 2, 1]);
+    assert.equal((await admin(eventPath(secondEvent))).incidentCase.id, id);
+    const investigate = { expectedRevision: 3, status: 'investigating', disposition: null, assigneeId: operator.access.id };
+    await post(`${path}/triage`, { ...investigate, assigneeId: auditor.access.id }, { expect: 400 });
+    await post(`${path}/triage`, investigate, { token: operator.token });
+    await post(`${path}/triage`, investigate);
+    assert.equal((await admin(eventPath(firstEvent))).event.triage, undefined);
+    const exported = await admin(`${path}/export`, { token: auditor.token });
+    assert.equal(exported.organization, `incident-cases-${suffix}`);
+    assert.equal(exported.investigation.case.eventCount, 3);
+    assert.equal(exported.investigation.case.triage.assignee.name, 'Case operator');
+    assert.doesNotMatch(JSON.stringify(exported), /SYNTHETIC_PROMPT|rawText|filename|tokenHash|creationFingerprint/);
+    assert.equal((await admin('audit?action=incident_case_changed')).entries.length, 4);
+    assert.equal((await admin('cases?status=investigating')).entries[0].eventCount, 3);
+    for (const invalid of ['status=closed', 'status=resolved&status=needs_review', 'beforeId=00000000-0000-0000-0000-000000000000',
+      'beforeAt=2026-11-22T00:00:00Z', 'unsupported=true']) await admin(`cases?${invalid}`, { expect: 400 });
+    await post(`access/${operator.access.id}/revoke`, undefined, { expect: 204 });
+    const close = { ...investigate, expectedRevision: 4, status: 'resolved', disposition: 'confirmed_violation' };
+    await post(`${path}/triage`, close);
+    assert.equal((await admin(path)).case.triage.assignee.active, false);
+    assert.deepEqual(await admin('cases?openOnly=true'), { entries: [], next: null });
+    assert.deepEqual(await membership(secondEvent, 5, false, { expect: 409 }), { code: 'case_resolved' });
+    await post(`${path}/triage`, { ...investigate, expectedRevision: 5, assigneeId: null });
+    await membership(secondEvent, 6, false);
+    await membership(secondEvent, 6, false);
+    assert.equal((await admin(eventPath(secondEvent))).incidentCase, null);
+    assert.equal((await admin(path)).case.eventCount, 2);
+
+    if (!postgres) return;
+    const separate = randomUUID();
+    await post('cases', { requestId: separate, category: 'other', ...spare });
+    await post(`cases/${separate}/triage`, { expectedRevision: 1, status: 'resolved', disposition: 'false_positive', assigneeId: null });
+    await retentionFixture(`
+      UPDATE incident_cases SET updated_at = now() - interval '3 days' WHERE id = '${separate}';
+      UPDATE security_events SET occurred_at = now() - interval '3 days'
+      WHERE installation_id = '${firstEvent.installationId}' AND event_id = '${firstEvent.eventId}';
+    `);
+    await post('retention', { securityEventDays: 1, aiObservationDays: null, auditDays: 1 }, { expect: 204 });
+    await admin(`cases/${separate}`, { expect: 404 });
+    await admin(`cases/${separate}/export`, { expect: 404 });
+    assert.equal((await admin(eventPath(spare))).incidentCase, null);
+    assert.equal((await admin(path)).case.eventCount, 1);
+    await membership(spare, 7, true);
+    await membership(firstEvent, 8, true, { expect: 404 });
+    const cleaned = await post('retention/cleanup');
+    assert.equal(cleaned.incidentCases, 1);
+    assert.ok(cleaned.securityEvents >= 1);
+    assert.equal((await admin(eventPath(spare))).incidentCase.id, id);
+    assert.equal(await retentionFixture(`SELECT count(*) FROM incident_case_events WHERE installation_id = '${firstEvent.installationId}'
+      AND event_id = '${firstEvent.eventId}';`), '0');
+    assert.equal((await admin('audit?action=incident_case_changed')).entries.some(({ incidentCaseChange }) =>
+      incidentCaseChange.caseId === separate), true);
+    await retentionFixture(`
+      WITH organization AS (SELECT id FROM organizations WHERE slug = 'incident-cases-${suffix}')
+      INSERT INTO incident_cases (organization_id, id, category, creation_fingerprint)
+      SELECT id, gen_random_uuid(), 'other', 'synthetic' FROM organization CROSS JOIN generate_series(1, 101);
+      WITH more AS (
+        INSERT INTO security_events (organization_id, installation_id, event_id, occurred_at, received_at, policy_version, decision, app_id, rule_id)
+        SELECT organization_id, id, gen_random_uuid(), now(), now(), 1, 'monitor', 'local-prompt-fixture', 'fixture-secret'
+        FROM installations CROSS JOIN generate_series(1, 98) WHERE id = '${alpha.installationId}'
+        RETURNING organization_id, installation_id, event_id
+      )
+      INSERT INTO incident_case_events (organization_id, case_id, installation_id, event_id)
+      SELECT organization_id, '${id}', installation_id, event_id FROM more;
+    `);
+    assert.equal((await admin(path)).case.eventCount, 100);
+    assert.deepEqual(await membership(secondEvent, 8, true, { expect: 409 }), { code: 'case_event_limit' });
+    const list = await admin('cases');
+    const more = await admin(`cases?${new URLSearchParams({ beforeAt: list.next.createdAt, beforeId: list.next.id })}`);
+    assert.equal(list.entries.length, 100);
+    assert.equal(more.entries.length, 2);
+    assert.equal(new Set([...list.entries, ...more.entries].map((entry) => entry.id)).size, 102);
   });
 });

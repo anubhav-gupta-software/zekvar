@@ -1,4 +1,5 @@
 import { notFound, redirect } from 'next/navigation';
+import { randomUUID } from 'node:crypto';
 import { fileInspectionUnavailableRule, uploadMethods, uploadRule } from '../../../../../../contracts/policy/uploads';
 import { canWrite } from '../../../../lib/access';
 import { ApiError, controlApi } from '../../../../lib/api';
@@ -7,10 +8,11 @@ import { decisionLabels, fileCheckUnavailableLabel, isPromptApp, promptAppLabels
 import { eventFilters, setEventCursor } from '../../../../lib/events';
 import { sessionToken } from '../../../../lib/session';
 import { initialTriage, isTriageId, triageDispositions, triageStatuses, type TriageState } from '../../../../lib/triage';
-import { saveEventTriage } from '../../../actions';
+import { caseCategories, caseNumber, casePath } from '../../../../lib/cases';
+import { createIncidentCase, saveEventTriage } from '../../../actions';
 import { MutationForm } from '../../../forms';
 import { DeploymentBadge, Sidebar } from '../../../workspace';
-import { TriageFields } from './triage-fields';
+import { TriageFields } from '../../../triage-fields';
 
 type Search = Record<string, string | string[] | undefined>;
 
@@ -67,6 +69,28 @@ export default async function ReviewEvent({ params, searchParams }: {
             <div><dt className="muted">Event ID</dt><dd><code className="break-all">{event.eventId}</code></dd></div>
           </dl>
         </section>
+        {details.incidentCase !== undefined && <section className="panel" aria-labelledby="event-case-heading">
+          <div className="panel-heading"><h2 id="event-case-heading">Incident case</h2></div>
+          {details.incidentCase ? <p className="muted">
+            <a className="underline" href={casePath(details.incidentCase.id)}>{caseNumber(details.incidentCase.id)}</a>
+            {' · '}{caseCategories[details.incidentCase.category]} · {triageStatuses[details.incidentCase.status]}
+          </p> : canWrite(session) ? <>
+            <p className="muted">Group this detection with related events in one investigation.</p>
+            <MutationForm action={createIncidentCase.bind(null, { installationId, eventId })} label="Open new case" appearance="primary">
+              <input type="hidden" name="requestId" value={randomUUID()} />
+              <div className="grid gap-1">
+                <label htmlFor="case-category">Case category</label>
+                <select id="case-category" name="category" required defaultValue="">
+                  <option value="">Choose a category</option>
+                  {Object.entries(caseCategories).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+              </div>
+              <a className="button" href={`/cases?${new URLSearchParams({ installation: installationId, event: eventId, open: '1' })}`}>
+                Link to an existing case
+              </a>
+            </MutationForm>
+          </> : <p className="muted">Unlinked</p>}
+        </section>}
         <section className="panel" aria-labelledby="event-triage-heading">
           <div className="panel-heading"><h2 id="event-triage-heading">Triage</h2>
             <span className={`badge ${triage.status === 'resolved' ? 'current' : ''}`}>{triageStatuses[triage.status]}</span>

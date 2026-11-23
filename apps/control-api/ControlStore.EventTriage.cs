@@ -68,8 +68,9 @@ internal sealed partial class ControlStore
                 activity.Add(new(rows.GetGuid(0), rows.GetDateTime(1),
                     rows.IsDBNull(3) ? null : new(rows.GetGuid(3), rows.GetString(4), rows.GetString(5)),
                     JsonSerializer.Deserialize<EventTriageChange>(rows.GetString(2), JsonSerializerOptions.Web)!));
+        var incident = await FindCaseForEvent(transaction, org, installationId, eventId, ct);
         await transaction.CommitAsync(ct);
-        return new(entry, activity.ToArray());
+        return new(entry, activity.ToArray(), incident);
     }
 
     private static async Task<StoredEvent?> ReadEventDetail(NpgsqlTransaction transaction, Guid org, Guid installationId, Guid eventId, CancellationToken ct)
@@ -86,30 +87,20 @@ internal sealed partial class ControlStore
         var org = identity.OrganizationId;
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
-        // Serialize triage for this event, including the first update when a triage row does not exist.
-        await using var gate = new NpgsqlCommand("""
-            SELECT 1 FROM security_events WHERE organization_id = $1 AND installation_id = $2 AND event_id = $3 FOR UPDATE
-            """, connection, transaction);
-        AddParameters(gate, org, installationId, eventId);
-        if (await gate.ExecuteScalarAsync(ct) is null) return new();
+        if (!await LockEvent(transaction, org, installationId, eventId, ct)) return new();
         var entry = await ReadEventDetail(transaction, org, installationId, eventId, ct);
         if (entry is null) return new();
 
         var current = entry.Triage ?? EventTriage.Initial;
         var desired = new EventTriageState(request.Status!, request.Disposition, request.AssigneeId);
-        if (current.State() == desired && (request.ExpectedRevision == current.Revision || request.ExpectedRevision == current.Revision - 1))
+        if (current.State() == desired && RetryRevision(current.Revision, request.ExpectedRevision))
             return new(current);
         if (current.Revision != request.ExpectedRevision) return new(Error: "event_triage_stale");
         var assignee = current.Assignee;
         if (request.AssigneeId is { } assigneeId && assigneeId != assignee?.Id)
         {
-            await using var verify = new NpgsqlCommand("""
-                SELECT display_name FROM control_access WHERE organization_id = $1 AND id = $2 AND role = 'administrator'
-                    AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()) FOR SHARE
-                """, connection, transaction);
-            AddParameters(verify, org, assigneeId);
-            if (await verify.ExecuteScalarAsync(ct) is not string name) return new(Error: "event_assignee_unavailable");
-            assignee = new(assigneeId, name, true);
+            assignee = await FindActiveTriageAssignee(transaction, org, assigneeId, ct);
+            if (assignee is null) return new(Error: "event_assignee_unavailable");
         }
         if (request.AssigneeId is null) assignee = null;
 
@@ -135,5 +126,26 @@ internal sealed partial class ControlStore
         var updatedAt = (DateTime)(await write.ExecuteScalarAsync(ct))!;
         await transaction.CommitAsync(ct);
         return new(new(revision, desired.Status, desired.Disposition, assignee, updatedAt));
+    }
+
+    private static bool RetryRevision(int current, int? expected) => expected == current || expected == current - 1;
+
+    private static async Task<bool> LockEvent(NpgsqlTransaction transaction, Guid org, Guid installationId, Guid eventId, CancellationToken ct)
+    {
+        await using var gate = new NpgsqlCommand("""
+            SELECT 1 FROM security_events WHERE organization_id = $1 AND installation_id = $2 AND event_id = $3 FOR UPDATE
+            """, transaction.Connection, transaction);
+        AddParameters(gate, org, installationId, eventId);
+        return await gate.ExecuteScalarAsync(ct) is not null;
+    }
+
+    private static async Task<TriageAssignee?> FindActiveTriageAssignee(NpgsqlTransaction transaction, Guid org, Guid id, CancellationToken ct)
+    {
+        await using var verify = new NpgsqlCommand("""
+            SELECT display_name FROM control_access WHERE organization_id = $1 AND id = $2 AND role = 'administrator'
+                AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()) FOR SHARE
+            """, transaction.Connection, transaction);
+        AddParameters(verify, org, id);
+        return await verify.ExecuteScalarAsync(ct) is string name ? new(id, name, true) : null;
     }
 }

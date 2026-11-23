@@ -8,6 +8,7 @@ import { cleanupCounts, retentionFields, type RetentionField } from '../../lib/r
 import { sessionToken } from '../../lib/session';
 import { DeploymentBadge, Sidebar } from '../workspace';
 import { eventPath, triageDispositions, triageStatuses } from '../../lib/triage';
+import { CaseActivityDetails } from '../cases/case-activity';
 
 export default async function Audit({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const token = await sessionToken();
@@ -84,6 +85,7 @@ const actorLabels = { organization_admin: 'Organization admin', named_administra
   sso_identity: 'Single sign-on identity', browser_enrollment: 'Browser enrollment', system: 'Scheduled cleanup' };
 
 function auditDetails(entry: AuditEntry) {
+  if (entry.incidentCaseChange) return <CaseActivityDetails change={entry.incidentCaseChange} showCase />;
   const triage = entry.eventTriageChange;
   if (triage) return <><a className="underline" href={eventPath(triage.installationId, triage.eventId)}>Review event</a>
     {' · '}{triageStatuses[triage.before.status]} → {triageStatuses[triage.after.status]}

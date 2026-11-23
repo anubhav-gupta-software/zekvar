@@ -10,6 +10,7 @@ import type { EnrollmentBatch, IssuedEnrollmentBatch } from './enrollment';
 import type { AiEnforcementReport } from './reports';
 import type { ExtensionDeployment } from './extension-deployment';
 import { eventPath, type EventDetails, type EventTriage, type TriageAssignee, type TriageUpdate } from './triage';
+import { casePath, type CaseCategory, type CaseDetails, type CasePage, type EventReference } from './cases';
 
 const port = Number(process.env.ZEKVAR_CONTROL_PORT ?? 5187);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid Control loopback port.');
@@ -108,6 +109,15 @@ export const controlApi = {
   triageAssignees: (token: string) => request<TriageAssignee[]>('/events/triage-assignees', token),
   saveEventTriage: (token: string, installationId: string, eventId: string, change: TriageUpdate) =>
     request<EventTriage>(`${eventPath(installationId, eventId)}/triage`, token, 'POST', change),
+  cases: (token: string, filters: URLSearchParams) => request<CasePage>(`/cases?${filters}`, token),
+  case: (token: string, id: string) => request<CaseDetails>(casePath(id), token),
+  createCase: (token: string, requestId: string, category: CaseCategory, event: EventReference) =>
+    request<{ caseId: string }>('/cases', token, 'POST', { requestId, category, ...event }),
+  saveCaseTriage: (token: string, id: string, change: TriageUpdate) =>
+    request<{ caseId: string }>(`${casePath(id)}/triage`, token, 'POST', change),
+  changeCaseMembership: (token: string, id: string, event: EventReference, expectedRevision: number, linked: boolean) =>
+    request<{ caseId: string }>(`${casePath(id)}/membership`, token, 'POST', { ...event, expectedRevision, linked }),
+  exportCase: (token: string, id: string) => apiResponse(`${casePath(id)}/export`, token),
   exportEvents: (token: string, filters: URLSearchParams, signal: AbortSignal) =>
     eventResponse('/events/export', token, filters, signal),
   aiEnforcement: (token: string, filters: URLSearchParams) => request<AiEnforcementReport>(`/reports/ai-enforcement?${filters}`, token),

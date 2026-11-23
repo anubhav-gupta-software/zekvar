@@ -56,6 +56,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 31, "031_event_triage.sql", ct);
         await ApplyMigration(connection, 32, "032_file_content_block.sql", ct);
         await ApplyMigration(connection, 33, "033_organization_identifiers.sql", ct);
+        await ApplyMigration(connection, 34, "034_incident_cases.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -593,7 +594,7 @@ internal sealed partial class ControlStore
         await using var command = Command("""
             SELECT a.id, occurred_at, action, policy_version, restored_from, installation_id, app_id, classification, retention, cleanup, group_change,
                 actor.id, actor.display_name, actor.role, subject.id, subject.display_name, subject.role, a.review_change, a.enrollment_batch_change,
-                a.event_triage_change
+                a.event_triage_change, a.incident_case_change
             FROM control_audit a LEFT JOIN retention_cutoffs r ON a.organization_id = r.organization_id
             LEFT JOIN control_access actor ON actor.organization_id = a.organization_id AND actor.id = a.actor_access_id
             LEFT JOIN control_access subject ON subject.organization_id = a.organization_id AND subject.id = a.subject_access_id
@@ -619,7 +620,8 @@ internal sealed partial class ControlStore
                 ReadAccessIdentity(rows, 11), ReadAccessIdentity(rows, 14),
                 rows.IsDBNull(17) ? null : JsonSerializer.Deserialize<PolicyReviewAudit>(rows.GetString(17), JsonSerializerOptions.Web),
                 rows.IsDBNull(18) ? null : JsonSerializer.Deserialize<EnrollmentBatchChange>(rows.GetString(18), JsonSerializerOptions.Web),
-                rows.IsDBNull(19) ? null : JsonSerializer.Deserialize<EventTriageChange>(rows.GetString(19), JsonSerializerOptions.Web)));
+                rows.IsDBNull(19) ? null : JsonSerializer.Deserialize<EventTriageChange>(rows.GetString(19), JsonSerializerOptions.Web),
+                rows.IsDBNull(20) ? null : JsonSerializer.Deserialize<IncidentCaseChange>(rows.GetString(20), JsonSerializerOptions.Web)));
         if (entries.Count <= filters.Limit) return new(entries, null);
         entries.RemoveAt(filters.Limit);
         var last = entries[^1];

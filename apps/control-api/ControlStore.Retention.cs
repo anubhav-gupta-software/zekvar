@@ -56,6 +56,8 @@ internal sealed partial class ControlStore
                OR EXISTS (SELECT 1 FROM ai_app_observations o WHERE o.organization_id = r.organization_id
                         AND o.observed_at < r.observation_cutoff)
                OR EXISTS (SELECT 1 FROM control_audit a WHERE a.organization_id = r.organization_id AND a.occurred_at < r.audit_cutoff)
+               OR EXISTS (SELECT 1 FROM incident_cases c WHERE c.organization_id = r.organization_id
+                        AND c.status = 'resolved' AND c.updated_at < r.audit_cutoff)
             ORDER BY r.organization_id
             """);
         var organizations = new List<Guid>();
@@ -94,24 +96,32 @@ internal sealed partial class ControlStore
                     SELECT a.id FROM control_audit a, cutoff c WHERE a.organization_id = $1 AND a.occurred_at < c.audit_cutoff
                     ORDER BY a.occurred_at LIMIT $2 FOR UPDATE OF a SKIP LOCKED
                 ) RETURNING 1
+            ), removed_cases AS (
+                DELETE FROM incident_cases WHERE organization_id = $1 AND id IN (
+                    SELECT c.id FROM incident_cases c, cutoff r WHERE c.organization_id = $1
+                    AND c.status = 'resolved' AND c.updated_at < r.audit_cutoff
+                    ORDER BY c.updated_at, c.id LIMIT $2 FOR UPDATE OF c SKIP LOCKED
+                ) RETURNING 1
             ), counts AS (
                 SELECT (SELECT count(*) FROM removed_events)::integer AS events,
                     (SELECT count(*) FROM removed_observations)::integer AS observations,
-                    (SELECT count(*) FROM removed_audit)::integer AS audit_entries
+                    (SELECT count(*) FROM removed_audit)::integer AS audit_entries,
+                    (SELECT count(*) FROM removed_cases)::integer AS incidents
             ), audit AS (
                 INSERT INTO control_audit (organization_id, action, cleanup, actor_access_id)
                 SELECT $1, 'retention_cleanup', jsonb_build_object('securityEvents', events,
-                    'aiObservations', observations, 'auditEntries', audit_entries, 'source', $3::text), $4
-                FROM counts WHERE events + observations + audit_entries > 0
+                    'aiObservations', observations, 'auditEntries', audit_entries, 'source', $3::text)
+                    || CASE WHEN incidents > 0 THEN jsonb_build_object('incidentCases', incidents) ELSE '{}'::jsonb END, $4
+                FROM counts WHERE events + observations + audit_entries + incidents > 0
             )
-            SELECT events, observations, audit_entries FROM counts
+            SELECT events, observations, audit_entries, incidents FROM counts
             """, connection, transaction);
         AddParameters(command, organizationId, batchSize, source, (object?)actorId ?? DBNull.Value);
         RetentionCleanup result;
         await using (var rows = await command.ExecuteReaderAsync(ct))
         {
             await rows.ReadAsync(ct);
-            result = new(rows.GetInt32(0), rows.GetInt32(1), rows.GetInt32(2), source);
+            result = new(rows.GetInt32(0), rows.GetInt32(1), rows.GetInt32(2), source, rows.GetInt32(3));
         }
         await transaction.CommitAsync(ct);
         return result;

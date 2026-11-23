@@ -143,6 +143,15 @@ Open **Reports** in Control. Choose the last 7 or 30 UTC calendar days, an AI ap
 
 **Export report (JSON)** downloads the same time window and filters using current retention. It contains aggregate counts and excludes individual events and browser identifiers. Reload the report if its download link is more than 24 hours old. Owners, administrators, and auditors can read and export the report. [AI enforcement API](../control-api/README.md#ai-enforcement-report)
 
+## Investigate an incident case
+
+1. Open a detection from **Events**. Under **Incident case**, choose a category and select **Open new case**. To add another detection, open that event, choose **Link to an existing case**, and select the case from the list.
+2. In **Case triage**, set the shared status and assign an active named administrator. Review the related detections under **Linked security events**. Case triage and individual event triage can have different statuses and resolutions.
+3. Select a resolution when closing the case. Reopen it to link or unlink events later. Each event belongs to one case at a time, and each case holds up to 100 retained events.
+4. Review changes under **Case activity** or filter **Audit log** to **Incident case changed**. **Export case (JSON)** includes the case, its retained linked event metadata, and up to 50 retained case changes. Auditors can read and export cases.
+
+Events keep their own retention windows when linked. Resolved cases use the audit window, measured from their last case update. Open cases stay available if their original events expire. Each change records an actor and structured metadata. [Incident cases API](../control-api/README.md#incident-cases)
+
 ## Review and export the audit log
 
 Open **Audit log** from the Control sidebar. The log shows policy publishes and restores, enrollment grant issuance, browser enrollment and revocation, and changes to AI app classifications. Filter by action and UTC date range, or select **Older entries** to see more history.

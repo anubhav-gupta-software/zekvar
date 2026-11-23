@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { triageDispositions, triageStatuses, type EventTriage, type TriageAssignee, type TriageDisposition, type TriageStatus } from '../../../../lib/triage';
+import { triageDispositions, triageStatuses, type EventTriage, type TriageAssignee, type TriageDisposition, type TriageStatus } from '../lib/triage';
 
 export function TriageFields({ triage, assignees }: { triage: EventTriage; assignees: TriageAssignee[] }) {
   const [status, setStatus] = useState(triage.status);

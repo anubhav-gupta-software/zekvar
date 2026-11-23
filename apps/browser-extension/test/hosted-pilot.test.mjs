@@ -143,7 +143,7 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   });
   for (const origin of [browserOrigin, dashboardOrigin]) {
     for (const path of ['/v1/admin/session', '/v1/admin/browser-releases', '/v1/admin/browser-health?rolloutGroup=baseline',
-      '/v1/admin/enrollment-batches', '/v1/admin/reports/ai-enforcement', '/v1/admin/events/triage-assignees']) {
+      '/v1/admin/enrollment-batches', '/v1/admin/reports/ai-enforcement', '/v1/admin/events/triage-assignees', '/v1/admin/cases']) {
       const blocked = await call(origin + path, { headers: { Authorization: `Bearer ${owner}` } });
       assert.equal(blocked.status, 404);
       assert.equal(blocked.headers['cache-control'], 'no-store');
@@ -452,6 +452,12 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   await dashboard.getByRole('link', { name: 'Investigate security events', exact: true }).click();
   await dashboard.waitForURL((url) => url.searchParams.get('eventGroup') === group.id);
   assert.equal(await policyEvents.locator('tbody tr').count(), 4);
+  async function signInAs(token) {
+    await dashboard.getByRole('button', { name: 'Sign out', exact: true }).click();
+    await dashboard.getByLabel('Control token').fill(token);
+    await dashboard.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await dashboard.getByRole('heading', { name: 'Security overview', exact: true }).waitFor();
+  }
   await t.test('an owner, investigator, and auditor triage a real browser detection through the hosted dashboard', async () => {
     const reviewPath = `/events/${detected.installationId}/${detected.eventId}`;
     const investigator = await admin('access', { name: 'Hosted investigator', role: 'administrator', hours: 1 });
@@ -461,12 +467,6 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
     const save = triage.getByRole('button', { name: 'Save triage', exact: true });
     const status = triage.getByLabel('Status', { exact: true });
     const saved = () => triage.getByRole('status').getByText('Event triage saved.', { exact: true }).waitFor();
-    async function signInAs(token) {
-      await dashboard.getByRole('button', { name: 'Sign out', exact: true }).click();
-      await dashboard.getByLabel('Control token').fill(token);
-      await dashboard.getByRole('button', { name: 'Sign in', exact: true }).click();
-      await dashboard.getByRole('heading', { name: 'Security overview', exact: true }).waitFor();
-    }
     await dashboard.locator(`a[href^="${reviewPath}?"]`).click();
     await dashboard.waitForURL((url) => url.pathname === reviewPath);
     await dashboard.getByRole('region', { name: 'Detection details' }).getByText('ChatGPT', { exact: true }).waitFor();
@@ -556,6 +556,84 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
     await dashboard.getByRole('region', { name: 'Detection details' }).getByText(/Synthetic secret · File picker/).waitFor();
     const details = await admin(`events/${row.installationId}/${row.eventId}`);
     assert.doesNotMatch(JSON.stringify(details), /synthetic-hosted-attachment|ZEKVAR_TEST_SECRET|image\/png/);
+  });
+  await t.test('groups real prompt and attachment detections into an auditable case over TLS', async () => {
+    const investigator = await admin('access', { name: 'Case investigator', role: 'administrator', hours: 1 });
+    const auditor = await admin('access', { name: 'Case reviewer', role: 'auditor', hours: 1 });
+    const attachment = (await admin('events?appId=chatgpt&decision=block')).find(({ uploadMethod }) => uploadMethod === 'picker');
+    assert.ok(attachment);
+    const eventUrl = ({ installationId, eventId }) => `${dashboardOrigin}/events/${installationId}/${eventId}`;
+    const events = dashboard.getByRole('table', { name: 'Linked security events', exact: true });
+    const triage = dashboard.getByRole('region', { name: 'Case triage', exact: true });
+    const activity = dashboard.getByRole('table', { name: 'Case activity', exact: true });
+    await signInAs(owner);
+    await dashboard.goto(eventUrl(detected));
+    await dashboard.getByLabel('Case category', { exact: true }).selectOption('suspected_data_exposure');
+    await dashboard.getByRole('button', { name: 'Open new case', exact: true }).click();
+    await dashboard.waitForURL((url) => /^\/cases\/[a-f0-9-]+$/.test(url.pathname));
+    const caseUrl = dashboard.url();
+    const id = new URL(caseUrl).pathname.split('/').at(-1);
+    const card = `Case ${id.slice(0, 8).toUpperCase()}`;
+    const linkEvent = async () => {
+      await dashboard.goto(eventUrl(attachment));
+      await dashboard.getByRole('link', { name: 'Link to an existing case', exact: true }).click();
+      await dashboard.getByRole('button', { name: `Link event to ${card}`, exact: true }).click();
+      await dashboard.waitForURL(caseUrl);
+      await events.getByRole('link', { name: `Review event ${attachment.eventId}`, exact: true }).waitFor();
+    };
+    await events.getByRole('link', { name: `Review event ${detected.eventId}`, exact: true }).waitFor();
+    await linkEvent();
+    assert.equal(await events.locator('tbody tr').count(), 2);
+    await triage.getByLabel('Status', { exact: true }).selectOption('investigating');
+    await triage.getByLabel('Assignee', { exact: true }).selectOption(investigator.access.id);
+    await triage.getByRole('button', { name: 'Save case triage', exact: true }).click();
+    await triage.getByRole('status').filter({ hasText: 'Case triage saved.' }).waitFor();
+    await signInAs(investigator.token);
+    await dashboard.goto(caseUrl);
+    await triage.getByText('Assigned to Case investigator', { exact: true }).waitFor();
+    const unlink = events.getByRole('button', { name: `Unlink event ${attachment.eventId}`, exact: true });
+    dashboard.once('dialog', (dialog) => dialog.dismiss());
+    await unlink.click();
+    assert.equal(await events.locator('tbody tr').count(), 2);
+    dashboard.once('dialog', (dialog) => dialog.accept());
+    await unlink.click();
+    await unlink.waitFor({ state: 'detached' });
+    await activity.getByText(/Event unlinked/).waitFor();
+    await linkEvent();
+    await triage.getByLabel('Status', { exact: true }).selectOption('resolved');
+    await triage.getByLabel('Resolution', { exact: true }).selectOption('confirmed_violation');
+    await triage.getByRole('button', { name: 'Save case triage', exact: true }).click();
+    await activity.getByRole('row').filter({ hasText: 'Case investigator' }).getByText(/Confirmed violation/).waitFor();
+    assert.equal(await unlink.count(), 0);
+    const desktop = dashboard.viewportSize();
+    await dashboard.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await dashboard.evaluate(() => document.documentElement.scrollWidth === document.documentElement.clientWidth), true);
+    if (desktop) await dashboard.setViewportSize(desktop);
+    if (artifacts) await dashboard.screenshot({ path: join(artifacts, '39-incident-case.png'), fullPage: true });
+    await signInAs(auditor.token);
+    await dashboard.goto(caseUrl);
+    assert.equal(await triage.getByRole('button', { name: 'Save case triage', exact: true }).count(), 0);
+    const download = dashboard.waitForEvent('download');
+    await dashboard.getByRole('link', { name: 'Export case (JSON)', exact: true }).click();
+    const file = await download;
+    assert.equal(file.suggestedFilename(), `zekvar-case-${id}.json`);
+    const bytes = await readFile(await file.path(), 'utf8');
+    assert.equal((await call(`${caseUrl}/export`)).status, 401);
+    const { investigation } = JSON.parse(bytes);
+    assert.equal(investigation.case.eventCount, 2);
+    assert.equal(investigation.case.triage.disposition, 'confirmed_violation');
+    const prompt = investigation.events.find(({ eventId }) => eventId === detected.eventId);
+    assert.equal(prompt.triage.disposition, 'false_positive');
+    assert.doesNotMatch(bytes, /ZEKVAR_TEST_SECRET|synthetic-hosted-attachment|Synthetic pilot draft|tokenHash/);
+    await dashboard.getByRole('link', { name: 'Open audit log', exact: true }).click();
+    const audit = dashboard.getByRole('table', { name: 'Control activity', exact: true });
+    await audit.getByRole('row').filter({ hasText: 'Confirmed violation' }).getByRole('link', { name: card, exact: true }).click();
+    await dashboard.waitForURL(caseUrl);
+    await dashboard.getByRole('link', { name: 'Back to incident cases', exact: true }).click();
+    await dashboard.getByLabel('Status', { exact: true }).selectOption('resolved');
+    await dashboard.getByRole('button', { name: 'Apply case filters', exact: true }).click();
+    await dashboard.waitForURL((url) => url.searchParams.get('status') === 'resolved');
+    await dashboard.getByRole('table', { name: 'Investigations', exact: true }).getByRole('link', { name: card, exact: true }).waitFor();
   });
   await dashboard.getByRole('button', { name: 'Sign out', exact: true }).click();
   await dashboard.getByRole('heading', { name: 'Sign in to Control', exact: true }).waitFor();

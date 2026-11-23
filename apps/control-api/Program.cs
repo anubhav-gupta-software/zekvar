@@ -267,6 +267,35 @@ admin.MapPost("/events/{installationId:guid}/{eventId:guid}/triage",
         _ => Results.NotFound()
     };
 });
+var cases = admin.MapGroup("/cases");
+cases.MapGet("", async (string? status, bool? openOnly, DateTimeOffset? beforeAt, Guid? beforeId, HttpContext http, CancellationToken ct) =>
+{
+    if ((status is not null && !TriageStatus.IsValid(status)) || beforeAt.HasValue != beforeId.HasValue || beforeId == Guid.Empty ||
+        http.Request.Query.Any(entry => entry.Value.Count != 1 || entry.Key is not ("status" or "openOnly" or "beforeAt" or "beforeId")))
+        return Results.BadRequest(new { error = "Choose valid case filters and a complete cursor." });
+    var cursor = beforeAt is { } at && beforeId is { } id ? new IncidentCaseCursor(at, id) : null;
+    return Results.Ok(await store.IncidentCases(Identity(http).OrganizationId, status, openOnly == true, cursor, ct));
+});
+cases.MapGet("/{id:guid}", async (Guid id, HttpContext http, CancellationToken ct) =>
+    await store.IncidentCaseDetail(Identity(http).OrganizationId, id, ct) is { } detail
+        ? Results.Ok(detail) : Results.NotFound());
+cases.MapGet("/{id:guid}/export", async (Guid id, HttpContext http, CancellationToken ct) =>
+{
+    var identity = Identity(http);
+    if (await store.IncidentCaseDetail(identity.OrganizationId, id, ct) is not { } detail) return Results.NotFound();
+    http.Response.Headers.ContentDisposition = $"attachment; filename=\"zekvar-case-{id:D}.json\"";
+    http.Response.Headers.XContentTypeOptions = "nosniff";
+    return Results.Ok(new { organization = identity.OrganizationSlug, exportedAt = DateTime.UtcNow, investigation = detail });
+});
+cases.MapPost("", async (CreateIncidentCase request, HttpContext http, CancellationToken ct) =>
+    request.IsValid() ? CaseOutcome(await store.CreateIncidentCase(Identity(http), request, ct)) :
+        Results.BadRequest(new { error = "Choose a valid case category and a security event." }));
+cases.MapPost("/{id:guid}/triage", async (Guid id, SetEventTriage request, HttpContext http, CancellationToken ct) =>
+    request.IsValid() && request.ExpectedRevision >= 1 ? CaseOutcome(await store.ChangeCaseTriage(Identity(http), id, request, ct)) :
+        Results.BadRequest(new { error = "Choose a valid case status, resolution, and revision." }));
+cases.MapPost("/{id:guid}/membership", async (Guid id, SetCaseMembership request, HttpContext http, CancellationToken ct) =>
+    request.IsValid() ? CaseOutcome(await store.ChangeCaseMembership(Identity(http), id, request, ct)) :
+        Results.BadRequest(new { error = "Choose a valid case revision and event." }));
 admin.MapGet("/reports/ai-enforcement", async (HttpContext http, CancellationToken ct) =>
 {
     var query = AiReportQuery.Parse(http.Request.Query, DateTimeOffset.UtcNow);
@@ -387,6 +416,14 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
 
 static bool ExpectsReview(HttpContext http) => http.Request.Headers["X-Zekvar-Expect-Review"] == "1";
 static bool RepeatedTriageFilters(IQueryCollection query) => query["triageStatus"].Count > 1 || query["triageAssignee"].Count > 1;
+
+static IResult CaseOutcome(IncidentCaseResult result) => result switch
+{
+    { CaseId: { } id } => Results.Ok(new { caseId = id }),
+    { Error: "event_assignee_unavailable" } => Results.BadRequest(new { code = result.Error }),
+    { Error: { } code } => Results.Conflict(new { code }),
+    _ => Results.NotFound()
+};
 
 static IResult PolicyOutcome(PolicyChangeResult result, IResult fallback)
 {

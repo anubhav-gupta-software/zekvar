@@ -27,7 +27,7 @@ internal sealed record EventTriage(int Revision, string Status, string? Disposit
 internal sealed record EventTriageState(string Status, string? Disposition, Guid? AssigneeId);
 internal sealed record EventTriageChange(Guid InstallationId, Guid EventId, int Revision, EventTriageState Before, EventTriageState After);
 internal sealed record EventTriageActivity(Guid Id, DateTime OccurredAt, AccessIdentity? ActorAccess, EventTriageChange Change);
-internal sealed record EventDetails(StoredEvent Event, EventTriageActivity[] Activity);
+internal sealed record EventDetails(StoredEvent Event, EventTriageActivity[] Activity, IncidentCaseReference? IncidentCase);
 internal sealed record TriageResult(EventTriage? Triage = null, string? Error = null);
 
 internal readonly record struct TriageAssigneeFilter(bool RequireUnassigned, Guid? Id)
