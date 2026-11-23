@@ -1,5 +1,5 @@
 import { decisionLabels, detectorModeLabels, promptAppLabels, ruleLabels, utc } from '../lib/control';
-import { uploadApps } from '../../../contracts/policy/uploads';
+import { fileContentMode, uploadApps } from '../../../contracts/policy/uploads';
 import type { PreviewPolicy } from '../lib/preview';
 import { exceptionKey, samePromptExceptions } from '../../../contracts/policy/prompt-exceptions';
 import { fixtureRule } from '../../../contracts/policy/prompt';
@@ -30,8 +30,8 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     ['Claude prompt protection', toggle(reference.claudePromptEnabled), toggle(candidate.claudePromptEnabled)],
     ...uploadApps.map((app) => [`${promptAppLabels[app]} file uploads`, detectorModeLabels[reference.uploadModes[app]],
       detectorModeLabels[candidate.uploadModes[app]]]),
-    ...uploadApps.map((app) => [`${promptAppLabels[app]} file content monitoring`, reference.fileInspection?.[app] ? 'Monitor' : 'Off',
-      candidate.fileInspection?.[app] ? 'Monitor' : 'Off']),
+    ...uploadApps.map((app) => [`${promptAppLabels[app]} file content protection`, detectorModeLabels[fileContentMode(reference, app)],
+      detectorModeLabels[fileContentMode(candidate, app)]]),
     ...uploadApps.map((app) => [`${promptAppLabels[app]} file types`, reference.uploadTypes[app].join(', ') || 'All files',
       candidate.uploadTypes[app].join(', ') || 'All files']),
   ];

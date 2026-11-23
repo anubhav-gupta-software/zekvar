@@ -75,6 +75,7 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
           ...(request.headers['x-zekvar-composer-coverage'] ? { 'X-Zekvar-Composer-Coverage': request.headers['x-zekvar-composer-coverage'] } : {}),
           ...(request.headers['x-zekvar-private-key'] ? { 'X-Zekvar-Private-Key': request.headers['x-zekvar-private-key'] } : {}),
           ...(request.headers['x-zekvar-file-inspection'] ? { 'X-Zekvar-File-Inspection': request.headers['x-zekvar-file-inspection'] } : {}),
+          ...(request.headers['x-zekvar-file-content-block'] ? { 'X-Zekvar-File-Content-Block': request.headers['x-zekvar-file-content-block'] } : {}),
           ...(body.length ? { 'Content-Type': 'application/json' } : {}),
         },
         body: body.length ? body : undefined,
@@ -313,6 +314,12 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
       offline = false;
       await popup.getByRole('button', { name: 'Sync now' }).click();
       await popup.getByText(/Connected to Control/).waitFor();
+      await until(() => worker.evaluate(async () => {
+        const { controlState } = await chrome.storage.local.get('controlState');
+        return controlState.status === 'connected' && controlState.coveragePending === undefined;
+      }), 'The extension did not finish reconciling the offline composer check.');
+      if (changesPolicy) await until(async () => await verified() === 'unobserved',
+        'Control did not acknowledge the policy without carrying forward the outdated composer check.');
       assert.equal(await verified(), changesPolicy ? 'unobserved' : 'detected');
       chatGpt = await browser.newPage();
     }

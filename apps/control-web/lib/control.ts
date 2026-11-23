@@ -46,6 +46,7 @@ export type Policy = {
   uploadModes?: UploadModes;
   uploadTypes?: UploadTypes;
   fileInspection?: FileInspection;
+  fileContentModes?: UploadModes;
   discoveryEnabled?: boolean;
   customApps?: CustomApp[];
   promptExceptions?: PromptException[];
@@ -120,6 +121,8 @@ export type SecurityEvent = {
   rollout?: { kind: 'baseline' | 'unattributed' } | { kind: 'group'; groupId: string; groupName: string };
   triage?: import('./triage').EventTriage;
 };
+
+export const fileCheckUnavailableLabel = 'File check unavailable';
 
 export type Grant = { grant: string; expiresAt: string };
 export type Feedback = {

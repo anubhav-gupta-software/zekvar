@@ -1,6 +1,7 @@
 import { ApiError, controlApi } from '../lib/api';
 import {
-  aiApps, classifications, classificationLabels, composerStateLabels, decisionLabels, decisions, isPromptApp, promptAppLabels, ruleLabels, utc,
+  aiApps, classifications, classificationLabels, composerStateLabels, decisionLabels, decisions, fileCheckUnavailableLabel,
+  isPromptApp, promptAppLabels, ruleLabels, utc,
   type BrowserComposerReadiness, type BrowserReleaseCount, type ComposerCheck, type ComposerState, type Decision, type DiscoveredApp,
   type Installation, type SecurityEvent,
 } from '../lib/control';
@@ -13,7 +14,7 @@ import { classifyAiApp, revokeInstallation, signOut } from './actions';
 import { DomainRulesForm, EnrollmentForm, MutationForm, RefreshSection, SignInForm } from './forms';
 import { PolicyVersionTable, PublishPolicyForm } from './policies';
 import { Brand, DeploymentBadge, RecordedRolloutOptions, Sidebar } from './workspace';
-import { uploadMethods, uploadRule } from '../../../contracts/policy/uploads';
+import { fileInspectionUnavailableRule, uploadMethods, uploadRule } from '../../../contracts/policy/uploads';
 import { eventPath, initialTriage, triageDispositions, triageStatuses } from '../lib/triage';
 
 type Search = Record<string, string | string[] | undefined>;
@@ -416,7 +417,8 @@ function EventRow({ event, filters, returnQuery, showRollout, showTriage }: {
     <td><Timestamp value={event.timestamp} /></td>
     <td className="emphasis">{isPromptApp(event.appId) ? promptAppLabels[event.appId] : event.appId}</td>
     <td><DecisionBadge decision={event.decision} /></td>
-    <td>{event.ruleId === uploadRule ? 'File upload' : ruleLabels[event.ruleId as keyof typeof ruleLabels] ?? event.detectorCategory}
+    <td>{event.ruleId === uploadRule ? 'File upload' : event.ruleId === fileInspectionUnavailableRule ? fileCheckUnavailableLabel :
+      ruleLabels[event.ruleId as keyof typeof ruleLabels] ?? event.detectorCategory}
       {event.uploadMethod && <div className="muted">{event.ruleId !== uploadRule && 'File content · '}{uploadMethods[event.uploadMethod]}</div>}</td>
     <td>v{event.policyVersion}</td>
     {showRollout && <td>{rollout ? <a className="underline" href={`/?${rolloutQuery}#events`}>

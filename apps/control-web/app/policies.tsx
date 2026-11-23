@@ -1,5 +1,5 @@
 import { decisionLabels, detectorModeLabels, detectorModes, modes, promptAppLabels, ruleLabels, utc, type Policy } from '../lib/control';
-import { uploadApps, uploadModes, uploadTypesHint } from '../../../contracts/policy/uploads';
+import { fileContentMode, uploadApps, uploadModes, uploadTypesHint } from '../../../contracts/policy/uploads';
 import { exceptionKey } from '../../../contracts/policy/prompt-exceptions';
 import { fixtureRule } from '../../../contracts/policy/prompt';
 import { publishPolicy, restorePolicy } from './actions';
@@ -64,7 +64,13 @@ export function PublishPolicyForm({ policy, groupId, review }: { policy?: Policy
       <textarea key={`types-${policy?.version}`} id={`upload-types-${app}`} name={`upload-types-${app}`}
         rows={2} maxLength={1700} spellCheck={false} autoCapitalize="none" autoComplete="off"
         aria-describedby="upload-types-hint" defaultValue={policy?.uploadTypes?.[app]?.join(', ') ?? ''} />
-      {policy?.fileInspection && <>
+      {policy?.fileContentModes ? <>
+        <label htmlFor={`file-content-${app}`}>{promptAppLabels[app]} file content protection</label>
+        <select key={`content-${policy.version}`} id={`file-content-${app}`} name={`file-content-${app}`}
+          defaultValue={fileContentMode(policy, app)} aria-describedby="file-content-hint">
+          {uploadModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+        </select>
+      </> : policy?.fileInspection && <>
         <label htmlFor={`file-inspection-${app}`}>{promptAppLabels[app]} file content monitoring</label>
         <select key={`inspection-${policy.version}`} id={`file-inspection-${app}`} name={`file-inspection-${app}`}
           defaultValue={policy.fileInspection[app] ? 'on' : 'off'}>
@@ -73,6 +79,9 @@ export function PublishPolicyForm({ policy, groupId, review }: { policy?: Policy
       </>}
     </div>)}
     <p className="muted" id="upload-types-hint">{uploadTypesHint}</p>
+    {policy?.fileContentModes && <p className="muted" id="file-content-hint">
+      Block holds the batch and stops uploads with a sensitive match or an incomplete check. Start in Monitor to check coverage.
+    </p>}
   </MutationForm>;
 }
 
@@ -115,7 +124,8 @@ function PolicyRow({ policy, current, groupId, writable, review }: {
     <td>{uploadApps.map((app) => {
       const types = policy.uploadTypes?.[app] ?? [];
       return <div key={app}>{promptAppLabels[app]} · {detectorModeLabels[policy.uploadModes?.[app] ?? 'off']}
-        {policy.fileInspection?.[app] && <div className="muted">File content monitored</div>}
+        {fileContentMode(policy, app) !== 'off' &&
+          <div className="muted">File content · {detectorModeLabels[fileContentMode(policy, app)]}</div>}
         {types.length > 0 && <details className="domain-rule-history"><summary>{types.length} selected types</summary>
           <code>{types.join(', ')}</code></details>}
       </div>;

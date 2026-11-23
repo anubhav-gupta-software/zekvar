@@ -205,6 +205,7 @@ try {
   await run(process.execPath, ['--test', 'test/office-upload.test.mjs'], extension, {
     ZEKVAR_EXTENSION_TEST_API: apiOrigin, ZEKVAR_EXTENSION_TEST_ADMIN_TOKEN: officeAdmin,
     ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0',
+    ZEKVAR_TEST_FILE_BLOCK_SCREENSHOT: artifacts ? join(artifacts, '37-file-content-block.png') : '',
   });
   await run('npm', ['run', 'test:control'], extension, {
     ZEKVAR_EXTENSION_TEST_API: apiOrigin, ZEKVAR_EXTENSION_TEST_ADMIN_TOKEN: extensionAdmin,

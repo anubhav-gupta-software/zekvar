@@ -1,9 +1,9 @@
 import { notFound, redirect } from 'next/navigation';
-import { uploadMethods, uploadRule } from '../../../../../../contracts/policy/uploads';
+import { fileInspectionUnavailableRule, uploadMethods, uploadRule } from '../../../../../../contracts/policy/uploads';
 import { canWrite } from '../../../../lib/access';
 import { ApiError, controlApi } from '../../../../lib/api';
 import { browserHealthFilters } from '../../../../lib/browser-health';
-import { decisionLabels, isPromptApp, promptAppLabels, ruleLabels, utc } from '../../../../lib/control';
+import { decisionLabels, fileCheckUnavailableLabel, isPromptApp, promptAppLabels, ruleLabels, utc } from '../../../../lib/control';
 import { eventFilters, setEventCursor } from '../../../../lib/events';
 import { sessionToken } from '../../../../lib/session';
 import { initialTriage, isTriageId, triageDispositions, triageStatuses, type TriageState } from '../../../../lib/triage';
@@ -56,7 +56,7 @@ export default async function ReviewEvent({ params, searchParams }: {
           <dl className="policy-fields mt-4 gap-y-4 text-sm">
             <div><dt className="muted">Application</dt><dd>{isPromptApp(event.appId) ? promptAppLabels[event.appId] : event.appId}</dd></div>
             <div><dt className="muted">Detector</dt><dd>{event.ruleId === uploadRule ? 'File upload'
-              : ruleLabels[event.ruleId as keyof typeof ruleLabels] ?? event.detectorCategory}
+              : event.ruleId === fileInspectionUnavailableRule ? fileCheckUnavailableLabel : ruleLabels[event.ruleId as keyof typeof ruleLabels] ?? event.detectorCategory}
               {event.uploadMethod && <> · {uploadMethods[event.uploadMethod]}</>}</dd></div>
             <div><dt className="muted">Policy</dt><dd>v{event.policyVersion}</dd></div>
             <div><dt className="muted">Occurred (UTC)</dt><dd><Timestamp value={event.timestamp} /></dd></div>

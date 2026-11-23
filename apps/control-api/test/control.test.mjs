@@ -46,13 +46,14 @@ async function retentionFixture(query) {
   return stdout.trim();
 }
 
-function browserPolicyOnly({ extensionDeployment: _extensionDeployment, blockedAiAppHosts: _blockedAiAppHosts, ...browserPolicy }) {
+function browserPolicyOnly({ extensionDeployment: _extensionDeployment, blockedAiAppHosts: _blockedAiAppHosts,
+  fileContentModes: _fileContentModes, ...browserPolicy }) {
   return browserPolicy;
 }
 
 async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false,
   extensionVersion, scopedEnrollment = false, composerAware = false, privateKeyAware = false, fileInspectionAware = false,
-  aiAppAccessAware = false } = {}) {
+  aiAppAccessAware = false, fileBlockAware = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -65,6 +66,7 @@ async function call(path, { token, method = 'GET', body, expect = 200, assignmen
   if (privateKeyAware) headers['X-Zekvar-Private-Key'] = '1';
   if (fileInspectionAware) headers['X-Zekvar-File-Inspection'] = '1';
   if (aiAppAccessAware) headers['X-Zekvar-AI-App-Access'] = '1';
+  if (fileBlockAware) headers['X-Zekvar-File-Content-Block'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
@@ -2388,9 +2390,10 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual((await current()).fileInspection, off);
     if (postgres) {
       await stop();
-      await retentionFixture(`DELETE FROM schema_migrations WHERE version = 27;
-        ALTER TABLE policy_versions DROP COLUMN chatgpt_file_inspection, DROP COLUMN gemini_file_inspection;
-        ALTER TABLE policy_deliveries DROP COLUMN file_inspection;`);
+      await retentionFixture(`DELETE FROM schema_migrations WHERE version IN (27, 32);
+        ALTER TABLE policy_versions DROP COLUMN chatgpt_file_content_block, DROP COLUMN gemini_file_content_block,
+          DROP COLUMN chatgpt_file_inspection, DROP COLUMN gemini_file_inspection;
+        ALTER TABLE policy_deliveries DROP COLUMN file_inspection, DROP COLUMN file_content_block;`);
       await start();
       assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 27'), '1');
     }
@@ -2456,6 +2459,77 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual((await post(`${groupPath}/promote`, { expectedVersion: scoped.version })).fileInspection, scoped.fileInspection);
     assert.deepEqual((await post(`policies/${initial.version}/restore`)).fileInspection, off);
     await send(await fetchPolicy(), {}, 400);
+  });
+
+  await t.test('requires content-block capability and preserves exact per-app modes through review and rollback', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: fileAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const [initial] = await admin('policies');
+    await post('policies', { fileContentModes: { chatgpt: 'warn' } }, { expect: 400 });
+    await post('policies', { fileContentModes: { claude: 'block' } }, { expect: 400 });
+    await post('policies', { fileContentModes: {} }, { expect: 400 });
+    const oldSetting = await post('policies', { fileInspection: { gemini: true } });
+    assert.deepEqual(oldSetting.fileContentModes, { chatgpt: 'off', gemini: 'monitor' });
+    if (postgres) {
+      await stop();
+      await retentionFixture(`DELETE FROM schema_migrations WHERE version = 32;
+        ALTER TABLE policy_versions DROP COLUMN chatgpt_file_content_block, DROP COLUMN gemini_file_content_block;
+        ALTER TABLE policy_deliveries DROP COLUMN file_content_block;`);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 32'), '1');
+      assert.deepEqual((await admin('policies'))[0], oldSetting);
+    }
+    const { grant } = await post('enrollment-grants');
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const client = (path, options) => call(`/v1/browser/${path}`, { token: browser.token, assignmentAware: true, ...options });
+    const block = await post('policies', { fileContentModes: { chatgpt: 'block' }, privateKeyMode: 'off' });
+    assert.deepEqual(block.fileContentModes, { chatgpt: 'block', gemini: 'monitor' });
+    const legacy = await client('policy', { fileInspectionAware: true });
+    assert.equal(Object.hasOwn(legacy, 'fileContentModes'), false);
+    assert.deepEqual(legacy.fileInspection, { chatgpt: false, gemini: true });
+    const heartbeat = (fields, expect = 204) => client('heartbeat', { method: 'POST', expect,
+      body: { policyVersion: block.version, fileInspectionApplied: true, ...fields } });
+    const applied = async () => (await admin('installations')).find(({ installationId }) => installationId === browser.installationId).appliedPolicyVersion;
+    await heartbeat({});
+    assert.equal(await applied(), null);
+    await heartbeat({ fileContentBlockApplied: true }, 400);
+    const baseEvent = { ...event, timestamp: new Date().toISOString(), policyVersion: block.version,
+      appId: 'chatgpt', decision: 'block', uploadMethod: 'drop' };
+    const send = (fields, expect = 204) => client('events', { method: 'POST', expect, body: { ...baseEvent, eventId: randomUUID(), ...fields } });
+    await send({}, 400);
+    await send({ appId: 'gemini', decision: 'monitor' });
+    const modern = await client('policy', { fileInspectionAware: true, fileBlockAware: true, privateKeyAware: true });
+    assert.deepEqual(modern.fileContentModes, block.fileContentModes);
+    await heartbeat({ fileContentBlockApplied: true });
+    assert.equal(await applied(), block.version);
+    const unavailable = { ruleId: 'file-inspection-unavailable', detectorCategory: 'file-upload' };
+    for (const input of [{ appId: 'gemini' }, { decision: 'monitor' }, { ...unavailable, decision: 'monitor' },
+      { ...unavailable, uploadMethod: undefined }, { ruleId: 'pem-private-key', detectorCategory: 'credential' },
+      { ...unavailable, fileName: 'synthetic-file.txt' }, { content: 'synthetic-sensitive-value' }]) await send(input, 400);
+    const id = randomUUID();
+    await Promise.all([send({ eventId: id }), send({ eventId: id })]);
+    await send({ ...unavailable, uploadMethod: 'paste' });
+    const stored = (await admin('events/export?decision=block')).entries.filter(({ policyVersion }) => policyVersion === block.version);
+    assert.deepEqual(stored.map(({ ruleId }) => ruleId).sort(), ['file-inspection-unavailable', 'fixture-secret']);
+    const compatible = await post('policies', { fileInspection: { chatgpt: true } });
+    assert.deepEqual(compatible.fileContentModes, block.fileContentModes);
+    const group = await post('policy-groups', { name: 'File blocking review' });
+    const applicants = await Promise.all(['File policy author', 'File policy reviewer'].map((name) =>
+      post('access', { name, role: 'administrator', hours: 1 })));
+    await post('policy-reviews/setting', { required: true }, { expect: 204 });
+    const groupPath = `policy-groups/${group.id}/policies`;
+    const draft = await post(groupPath, { fileContentModes: { chatgpt: 'monitor', gemini: 'block' }, expectedVersion: compatible.version },
+      { token: applicants[0].token, expectReview: true, expect: 202 });
+    const queued = await admin('policy-reviews');
+    const pending = queued.entries.find((review) => review.id === draft.reviewId);
+    assert.deepEqual(pending.snapshots.candidate.fileContentModes, { chatgpt: 'monitor', gemini: 'block' });
+    const approved = await post(`policy-reviews/${draft.reviewId}/decision`, { approve: true }, { token: applicants[1].token });
+    assert.deepEqual(approved.fileContentModes, { chatgpt: 'monitor', gemini: 'block' });
+    assert.deepEqual((await admin(groupPath))[0].fileContentModes, approved.fileContentModes);
+    assert.deepEqual((await admin('policies'))[0].fileContentModes, compatible.fileContentModes);
+    await post('policy-reviews/setting', { required: false }, { expect: 204 });
+    assert.deepEqual((await post(`policies/${block.version}/restore`)).fileContentModes, block.fileContentModes);
+    assert.deepEqual((await post(`policies/${initial.version}/restore`)).fileContentModes, initial.fileContentModes);
   });
 
   await t.test('keeps recorded rollout groups through migration, reassignment, retries, and retention', async () => {

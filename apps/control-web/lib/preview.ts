@@ -3,7 +3,7 @@ import { evaluateNavigation, parseWebAddress, sameDomainRules, emptyDomainRules,
 import { fixtureRule, ruleLabels, testMarker, type DetectorMode, type PolicyMode } from '../../../contracts/policy/prompt';
 import { chatGptApp, claudeApp, promptAppLabels, type AiPromptApp } from '../../../contracts/policy/apps';
 import { evaluateFileInspection, fileInspectionDetectors } from '../../../contracts/policy/file-inspection';
-import { allUploadTypes, matchesUploadType, sameUploadTypes, uploadApps, uploadsOff, type UploadFile, type UploadMode,
+import { allUploadTypes, fileContentMode, matchesUploadType, sameUploadTypes, uploadApps, uploadsOff, type UploadFile, type UploadMode,
   type FileInspection, type UploadModes, type UploadTypes } from '../../../contracts/policy/uploads';
 import type { Policy } from './control';
 import { sameCustomApps, type CustomAppSetting } from '../../../contracts/policy/discovery';
@@ -18,6 +18,7 @@ export type PreviewPolicy = {
   blockedAiAppHosts?: string[];
   claudePromptEnabled: boolean;
   fileInspection?: FileInspection;
+  fileContentModes?: UploadModes;
   domainRules: DomainRules; pathRules: PathRules; uploadModes: UploadModes; uploadTypes: UploadTypes;
   customApps: CustomAppSetting[];
   promptExceptions: PromptException[];
@@ -44,6 +45,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     uploadModes: policy.uploadModes ?? uploadsOff,
     uploadTypes: policy.uploadTypes ?? allUploadTypes,
     fileInspection: policy.fileInspection,
+    fileContentModes: policy.fileContentModes,
   };
 }
 
@@ -55,7 +57,7 @@ export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
     (a.blockedAiAppHosts ?? []).join(',') === (b.blockedAiAppHosts ?? []).join(',') &&
     a.claudePromptEnabled === b.claudePromptEnabled &&
     uploadApps.every((app) => a.uploadModes[app] === b.uploadModes[app] && sameUploadTypes(a.uploadTypes[app], b.uploadTypes[app]) &&
-      a.fileInspection?.[app] === b.fileInspection?.[app]) &&
+      fileContentMode(a, app) === fileContentMode(b, app)) &&
     sameCustomApps(a.customApps, b.customApps) && samePromptExceptions(a.promptExceptions, b.promptExceptions) &&
     sameDomainRules(a.domainRules, b.domainRules) && sameDomainRules(a.pathRules, b.pathRules);
 }
@@ -103,11 +105,14 @@ function uploadOutcome(mode: UploadMode, types: string[], file: UploadFile): Pre
   return { action: mode, rule: 'File upload policy' };
 }
 
-function fileInspectionOutcome(policy: PreviewPolicy, app: typeof uploadApps[number]): PreviewDecision {
-  const beforeInspection = uploadOutcome(policy.uploadModes[app], policy.uploadTypes[app], { name: 'synthetic.txt', type: 'text/plain' });
+function fileInspectionOutcome(policy: PreviewPolicy, app: typeof uploadApps[number], file: UploadFile, text?: string): PreviewDecision {
+  const beforeInspection = uploadOutcome(policy.uploadModes[app], policy.uploadTypes[app], file);
   if (beforeInspection.action === 'block') return beforeInspection;
-  const match = policy.fileInspection?.[app] ? evaluateFileInspection(testMarker, fileInspectionDetectors(policy)) : undefined;
-  return match ? { action: 'monitor', rule: 'Test marker in file content' } : beforeInspection;
+  const mode = fileContentMode(policy, app);
+  if (mode === 'off') return beforeInspection;
+  if (text === undefined && mode === 'block') return { action: 'block', rule: 'File check unavailable' };
+  const match = text !== undefined && evaluateFileInspection(text, fileInspectionDetectors(policy));
+  return match ? { action: mode, rule: 'Test marker in file content' } : beforeInspection;
 }
 
 export function runComparison(reference: PreviewSnapshot, candidate: PreviewPolicy, prompt: string, address?: URL,
@@ -129,9 +134,13 @@ export function runComparison(reference: PreviewSnapshot, candidate: PreviewPoli
   }
   if (address) rows.push({ name: 'Custom navigation', current: navigationOutcome(address, reference), draft: navigationOutcome(address, candidate) });
   for (const app of uploadApps) {
-    if (reference.fileInspection !== undefined || candidate.fileInspection !== undefined) {
-      rows.push({ name: `${promptAppLabels[app]} synthetic text file`, current: fileInspectionOutcome(reference, app),
-        draft: fileInspectionOutcome(candidate, app) });
+    if (reference.fileInspection !== undefined || candidate.fileInspection !== undefined || candidate.fileContentModes) {
+      const textFile = { name: 'synthetic.txt', type: 'text/plain' };
+      const samples = [{ name: 'synthetic text file', file: textFile, text: testMarker },
+        { name: 'clean text file', file: textFile, text: 'Quarterly planning notes.' },
+        { name: 'unscannable PDF sample', file: { name: 'synthetic.pdf', type: 'application/pdf' }, text: undefined }];
+      for (const { name, file, text } of samples) rows.push({ name: `${promptAppLabels[app]} ${name}`,
+        current: fileInspectionOutcome(reference, app, file, text), draft: fileInspectionOutcome(candidate, app, file, text) });
     }
     for (const [name, sample] of [
       ['TXT upload', { name: 'example.txt', type: 'text/plain' }],

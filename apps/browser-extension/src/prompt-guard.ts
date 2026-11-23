@@ -3,9 +3,9 @@ import { recordDecision, recordFileInspection, recordUploadDecision } from './de
 import { evaluatePrompt, withPolicyVersion, type MatchedDecision } from './policy';
 import { isMode, send, type AiPromptApp, type Coverage, type Summary } from './protocol';
 import { promptAppLabels } from '../../../contracts/policy/apps';
-import { isUploadApp, type UploadMethod } from '../../../contracts/policy/uploads';
-import { bindUploadGuard } from './upload-guard';
-import { inspectFiles } from './file-inspection';
+import { fileContentMode, fileInspectionUnavailableRule, isUploadApp, uploadCategory, type UploadFile, type UploadMethod } from '../../../contracts/policy/uploads';
+import { bindUploadGuard, type UploadCheck } from './upload-guard';
+import { inspectFiles, scanFileContents } from './file-inspection';
 import { promptText, replacePromptText, supportsRedaction, type Composer, type ComposerInspection } from './prompt-composer';
 import { leaseTime } from './prompt-exceptions';
 import { evaluatePromptWithExceptions, exceptionDecision } from '../../../contracts/policy/prompt-exceptions';
@@ -133,11 +133,12 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     const privateKey = managedPolicy?.privateKeyMode;
     const targetedUpload = uploadApp && managedPolicy?.targetedUploads?.[uploadApp];
     const upload = targetedUpload?.mode ?? (uploadApp && managedPolicy?.uploadModes?.[uploadApp]);
-    if (upload !== 'block') ui.uploadNotice.textContent = '';
+    const content = uploadApp ? fileContentMode(managedPolicy, uploadApp) : 'off';
+    if (upload !== 'block' && content !== 'block') ui.uploadNotice.textContent = '';
     const detectors = (isMode(github) ? ` · GitHub PAT ${github}` : '') + (isMode(card) ? ` · Payment card ${card}` : '') +
       (isMode(privateKey) ? ` · Private key ${privateKey}` : '') +
       (upload && upload !== 'off' ? ` · File uploads ${upload}${targetedUpload ? ' (selected types)' : ''}` : '') +
-      (uploadApp && managedPolicy?.fileInspection?.[uploadApp] ? ' · File content monitor' : '');
+      (content !== 'off' ? ` · File content ${content}` : '');
     const label = !managedPolicy ? `Zekvar · ${appName} policy unavailable` : coverage === 'unsupported' ?
       `Zekvar · Unsupported composer (${inspection.gap ?? 'Send control missing'})` : !coverage && !waiting ? 'Zekvar · Checking composer…' :
         `Zekvar · ${managedPolicy.mode.toUpperCase()} v${managedPolicy.version}${detectors}${control?.status === 'offline' ? ' · Offline policy' : ''}${current?.button ? '' : ' · Waiting for Send control'}`;
@@ -328,12 +329,36 @@ export function bindPromptGuard(adapter: PromptAdapter) {
   }
 
   let scansInProgress = 0;
+  async function checkFileContent(files: readonly UploadFile[], policy: Policy): Promise<UploadCheck> {
+    if (scansInProgress >= 2 || !files.every((file): file is File => file instanceof File)) return { kind: 'unavailable' };
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<UploadCheck>((resolve) => {
+      timer = setTimeout(() => {
+        abort.abort();
+        resolve({ kind: 'unavailable' });
+      }, 3000);
+    });
+    scansInProgress++;
+    const scan = scanFileContents(files, policy, { signal: abort.signal, snapshot: true }).then((result): UploadCheck => {
+      if (result.match) return { kind: 'blocked', rule: result.match };
+      if (!result.complete || result.snapshots.length !== files.length) return { kind: 'unavailable' };
+      return { kind: 'allow', files: result.snapshots };
+    }).finally(() => { scansInProgress--; });
+    try {
+      return await Promise.race([scan, deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   if (uploadApp) bindUploadGuard(() => {
     if (!supported() || !enabled(control) || !control?.installationId || !control.policy) return;
     const { policy, installationId } = control;
+    const content = fileContentMode(policy, uploadApp);
     const mode = policy.uploadModes?.[uploadApp];
     const filter = policy.targetedUploads?.[uploadApp] ?? (mode === 'monitor' || mode === 'block' ? { mode, types: [] } : undefined);
-    const inspect = policy.fileInspection?.[uploadApp] ? (files: readonly File[], method: UploadMethod) => {
+    const inspect = content === 'monitor' ? (files: readonly File[], method: UploadMethod) => {
       if (!files.length || scansInProgress >= 2) return;
       const timestamp = new Date().toISOString();
       scansInProgress++;
@@ -341,12 +366,21 @@ export function bindPromptGuard(adapter: PromptAdapter) {
         if (rule && control?.installationId === installationId) recordFileInspection(uploadApp, policy, installationId, rule, method, timestamp);
       }).catch(() => undefined).finally(() => { scansInProgress--; });
     } : undefined;
-    if (filter || inspect) return { filter, inspect };
+    const check = content === 'block' ? (files: readonly UploadFile[]) => checkFileContent(files, policy) : undefined;
+    if (filter || inspect || check) return { scope: `${installationId}/${policy.version}/${policy.assignmentVersion ?? 0}`, filter, inspect, check };
   }, (decision, method) => {
     if (decision !== 'block') ui.uploadNotice.textContent = '';
     if (!decision || !control?.policy || !control.installationId) return;
     recordUploadDecision(uploadApp, control.policy, control.installationId, decision, method);
     if (decision === 'block') ui.uploadNotice.textContent = `File upload blocked by your organization’s ${appName} policy.`;
+  }, (state, method, rule) => {
+    ui.uploadNotice.textContent = state === 'checking' ? 'Checking file contents before upload…' :
+      state === 'blocked' ? 'File upload blocked because sensitive content was detected.' :
+      state === 'unavailable' ? 'File upload blocked because Zekvar could not complete its file check.' :
+      state === 'retry' ? 'File upload interrupted. Choose your files again on this page.' : '';
+    if (state !== 'blocked' && state !== 'unavailable' || !control?.policy || !control.installationId) return;
+    const detection = rule ?? { ruleId: fileInspectionUnavailableRule, detectorCategory: uploadCategory } as const;
+    recordFileInspection(uploadApp, control.policy, control.installationId, detection, method, new Date().toISOString(), 'block');
   });
   refreshPage();
   window.setInterval(refreshPage, 750);

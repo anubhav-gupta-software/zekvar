@@ -17,17 +17,26 @@
   <script>
     window.fileEvents = [];
     const field = document.querySelector('input[type=file]');
+    function take(files) {
+      if (!window.captureUploads) return;
+      for (const file of files) void fetch('/fixture-upload', { method: 'POST', body: file });
+    }
     field.addEventListener('input', () => { if (field.files.length) fileEvents.push(['input', field.files.length]); });
-    field.addEventListener('change', () => { if (field.files.length) fileEvents.push(['change', field.files.length]); });
+    field.addEventListener('change', () => {
+      if (field.files.length) fileEvents.push(['change', field.files.length]);
+      take(field.files);
+    });
     window.addEventListener('dragover', (event) => event.preventDefault());
     window.addEventListener('drop', (event) => {
       if (event.target !== field) event.preventDefault();
       if (event.dataTransfer.files.length) fileEvents.push(['drop', event.dataTransfer.files.length]);
+      if (event.target !== field) take(event.dataTransfer.files);
     });
     window.addEventListener('paste', (event) => {
       if (event.clipboardData.files.length) {
         event.preventDefault();
         fileEvents.push(['paste', event.clipboardData.files.length]);
+        take(event.clipboardData.files);
       }
     });
   </script>

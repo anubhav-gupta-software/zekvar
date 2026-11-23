@@ -74,6 +74,7 @@ function richCellText(node: Element) {
 function worksheetText(root: Element, shared: readonly string[]) {
   const text: string[] = [];
   let remaining = 256 * 1024;
+  let complete = true;
   const cells = root.getElementsByTagNameNS(root.namespaceURI, 'c');
   for (let index = 0; index < cells.length; index++) {
     const cell = cells[index];
@@ -85,17 +86,18 @@ function worksheetText(root: Element, shared: readonly string[]) {
     const content = format === 's' && /^\d+$/.test(raw) ? shared[Number(raw)]
       : format === 'inlineStr' ? richCellText(value)
         : format === 'n' || format === 'str' ? excelText(raw) : undefined;
+    if (format === 's' && content === undefined) complete = false;
     if (!content) continue;
-    if (content.length >= remaining) break;
+    if (content.length >= remaining) return { text: text.join('\n'), complete: false };
     remaining -= content.length + 1;
     text.push(content);
   }
-  return text.join('\n');
+  return { text: text.join('\n'), complete };
 }
 
-export async function* readOfficeText(bytes: Uint8Array<ArrayBuffer>, budget: OfficeReadBudget) {
+export async function* readOfficeText(bytes: Uint8Array<ArrayBuffer>, budget: OfficeReadBudget): AsyncGenerator<string, boolean> {
   const archive = openOfficeZip(bytes);
-  if (!archive) return;
+  if (!archive) return false;
   const { names, read } = archive;
   async function readPart(name: string) {
     try {
@@ -107,8 +109,9 @@ export async function* readOfficeText(bytes: Uint8Array<ArrayBuffer>, budget: Of
   }
   const types = await readPart('[Content_Types].xml');
   const main = types && pickMainPart(types, names);
-  if (!main) return;
+  if (!main) return false;
 
+  let complete = !names.some((name) => /^(?:word|xl|ppt)\/embeddings\/.+/.test(name));
   const root = await readPart(main);
   if (main === documentPart && isElement(root, ['document'], word)) {
     yield paragraphText(root, [...word, ...drawing]);
@@ -116,21 +119,31 @@ export async function* readOfficeText(bytes: Uint8Array<ArrayBuffer>, budget: Of
     for (const part of parts) {
       const xml = await readPart(part);
       if (isElement(xml, ['hdr', 'ftr', 'footnotes', 'endnotes'], word)) yield paragraphText(xml, [...word, ...drawing]);
+      else complete = false;
     }
   } else if (main === workbookPart && isElement(root, ['workbook'], sheet)) {
     const strings = await readPart(sharedStringsPart);
     const shared = isElement(strings, ['sst'], sheet)
       ? Array.from(strings.children).filter((node) => isElement(node, ['si'], sheet)).map(richCellText) : [];
+    if (names.includes(sharedStringsPart) && !isElement(strings, ['sst'], sheet)) complete = false;
     const parts = names.filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/.test(name)).sort();
     for (const part of parts) {
       const xml = await readPart(part);
-      if (isElement(xml, ['worksheet'], sheet)) yield worksheetText(xml, shared);
+      if (!isElement(xml, ['worksheet'], sheet)) {
+        complete = false;
+        continue;
+      }
+      const worksheet = worksheetText(xml, shared);
+      complete &&= worksheet.complete;
+      yield worksheet.text;
     }
   } else if (main === presentationPart && isElement(root, ['presentation'], presentation)) {
     const parts = names.filter((name) => /^ppt\/(?:slides\/slide|notesSlides\/notesSlide)\d+\.xml$/.test(name)).sort();
     for (const part of parts) {
       const xml = await readPart(part);
       if (isElement(xml, ['sld', 'notes'], presentation)) yield paragraphText(xml, drawing);
+      else complete = false;
     }
-  }
+  } else return false;
+  return complete;
 }

@@ -1,14 +1,14 @@
 import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../../lib/api';
-import { aiPromptApps, decisionLabels, decisions, promptAppLabels, ruleLabels, utc } from '../../lib/control';
+import { aiPromptApps, decisionLabels, decisions, fileCheckUnavailableLabel, promptAppLabels, ruleLabels, utc } from '../../lib/control';
 import { eventTotal, reportFilters, type AiEnforcementReport, type DecisionCounts, type ReportBreakdown } from '../../lib/reports';
 import { sessionToken } from '../../lib/session';
-import { uploadRule } from '../../../../contracts/policy/uploads';
+import { fileInspectionUnavailableRule, uploadRule } from '../../../../contracts/policy/uploads';
 import { DeploymentBadge, RecordedRolloutOptions, Sidebar } from '../workspace';
 
 const number = new Intl.NumberFormat('en-US');
 const date = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'UTC' });
-const reportRuleLabels = { ...ruleLabels, [uploadRule]: 'AI file upload' };
+const reportRuleLabels = { ...ruleLabels, [uploadRule]: 'AI file upload', [fileInspectionUnavailableRule]: fileCheckUnavailableLabel };
 
 export default async function Reports({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const token = await sessionToken();

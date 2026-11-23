@@ -54,6 +54,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 29, "029_extension_deployment.sql", ct);
         await ApplyMigration(connection, 30, "030_ai_app_access.sql", ct);
         await ApplyMigration(connection, 31, "031_event_triage.sql", ct);
+        await ApplyMigration(connection, 32, "032_file_content_block.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -147,7 +148,7 @@ internal sealed partial class ControlStore
                 p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
                 p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, p.private_key_mode, p.chatgpt_file_inspection, p.gemini_file_inspection,
-                p.blocked_ai_app_hosts, p.extension_deployment
+                p.blocked_ai_app_hosts, p.chatgpt_file_content_block, p.gemini_file_content_block, p.extension_deployment
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.policy_group_id IS NOT DISTINCT FROM $2::uuid ORDER BY p.version DESC LIMIT 100
             """, organizationId, (object?)groupId ?? DBNull.Value);
@@ -158,7 +159,7 @@ internal sealed partial class ControlStore
     }
 
     public async Task<Policy?> CurrentPolicy(Guid installationId, bool assignmentAware, bool claudeAware, string? extensionVersion, bool privateKeyAware,
-        bool fileInspectionAware, bool aiAppAccessAware, CancellationToken ct)
+        bool fileInspectionAware, bool aiAppAccessAware, bool fileBlockAware, CancellationToken ct)
     {
         await using var command = Command("""
             WITH active AS (
@@ -177,17 +178,19 @@ internal sealed partial class ControlStore
                 LEFT JOIN policy_groups g ON g.organization_id = o.id AND g.id = i.policy_group_id
             ), delivery AS (
                 INSERT INTO policy_deliveries (organization_id, installation_id, assignment_version, policy_version,
-                    exception_scope, claude_prompt, private_key, file_inspection, rollout_group_id, rollout_attributed, ai_app_access)
+                    exception_scope, claude_prompt, private_key, file_inspection, rollout_group_id, rollout_attributed, ai_app_access, file_content_block)
                 SELECT e.organization_id, e.id, e.assignment_version, e.version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id,
                     $3 AND p.claude_prompt_enabled, $5 AND p.private_key_mode <> 'off',
-                    $6 AND (p.chatgpt_file_inspection OR p.gemini_file_inspection), e.policy_group_id, true,
-                    $7 AND cardinality(p.blocked_ai_app_hosts) > 0
+                    $6 AND (p.chatgpt_file_inspection AND (NOT p.chatgpt_file_content_block OR $8)
+                        OR p.gemini_file_inspection AND (NOT p.gemini_file_content_block OR $8)), e.policy_group_id, true,
+                    $7 AND cardinality(p.blocked_ai_app_hosts) > 0, $8 AND (p.chatgpt_file_content_block OR p.gemini_file_content_block)
                 FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
                 ON CONFLICT (installation_id, assignment_version, policy_version) DO UPDATE
                 SET claude_prompt = policy_deliveries.claude_prompt OR EXCLUDED.claude_prompt,
                     private_key = policy_deliveries.private_key OR EXCLUDED.private_key,
                     file_inspection = policy_deliveries.file_inspection OR EXCLUDED.file_inspection,
                     ai_app_access = policy_deliveries.ai_app_access OR EXCLUDED.ai_app_access,
+                    file_content_block = policy_deliveries.file_content_block OR EXCLUDED.file_content_block,
                     rollout_group_id = CASE WHEN policy_deliveries.rollout_attributed THEN policy_deliveries.rollout_group_id
                         ELSE EXCLUDED.rollout_group_id END,
                     rollout_attributed = true
@@ -195,21 +198,23 @@ internal sealed partial class ControlStore
                     OR (EXCLUDED.private_key AND NOT policy_deliveries.private_key)
                     OR (EXCLUDED.file_inspection AND NOT policy_deliveries.file_inspection)
                     OR (EXCLUDED.ai_app_access AND NOT policy_deliveries.ai_app_access)
+                    OR (EXCLUDED.file_content_block AND NOT policy_deliveries.file_content_block)
                     OR NOT policy_deliveries.rollout_attributed
             )
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
                 p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
                 p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, p.private_key_mode, p.chatgpt_file_inspection, p.gemini_file_inspection,
-                p.blocked_ai_app_hosts, e.assignment_version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id
+                p.blocked_ai_app_hosts, p.chatgpt_file_content_block, p.gemini_file_content_block,
+                e.assignment_version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id
             FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
             LEFT JOIN policy_audit a ON a.organization_id = p.organization_id AND a.version = p.version
             """, installationId, assignmentAware, claudeAware, (object?)extensionVersion ?? DBNull.Value, privateKeyAware,
-            fileInspectionAware, aiAppAccessAware);
+            fileInspectionAware, aiAppAccessAware, fileBlockAware);
         await using var rows = await command.ExecuteReaderAsync(ct);
         if (!await rows.ReadAsync(ct)) return null;
         var policy = ReadPolicy(rows, includeDeployment: false);
-        return policy with { AssignmentVersion = rows.GetInt32(23), PromptExceptions = rows.GetBoolean(24) ? policy.PromptExceptions : [] };
+        return policy with { AssignmentVersion = rows.GetInt32(25), PromptExceptions = rows.GetBoolean(26) ? policy.PromptExceptions : [] };
     }
 
     public async Task<bool> RecordHeartbeat(Guid installationId, Heartbeat request, bool scopedCoverage, CancellationToken ct)
@@ -227,6 +232,7 @@ internal sealed partial class ControlStore
                     AND (p.private_key_mode = 'off' OR $16)
                     AND (NOT (p.chatgpt_file_inspection OR p.gemini_file_inspection) OR $17)
                     AND (cardinality(p.blocked_ai_app_hosts) = 0 OR $18)
+                    AND (NOT (p.chatgpt_file_content_block OR p.gemini_file_content_block) OR $19)
                     AND ($12 OR i.policy_group_id IS DISTINCT FROM p.policy_group_id OR NOT EXISTS (
                         SELECT 1 FROM jsonb_array_elements(p.prompt_exceptions) AS entries(entry)
                         WHERE (entry->>'expiresAt')::timestamptz > now()
@@ -249,10 +255,10 @@ internal sealed partial class ControlStore
                 AND p.organization_id = i.organization_id AND p.version = $2
                 AND ($4 OR cardinality(p.allowed_domains) + cardinality(p.blocked_domains) = 0)
                 AND ($13::text IS NULL OR p.claude_prompt_enabled AND $14)
-                AND (($5 = 0 AND p.policy_group_id IS NULL AND NOT $14 AND NOT $16 AND NOT $17 AND NOT $18) OR EXISTS (SELECT 1 FROM policy_deliveries d
+                AND (($5 = 0 AND p.policy_group_id IS NULL AND NOT $14 AND NOT $16 AND NOT $17 AND NOT $18 AND NOT $19) OR EXISTS (SELECT 1 FROM policy_deliveries d
                     WHERE d.installation_id = i.id AND d.assignment_version = $5 AND d.policy_version = $2
                         AND (NOT $14 OR d.claude_prompt) AND (NOT $16 OR d.private_key) AND (NOT $17 OR d.file_inspection)
-                        AND (NOT $18 OR d.ai_app_access)))
+                        AND (NOT $18 OR d.ai_app_access) AND (NOT $19 OR d.file_content_block)))
             RETURNING i.id, i.organization_id
             ), observed AS (
                 INSERT INTO composer_observations (organization_id, installation_id, app_id, policy_version, assignment_version, coverage)
@@ -270,7 +276,8 @@ internal sealed partial class ControlStore
             request.DomainRulesApplied, request.AssignmentVersion, (object?)request.GeminiCoverage ?? DBNull.Value,
             request.PaymentCardModeApplied, request.UploadControlsApplied, request.PathRulesApplied, request.UploadTypesApplied,
             request.CustomDiscoveryApplied, request.PromptExceptionsApplied, (object?)request.ClaudeCoverage ?? DBNull.Value,
-            request.ClaudePromptApplied, scopedCoverage, request.PrivateKeyModeApplied, request.FileInspectionApplied, request.AiAppAccessApplied);
+            request.ClaudePromptApplied, scopedCoverage, request.PrivateKeyModeApplied, request.FileInspectionApplied, request.AiAppAccessApplied,
+            request.FileContentBlockApplied);
         return (bool)(await command.ExecuteScalarAsync(ct))!;
     }
 
@@ -404,8 +411,9 @@ internal sealed partial class ControlStore
                     WHEN 'pem-private-key' THEN p.private_key_mode
                     WHEN 'ai-file-upload' THEN CASE $6 WHEN 'chatgpt' THEN p.chatgpt_upload_mode WHEN 'gemini' THEN p.gemini_upload_mode END
                     ELSE p.mode END AS mode, $9::text IS NOT NULL AND $7 <> 'ai-file-upload' AS file_content) AS detector
-                WHERE (detector.file_content AND detector.mode <> 'off' AND
-                        CASE $6 WHEN 'chatgpt' THEN p.chatgpt_file_inspection WHEN 'gemini' THEN p.gemini_file_inspection ELSE false END
+                WHERE (detector.file_content AND (detector.mode <> 'off' OR $7 = 'file-inspection-unavailable') AND
+                        CASE $6 WHEN 'chatgpt' THEN p.chatgpt_file_inspection AND (p.chatgpt_file_content_block = ($5 = 'block'))
+                            WHEN 'gemini' THEN p.gemini_file_inspection AND (p.gemini_file_content_block = ($5 = 'block')) ELSE false END
                     OR NOT detector.file_content AND (detector.mode = CASE WHEN $5 = 'warn_override' THEN 'warn' ELSE $5 END
                     OR ($5 = 'exception_applied' AND detector.mode IN ('warn', 'block') AND $3 >= p.published_at
                         AND $3 <= now() + interval '2 minutes'
@@ -418,7 +426,7 @@ internal sealed partial class ControlStore
                     OR (d.installation_id IS NOT NULL
                         AND ($6 <> 'claude' OR d.claude_prompt)
                         AND ($7 <> 'pem-private-key' OR d.private_key)
-                        AND (NOT detector.file_content OR d.file_inspection)
+                        AND (NOT detector.file_content OR d.file_inspection AND ($5 <> 'block' OR d.file_content_block))
                         AND ($5 <> 'exception_applied' OR d.exception_scope)))
             ), written AS (
                 INSERT INTO security_events (organization_id, installation_id, event_id, occurred_at, policy_version, decision, app_id, rule_id, upload_method,
@@ -628,5 +636,8 @@ internal sealed partial class ControlStore
         JsonSerializer.Deserialize<PromptException[]>(rows.GetString(17), JsonSerializerOptions.Web), ClaudePromptEnabled: rows.GetBoolean(18),
         PrivateKeyMode: rows.GetString(19), FileInspection: new(rows.GetBoolean(20), rows.GetBoolean(21)),
         BlockedAiAppHosts: rows.GetFieldValue<string[]>(22),
-        ExtensionDeployment: includeDeployment ? JsonSerializer.Deserialize<ExtensionDeployment>(rows.GetString(23), JsonSerializerOptions.Web) : null);
+        FileContentModes: new(FileContentMode(rows.GetBoolean(20), rows.GetBoolean(23)), FileContentMode(rows.GetBoolean(21), rows.GetBoolean(24))),
+        ExtensionDeployment: includeDeployment ? JsonSerializer.Deserialize<ExtensionDeployment>(rows.GetString(25), JsonSerializerOptions.Web) : null);
+
+    private static string FileContentMode(bool enabled, bool block) => block ? "block" : enabled ? "monitor" : "off";
 }

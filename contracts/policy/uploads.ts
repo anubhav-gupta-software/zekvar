@@ -51,10 +51,16 @@ export function matchesUploadType(file: UploadFile, types: readonly string[]) {
 }
 
 export const uploadRule = 'ai-file-upload';
+export const fileInspectionUnavailableRule = 'file-inspection-unavailable';
 export const uploadCategory = 'file-upload';
 export const uploadMethods = { picker: 'File picker', drop: 'Drag and drop', paste: 'Clipboard file' } as const;
 export type UploadMethod = keyof typeof uploadMethods;
-export type UploadMetadata = { ruleId: typeof uploadRule; detectorCategory: typeof uploadCategory; uploadMethod: UploadMethod };
+export type UploadMetadata = { ruleId: typeof uploadRule | typeof fileInspectionUnavailableRule;
+  detectorCategory: typeof uploadCategory; uploadMethod: UploadMethod };
+
+export function fileContentMode(policy: { fileContentModes?: UploadModes; fileInspection?: FileInspection } | undefined, app: UploadApp): UploadMode {
+  return policy?.fileContentModes?.[app] ?? (policy?.fileInspection?.[app] ? 'monitor' : 'off');
+}
 
 export function isUploadMode(value: unknown): value is UploadMode {
   return value === 'off' || value === 'monitor' || value === 'block';

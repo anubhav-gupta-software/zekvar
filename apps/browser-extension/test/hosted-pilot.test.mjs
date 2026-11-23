@@ -531,6 +531,32 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
     await activity.getByText(/Resolved · False positive/).waitFor();
     assert.equal((await call(browserOrigin + '/v1/admin' + reviewPath, { headers: { Authorization: `Bearer ${owner}` } })).status, 404);
   });
+  await t.test('enforces file content blocking in managed Chrome over the hosted policy and event endpoints', async () => {
+    const fileBlock = await admin('policies', { fileContentModes: { chatgpt: 'block' } });
+    await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
+    await attachment.getByText(/File content block$/).waitFor();
+    const field = attachment.getByLabel('Attach fixture files');
+    const disguisedFile = join(scratch, 'synthetic-hosted-attachment.png');
+    const safeFile = join(scratch, 'synthetic-safe.txt');
+    await Promise.all([writeFile(disguisedFile, 'ZEKVAR_TEST_SECRET'), writeFile(safeFile, 'Synthetic safe attachment')]);
+    const rejected = attachment.waitForEvent('filechooser');
+    await field.click();
+    await (await rejected).setFiles(disguisedFile);
+    await attachment.getByRole('alert').filter({ hasText: 'sensitive content' }).waitFor();
+    assert.deepEqual(await attachment.evaluate(() => window.fileEvents), [['input', 1], ['change', 1]]);
+    assert.equal(await field.evaluate((input) => input.files.length), 0);
+    const row = await until(async () => (await admin('events?appId=chatgpt&decision=block')).find(({ policyVersion, uploadMethod }) =>
+      policyVersion === fileBlock.version && uploadMethod === 'picker'), 'The hosted browser did not report the blocked attachment.');
+    assert.equal(row.ruleId, 'fixture-secret');
+    const approved = attachment.waitForEvent('filechooser');
+    await field.click();
+    await (await approved).setFiles(safeFile);
+    await until(async () => (await attachment.evaluate(() => window.fileEvents)).length === 4, 'The hosted browser did not release the clean attachment.');
+    await dashboard.goto(dashboardOrigin + `/events/${row.installationId}/${row.eventId}`);
+    await dashboard.getByRole('region', { name: 'Detection details' }).getByText(/Synthetic secret · File picker/).waitFor();
+    const details = await admin(`events/${row.installationId}/${row.eventId}`);
+    assert.doesNotMatch(JSON.stringify(details), /synthetic-hosted-attachment|ZEKVAR_TEST_SECRET|image\/png/);
+  });
   await dashboard.getByRole('button', { name: 'Sign out', exact: true }).click();
   await dashboard.getByRole('heading', { name: 'Sign in to Control', exact: true }).waitFor();
   assert.equal((await browser.cookies(dashboardOrigin)).some(({ name }) => name === session.name), false);

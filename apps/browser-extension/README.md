@@ -98,13 +98,21 @@ Update enrolled Chrome profiles to v0.15.0 before publishing scoped file types. 
 
 ## Monitor file contents
 
-1. Upgrade the test profile to Browser v0.24.0 or later. In Control, set **ChatGPT file content monitoring** or **Gemini file content monitoring** to **Monitor** in the baseline or a rollout group. **Policy preview** includes a synthetic text file for each app. Each setting starts Off.
+1. Upgrade the test profile to Browser v0.24.0 or later. In Control, set **ChatGPT file content protection** or **Gemini file content protection** to **Monitor** in the baseline or a rollout group. **Policy preview** includes a synthetic text file for each app. Each setting starts Off.
 2. Save `ZEKVAR_TEST_SECRET` in a synthetic UTF-8 text file or, with Browser v0.25.0 or later, put it in a Word paragraph, Excel cell, or PowerPoint text box. Sync the browser and attach the file with the native picker or a file drop on a supported ChatGPT or Gemini page. The attachment proceeds and Browser scans its bytes locally. An existing file-type Block rule takes precedence. For other detectors, enable the corresponding prompt detector in the policy. The file match is recorded as Monitor regardless of its prompt action.
 3. Open **Security events** and look for **Synthetic secret** with **File content · File picker** or **File content · Drag and drop**. **Reports → By activity** separates inspection matches, file upload rules, and prompt events. Control receives rule and attempt metadata. File names, bytes, and decoded text stay outside telemetry.
 
 Browser reads plain UTF-8 text up to 256 KiB per file and recognizes standard `.docx`, `.xlsx`, and `.pptx` packages by their bytes. Office coverage includes Word body text, headers, footers, and footnotes and endnotes, Excel cell values in standard worksheets, and PowerPoint slide text and speaker notes. Coverage is limited to text in supported parts. Password-protected files, legacy binary Office formats, embedded objects, images, scanned pages, and PDFs are outside this coverage. [Office Open XML](https://ecma-international.org/publications-and-standards/standards/ecma-376/)
 
 Each intake can read up to 16 supplied files and 1 MiB of file bytes. Office inspection also has a limit of 64 XML parts and 1 MiB of expanded XML per intake, with at most 256 KiB per XML part. Two scans can run concurrently per tab. File-backed clipboard entries use the scanner when Chrome supplies files. A batch produces at most one inspection event for the highest-priority match. Temporary prompt exceptions apply to prompts. [File API](https://w3c.github.io/FileAPI/#dom-blob-arraybuffer)
+
+## Block sensitive file contents
+
+1. Install Browser v0.27.0 and verify the deployed version in **Browser health**. Choose **Block** under **ChatGPT file content protection** or **Gemini file content protection**. Publish to a test rollout group and sync the browser. Wait for **File content block** in the supported tab.
+2. Attach a clean text file. Browser pauses the attempt until it finishes checking the file and then hands the scanned bytes to the app. Attach a file with `ZEKVAR_TEST_SECRET` as a second test. Browser blocks the whole selection if a detector matches, even when the selection includes clean files. Existing file-type Block rules run first.
+3. Try a PDF, a file beyond the scan limits, or an Office package with an embedded file. Block stops the batch when Browser cannot finish the check in three seconds or reach a complete result within the scan limits. Find a matching detector or **File check unavailable** under **Security events**. File content and names stay on the device until an approved file is released to the chosen site. Control receives only decision metadata.
+
+The Chrome lab verified native file picker and drag-and-drop workflows for controlled ChatGPT and Gemini layouts, including a native clipboard image rejection. Browser delivers approved files with a new DOM event after inspection. Verify each signed-in or partner layout accepts that handoff before enforcing Block. Clean clipboard files, cloud pickers, and programmatic uploads need separate coverage. [HTML file input](https://html.spec.whatwg.org/multipage/input.html#dom-input-files) · [Clipboard API and events](https://www.w3.org/TR/clipboard-apis/)
 
 ## Test temporary prompt exceptions
 

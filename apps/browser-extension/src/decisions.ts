@@ -1,6 +1,6 @@
 import type { MatchedDecision } from './policy';
 import { send, type AppId, type Policy, type PolicyEvent, type RuleMetadata } from './protocol';
-import { uploadCategory, uploadRule, type UploadApp, type UploadDecision, type UploadMethod } from '../../../contracts/policy/uploads';
+import { uploadCategory, uploadRule, type UploadApp, type UploadDecision, type UploadMetadata, type UploadMethod } from '../../../contracts/policy/uploads';
 
 export function recordDecision(appId: AppId, match: MatchedDecision, installationId: string | undefined,
   decision: PolicyEvent['decision'] = match.action, timestamp = new Date().toISOString()) {
@@ -19,10 +19,11 @@ export function recordUploadDecision(appId: UploadApp, policy: Policy, installat
   }, installationId);
 }
 
-export function recordFileInspection(appId: UploadApp, policy: Policy, installationId: string, rule: RuleMetadata, uploadMethod: UploadMethod,
-  timestamp: string) {
+export function recordFileInspection(appId: UploadApp, policy: Policy, installationId: string,
+  rule: RuleMetadata | Pick<UploadMetadata, 'ruleId' | 'detectorCategory'>, uploadMethod: UploadMethod,
+  timestamp: string, decision: UploadDecision = 'monitor') {
   report({ eventId: crypto.randomUUID(), appId, timestamp, ...rule,
-    policyVersion: policy.version, assignmentVersion: policy.assignmentVersion, decision: 'monitor', uploadMethod }, installationId);
+    policyVersion: policy.version, assignmentVersion: policy.assignmentVersion, decision, uploadMethod }, installationId);
 }
 
 function report(event: PolicyEvent, installationId: string | undefined) {

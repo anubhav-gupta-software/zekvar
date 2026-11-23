@@ -32,6 +32,7 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
     claudePromptEnabled: snapshot.claudePromptEnabled,
     uploadModes: snapshot.uploadModes,
     fileInspection: snapshot.fileInspection,
+    fileContentModes: snapshot.fileContentModes,
     uploadTypeText: { chatgpt: snapshot.uploadTypes.chatgpt.join(', '), gemini: snapshot.uploadTypes.gemini.join(', ') },
     catalog: snapshot.customApps.map(({ host, name }) => `${host}, ${name}`).join('\n'),
     promptExceptions: snapshot.promptExceptions.map((entry) => ({ ...entry, expiresAt: new Date(entry.expiresAt).toISOString().slice(0, -1) })),
@@ -129,7 +130,8 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
       extensionDeployment: reference.extensionDeployment,
       blockedAiAppHosts: editor.blockedAiAppHosts,
       claudePromptEnabled: editor.claudePromptEnabled, domainRules, pathRules,
-      uploadModes: editor.uploadModes, uploadTypes: { chatgpt, gemini }, fileInspection: editor.fileInspection, customApps, promptExceptions,
+      uploadModes: editor.uploadModes, uploadTypes: { chatgpt, gemini }, fileInspection: editor.fileInspection,
+      fileContentModes: editor.fileContentModes, customApps, promptExceptions,
     }, customPrompt, address, file, promptApp));
   }
 
@@ -200,7 +202,15 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
           <textarea id={`draft-upload-types-${app}`} rows={2} value={editor.uploadTypeText[app]}
             onChange={(event) => edit('uploadTypeText', { ...editor.uploadTypeText, [app]: event.target.value })}
             maxLength={1700} spellCheck={false} autoCapitalize="none" autoComplete="off" aria-describedby="draft-upload-types-hint" />
-          {editor.fileInspection && <>
+          {editor.fileContentModes ? <>
+            <label htmlFor={`draft-file-content-${app}`}>Draft {promptAppLabels[app]} file content protection</label>
+            <select id={`draft-file-content-${app}`} value={editor.fileContentModes[app]} aria-describedby="draft-file-content-hint"
+              onChange={(event) => {
+                if (editor.fileContentModes) edit('fileContentModes', { ...editor.fileContentModes, [app]: event.target.value as UploadMode });
+              }}>
+              {uploadModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+            </select>
+          </> : editor.fileInspection && <>
             <label htmlFor={`draft-file-inspection-${app}`}>Draft {promptAppLabels[app]} file content monitoring</label>
             <select id={`draft-file-inspection-${app}`} value={editor.fileInspection[app] ? 'on' : 'off'}
               onChange={(event) => {
@@ -212,6 +222,9 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
         </div>)}
       </div>
       <p className="muted" id="draft-upload-types-hint">{uploadTypesHint}</p>
+      {editor.fileContentModes && <p className="muted" id="draft-file-content-hint">
+        Block holds the batch and stops uploads with a sensitive match or an incomplete check.
+      </p>}
       <div className="grid gap-1" id="draft-app-catalog">
         <label htmlFor="draft-custom-apps">Custom app catalog</label>
         <p className="muted" id="custom-apps-hint">Enter the exact hostname and display name for each HTTPS site, one per line.
@@ -361,7 +374,9 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         <input type="hidden" name="claudePromptEnabled" value={candidate.claudePromptEnabled ? 'on' : 'off'} />
         {uploadApps.map((app) => <input key={app} type="hidden" name={`upload-${app}`} value={candidate.uploadModes[app]} />)}
         {uploadApps.map((app) => <input key={app} type="hidden" name={`upload-types-${app}`} value={candidate.uploadTypes[app].join(', ')} />)}
-        {candidate.fileInspection && uploadApps.map((app) => <input key={app} type="hidden" name={`file-inspection-${app}`}
+        {candidate.fileContentModes ? uploadApps.map((app) => <input key={app} type="hidden" name={`file-content-${app}`}
+          value={candidate.fileContentModes?.[app]} />) : candidate.fileInspection &&
+          uploadApps.map((app) => <input key={app} type="hidden" name={`file-inspection-${app}`}
           value={candidate.fileInspection?.[app] ? 'on' : 'off'} />)}
         <input type="hidden" name="allow" value={candidate.domainRules.allow.join('\n')} />
         <input type="hidden" name="block" value={candidate.domainRules.block.join('\n')} />

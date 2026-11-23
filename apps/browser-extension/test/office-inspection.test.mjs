@@ -24,10 +24,14 @@ test('extracts bounded Office text in Chrome', { timeout: 30_000 }, async (t) =>
   const requests = [];
   page.on('request', (request) => requests.push(request.url()));
   await page.addScriptTag({ content: bundle.outputFiles[0].text });
-  async function scan(files, detectorPolicy = policy) {
-    return page.evaluate(({ byteStrings, detectorPolicy }) => officeInspection.inspectFiles(byteStrings.map((bytes) =>
-      new File([Uint8Array.from(atob(bytes), (character) => character.charCodeAt(0))], 'misleading.png', { type: 'image/png' })),
-    detectorPolicy), { byteStrings: files.map((bytes) => Buffer.from(bytes).toString('base64')), detectorPolicy });
+  async function scan(files, detectorPolicy = policy, block = false) {
+    return page.evaluate(async ({ byteStrings, detectorPolicy, block }) => {
+      const files = byteStrings.map((bytes) =>
+        new File([Uint8Array.from(atob(bytes), (character) => character.charCodeAt(0))], 'misleading.png', { type: 'image/png' }));
+      if (!block) return officeInspection.inspectFiles(files, detectorPolicy);
+      const { match, complete, snapshots } = await officeInspection.scanFileContents(files, detectorPolicy, { snapshot: true });
+      return { match, complete, snapshots: snapshots.length };
+    }, { byteStrings: files.map((bytes) => Buffer.from(bytes).toString('base64')), detectorPolicy, block });
   }
 
   await t.test('recognizes Word, Excel, and PowerPoint by bytes and combines formatted text runs', async () => {
@@ -100,5 +104,17 @@ test('extracts bounded Office text in Chrome', { timeout: 30_000 }, async (t) =>
     assert.equal((await scan([mediumDoc])).ruleId, 'fixture-secret');
     const tooBig = officeFile('docx', [[documentPath, wordText], ['word/media/unscanned.bin', { text: randomBytes(1024 * 1024), store: true }]]);
     assert.equal(await scan([tooBig]), undefined);
+  });
+
+  await t.test('reports incomplete Office checks for encrypted parts, embedded files, and expansion limits', async () => {
+    const clean = textXml.word(paragraph('Approved document'));
+    const standard = officeFile('docx', [[documentPath, clean]]);
+    assert.deepEqual(await scan([standard], policy, true), { match: undefined, complete: true, snapshots: 1 });
+    const encrypted = officeFile('docx', [[documentPath, clean], ['word/header1.xml', { text: clean, encrypted: true }]]);
+    const embedded = officeFile('docx', [[documentPath, clean], ['word/embeddings/nested.docx', samples.docx]]);
+    const oversized = officeFile('docx', [[documentPath, clean], ['word/header1.xml', textXml.header('X'.repeat(300 * 1024))]]);
+    for (const file of [encrypted, embedded, oversized]) {
+      assert.deepEqual(await scan([file], policy, true), { match: undefined, complete: false, snapshots: 0 });
+    }
   });
 });

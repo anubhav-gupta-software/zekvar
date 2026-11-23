@@ -1,7 +1,7 @@
 import { credentialDetector, fixtureDetector, fixtureRule, githubPatRule, isMode, paymentCardRule, paymentDetector, privateKeyRule, type PolicyMode,
   type PromptPolicy, type RuleMetadata } from '../../../contracts/policy/prompt';
 import { chatGptApp, claudeApp, fixtureApp, geminiApp, isPromptApp, type AiPromptApp, type AppId } from '../../../contracts/policy/apps';
-import { isUploadApp, isUploadMethod, uploadCategory, uploadRule, type FileInspection, type TargetedUploads,
+import { fileInspectionUnavailableRule, isUploadApp, isUploadMethod, uploadCategory, uploadRule, type FileInspection, type TargetedUploads,
   type UploadMetadata, type UploadMethod, type UploadModes } from '../../../contracts/policy/uploads';
 import type { InventoryStatus } from '../../../contracts/policy/extension-inventory';
 import { builtInDiscoveryApps, type BuiltInDiscoveryApp, type CustomAppId } from '../../../contracts/policy/discovery';
@@ -27,6 +27,7 @@ export type Policy = PromptPolicy & {
   version: number; discoveryEnabled?: boolean; assignmentVersion?: number; uploadModes?: UploadModes;
   targetedUploads?: TargetedUploads; extensionInventoryEnabled?: boolean; claudePromptEnabled?: boolean;
   fileInspection?: FileInspection;
+  fileContentModes?: UploadModes;
 };
 export type PolicyEvent = {
   eventId: string;
@@ -128,11 +129,13 @@ export function readMetadata(value: unknown): PolicyEvent | undefined {
     eventId: value.eventId, appId: value.appId, timestamp: new Date(value.timestamp).toISOString(),
     policyVersion: value.policyVersion, decision: value.decision, assignmentVersion: value.assignmentVersion,
   } as const;
-  if (value.ruleId === uploadRule && value.detectorCategory === uploadCategory && isUploadApp(value.appId) &&
-      (value.decision === 'monitor' || value.decision === 'block') && isUploadMethod(value.uploadMethod)) {
-    return { ...event, ruleId: uploadRule, detectorCategory: uploadCategory, uploadMethod: value.uploadMethod };
+  if ((value.ruleId === uploadRule || value.ruleId === fileInspectionUnavailableRule) &&
+      value.detectorCategory === uploadCategory && isUploadApp(value.appId) &&
+      (value.decision === 'block' || value.ruleId === uploadRule && value.decision === 'monitor') && isUploadMethod(value.uploadMethod)) {
+    return { ...event, ruleId: value.ruleId, detectorCategory: uploadCategory, uploadMethod: value.uploadMethod };
   }
-  if (value.uploadMethod !== undefined && !(isUploadApp(value.appId) && value.decision === 'monitor' && isUploadMethod(value.uploadMethod))) return;
+  if (value.uploadMethod !== undefined && !(isUploadApp(value.appId) && (value.decision === 'monitor' || value.decision === 'block') &&
+      isUploadMethod(value.uploadMethod))) return;
   const source = isUploadMethod(value.uploadMethod) ? { uploadMethod: value.uploadMethod } : {};
   if (value.ruleId === fixtureRule && value.detectorCategory === fixtureDetector) {
     return { ...event, ...source, ruleId: fixtureRule, detectorCategory: fixtureDetector };

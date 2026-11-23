@@ -18,6 +18,7 @@ internal static class FixtureContract
     public const string PrivateKeyRule = "pem-private-key";
     public const string PaymentCategory = "payment-card";
     public const string UploadRule = "ai-file-upload";
+    public const string FileInspectionUnavailableRule = "file-inspection-unavailable";
     public const string UploadCategory = "file-upload";
     public const string ExceptionApplied = "exception_applied";
 
@@ -30,11 +31,12 @@ internal static class FixtureContract
 
     public static bool IsEvent(PolicyEvent request) =>
         request.EventId != Guid.Empty && request.Timestamp != default && request.PolicyVersion > 0 &&
-        IsApp(request.AppId) && (request.RuleId == UploadRule
+        IsApp(request.AppId) && (request.RuleId is UploadRule or FileInspectionUnavailableRule
             ? request.AppId is ChatGpt or Gemini && request.DetectorCategory == UploadCategory &&
-              request.Decision is "monitor" or "block" && request.UploadMethod is "picker" or "drop" or "paste"
+              (request.Decision == "block" || request.RuleId == UploadRule && request.Decision == "monitor") &&
+              request.UploadMethod is "picker" or "drop" or "paste"
             : (request.UploadMethod is null && IsDecision(request.Decision) ||
-                (request.AppId is ChatGpt or Gemini) && (request.UploadMethod is "picker" or "drop" or "paste") && request.Decision == "monitor") &&
+                (request.AppId is ChatGpt or Gemini) && (request.UploadMethod is "picker" or "drop" or "paste") && request.Decision is "monitor" or "block") &&
               (request.Decision != ExceptionApplied || request.AppId != AppId) &&
               ((request.RuleId == RuleId && request.DetectorCategory == DetectorCategory) ||
                ((request.RuleId is GitHubPatRule or PrivateKeyRule) && request.DetectorCategory == CredentialCategory) ||
@@ -70,7 +72,7 @@ internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode 
     PathRules? PathRules = null, bool? ExtensionInventoryEnabled = null, UploadTypes? UploadTypes = null,
     CustomAppSetting?[]? CustomApps = null, PromptException?[]? PromptExceptions = null, bool? ClaudePromptEnabled = null,
     string? PrivateKeyMode = null, FileInspection? FileInspection = null, ExtensionDeployment? ExtensionDeployment = null,
-    string[]? BlockedAiAppHosts = null);
+    string[]? BlockedAiAppHosts = null, UploadModes? FileContentModes = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null)
 {
     public bool HasSettings() => Chatgpt is not null || Gemini is not null;
@@ -85,11 +87,11 @@ internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = nu
     int AssignmentVersion = 0, string? GeminiCoverage = null, bool PaymentCardModeApplied = false, bool UploadControlsApplied = false,
     bool PathRulesApplied = false, bool UploadTypesApplied = false, bool CustomDiscoveryApplied = false,
     bool PromptExceptionsApplied = false, string? ClaudeCoverage = null, bool ClaudePromptApplied = false, bool PrivateKeyModeApplied = false,
-    bool FileInspectionApplied = false, bool AiAppAccessApplied = false)
+    bool FileInspectionApplied = false, bool AiAppAccessApplied = false, bool FileContentBlockApplied = false)
 {
     public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported") &&
         (GeminiCoverage is null or "ready" or "unsupported") &&
-        (ClaudeCoverage is null or "ready" or "unsupported");
+        (ClaudeCoverage is null or "ready" or "unsupported") && (!FileContentBlockApplied || FileInspectionApplied);
 }
 internal sealed record PolicyEvent(Guid EventId, string AppId, DateTimeOffset Timestamp, string RuleId,
     string DetectorCategory, int PolicyVersion, string Decision, int AssignmentVersion = 0, string? UploadMethod = null);
@@ -107,7 +109,8 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? PrivateKeyMode = "off",
     FileInspection? FileInspection = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ExtensionDeployment? ExtensionDeployment = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string[]? BlockedAiAppHosts = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string[]? BlockedAiAppHosts = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] UploadModes? FileContentModes = null)
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => ClaudePromptEnabled
@@ -116,11 +119,15 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     public string RuleId => FixtureContract.RuleId;
     public string DetectorCategory => FixtureContract.DetectorCategory;
 
-    public Policy ForBrowser(bool claudeAware, bool privateKeyAware, bool fileInspectionAware, bool aiAppAccessAware)
+    public UploadModes EffectiveFileContentModes() => FileContentModes ??
+        new(FileInspection?.Chatgpt == true ? "monitor" : "off", FileInspection?.Gemini == true ? "monitor" : "off");
+
+    public Policy ForBrowser(bool claudeAware, bool privateKeyAware, bool fileInspectionAware, bool aiAppAccessAware, bool fileBlockAware)
     {
         var now = DateTimeOffset.UtcNow;
         var nowMs = now.ToUnixTimeMilliseconds();
         var claudeEnabled = claudeAware && ClaudePromptEnabled;
+        var content = EffectiveFileContentModes();
         var exceptions = PromptExceptions?.Where(entry => (entry.AppId != FixtureContract.Claude || claudeEnabled) &&
             (entry.RuleId != FixtureContract.PrivateKeyRule || privateKeyAware && PrivateKeyMode is "warn" or "block"))
             .Select(entry => new PromptExceptionGrant(entry.AppId, entry.RuleId, entry.ExpiresAt.ToUnixTimeMilliseconds()))
@@ -129,7 +136,9 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
         {
             ClaudePromptEnabled = claudeEnabled,
             PrivateKeyMode = privateKeyAware ? PrivateKeyMode : "off",
-            FileInspection = fileInspectionAware ? FileInspection : new(false, false),
+            FileInspection = new(fileInspectionAware && (content.Chatgpt == "monitor" || fileBlockAware && content.Chatgpt == "block"),
+                fileInspectionAware && (content.Gemini == "monitor" || fileBlockAware && content.Gemini == "block")),
+            FileContentModes = fileBlockAware ? content : null,
             ExtensionDeployment = null,
             BlockedAiAppHosts = aiAppAccessAware ? BlockedAiAppHosts : null,
             PromptExceptions = PromptExceptions is { Length: > 0 } ? null : PromptExceptions,
@@ -172,7 +181,7 @@ internal sealed record StoredEvent(Guid EventId, Guid InstallationId, DateTime T
     {
         FixtureContract.GitHubPatRule or FixtureContract.PrivateKeyRule => FixtureContract.CredentialCategory,
         FixtureContract.PaymentCardRule => FixtureContract.PaymentCategory,
-        FixtureContract.UploadRule => FixtureContract.UploadCategory,
+        FixtureContract.UploadRule or FixtureContract.FileInspectionUnavailableRule => FixtureContract.UploadCategory,
         _ => FixtureContract.DetectorCategory
     };
 }

@@ -6,7 +6,7 @@ import {
 } from './protocol';
 import { domainRuleLimit, emptyDomainRules, emptyPathRules, installDomainRules, readDomainRules, readPathRules,
   ruleCount, sameDomainRules, type DomainRules, type PathRules } from './domain-rules';
-import { isFileInspection, isUploadModes, readTargetedUpload, sameUploadTypes, uploadApps, uploadsOff, type TargetedUploads } from '../../../contracts/policy/uploads';
+import { fileContentMode, isFileInspection, isUploadModes, readTargetedUpload, sameUploadTypes, uploadApps, uploadsOff, type TargetedUploads } from '../../../contracts/policy/uploads';
 import { collectExtensionInventory } from './extension-inventory';
 import type { InventoryStatus } from '../../../contracts/policy/extension-inventory';
 import { isCustomAppId, readCustomApps, type CustomApp } from '../../../contracts/policy/discovery';
@@ -141,7 +141,7 @@ async function request(path: string, token?: string, body?: object): Promise<unk
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(path === 'browser/policy' ? { 'X-Zekvar-Assignment-Aware': '1', 'X-Zekvar-Claude-Prompt': '1',
-        'X-Zekvar-Private-Key': '1', 'X-Zekvar-File-Inspection': '1', 'X-Zekvar-AI-App-Access': '1',
+        'X-Zekvar-Private-Key': '1', 'X-Zekvar-File-Inspection': '1', 'X-Zekvar-File-Content-Block': '1', 'X-Zekvar-AI-App-Access': '1',
         'X-Zekvar-Extension-Version': extensionVersion } : {}),
       ...(path === 'browser/heartbeat' ? { 'X-Zekvar-Composer-Coverage': '1' } : {}),
       ...(path === 'enroll' ? { 'X-Zekvar-Scoped-Enrollment': '1' } : {}),
@@ -256,6 +256,7 @@ async function sync(state: State) {
         (policy.paymentCardMode !== undefined && !isDetectorMode(policy.paymentCardMode)) ||
         (policy.privateKeyMode !== undefined && !isDetectorMode(policy.privateKeyMode)) ||
         (policy.fileInspection !== undefined && !isFileInspection(policy.fileInspection)) ||
+        (policy.fileContentModes !== undefined && !isUploadModes(policy.fileContentModes)) ||
         (policy.uploadModes !== undefined && !isUploadModes(policy.uploadModes)) ||
         (policy.discoveryEnabled !== undefined && typeof policy.discoveryEnabled !== 'boolean') ||
         (policy.extensionInventoryEnabled !== undefined && typeof policy.extensionInventoryEnabled !== 'boolean') ||
@@ -267,6 +268,10 @@ async function sync(state: State) {
     const paymentCardMode = policy.paymentCardMode ?? 'off';
     const privateKeyMode = policy.privateKeyMode;
     const fileInspection = policy.fileInspection;
+    const fileContentModes = policy.fileContentModes;
+    if (fileContentModes && uploadApps.some((app) => (fileContentModes[app] !== 'off') !== (fileInspection?.[app] === true))) {
+      throw new Error('Inconsistent file content policy modes');
+    }
     const uploads = policy.uploadModes ?? uploadsOff;
     const previousUploads = state.policy?.uploadModes;
     const targetedUploads = readTargetedUploads(policy.targetedUploads);
@@ -299,6 +304,8 @@ async function sync(state: State) {
         (state.policy.privateKeyMode === undefined || privateKeyMode === state.policy.privateKeyMode) &&
         (state.policy.fileInspection === undefined || fileInspection !== undefined &&
           uploadApps.every((app) => state.policy?.fileInspection?.[app] === fileInspection[app])) &&
+        (!state.policy.fileContentModes || !!fileContentModes &&
+          uploadApps.every((app) => state.policy?.fileContentModes?.[app] === fileContentModes[app])) &&
         (!previousUploads || uploads.chatgpt === previousUploads.chatgpt && uploads.gemini === previousUploads.gemini) &&
         (!previousTargets || sameTargetedUploads(previousTargets, targetedUploads)) &&
         discoveryEnabled === (state.policy.discoveryEnabled ?? false) &&
@@ -311,7 +318,7 @@ async function sync(state: State) {
         (!state.blockedAiAppHosts || blockedAiAppHosts.join(',') === state.blockedAiAppHosts.join(',')))))) {
       await applyDomainRules(state, domainRules, pathRules, blockedAiAppHosts);
       if (policy.version !== state.policy?.version || assignment !== previousAssignment) clearCoverage(state);
-      state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, privateKeyMode, fileInspection,
+      state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, privateKeyMode, fileInspection, fileContentModes,
         discoveryEnabled, customApps, extensionInventoryEnabled, claudePromptEnabled,
         assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini }, targetedUploads };
       promptLease = lease ? { installationId: state.enrollment.installationId, version: policy.version,
@@ -387,6 +394,7 @@ async function heartbeat(state: State) {
     paymentCardModeApplied: isMode(state.policy.paymentCardMode) ? true : undefined,
     privateKeyModeApplied: isMode(state.policy.privateKeyMode) ? true : undefined,
     fileInspectionApplied: uploadApps.some((app) => state.policy?.fileInspection?.[app]) ? true : undefined,
+    fileContentBlockApplied: uploadApps.some((app) => fileContentMode(state.policy, app) === 'block') ? true : undefined,
     uploadControlsApplied: scopedUploads || (state.policy.uploadModes &&
       uploadApps.some((app) => state.policy?.uploadModes?.[app] !== 'off')) ? true : undefined,
     uploadTypesApplied: scopedUploads ? true : undefined,
