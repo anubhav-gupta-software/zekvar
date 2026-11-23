@@ -86,6 +86,8 @@ const actorLabels = { organization_admin: 'Organization admin', named_administra
   sso_identity: 'Single sign-on identity', browser_enrollment: 'Browser enrollment', system: 'Scheduled cleanup' };
 
 function auditDetails(entry: AuditEntry) {
+  const feedKey = entry.eventFeedKeyChange;
+  if (feedKey) return <>{feedKey.name} · <code title={feedKey.keyId}>{feedKey.keyId.slice(0, 13)}</code></>;
   const alertChange = entry.securityAlertChange;
   if (alertChange?.alertId) return <a className="underline" href={alertPath(alertChange.alertId)}>Alert {alertNumber(alertChange.alertId)}</a>;
   if (alertChange?.after) return `${alertChange.after.enabled ? 'On' : 'Off'} · ${alertChange.after.threshold} blocks in 15 minutes`;

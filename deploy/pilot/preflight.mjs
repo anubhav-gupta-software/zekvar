@@ -148,6 +148,8 @@ function deploymentChecks(dashboard, browser, access, httpPort) {
     edgeResponse('Browser policy requires enrollment', browser, '/v1/browser/policy', 401),
     edgeResponse('Dashboard origin excludes browser API', dashboard, '/v1/browser/policy', 404),
     edgeResponse('Browser origin excludes dashboard', browser, '/reports/export', 404),
+    edgeResponse('Browser origin excludes event feed', browser, '/v1/integrations/events', 404),
+    edgeResponse('Event feed requires a trusted network and key', dashboard, '/v1/integrations/events', access === 'allowed' ? 401 : 404),
   ];
   for (const [label, host] of [['Dashboard origin', dashboard], ['Browser origin', browser]]) {
     checks.push(edgeResponse(`${label} excludes administrative API`, host, '/v1/admin/session', 404));

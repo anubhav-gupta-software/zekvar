@@ -13,5 +13,7 @@ export type ControlAccess = AccessIdentity & {
   issuedAt: string; expiresAt: string | null; status: 'active' | 'expired' | 'revoked'; issuer?: string; subject?: string;
 };
 export type IssuedControlAccess = { access: ControlAccess & { expiresAt: string }; token: string };
+export type EventFeedKey = { id: string; name: string; issuedAt: string; expiresAt: string; status: ControlAccess['status'] };
+export type IssuedEventFeedKey = { key: EventFeedKey; token: string };
 export const canWrite = (session?: ControlSession) => session?.role === 'owner' || session?.role === 'administrator';
 export const canChangePolicy = (session?: ControlSession) => canWrite(session) && (!session?.reviewRequired || session.role === 'administrator');

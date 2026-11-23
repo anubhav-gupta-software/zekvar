@@ -10,7 +10,8 @@ internal sealed record AuditFilters(string? Action, DateTimeOffset? Since, DateT
             or "app_classified" or "retention_changed" or "retention_cleanup" or "policy_group_created" or "policy_group_assigned"
             or "access_issued" or "access_revoked" or "control_sso_signed_in" or "policy_review_setting_changed"
             or "policy_review_requested" or "policy_review_decided" or "enrollment_batch_issued" or "enrollment_batch_cancelled"
-            or "event_triage_changed" or "incident_case_changed" or "security_alert_settings_changed" or "security_alert_acknowledged") &&
+            or "event_triage_changed" or "incident_case_changed" or "security_alert_settings_changed" or "security_alert_acknowledged"
+            or "event_feed_key_issued" or "event_feed_key_revoked") &&
         (Since is null || Until is null || Since < Until) &&
         (BeforeAt is null) == (BeforeId is null) && BeforeId != Guid.Empty && Limit is >= 1 and <= 1000;
 }
@@ -24,7 +25,8 @@ internal sealed record AuditEntry(Guid Id, DateTime OccurredAt, string Action, i
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] EnrollmentBatchChange? EnrollmentBatchChange,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] EventTriageChange? EventTriageChange,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IncidentCaseChange? IncidentCaseChange,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SecurityAlertChange? SecurityAlertChange)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SecurityAlertChange? SecurityAlertChange,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] EventFeedKeyChange? EventFeedKeyChange)
 {
     public string Actor => Action switch
     {

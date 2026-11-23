@@ -63,6 +63,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 36, "036_social_security_number.sql", ct);
         await ApplyMigration(connection, 37, "037_security_alerts.sql", ct);
         await ApplyMigration(connection, 38, "038_alert_webhook_delivery.sql", ct);
+        await ApplyMigration(connection, 39, "039_security_event_feed.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -74,6 +75,9 @@ internal sealed partial class ControlStore
                 ), initial_policy AS (
                     INSERT INTO policy_versions (organization_id, version, mode)
                     SELECT id, 1, 'monitor' FROM org ON CONFLICT DO NOTHING
+                ), event_stream AS (
+                    INSERT INTO organization_event_streams (organization_id)
+                    SELECT id FROM org ON CONFLICT DO NOTHING
                 )
                 INSERT INTO admin_memberships (organization_id, token_hash)
                 SELECT id, $3 FROM org
@@ -645,7 +649,7 @@ internal sealed partial class ControlStore
         await using var command = Command("""
             SELECT a.id, occurred_at, action, policy_version, restored_from, installation_id, app_id, classification, retention, cleanup, group_change,
                 actor.id, actor.display_name, actor.role, subject.id, subject.display_name, subject.role, a.review_change, a.enrollment_batch_change,
-                a.event_triage_change, a.incident_case_change, a.security_alert_change
+                a.event_triage_change, a.incident_case_change, a.security_alert_change, a.event_feed_key_change
             FROM control_audit a LEFT JOIN retention_cutoffs r ON a.organization_id = r.organization_id
             LEFT JOIN control_access actor ON actor.organization_id = a.organization_id AND actor.id = a.actor_access_id
             LEFT JOIN control_access subject ON subject.organization_id = a.organization_id AND subject.id = a.subject_access_id
@@ -673,7 +677,8 @@ internal sealed partial class ControlStore
                 rows.IsDBNull(18) ? null : JsonSerializer.Deserialize<EnrollmentBatchChange>(rows.GetString(18), JsonSerializerOptions.Web),
                 rows.IsDBNull(19) ? null : JsonSerializer.Deserialize<EventTriageChange>(rows.GetString(19), JsonSerializerOptions.Web),
                 rows.IsDBNull(20) ? null : JsonSerializer.Deserialize<IncidentCaseChange>(rows.GetString(20), JsonSerializerOptions.Web),
-                rows.IsDBNull(21) ? null : JsonSerializer.Deserialize<SecurityAlertChange>(rows.GetString(21), JsonSerializerOptions.Web)));
+                rows.IsDBNull(21) ? null : JsonSerializer.Deserialize<SecurityAlertChange>(rows.GetString(21), JsonSerializerOptions.Web),
+                rows.IsDBNull(22) ? null : JsonSerializer.Deserialize<EventFeedKeyChange>(rows.GetString(22), JsonSerializerOptions.Web)));
         if (entries.Count <= filters.Limit) return new(entries, null);
         entries.RemoveAt(filters.Limit);
         var last = entries[^1];

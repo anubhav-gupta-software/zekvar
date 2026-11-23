@@ -5,7 +5,7 @@ import type { AuditPage } from './audit';
 import type { EventPage } from './events';
 import type { RetentionCleanup, RetentionPolicy } from './retention';
 import type { PreviewPolicy } from './preview';
-import type { ControlAccess, ControlSession, DelegatedRole, IssuedControlAccess } from './access';
+import type { ControlAccess, ControlSession, DelegatedRole, EventFeedKey, IssuedControlAccess, IssuedEventFeedKey } from './access';
 import type { PolicyChange, PolicyReviewQueue } from './reviews';
 import type { InventoryInstallation } from './extension-inventory';
 import type { EnrollmentBatch, IssuedEnrollmentBatch } from './enrollment';
@@ -81,6 +81,13 @@ export const controlApi = {
   issueAccess: (token: string, name: string, role: DelegatedRole, hours: number) =>
     request<IssuedControlAccess>('/access', token, 'POST', { name, role, hours }),
   revokeAccess: (token: string, id: string) => request<void>(`/access/${id}/revoke`, token, 'POST'),
+  eventFeedKeys: (token: string) => request<EventFeedKey[]>('/access/event-feed', token).catch((error: unknown) => {
+    if (error instanceof ApiError && error.status === 404) return undefined;
+    throw error;
+  }),
+  issueEventFeedKey: (token: string, requestId: string, name: string, days: number) =>
+    request<IssuedEventFeedKey>('/access/event-feed', token, 'POST', { requestId, name, days }),
+  revokeEventFeedKey: (token: string, id: string) => request<void>(`/access/event-feed/${id}/revoke`, token, 'POST'),
   policies: (token: string, groupId?: string) => request<Policy[]>(policiesPath(groupId), token),
   groups: (token: string) => request<PolicyGroup[]>('/policy-groups', token),
   createGroup: (token: string, name: string) => request<PolicyGroup>('/policy-groups', token, 'POST', { name }),

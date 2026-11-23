@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json.Serialization;
@@ -102,6 +103,19 @@ access.MapPost("", async (IssueControlAccess request, HttpContext http, Cancella
 });
 access.MapPost("/{id:guid}/revoke", async (Guid id, HttpContext http, CancellationToken ct) =>
     await store.RevokeAccess(Identity(http).OrganizationId, id, ct) ? Results.NoContent() : Results.NotFound());
+access.MapGet("/event-feed", async (HttpContext http, CancellationToken ct) =>
+    Results.Ok(await store.ListEventFeedKeys(Identity(http).OrganizationId, ct)));
+access.MapPost("/event-feed", async (CreateEventFeedKey request, HttpContext http, CancellationToken ct) =>
+{
+    var name = request.Name?.Trim();
+    if (request.RequestId == Guid.Empty || name is not { Length: >= 2 and <= 64 } || name.Any(char.IsControl) ||
+        request.Days is < 1 or > 90)
+        return Results.BadRequest(new { error = "Enter a request ID, a name, and a lifetime from 1 to 90 days." });
+    var result = await store.IssueEventFeedKey(Identity(http).OrganizationId, request.RequestId, name, request.Days, ct);
+    return result.Issued is { } issued ? Results.Ok(issued) : Results.Conflict(new { code = result.Error });
+});
+access.MapPost("/event-feed/{id:guid}/revoke", async (Guid id, HttpContext http, CancellationToken ct) =>
+    await store.RevokeEventFeedKey(Identity(http).OrganizationId, id, ct) ? Results.NoContent() : Results.NotFound());
 access.MapGet("/sso", (HttpContext http) => sso is not null && Identity(http).OrganizationSlug == sso.OrganizationSlug
     ? Results.Ok(new { sso.Issuer }) : Results.NoContent());
 access.MapPost("/sso", async (AddSsoIdentity request, HttpContext http, CancellationToken ct) =>
@@ -114,6 +128,26 @@ access.MapPost("/sso", async (AddSsoIdentity request, HttpContext http, Cancella
         return Results.BadRequest(new { error = "Enter a name, delegated role, and exact OIDC subject." });
     var added = await store.AddSsoIdentity(identity.OrganizationId, sso.Issuer, request.Subject!, name, request.Role!, ct);
     return added is not null ? Results.Ok(added) : Results.Conflict(new { code = "sso_subject_exists" });
+});
+
+app.MapGet("/v1/integrations/events", async (HttpContext http, CancellationToken ct) =>
+{
+    if (ParseBearer(http) is not { } token || !EventFeedToken.IsValid(token)) return RejectEventFeed(http);
+    var query = http.Request.Query;
+    var limit = 100;
+    if (query.Any(parameter => parameter.Key is not ("after" or "limit") || parameter.Value.Count != 1) ||
+        (query.ContainsKey("limit") && (!int.TryParse(query["limit"], NumberStyles.None, CultureInfo.InvariantCulture, out limit) || limit is < 1 or > 500)))
+        return Results.BadRequest(new { error = "Use an optional cursor and a page limit from 1 to 500." });
+    EventFeedCursor? after = null;
+    if (query.TryGetValue("after", out var received))
+    {
+        if (!EventFeedCursor.TryParse(received.ToString(), out var cursor))
+            return Results.BadRequest(new { error = "Use the next cursor returned by the event feed." });
+        after = cursor;
+    }
+    var result = await store.ReadEventFeed(token, after, limit, ct);
+    if (!result.Authorized) return RejectEventFeed(http);
+    return result.Page is { } page ? Results.Ok(page) : Results.Conflict(new { code = "event_feed_cursor_invalid" });
 });
 
 app.MapPost("/v1/internal/sso/session", async (ExchangeSsoIdentity request, HttpContext http, CancellationToken ct) =>
@@ -510,8 +544,16 @@ Func<EndpointFilterInvocationContext, EndpointFilterDelegate, ValueTask<object?>
     return await next(context);
 };
 
-static string? BearerToken(HttpContext http) => AuthenticationHeaderValue.TryParse(http.Request.Headers.Authorization, out var auth) &&
-    auth.Scheme.Equals("Bearer", StringComparison.OrdinalIgnoreCase) && Tokens.IsValid(auth.Parameter) ? auth.Parameter : null;
+static IResult RejectEventFeed(HttpContext http)
+{
+    http.Response.Headers.WWWAuthenticate = "Bearer";
+    return Results.Unauthorized();
+}
+
+static string? ParseBearer(HttpContext http) => AuthenticationHeaderValue.TryParse(http.Request.Headers.Authorization, out var auth) &&
+    auth.Scheme.Equals("Bearer", StringComparison.OrdinalIgnoreCase) ? auth.Parameter : null;
+
+static string? BearerToken(HttpContext http) => ParseBearer(http) is { } token && Tokens.IsValid(token) ? token : null;
 
 static RequestIdentity Identity(HttpContext http) => (RequestIdentity)http.Items[typeof(RequestIdentity)]!;
 

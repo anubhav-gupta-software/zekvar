@@ -22,6 +22,14 @@
 
 {$ZEKVAR_DASHBOARD_HOST} {
 	import pilot_headers
+	@eventFeed {
+		method GET
+		path /v1/integrations/events
+		remote_ip {$ZEKVAR_ADMIN_NETWORKS}
+	}
+	handle @eventFeed {
+		reverse_proxy 127.0.0.1:{$ZEKVAR_API_PORT:5187}
+	}
 	@api path /v1 /v1/*
 	handle @api {
 		respond 404

@@ -66,6 +66,13 @@ Control keeps the latest snapshot per browser and labels counts when Chrome repo
 
 Hosted pilots can also use **Single sign-on access** on this page. Add an identity by its exact OIDC subject and assign the Administrator or Auditor role. Revoke it from the same list to end active Control sessions. [Configure hosted single sign-on](../../deploy/pilot/README.md#configure-control-single-sign-on)
 
+## Connect a security event collector
+
+1. Sign in as the organization owner and open **Control access → Security event feed**.
+2. Enter a name and the number of days the collector can read the feed. Choose **Issue event feed key** and copy the key into your collector's secret store before hiding it or leaving the page.
+3. Configure the collector to poll `/v1/integrations/events` on the Control dashboard hostname over HTTPS. Use a source network allowed by the pilot deployment. Save its checkpoint only after storing each page of events.
+4. To rotate a key, issue a replacement, configure the collector with the replacement, and verify it can resume from its saved checkpoint. Revoke the old key from its row. Review issuance and revocation under **Audit log**. [Event feed API and checkpoint rules](../control-api/README.md#security-event-feed)
+
 ## Require policy reviews
 
 1. Issue named administrator credentials to two reviewers, then sign in as the owner and choose **Require policy reviews** under **Policy reviews**. The requirement applies to the organization baseline and rollout groups.

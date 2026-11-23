@@ -251,6 +251,43 @@ export async function revokeControlAccess(_previous: Feedback, form: FormData): 
   });
 }
 
+export async function issueEventFeedKey(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const requestId = form.get('requestId');
+  const input = form.get('name');
+  const name = typeof input === 'string' ? input.trim() : '';
+  const days = Number(form.get('days'));
+  if (!isId(requestId) || name.length < 2 || name.length > 64 || /[\x00-\x1f\x7f-\x9f]/.test(name) ||
+      !Number.isInteger(days) || days < 1 || days > 90) return { error: 'Enter a name and a lifetime from 1 to 90 days.' };
+  return perform(async (token) => {
+    try {
+      const issuedEventFeedKey = await controlApi.issueEventFeedKey(token, requestId, name, days);
+      revalidatePath('/access');
+      revalidatePath('/audit');
+      return { issuedEventFeedKey };
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'event_feed_key_exists') {
+        revalidatePath('/access');
+        return { error: 'This request already issued a key. If you missed it, revoke it and issue a replacement.' };
+      }
+      if (error instanceof ApiError && error.code === 'event_feed_key_limit') {
+        return { error: 'There are 20 active keys. Revoke a key before issuing another.' };
+      }
+      throw error;
+    }
+  });
+}
+
+export async function revokeEventFeedKey(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const id = form.get('id');
+  if (!isId(id)) return { error: 'Choose a valid event feed key.' };
+  return perform(async (token) => {
+    await controlApi.revokeEventFeedKey(token, id);
+    revalidatePath('/access');
+    revalidatePath('/audit');
+    return { message: 'Event feed key revoked.' };
+  });
+}
+
 export async function addSsoIdentity(_previous: Feedback, form: FormData): Promise<Feedback> {
   const input = form.get('name');
   const name = typeof input === 'string' ? input.trim() : '';

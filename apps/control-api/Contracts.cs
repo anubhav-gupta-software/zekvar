@@ -33,6 +33,16 @@ internal static class FixtureContract
     public static bool IsDecision(string? decision) => IsMode(decision) || decision is "warn_override" or ExceptionApplied;
     public static bool IsPromptRule(string? rule) => rule is RuleId or GitHubPatRule or PaymentCardRule or PrivateKeyRule or OrganizationIdentifierRule or SsnRule;
 
+    public static string CategoryForRule(string ruleId) => ruleId switch
+    {
+        GitHubPatRule or PrivateKeyRule => CredentialCategory,
+        PaymentCardRule => PaymentCategory,
+        OrganizationIdentifierRule => OrganizationIdentifierCategory,
+        SsnRule => SsnCategory,
+        UploadRule or FileInspectionUnavailableRule => UploadCategory,
+        _ => DetectorCategory
+    };
+
     public static bool IsEvent(PolicyEvent request) =>
         request.EventId != Guid.Empty && request.Timestamp != default && request.PolicyVersion > 0 &&
         IsApp(request.AppId) && (request.RuleId is UploadRule or FileInspectionUnavailableRule
@@ -206,15 +216,7 @@ internal sealed record StoredEvent(Guid EventId, Guid InstallationId, DateTime T
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? UploadMethod, EventRollout Rollout,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] EventTriage? Triage)
 {
-    public string DetectorCategory => RuleId switch
-    {
-        FixtureContract.GitHubPatRule or FixtureContract.PrivateKeyRule => FixtureContract.CredentialCategory,
-        FixtureContract.PaymentCardRule => FixtureContract.PaymentCategory,
-        FixtureContract.OrganizationIdentifierRule => FixtureContract.OrganizationIdentifierCategory,
-        FixtureContract.SsnRule => FixtureContract.SsnCategory,
-        FixtureContract.UploadRule or FixtureContract.FileInspectionUnavailableRule => FixtureContract.UploadCategory,
-        _ => FixtureContract.DetectorCategory
-    };
+    public string DetectorCategory => FixtureContract.CategoryForRule(RuleId);
 }
 
 internal sealed record EventRollout(string Kind,

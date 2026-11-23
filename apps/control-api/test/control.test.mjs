@@ -36,6 +36,7 @@ const presetsAdmin = randomBytes(32).toString('hex');
 const ssnAdmin = randomBytes(32).toString('hex');
 const alertsAdmin = randomBytes(32).toString('hex');
 const webhooksAdmin = randomBytes(32).toString('hex');
+const eventFeedAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -57,7 +58,17 @@ const undoIdentifierSchema = `
   ALTER TABLE policy_versions DROP COLUMN identifier_protection;
   ALTER TABLE policy_deliveries DROP COLUMN identifiers;
 `;
+const undoEventFeedSchema = `
+  DELETE FROM schema_migrations WHERE version = 39;
+  DROP TRIGGER security_event_feed_sequence ON security_events;
+  DROP FUNCTION assign_security_event_sequence();
+  ALTER TABLE security_events DROP COLUMN stream_sequence;
+  DROP TABLE event_feed_keys;
+  DROP TABLE organization_event_streams;
+  ALTER TABLE control_audit DROP COLUMN event_feed_key_change;
+`;
 const undoAlertSchema = `
+  ${undoEventFeedSchema}
   DELETE FROM schema_migrations WHERE version = 38;
   DROP TABLE alert_webhook_deliveries;
   DELETE FROM schema_migrations WHERE version = 37;
@@ -174,6 +185,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__18__AdminToken: alertsAdmin,
       Control__Organizations__19__Slug: `webhooks-${suffix}`,
       Control__Organizations__19__AdminToken: webhooksAdmin,
+      Control__Organizations__20__Slug: `event-feed-${suffix}`,
+      Control__Organizations__20__AdminToken: eventFeedAdmin,
       ...overrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -3874,5 +3887,161 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(cancelled.failureCode, 'recovery_cancelled');
     assert.equal(cancelled.attempts, 1);
     assert.equal((await detail(interrupted)).webhook.status, 'sent');
+  });
+
+  await t.test('streams retained event metadata in commit order with isolated, expiring keys and recoverable checkpoints', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: eventFeedAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const browse = (token, query = '', expect = 200) => call('/v1/integrations/events' + query, { token, expect });
+    const keys = 'access/event-feed';
+    const issue = (name, options, fields = {}) => post(keys, { name, days: 15, requestId: randomUUID(), ...fields }, options);
+    const revoke = (keyId, options) => post(`${keys}/${keyId}/revoke`, undefined, { expect: 204, ...options });
+    const { grant } = await post('enrollment-grants');
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const { version } = await post('policies', { mode: 'block', uploadModes: { gemini: 'block' } });
+    const event = (fields = {}) => ({ ...contract.event, eventId: randomUUID(), timestamp: new Date().toISOString(),
+      policyVersion: version, decision: 'block', appId: 'chatgpt', ...fields });
+    const send = (body) => call('/v1/browser/events', { token: browser.token, method: 'POST', body, expect: 204 });
+    const first = event();
+    const second = event({ timestamp: new Date(Date.now() - 10_000).toISOString(), appId: 'gemini',
+      ruleId: 'ai-file-upload', detectorCategory: 'file-upload', uploadMethod: 'drop' });
+    await send(first);
+    await send(second);
+    if (postgres) {
+      await stop();
+      await retentionFixture(undoEventFeedSchema);
+      await start();
+      assert.equal(await retentionFixture("SELECT count(*) FROM schema_migrations WHERE version = 39"), '1');
+    }
+
+    const operator = await post('access', { name: 'Feed operator', role: 'administrator', hours: 1 });
+    const auditor = await post('access', { name: 'Feed auditor', role: 'auditor', hours: 1 });
+    for (const token of [operator.token, auditor.token]) {
+      await admin(keys, { token, expect: 403 });
+      await issue('Denied key', { token, expect: 403 });
+    }
+    for (const token of [undefined, eventFeedAdmin, browser.token, auditor.token, 'zkf_' + '0'.repeat(64)]) {
+      await browse(token, '', 401);
+    }
+    await issue('Bad lifetime', { expect: 400 }, { days: 91 });
+    await issue('Bad request ID', { expect: 400 }, { requestId: '00000000-0000-0000-0000-000000000000' });
+    await issue('Extra data', { expect: 400 }, { prompt: 'SYNTHETIC_PRIVATE_PROMPT' });
+    const requestId = randomUUID();
+    const retryIssue = () => fetch(`${baseUrl}/v1/admin/${keys}`, { method: 'POST', headers: {
+      Authorization: `Bearer ${eventFeedAdmin}`, 'Content-Type': 'application/json',
+    }, body: JSON.stringify({ name: 'Primary collector', requestId, days: 15 }), signal: AbortSignal.timeout(5000) });
+    const replies = await Promise.all([retryIssue(), retryIssue()]);
+    assert.deepEqual(replies.map(({ status }) => status).sort(), [200, 409]);
+    const { token, key } = await replies.find(({ ok }) => ok).json();
+    assert.deepEqual(await replies.find(({ ok }) => !ok).json(), { code: 'event_feed_key_exists' });
+    assert.match(token, /^zkf_[a-f0-9]{64}$/);
+    assert.equal(key.id, requestId);
+    assert.equal(Date.parse(key.expiresAt) - Date.parse(key.issuedAt), 15 * 86_400_000);
+    assert.deepEqual(await admin(keys), [key]);
+    if (postgres) assert.equal(await retentionFixture(`SELECT token_hash FROM event_feed_keys WHERE id = '${key.id}'`),
+      createHash('sha256').update(token).digest('hex'));
+    await admin('session', { token, expect: 401 });
+    await call('/v1/browser/policy', { token, expect: 401 });
+    await call('/v1/integrations/events', { token, method: 'POST', expect: 405 });
+    for (const query of ['?after=', '?after=malformed', '?limit=-1', '?limit=501', '?limit=1&limit=2', '?limit=1&output=json']) {
+      await browse(token, query, 400);
+    }
+
+    const readAfter = (cursor, pageSize = 1, key = token, expect = 200) =>
+      browse(key, '?' + new URLSearchParams({ after: cursor, limit: pageSize }), expect);
+    const page = await browse(token, '?limit=1');
+    assert.equal(page.schemaVersion, 1);
+    assert.equal(page.hasMore, true);
+    assert.equal(page.entries[0].eventId, first.eventId);
+    assert.deepEqual(Object.keys(page.entries[0]).sort(), ['appId', 'decision', 'detectorCategory', 'eventId', 'installationId',
+      'policyVersion', 'receivedAt', 'rollout', 'ruleId', 'timestamp']);
+    assert.deepEqual(page.entries[0].rollout, { kind: 'baseline' });
+    const tail = await readAfter(page.nextCursor);
+    assert.equal(tail.hasMore, false);
+    assert.equal(tail.entries[0].eventId, second.eventId);
+    assert.equal(tail.entries[0].uploadMethod, 'drop');
+    assert.equal(tail.entries[0].detectorCategory, 'file-upload');
+    assert.deepEqual(await readAfter(page.nextCursor), tail);
+    assert.deepEqual(await readAfter(tail.nextCursor), { schemaVersion: 1, entries: [], nextCursor: tail.nextCursor, hasMore: false });
+    assert.deepEqual(await readAfter(tail.nextCursor.split(':')[0] + ':9223372036854775807', 1, token, 409),
+      { code: 'event_feed_cursor_invalid' });
+    const foreign = await issue('Foreign collector', { token: retentionAdmin });
+    assert.deepEqual(await readAfter(page.nextCursor, 1, foreign.token, 409), { code: 'event_feed_cursor_invalid' });
+    await revoke(key.id, { token: retentionAdmin, expect: 404 });
+
+    const arriving = Array.from({ length: 12 }, () => event());
+    const concurrent = Promise.all(arriving.flatMap((entry) => [send(entry), send(entry)]));
+    let seen = await readAfter(tail.nextCursor, 2);
+    const delivered = seen.entries.map(({ eventId }) => eventId);
+    await concurrent;
+    do {
+      seen = await readAfter(seen.nextCursor, 2);
+      delivered.push(...seen.entries.map(({ eventId }) => eventId));
+    } while (seen.hasMore);
+    assert.deepEqual(delivered.sort(), arriving.map(({ eventId }) => eventId).sort());
+    if (postgres) {
+      const pending = event();
+      const following = event();
+      const delayed = retentionFixture(`BEGIN;
+        INSERT INTO security_events (organization_id, installation_id, event_id, occurred_at, policy_version,
+          decision, app_id, rule_id, rollout_attributed)
+        SELECT organization_id, id, '${pending.eventId}', now(), ${version}, 'block', 'chatgpt', 'fixture-secret', true
+        FROM installations WHERE id = '${browser.installationId}';
+        SELECT pg_advisory_xact_lock(39, 10201);
+        SELECT pg_sleep(1.5);
+        COMMIT;`);
+      for (let attempt = 0; attempt < 30; attempt++) {
+        const inserting = await retentionFixture("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND classid = 39 AND objid = 10201 AND granted)");
+        if (inserting === 't') break;
+        assert.ok(attempt < 29, 'The delayed writer did not acquire the stream lock.');
+        await delay(20);
+      }
+      const followingWrite = send(following);
+      const peek = await readAfter(seen.nextCursor);
+      assert.deepEqual(peek.entries, []);
+      assert.equal(peek.nextCursor, seen.nextCursor);
+      await Promise.all([delayed, followingWrite]);
+      seen = await readAfter(peek.nextCursor, 2);
+      assert.deepEqual(seen.entries.map(({ eventId }) => eventId), [pending.eventId, following.eventId]);
+    }
+    const rotation = await issue('Replacement collector');
+    assert.deepEqual(await readAfter(seen.nextCursor, 1, rotation.token), await readAfter(seen.nextCursor));
+    await Promise.all([revoke(key.id), revoke(key.id)]);
+    await browse(token, '', 401);
+    assert.equal((await admin(keys)).find(({ id }) => id === key.id).status, 'revoked');
+    assert.deepEqual((await admin('audit?action=event_feed_key_issued')).entries.map(({ eventFeedKeyChange }) => eventFeedKeyChange.keyId).sort(),
+      [key.id, rotation.key.id].sort());
+    const audit = (await admin('audit?action=event_feed_key_revoked')).entries;
+    assert.equal(audit.length, 1);
+    assert.deepEqual(audit[0].eventFeedKeyChange, { keyId: key.id, name: 'Primary collector' });
+    assert.equal(JSON.stringify(audit).includes(token), false);
+
+    if (!postgres) return;
+    await retentionFixture(`UPDATE event_feed_keys SET issued_at = now() - interval '2 days', expires_at = now() - interval '1 day'
+      WHERE id = '${foreign.key.id}'; UPDATE security_events SET occurred_at = now() - interval '2 days' WHERE event_id = '${first.eventId}';`);
+    await browse(foreign.token, '', 401);
+    assert.equal((await admin(keys, { token: retentionAdmin })).find(({ id }) => id === foreign.key.id).status, 'expired');
+    await post('retention', { securityEventDays: 1, aiObservationDays: null, auditDays: 30 }, { expect: 204 });
+    assert.equal((await retentionFixture(`SELECT count(*) FROM security_events WHERE event_id = '${first.eventId}'`)), '1');
+    const retained = await browse(rotation.token);
+    assert.ok(retained.entries.every(({ eventId }) => eventId !== first.eventId));
+    assert.equal(retained.entries.length, 15);
+    await post('retention/cleanup');
+    assert.equal((await retentionFixture(`SELECT count(*) FROM security_events WHERE event_id = '${first.eventId}'`)), '0');
+    assert.deepEqual(await browse(rotation.token), retained);
+
+    await stop();
+    await retentionFixture(await readFile(new URL('../../../deploy/pilot/recover-access.sql', import.meta.url), 'utf8'));
+    await start();
+    await browse(rotation.token, '', 401);
+    const recovered = await issue('Restored collector');
+    await readAfter(retained.nextCursor, 1, recovered.token, 409);
+    assert.deepEqual((await browse(recovered.token)).entries, retained.entries);
+    assert.ok((await admin('audit?action=event_feed_key_revoked')).entries.some(({ eventFeedKeyChange }) => eventFeedKeyChange.keyId === rotation.key.id));
+    const reserve = await Promise.all(Array.from({ length: 19 }, (_, index) => issue(`Capacity check ${index + 1}`)));
+    assert.equal((await admin(keys)).filter(({ status }) => status === 'active').length, 20);
+    assert.deepEqual(await issue('Over capacity', { expect: 409 }), { code: 'event_feed_key_limit' });
+    await revoke(reserve[0].key.id);
+    assert.equal((await issue('Recovered key slot')).key.status, 'active');
   });
 });

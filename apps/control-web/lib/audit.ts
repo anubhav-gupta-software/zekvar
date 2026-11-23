@@ -30,6 +30,8 @@ export const auditActions = {
   incident_case_changed: 'Incident case changed',
   security_alert_settings_changed: 'Alert settings changed',
   security_alert_acknowledged: 'Security alert acknowledged',
+  event_feed_key_issued: 'Event feed key issued',
+  event_feed_key_revoked: 'Event feed key revoked',
 } as const;
 
 export type AuditAction = keyof typeof auditActions;
@@ -44,6 +46,7 @@ export type AuditEntry = AuditCursor & {
   eventTriageChange?: EventTriageChange;
   incidentCaseChange?: CaseChange;
   securityAlertChange?: AlertChange;
+  eventFeedKeyChange?: { keyId: string; name: string; expiresAt?: string };
   policyVersion: number | null;
   restoredFrom: number | null;
   installationId: string | null;

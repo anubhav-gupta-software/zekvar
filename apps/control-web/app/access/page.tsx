@@ -1,12 +1,14 @@
+import { randomUUID } from 'node:crypto';
 import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../../lib/api';
-import { roleLabels, type ControlAccess } from '../../lib/access';
+import { roleLabels, type ControlAccess, type EventFeedKey } from '../../lib/access';
 import { utc } from '../../lib/control';
 import { sessionToken } from '../../lib/session';
-import { addSsoIdentity, revokeControlAccess } from '../actions';
+import { addSsoIdentity, revokeControlAccess, revokeEventFeedKey } from '../actions';
 import { MutationForm, RefreshSection } from '../forms';
 import { DeploymentBadge, Sidebar } from '../workspace';
 import { IssueAccessForm } from './issue-form';
+import { EventFeedForm } from './event-feed-form';
 
 export default async function AccessPage() {
   const token = await sessionToken();
@@ -58,6 +60,7 @@ export default async function AccessPage() {
           </div>
           {credentials.length === 0 && <p className="empty">No delegated credentials have been issued.</p>}
         </section>
+        {result?.eventFeedKeys && <EventFeedKeys keys={result.eventFeedKeys} />}
       </> : <section className="panel" role="alert">{result ? 'Only the organization owner can manage Control access.' :
         'Control could not load credentials. Try reloading this page.'}</section>}
     </main>
@@ -66,12 +69,36 @@ export default async function AccessPage() {
 
 async function loadAccess(token: string) {
   const session = await controlApi.session(token);
-  const credentials = session.role === 'owner' ? await controlApi.access(token) : undefined;
-  const sso = session.role === 'owner' ? await controlApi.ssoSettings(token) : undefined;
-  return { session, credentials, sso };
+  if (session.role !== 'owner') return { session };
+  const [credentials, sso, eventFeedKeys] = await Promise.all([
+    controlApi.access(token), controlApi.ssoSettings(token), controlApi.eventFeedKeys(token),
+  ]);
+  return { session, credentials, sso, eventFeedKeys };
 }
 
 const statuses = { active: 'Active', expired: 'Expired', revoked: 'Revoked' };
+
+function EventFeedKeys({ keys }: { keys: EventFeedKey[] }) {
+  return <section className="panel table-panel" aria-labelledby="event-feed-heading">
+    <div className="panel-heading"><h2 id="event-feed-heading">Security event feed</h2><RefreshSection label="Refresh event feed keys" /></div>
+    <p className="muted">Give a SIEM or log collector read-only access to retained event metadata at <code>/v1/integrations/events</code>.</p>
+    <EventFeedForm requestId={randomUUID()} activeIds={keys.filter(({ status }) => status === 'active').map(({ id }) => id)} />
+    {keys.length ? <div className="table-scroll" role="region" tabIndex={0} aria-labelledby="event-feed-heading">
+      <table aria-labelledby="event-feed-heading">
+        <thead><tr><th>Collector</th><th>Key ID</th><th>Status</th><th>Expires (UTC)</th><th>Action</th></tr></thead>
+        <tbody>{keys.map((key) => <tr key={key.id}>
+          <th scope="row" className="emphasis">{key.name}</th><td><code title={key.id}>{key.id.slice(0, 13)}</code></td>
+          <td><span className={`badge ${key.status === 'active' ? 'current' : ''}`}>{statuses[key.status]}</span></td>
+          <td><time dateTime={key.expiresAt}>{utc.format(new Date(key.expiresAt))}</time></td>
+          <td>{key.status === 'active' ? <MutationForm action={revokeEventFeedKey} label="Revoke" appearance="small danger"
+            accessibleLabel={`Revoke event feed key for ${key.name}`} confirmation={`Revoke the event feed key for ${key.name} (${key.id.slice(0, 13)})?`}>
+            <input type="hidden" name="id" value={key.id} />
+          </MutationForm> : '—'}</td>
+        </tr>)}</tbody>
+      </table>
+    </div> : <p className="empty">No event feed keys have been issued.</p>}
+  </section>;
+}
 
 function CredentialRow({ credential }: { credential: ControlAccess }) {
   const sso = credential.subject !== undefined;

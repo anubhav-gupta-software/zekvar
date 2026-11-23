@@ -84,7 +84,7 @@ export async function preparePreflight(t, { scratch, key, cert, ca, dashboardOri
     const wrongNetwork = await invoke('denied');
     assert.equal(wrongNetwork.status, 1);
     assert.deepEqual(JSON.parse(wrongNetwork.stdout).checks.filter(({ passed }) => !passed).map(({ name }) => name),
-      ['Dashboard denies this network', 'Report download denies this network']);
+      ['Event feed requires a trusted network and key', 'Dashboard denies this network', 'Report download denies this network']);
 
     const untrusted = await invoke('allowed', { trusted: false });
     assert.equal(untrusted.status, 1);

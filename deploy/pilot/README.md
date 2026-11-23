@@ -43,6 +43,12 @@ Control posts JSON schema version 1 with type `security.alert.opened`. The envel
 
 Control retries timeouts, connection errors, HTTP 408, 425, 429, and 5xx responses up to six total attempts. Retry delays start at 15 seconds and double. Control honors a longer `Retry-After` up to one hour. Redirects and other HTTP rejections stop delivery. Existing pending jobs remain pinned to their original destination, and Control shows the destination as unavailable when it changes. Database recovery cancels pending jobs from the restored snapshot. Current status is available in **Alerts → Webhook delivery**.
 
+## Collect security events in a SIEM
+
+From a collector on an existing trusted egress network, poll `https://<dashboard-host>/v1/integrations/events` using a dedicated key issued in **Control access**. Caddy checks the actual source IP against `ZEKVAR_ADMIN_NETWORKS`, which also grants network access to the dashboard sign-in page. The feed route supports GET on the dashboard origin. The browser API origin and sources outside the allowlist return 404.
+
+Give each collector its own key and store it in its secret store. Use the collector's HTTP input or a poller that can save the returned checkpoint after processing a page. Retained event metadata is available for replay, so size event retention for the longest collector outage you intend to cover. Manage retention of any copies in the SIEM. After a database restore, issue replacement feed keys and replay retained records from a fresh cursor, deduplicating by installation and event ID. [Event feed API and checkpoint rules](../../apps/control-api/README.md#security-event-feed)
+
 ## Build and enroll Browser
 
 Use the browser API hostname in the extension build and keep pilot output in its own directory.
@@ -111,7 +117,7 @@ deploy/pilot/database-backup.sh restore zekvar-recovery /secure/recovery.env \
   /srv/backups/zekvar/2026-11-22T0000Z.age /secure/pilot-identity.txt
 ```
 
-Restore revokes previous browser enrollments and named Control credentials, including SSO identities. It deletes SSO sessions, expires unused grants, and cancels pending policy reviews in the same transaction. This prevents an older snapshot from reactivating revoked access or leaving a browser on a newer cached policy from before the outage. Start Control with the new owner token. Issue fresh delegated tokens, reauthorize current SSO identities, and re-enroll Chrome with fresh grants. Reassign re-enrolled browsers to their rollout groups before restoring normal access.
+Restore revokes previous browser enrollments, named Control credentials including SSO identities, and event feed keys. It deletes SSO sessions, expires unused grants, cancels pending policy reviews and webhook jobs, and changes the event feed generation in the same transaction. This prevents an older snapshot from reactivating revoked access or leaving a browser on a newer cached policy from before the outage. Start Control with the new owner token. Issue fresh delegated tokens and collector keys, reauthorize current SSO identities, and re-enroll Chrome with fresh grants. Reassign re-enrolled browsers to their rollout groups before restoring normal access.
 
 Keep both origins on the recovery network while verifying policies, event export, enrollment, and retention. Reconcile post-backup policy changes, retention changes, and data deletions against the independent operator record before exposing the recovered environment. For an actual switch, keep the original environment offline to avoid divergent writes and measure data loss and recovery time from the backup and drill timestamps.
 

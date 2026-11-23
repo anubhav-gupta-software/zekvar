@@ -67,4 +67,18 @@ BEGIN
 END;
 $$;
 
+DO $$
+BEGIN
+    IF to_regclass('public.event_feed_keys') IS NOT NULL THEN
+        WITH revoked AS (
+            UPDATE public.event_feed_keys SET revoked_at = CURRENT_TIMESTAMP, token_hash = NULL
+            WHERE revoked_at IS NULL RETURNING organization_id, id, display_name, revoked_at
+        )
+        INSERT INTO public.control_audit (organization_id, occurred_at, action, event_feed_key_change)
+        SELECT organization_id, revoked_at, 'event_feed_key_revoked', jsonb_build_object('keyId', id, 'name', display_name) FROM revoked;
+        UPDATE public.organization_event_streams SET stream_id = gen_random_uuid();
+    END IF;
+END;
+$$;
+
 COMMIT;

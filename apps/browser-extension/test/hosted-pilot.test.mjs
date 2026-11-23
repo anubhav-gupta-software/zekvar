@@ -126,6 +126,7 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
 
   await startEdge('192.0.2.10/32');
   assert.equal((await call(dashboardOrigin + '/', { headers: { 'X-Forwarded-For': '192.0.2.10' } })).status, 403);
+  assert.equal((await call(dashboardOrigin + '/v1/integrations/events', { headers: { 'X-Forwarded-For': '192.0.2.10' } })).status, 404);
   await t.test('preflight proves dashboard denial and public update availability outside the admin allowlist', async () => {
     const evidence = await preflight.verify('denied');
     if (artifacts) await writeFile(join(artifacts, 'preflight-denied.json'), JSON.stringify(evidence, null, 2) + '\n');
@@ -744,6 +745,68 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
     const ack = history.getByRole('row').filter({ hasText: 'Security alert acknowledged' });
     await ack.getByRole('link', { name: alertLabel, exact: true }).click();
     await dashboard.waitForURL(alertUrl);
+  });
+  await t.test('issues scoped collector keys and reads real Chrome events through the private TLS feed', async () => {
+    await signInAs(owner);
+    await dashboard.getByRole('link', { name: 'Control access', exact: true }).click();
+    const section = dashboard.getByRole('region', { name: 'Security event feed', exact: true }).first();
+    await section.getByText('No event feed keys have been issued.', { exact: true }).waitFor();
+    const issue = async (name) => {
+      await section.getByLabel('Collector name').fill(name);
+      await section.getByRole('button', { name: 'Issue event feed key', exact: true }).click();
+      const issued = section.getByLabel('Issued event feed key', { exact: true });
+      await issued.waitFor();
+      const key = await issued.inputValue();
+      assert.ok(/^zkf_[a-f0-9]{64}$/.test(key));
+      await section.getByRole('button', { name: 'Hide event feed key', exact: true }).click();
+      await issued.waitFor({ state: 'detached' });
+      return key;
+    };
+    const key = await issue('Hosted SIEM');
+    const path = '/v1/integrations/events';
+    const headers = { Authorization: `Bearer ${key}` };
+    const feed = await call(dashboardOrigin + path, { headers });
+    assert.equal(feed.status, 200);
+    assert.equal(feed.headers['cache-control'], 'no-store');
+    const page = JSON.parse(feed.body);
+    assert.equal(page.schemaVersion, 1);
+    assert.equal(page.hasMore, false);
+    const firstDetection = page.entries.find(({ eventId }) => eventId === detected.eventId);
+    assert.equal(firstDetection?.installationId, detected.installationId);
+    assert.equal(firstDetection?.decision, 'block');
+    assert.equal(firstDetection?.appId, 'chatgpt');
+    assert.ok(page.entries.some(({ uploadMethod, decision }) => uploadMethod === 'picker' && decision === 'block'));
+    assert.doesNotMatch(feed.body, /ZEKVAR_TEST_SECRET|prompt|filename|triage|tokenHash|groupName/i);
+    assert.equal((await call(browserOrigin + path, { headers })).status, 404);
+    assert.equal((await call(dashboardOrigin + path, { headers, method: 'POST' })).status, 404);
+    assert.equal((await call(dashboardOrigin + path, { headers: { Authorization: `Bearer ${owner}` } })).status, 401);
+    const backupKey = await issue('Hosted backup collector');
+    const next = await call(dashboardOrigin + path + '?' + new URLSearchParams({ after: page.nextCursor }), {
+      headers: { Authorization: `Bearer ${backupKey}` },
+    });
+    assert.equal(next.status, 200);
+    assert.deepEqual(JSON.parse(next.body), { schemaVersion: 1, entries: [], nextCursor: page.nextCursor, hasMore: false });
+
+    const keyRow = section.getByRole('row', { name: /Hosted SIEM/ });
+    dashboard.once('dialog', (dialog) => dialog.dismiss());
+    await keyRow.getByRole('button', { name: 'Revoke event feed key for Hosted SIEM', exact: true }).click();
+    assert.equal((await call(dashboardOrigin + path, { headers })).status, 200);
+    dashboard.once('dialog', (dialog) => dialog.accept());
+    await keyRow.getByRole('button', { name: 'Revoke event feed key for Hosted SIEM', exact: true }).click();
+    await keyRow.getByText('Revoked', { exact: true }).waitFor();
+    const revoked = await call(dashboardOrigin + path, { headers });
+    assert.equal(revoked.status, 401);
+    assert.equal(revoked.headers['www-authenticate'], 'Bearer');
+    await dashboard.reload();
+    await section.getByRole('row', { name: /Hosted backup collector/ }).getByText('Active', { exact: true }).waitFor();
+    assert.ok(!(await dashboard.content()).includes(backupKey));
+    if (artifacts) await section.screenshot({ path: join(artifacts, 'security-event-feed-keys.png') });
+    await dashboard.getByRole('link', { name: 'Audit log', exact: true }).click();
+    const history = dashboard.getByRole('table', { name: 'Control activity', exact: true });
+    await history.getByRole('row').filter({ hasText: 'Event feed key revoked' }).getByText('Hosted SIEM', { exact: false }).waitFor();
+    const activity = (await admin('audit?action=event_feed_key_issued')).entries;
+    assert.equal(activity.length, 2);
+    assert.ok(!JSON.stringify(activity).includes(key) && !JSON.stringify(activity).includes(backupKey));
   });
   await dashboard.getByRole('button', { name: 'Sign out', exact: true }).click();
   await dashboard.getByRole('heading', { name: 'Sign in to Control', exact: true }).waitFor();
