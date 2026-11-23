@@ -64,6 +64,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 37, "037_security_alerts.sql", ct);
         await ApplyMigration(connection, 38, "038_alert_webhook_delivery.sql", ct);
         await ApplyMigration(connection, 39, "039_security_event_feed.sql", ct);
+        await ApplyMigration(connection, 40, "040_browser_hardening.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -161,7 +162,7 @@ internal sealed partial class ControlStore
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
                 p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, p.private_key_mode, p.chatgpt_file_inspection, p.gemini_file_inspection,
                 p.blocked_ai_app_hosts, p.chatgpt_file_content_block, p.gemini_file_content_block, p.identifier_protection, p.extension_deployment,
-                p.preset_discovery_enabled, p.ssn_mode
+                p.preset_discovery_enabled, p.ssn_mode, p.browser_hardening
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.policy_group_id IS NOT DISTINCT FROM $2::uuid ORDER BY p.version DESC LIMIT 100
             """, organizationId, (object?)groupId ?? DBNull.Value);
@@ -709,7 +710,8 @@ internal sealed partial class ControlStore
         FileContentModes: new(FileContentMode(rows.GetBoolean(20), rows.GetBoolean(23)), FileContentMode(rows.GetBoolean(21), rows.GetBoolean(24))),
         IdentifierProtection: JsonSerializer.Deserialize<IdentifierProtection>(rows.GetString(25), JsonSerializerOptions.Web),
         ExtensionDeployment: includeDeployment ? JsonSerializer.Deserialize<ExtensionDeployment>(rows.GetString(26), JsonSerializerOptions.Web) : null,
-        PresetDiscoveryEnabled: rows.GetBoolean(rows.GetOrdinal("preset_discovery_enabled")), SsnMode: rows.GetString(rows.GetOrdinal("ssn_mode")));
+        PresetDiscoveryEnabled: rows.GetBoolean(rows.GetOrdinal("preset_discovery_enabled")), SsnMode: rows.GetString(rows.GetOrdinal("ssn_mode")),
+        BrowserHardening: includeDeployment ? JsonSerializer.Deserialize<BrowserHardening>(rows.GetString(rows.GetOrdinal("browser_hardening")), JsonSerializerOptions.Web) : null);
 
     private static string FileContentMode(bool enabled, bool block) => block ? "block" : enabled ? "monitor" : "off";
 }

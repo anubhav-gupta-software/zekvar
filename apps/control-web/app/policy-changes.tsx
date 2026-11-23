@@ -4,6 +4,7 @@ import type { PreviewPolicy } from '../lib/preview';
 import { exceptionKey, samePromptExceptions } from '../../../contracts/policy/prompt-exceptions';
 import { fixtureRule } from '../../../contracts/policy/prompt';
 import { extensionDeploymentChanges, extensionModeLabels, unlistedLabels, type ExtensionDeployment, type ExtensionRule } from '../lib/extension-deployment';
+import { hardeningDifferences } from '../lib/browser-hardening';
 
 export function ExtensionDeploymentChanges({ reference, candidate }: { reference?: ExtensionDeployment; candidate?: ExtensionDeployment }) {
   const before = reference?.unlisted ?? 'preserve';
@@ -44,6 +45,8 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     {fields.filter(([, before, after]) => before !== after).map(([field, before, after]) =>
       <li key={field}>{field} · {before} → {after}</li>)}
     <ExtensionDeploymentChanges reference={reference.extensionDeployment} candidate={candidate.extensionDeployment} />
+    {hardeningDifferences(reference.browserHardening, candidate.browserHardening).map(({ key, label, before, after }) =>
+      <li key={key}>{label} · {before} → {after}</li>)}
     {(candidate.blockedAiAppHosts ?? []).filter((host) => !reference.blockedAiAppHosts?.includes(host))
       .map((host) => <li key={`block-${host}`}>Block AI app host <code>{host}</code></li>)}
     {(reference.blockedAiAppHosts ?? []).filter((host) => !candidate.blockedAiAppHosts?.includes(host))

@@ -101,7 +101,7 @@ internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode 
     CustomAppSetting?[]? CustomApps = null, PromptException?[]? PromptExceptions = null, bool? ClaudePromptEnabled = null,
     string? PrivateKeyMode = null, FileInspection? FileInspection = null, ExtensionDeployment? ExtensionDeployment = null,
     string[]? BlockedAiAppHosts = null, UploadModes? FileContentModes = null, IdentifierProtection? IdentifierProtection = null,
-    bool? PresetDiscoveryEnabled = null, string? SsnMode = null);
+    bool? PresetDiscoveryEnabled = null, string? SsnMode = null, BrowserHardening? BrowserHardening = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null)
 {
     public bool HasSettings() => Chatgpt is not null || Gemini is not null;
@@ -143,7 +143,8 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] UploadModes? FileContentModes = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IdentifierProtection? IdentifierProtection = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? PresetDiscoveryEnabled = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SsnMode = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SsnMode = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] BrowserHardening? BrowserHardening = null)
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => ClaudePromptEnabled
@@ -179,6 +180,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
             PresetDiscoveryEnabled = presetDiscoveryAware && DiscoveryEnabled ? PresetDiscoveryEnabled : null,
             SsnMode = ssnAware ? SsnMode : null,
             ExtensionDeployment = null,
+            BrowserHardening = null,
             BlockedAiAppHosts = aiAppAccessAware ? BlockedAiAppHosts : null,
             PromptExceptions = PromptExceptions is { Length: > 0 } ? null : PromptExceptions,
             PromptExceptionLease = exceptions is { Length: > 0 } ? new(nowMs, exceptions) : null

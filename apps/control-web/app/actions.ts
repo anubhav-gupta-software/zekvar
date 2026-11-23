@@ -15,6 +15,7 @@ import { isUploadMode, parseUploadTypes, uploadTypesError } from '../../../contr
 import { customAppError, isCustomAppId, parseCustomApps } from '../../../contracts/policy/discovery';
 import { promptExceptionError, readPromptExceptions } from '../../../contracts/policy/prompt-exceptions';
 import { parseExtensionDeployment } from '../lib/extension-deployment';
+import { parseBrowserHardening } from '../lib/browser-hardening';
 import { aiAppAccessCatalog, readBlockedAiAppHosts } from '../../../contracts/policy/ai-app-access';
 import { domainRuleLimit, ruleCount } from '../../../contracts/policy/domains';
 import { eventPath, isTriageDisposition, isTriageId, isTriageStatus } from '../lib/triage';
@@ -503,6 +504,30 @@ export async function publishExtensionDeployment(_previous: Feedback, form: Form
   });
 }
 
+export async function publishBrowserHardening(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const groupId = form.get('groupId');
+  const expectedVersion = Number(form.get('expectedVersion'));
+  const draft = parseBrowserHardening(form);
+  if ((groupId !== null && !isId(groupId)) || !Number.isInteger(expectedVersion) ||
+      expectedVersion < 1 || expectedVersion > 2_147_483_647 || !draft) {
+    return { error: 'Reload the current plan and choose supported Chrome settings.' };
+  }
+  return perform(async (token) => {
+    try {
+      const published = await controlApi.publishBrowserHardening(token, draft, expectedVersion,
+        form.get('expectReview') === 'on', groupId ?? undefined);
+      if ('reviewId' in published) return queued(published.reviewId);
+      refreshPolicyViews();
+      return { message: `Chrome hardening plan published as version ${published.version}.` };
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409 && !error.code) {
+        return { error: 'The policy changed. Reload and review the Chrome hardening plan again.' };
+      }
+      throw error;
+    }
+  });
+}
+
 export async function saveAlertSettings(_previous: Feedback, form: FormData): Promise<Feedback> {
   const enabled = form.get('enabled');
   const threshold = Number(form.get('threshold'));
@@ -560,6 +585,7 @@ function refreshPolicyViews() {
   revalidatePath('/reviews');
   revalidatePath('/extensions');
   revalidatePath('/extensions/deployment');
+  revalidatePath('/hardening');
 }
 
 function queued(reviewId: string) {

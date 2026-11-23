@@ -153,6 +153,12 @@ Read `extensionDeployment` in the organization or group policy history. Publish 
 
 Changes use the same audit, approvals, promotion, and restore workflow as other versioned policy. Migration 029 starts earlier policy versions with an empty plan that preserves the native default. The browser policy endpoint keeps the Control agent's existing policy shape. Device managers apply the Chrome policy downloaded from Control. [Export a Chrome deployment plan](../control-web/README.md#deploy-chrome-extension-rules)
 
+## Chrome hardening plans
+
+Owners and named administrators publish `browserHardening` through the baseline or rollout-group policy endpoint with a current `expectedVersion`. The plan follows existing scope inheritance, independent review, promotion, history, and restore. An auditor can read plans and review comparisons. Migration 040 initializes existing versions with **Preserve existing** for each setting.
+
+`safeBrowsing` accepts `preserve`, `standard`, or `enhanced`. `downloads` accepts `preserve`, `malicious`, `dangerous`, `potentially-dangerous`, or `all`. `lockSafeBrowsingWarnings`, `disableGuest`, `disableIncognito`, `disablePasswordSaving`, and `disableSync` are opt-in booleans. Sending `browserHardening` replaces the plan, and omitted plan fields use **Preserve existing**. A policy update that omits the entire plan keeps the current one. Browser policy responses omit administrative Chrome hardening settings. The dashboard can merge the approved plan with the current managed policy in the admin's browser. [Deploy a Chrome hardening plan](../control-web/README.md#deploy-a-chrome-hardening-plan)
+
 ## Security event history and export
 
 - `GET /v1/admin/events` returns an array of up to 100 events for existing clients.

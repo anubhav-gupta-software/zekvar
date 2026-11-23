@@ -11,6 +11,7 @@ import type { InventoryInstallation } from './extension-inventory';
 import type { EnrollmentBatch, IssuedEnrollmentBatch } from './enrollment';
 import type { AiEnforcementReport } from './reports';
 import type { ExtensionDeployment } from './extension-deployment';
+import type { BrowserHardening } from './browser-hardening';
 import { eventPath, type EventDetails, type EventTriage, type TriageAssignee, type TriageUpdate } from './triage';
 import { casePath, type CaseCategory, type CaseDetails, type CasePage, type EventReference } from './cases';
 import { alertPath, type AlertDetails, type AlertPage, type AlertSettings } from './alerts';
@@ -110,6 +111,8 @@ export const controlApi = {
   extensionInventory: (token: string) => request<InventoryInstallation[]>('/extension-inventory', token),
   publishExtensionDeployment: (token: string, extensionDeployment: ExtensionDeployment, expectedVersion: number, review: boolean, groupId?: string) =>
     request<PolicyChange>(policiesPath(groupId), token, 'POST', { extensionDeployment, expectedVersion }, review),
+  publishBrowserHardening: (token: string, browserHardening: BrowserHardening, expectedVersion: number, review: boolean, groupId?: string) =>
+    request<PolicyChange>(policiesPath(groupId), token, 'POST', { browserHardening, expectedVersion }, review),
   browserExtensionInventory: (token: string, id: string) => request<InventoryInstallation>(`/extension-inventory/${id}`, token),
   events: async (token: string, filters: URLSearchParams): Promise<EventPage> => {
     const response = await eventResponse('/events/history', token, filters);

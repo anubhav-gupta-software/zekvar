@@ -457,7 +457,8 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
               request.PromptExceptions is not null || request.ClaudePromptEnabled.HasValue || request.PrivateKeyMode is not null ||
               request.FileInspection?.HasSettings() == true || request.ExtensionDeployment is not null ||
               request.BlockedAiAppHosts is not null || request.FileContentModes?.HasSettings() == true ||
-              request.IdentifierProtection is not null || request.PresetDiscoveryEnabled.HasValue || request.SsnMode is not null)) ||
+              request.IdentifierProtection is not null || request.PresetDiscoveryEnabled.HasValue || request.SsnMode is not null ||
+              request.BrowserHardening is not null)) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode) ||
         !FixtureContract.IsOptionalDetectorMode(request.PrivateKeyMode) || !FixtureContract.IsOptionalDetectorMode(request.SsnMode))
         return Results.BadRequest(new { error = "Choose a valid rule mode." });
@@ -478,6 +479,8 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
     if (!ExtensionDeployment.TryNormalize(request.ExtensionDeployment, out var extensionDeployment) ||
         (extensionDeployment is not null && request.ExpectedVersion is null))
         return Results.BadRequest(new { error = "Use a current policy version, distinct Chrome extension IDs, and HTTPS update manifest URLs for force installs." });
+    if (request.BrowserHardening is { } hardening && (!hardening.IsValid() || request.ExpectedVersion is null))
+        return Results.BadRequest(new { error = "Use a current policy version and supported Chrome hardening settings." });
     if (!AiAppAccess.TryNormalize(request.BlockedAiAppHosts, out var blockedAiAppHosts))
         return Results.BadRequest(new { error = "Select distinct AI app hostnames from the policy catalog." });
     if (!IdentifierProtection.TryNormalize(request.IdentifierProtection, out var identifiers))

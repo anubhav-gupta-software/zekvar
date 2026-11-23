@@ -221,7 +221,7 @@ internal sealed partial class ControlStore
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
                 p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, p.private_key_mode, p.chatgpt_file_inspection, p.gemini_file_inspection,
                 p.blocked_ai_app_hosts, p.chatgpt_file_content_block, p.gemini_file_content_block, p.identifier_protection, p.extension_deployment,
-                p.preset_discovery_enabled, p.ssn_mode
+                p.preset_discovery_enabled, p.ssn_mode, p.browser_hardening
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.version = $2 AND (NOT $3 OR p.policy_group_id IS NOT DISTINCT FROM $4::uuid)
             """, transaction.Connection, transaction);
@@ -250,6 +250,7 @@ internal sealed partial class ControlStore
         SsnMode = request.SsnMode ?? current.SsnMode,
         IdentifierProtection = request.IdentifierProtection ?? current.IdentifierProtection,
         ExtensionDeployment = request.ExtensionDeployment ?? current.ExtensionDeployment,
+        BrowserHardening = request.BrowserHardening ?? current.BrowserHardening,
         BlockedAiAppHosts = request.BlockedAiAppHosts ?? current.BlockedAiAppHosts,
         FileContentModes = new(
             ResolveFileContentMode(request.FileContentModes?.Chatgpt, request.FileInspection?.Chatgpt, current.EffectiveFileContentModes().Chatgpt!),
@@ -279,9 +280,9 @@ internal sealed partial class ControlStore
                     allowed_domains, blocked_domains, payment_card_mode, chatgpt_upload_mode, gemini_upload_mode, allowed_paths, blocked_paths,
                     extension_inventory_enabled, chatgpt_upload_types, gemini_upload_types, custom_apps, prompt_exceptions, claude_prompt_enabled,
                     private_key_mode, chatgpt_file_inspection, gemini_file_inspection, extension_deployment, blocked_ai_app_hosts,
-                    chatgpt_file_content_block, gemini_file_content_block, identifier_protection, preset_discovery_enabled, ssn_mode)
+                    chatgpt_file_content_block, gemini_file_content_block, identifier_protection, preset_discovery_enabled, ssn_mode, browser_hardening)
                 SELECT id, policy_sequence, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $16, $17, $18, $19::jsonb, $20::jsonb,
-                    $21, $22, $23, $24, $25::jsonb, $26, $27, $28, $29::jsonb, $30, $31
+                    $21, $22, $23, $24, $25::jsonb, $26, $27, $28, $29::jsonb, $30, $31, $32::jsonb
                 FROM next_version
                 RETURNING organization_id, version, published_at
             ), group_pointer AS (
@@ -308,7 +309,8 @@ internal sealed partial class ControlStore
             JsonSerializer.Serialize(policy.ExtensionDeployment ?? ExtensionDeployment.Empty, JsonSerializerOptions.Web), policy.BlockedAiAppHosts ?? [],
             content.Chatgpt == "block", content.Gemini == "block",
             JsonSerializer.Serialize(policy.IdentifierProtection ?? IdentifierProtection.Disabled, JsonSerializerOptions.Web),
-            policy.PresetDiscoveryEnabled ?? false, policy.SsnMode ?? "off");
+            policy.PresetDiscoveryEnabled ?? false, policy.SsnMode ?? "off",
+            JsonSerializer.Serialize(policy.BrowserHardening ?? BrowserHardening.Empty, JsonSerializerOptions.Web));
         await using var rows = await command.ExecuteReaderAsync(ct);
         await rows.ReadAsync(ct);
         return policy with { Version = rows.GetInt32(0), PublishedAt = rows.GetDateTime(1), RestoredFrom = restoredFrom,
@@ -316,6 +318,7 @@ internal sealed partial class ControlStore
             PromptExceptions = policy.PromptExceptions ?? [], FileInspection = new(inspectChatgpt, inspectGemini), FileContentModes = content,
             IdentifierProtection = policy.IdentifierProtection ?? IdentifierProtection.Disabled, PresetDiscoveryEnabled = policy.PresetDiscoveryEnabled ?? false,
             SsnMode = policy.SsnMode ?? "off",
+            BrowserHardening = policy.BrowserHardening ?? BrowserHardening.Empty,
             ExtensionDeployment = policy.ExtensionDeployment ?? ExtensionDeployment.Empty, BlockedAiAppHosts = policy.BlockedAiAppHosts ?? [] };
     }
 

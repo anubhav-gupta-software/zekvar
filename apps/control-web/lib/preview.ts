@@ -10,6 +10,7 @@ import type { Policy } from './control';
 import { sameCustomApps, type CustomAppSetting } from '../../../contracts/policy/discovery';
 import { evaluatePromptWithExceptions, exceptionDecision, samePromptExceptions, type PromptException } from '../../../contracts/policy/prompt-exceptions';
 import { sameExtensionDeployment, type ExtensionDeployment } from './extension-deployment';
+import { hardeningDifferences, type BrowserHardening } from './browser-hardening';
 import { blockedAiAppAt } from '../../../contracts/policy/ai-app-access';
 
 export type PreviewPolicy = {
@@ -19,6 +20,7 @@ export type PreviewPolicy = {
   ssnMode?: DetectorMode;
   extensionInventoryEnabled: boolean;
   extensionDeployment?: ExtensionDeployment;
+  browserHardening?: BrowserHardening;
   blockedAiAppHosts?: string[];
   claudePromptEnabled: boolean;
   fileInspection?: FileInspection;
@@ -45,6 +47,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     promptExceptions: policy.promptExceptions ?? [],
     extensionInventoryEnabled: policy.extensionInventoryEnabled ?? false,
     extensionDeployment: policy.extensionDeployment,
+    browserHardening: policy.browserHardening,
     blockedAiAppHosts: policy.blockedAiAppHosts,
     claudePromptEnabled: policy.claudePromptEnabled ?? false,
     domainRules: policy.domainRules ?? emptyDomainRules,
@@ -63,6 +66,7 @@ export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
     a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
     a.presetDiscoveryEnabled === b.presetDiscoveryEnabled &&
     sameExtensionDeployment(a.extensionDeployment, b.extensionDeployment) &&
+    hardeningDifferences(a.browserHardening, b.browserHardening).length === 0 &&
     (a.blockedAiAppHosts ?? []).join(',') === (b.blockedAiAppHosts ?? []).join(',') &&
     a.claudePromptEnabled === b.claudePromptEnabled &&
     uploadApps.every((app) => a.uploadModes[app] === b.uploadModes[app] && sameUploadTypes(a.uploadTypes[app], b.uploadTypes[app]) &&

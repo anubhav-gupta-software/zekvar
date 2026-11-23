@@ -145,6 +145,7 @@ try {
   const claudeAdmin = randomBytes(32).toString('hex');
   const officeAdmin = randomBytes(32).toString('hex');
   const deploymentAdmin = randomBytes(32).toString('hex');
+  const hardeningAdmin = randomBytes(32).toString('hex');
   const aiAccessAdmin = randomBytes(32).toString('hex');
   const identifiersAdmin = randomBytes(32).toString('hex');
   const apiServer = startService('dotnet', ['bin/Debug/net10.0/Control.Api.dll'], api, {
@@ -160,6 +161,7 @@ try {
     Control__Organizations__10__Slug: 'extension-deployment', Control__Organizations__10__AdminToken: deploymentAdmin,
     Control__Organizations__11__Slug: 'ai-app-access', Control__Organizations__11__AdminToken: aiAccessAdmin,
     Control__Organizations__12__Slug: 'organization-identifiers', Control__Organizations__12__AdminToken: identifiersAdmin,
+    Control__Organizations__13__Slug: 'chrome-hardening', Control__Organizations__13__AdminToken: hardeningAdmin,
     ...(flags.has('--pilot') ? {
       Control__Organizations__3__Slug: 'managed-pilot', Control__Organizations__3__AdminToken: pilotAdmin,
       Control__Organizations__4__Slug: 'review-pilot', Control__Organizations__4__AdminToken: reviewAdmin,
@@ -198,6 +200,11 @@ try {
     ZEKVAR_TEST_WEB_ORIGIN: webOrigin, ZEKVAR_TEST_API_ORIGIN: apiOrigin, ZEKVAR_TEST_ADMIN_TOKEN: deploymentAdmin,
     ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0',
     ZEKVAR_TEST_DEPLOYMENT_SCREENSHOT: artifacts ? join(artifacts, '35-chrome-extension-deployment.png') : '',
+  });
+  await run(process.execPath, ['--test', 'test/browser-hardening.test.mjs'], web, {
+    ZEKVAR_TEST_WEB_ORIGIN: webOrigin, ZEKVAR_TEST_API_ORIGIN: apiOrigin, ZEKVAR_TEST_ADMIN_TOKEN: hardeningAdmin,
+    ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0',
+    ZEKVAR_TEST_HARDENING_SCREENSHOT: artifacts ? join(artifacts, '40-chrome-hardening.png') : '',
   });
   await run(process.execPath, ['--test', 'test/ai-app-access.test.mjs'], extension, {
     ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: aiAccessAdmin,

@@ -37,6 +37,7 @@ const ssnAdmin = randomBytes(32).toString('hex');
 const alertsAdmin = randomBytes(32).toString('hex');
 const webhooksAdmin = randomBytes(32).toString('hex');
 const eventFeedAdmin = randomBytes(32).toString('hex');
+const hardeningAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -96,7 +97,7 @@ async function retentionFixture(query) {
   return stdout.trim();
 }
 
-function browserPolicyOnly({ extensionDeployment: _extensionDeployment, blockedAiAppHosts: _blockedAiAppHosts,
+function browserPolicyOnly({ extensionDeployment: _extensionDeployment, browserHardening: _browserHardening, blockedAiAppHosts: _blockedAiAppHosts,
   fileContentModes: _fileContentModes, identifierProtection: _identifierProtection, presetDiscoveryEnabled: _presetDiscovery,
   ssnMode: _ssnMode, ...browserPolicy }) {
   return browserPolicy;
@@ -187,6 +188,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__19__AdminToken: webhooksAdmin,
       Control__Organizations__20__Slug: `event-feed-${suffix}`,
       Control__Organizations__20__AdminToken: eventFeedAdmin,
+      Control__Organizations__21__Slug: `hardening-${suffix}`,
+      Control__Organizations__21__AdminToken: hardeningAdmin,
       ...overrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -4043,5 +4046,73 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual(await issue('Over capacity', { expect: 409 }), { code: 'event_feed_key_limit' });
     await revoke(reserve[0].key.id);
     assert.equal((await issue('Recovered key slot')).key.status, 'active');
+  });
+
+  await t.test('versions Chrome hardening plans with scoped reviews, safe defaults, and policy rollback', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: hardeningAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const initial = { safeBrowsing: 'preserve', downloads: 'preserve', lockSafeBrowsingWarnings: false, disableGuest: false,
+      disableIncognito: false, disablePasswordSaving: false, disableSync: false };
+    const baseline = await post('policies', { mode: 'block' });
+    if (postgres) {
+      await stop();
+      await retentionFixture('DELETE FROM schema_migrations WHERE version = 40; ALTER TABLE policy_versions DROP COLUMN browser_hardening;');
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 40'), '1');
+    }
+    assert.deepEqual((await admin('policies'))[0], baseline);
+    assert.deepEqual(baseline.browserHardening, initial);
+    const requested = { ...initial, safeBrowsing: 'standard', downloads: 'all', lockSafeBrowsingWarnings: true,
+      disableGuest: true, disableIncognito: true, disablePasswordSaving: true, disableSync: true };
+    const group = await post('policy-groups', { name: 'Chrome hardening canary' });
+    const groupPath = `policy-groups/${group.id}`;
+    const path = `${groupPath}/policies`;
+    const save = (browserHardening, options, expectedVersion = baseline.version) => post(path, { browserHardening, expectedVersion }, options);
+    await post(path, { browserHardening: requested }, { expect: 400 });
+    await save({ ...requested, safeBrowsing: 'disabled' }, { expect: 400 });
+    await save({ ...requested, safeBrowsing: null }, { expect: 400 });
+    await save({ ...requested, downloads: '3' }, { expect: 400 });
+    await save({ ...requested, extraPolicy: 'private synthetic marker' }, { expect: 400 });
+    await save(requested, { token: eventFeedAdmin, expect: 409 });
+    await save(requested, { expect: 409 }, baseline.version - 1);
+    const first = await save(requested);
+    assert.deepEqual(first.browserHardening, requested);
+    assert.deepEqual(await admin(path, { token: eventFeedAdmin }), []);
+    await save(requested, { expect: 409 });
+    assert.equal((await admin(path)).length, 1);
+    assert.deepEqual((await admin('policies'))[0].browserHardening, initial);
+    const author = await post('access', { name: 'Hardening author', role: 'administrator', hours: 1 });
+    const reviewer = await post('access', { name: 'Hardening reviewer', role: 'administrator', hours: 1 });
+    const auditor = await post('access', { name: 'Hardening auditor', role: 'auditor', hours: 1 });
+    assert.deepEqual((await admin(path, { token: auditor.token }))[0].browserHardening, requested);
+    await save(requested, { token: auditor.token, expect: 403 }, first.version);
+    await post('policy-reviews/setting', { required: true }, { expect: 204 });
+    await save(requested, { expect: 403 }, first.version);
+    const stricter = { ...requested, safeBrowsing: 'enhanced' };
+    const { reviewId } = await save(stricter, { token: author.token, expect: 202, expectReview: true }, first.version);
+    const review = (await admin('policy-reviews')).entries.find(({ id }) => id === reviewId);
+    assert.deepEqual(review.snapshots.before.browserHardening, requested);
+    assert.deepEqual(review.snapshots.candidate.browserHardening, stricter);
+    assert.deepEqual((await admin(path))[0].browserHardening, requested);
+    await post(`policy-reviews/${reviewId}/decision`, { approve: true }, { token: author.token, expect: 403 });
+    const approved = await post(`policy-reviews/${reviewId}/decision`, { approve: true }, { token: reviewer.token });
+    assert.deepEqual(approved.browserHardening, stricter);
+    const audited = (await admin('audit?action=policy_published')).entries.find(({ policyVersion }) => policyVersion === approved.version);
+    assert.equal(audited.actorAccess.id, reviewer.access.id);
+    assert.equal(audited.groupChange.groupId, group.id);
+    await post('policy-reviews/setting', { required: false }, { expect: 204 });
+    const otherSetting = await post(path, { mode: 'warn', expectedVersion: approved.version });
+    assert.deepEqual(otherSetting.browserHardening, stricter);
+    const promoted = await post(`${groupPath}/promote`, { expectedVersion: otherSetting.version });
+    assert.deepEqual(promoted.browserHardening, stricter);
+    const { grant } = await post('enrollment-grants');
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const delivered = await call('/v1/browser/policy', { token: browser.token });
+    assert.equal(delivered.version, promoted.version);
+    assert.equal(delivered.mode, 'warn');
+    assert.equal(Object.hasOwn(delivered, 'browserHardening'), false);
+    const restored = await post(`policies/${baseline.version}/restore`);
+    assert.deepEqual(restored.browserHardening, initial);
+    assert.deepEqual((await admin(path))[0].browserHardening, stricter);
   });
 });
