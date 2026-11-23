@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +35,7 @@ const casesAdmin = randomBytes(32).toString('hex');
 const presetsAdmin = randomBytes(32).toString('hex');
 const ssnAdmin = randomBytes(32).toString('hex');
 const alertsAdmin = randomBytes(32).toString('hex');
+const webhooksAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -56,6 +58,8 @@ const undoIdentifierSchema = `
   ALTER TABLE policy_deliveries DROP COLUMN identifiers;
 `;
 const undoAlertSchema = `
+  DELETE FROM schema_migrations WHERE version = 38;
+  DROP TABLE alert_webhook_deliveries;
   DELETE FROM schema_migrations WHERE version = 37;
   DROP TABLE security_alert_events;
   DROP TABLE security_alert_windows;
@@ -121,7 +125,7 @@ async function call(path, { token, method = 'GET', body, expect = 200, assignmen
 let processHandle;
 let exited;
 
-async function start(sweepSeconds = 3600) {
+async function start(sweepSeconds = 3600, overrides = {}) {
   processHandle = spawn('dotnet', [app], {
     env: {
       ...process.env,
@@ -168,6 +172,9 @@ async function start(sweepSeconds = 3600) {
       Control__Organizations__17__AdminToken: ssnAdmin,
       Control__Organizations__18__Slug: `alerts-${suffix}`,
       Control__Organizations__18__AdminToken: alertsAdmin,
+      Control__Organizations__19__Slug: `webhooks-${suffix}`,
+      Control__Organizations__19__AdminToken: webhooksAdmin,
+      ...overrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -193,7 +200,7 @@ async function stop() {
   processHandle = undefined;
 }
 
-test('Control persists tenant-scoped policies, enrollment and metadata in PostgreSQL', { timeout: 60_000 }, async (t) => {
+test('Control persists tenant-scoped policies, enrollment and metadata in PostgreSQL', { timeout: 120_000 }, async (t) => {
   t.after(stop);
   await start();
   let client;
@@ -3672,5 +3679,200 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       assert.equal(await retentionFixture(`SELECT count(*) FROM security_alert_events WHERE alert_id = '${raised.id}'`), '0');
       assert.equal((await admin('audit?action=security_alert_acknowledged')).entries.length, 1);
     }
+  });
+
+  await t.test('delivers a durable signed webhook with tenant isolation, retry, and recovery', async (webhookTest) => {
+    const inbox = [];
+    const replies = [];
+    const receiver = createServer(async (request, response) => {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const body = Buffer.concat(chunks);
+      inbox.push({ path: request.url, method: request.method, headers: request.headers, body });
+      const reply = replies.shift() ?? { status: 204 };
+      if (!reply.hold) response.writeHead(reply.status, reply.headers).end();
+    });
+    receiver.listen(0, '127.0.0.1');
+    await once(receiver, 'listening');
+    webhookTest.after(() => new Promise((resolve) => { receiver.close(resolve); receiver.closeAllConnections(); }));
+    const endpoint = `http://127.0.0.1:${receiver.address().port}/notify`;
+    const secret = randomBytes(32).toString('hex');
+    const organization = `webhooks-${suffix}`;
+    const route = {
+      Control__AlertWebhooks__0__OrganizationSlug: organization,
+      Control__AlertWebhooks__0__Endpoint: endpoint,
+      Control__AlertWebhooks__0__SigningSecret: secret,
+    };
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: webhooksAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const { grant } = await post('enrollment-grants');
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const policy = await post('policies', { mode: 'block' });
+    async function eventually(check, message) {
+      for (let attempt = 0; attempt < 75; attempt++) {
+        const result = await check();
+        if (result) return result;
+        await delay(100);
+      }
+      assert.fail(message);
+    }
+    async function raise(appId = 'chatgpt') {
+      const previous = new Set((await admin('alerts')).entries.map(({ id }) => id));
+      let settings = await admin('alerts/settings');
+      if (settings.enabled) settings = await post('alerts/settings', { enabled: false, threshold: 2, expectedRevision: settings.revision });
+      await post('alerts/settings', { enabled: true, threshold: 2, expectedRevision: settings.revision });
+      const remaining = 900_000 - Date.now() % 900_000;
+      if (remaining < 3000) await delay(remaining + 50);
+      const one = { ...contract.event, appId, eventId: randomUUID(), timestamp: new Date().toISOString(),
+        policyVersion: policy.version, decision: 'block' };
+      const send = (body) => call('/v1/browser/events', { token: browser.token, method: 'POST', body, expect: 204 });
+      await Promise.all([send(one), send({ ...one, eventId: randomUUID() }), send(one)]);
+      const alert = (await admin('alerts')).entries.find(({ id }) => !previous.has(id));
+      assert.ok(alert);
+      assert.equal(alert.blockCount, 2);
+      return alert;
+    }
+    const detail = (alert, options) => admin(`alerts/${alert.id}`, options);
+    const state = (alert, wanted) => eventually(async () => {
+      const lease = (await detail(alert)).webhook;
+      return lease?.status === wanted ? lease : false;
+    }, `The webhook did not enter state ${wanted}.`);
+    const old = await raise();
+    assert.equal((await detail(old)).webhook, undefined);
+    await assert.rejects(sql('dotnet', [app], { timeout: 5000, env: {
+      ...process.env, ASPNETCORE_ENVIRONMENT: 'Production', DOTNET_ENVIRONMENT: 'Production', Control__HostedPilot: 'true',
+      ConnectionStrings__Control: db, Control__Organizations__0__Slug: organization, Control__Organizations__0__AdminToken: webhooksAdmin, ...route,
+    } }), (error) => {
+      assert.match(error.stderr, /Configure one HTTPS alert webhook/);
+      assert.doesNotMatch(error.stderr, new RegExp(secret));
+      return true;
+    });
+    await stop();
+    if (postgres) await retentionFixture('DELETE FROM schema_migrations WHERE version = 38; DROP TABLE alert_webhook_deliveries;');
+    await start(3600, route);
+    if (postgres) assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 38'), '1');
+    assert.equal((await detail(old)).webhook, undefined);
+    assert.deepEqual(inbox, []);
+
+    if (postgres) replies.push({ status: 429, headers: { 'Retry-After': '90' } }, { status: 204 });
+    const delivered = await raise('gemini');
+    if (postgres) {
+      const retry = await state(delivered, 'retrying');
+      assert.equal(retry.lastHttpStatus, 429);
+      assert.equal(retry.attempts, 1);
+      assert.ok(Date.parse(retry.nextAttemptAt) - Date.parse(retry.lastAttemptAt) >= 90_000);
+      await retentionFixture(`UPDATE alert_webhook_deliveries SET available_at = now() WHERE alert_id = '${delivered.id}';`);
+    }
+    const sent = await state(delivered, 'sent');
+    assert.equal(sent.attempts, postgres ? 2 : 1);
+    assert.equal(sent.lastHttpStatus, 204);
+    assert.ok(Date.parse(sent.sentAt));
+    const [message, again] = inbox;
+    function checkSignature(entry) {
+      const time = entry.headers['x-zekvar-timestamp'];
+      assert.match(time, /^\d{10}$/);
+      assert.ok(Math.abs(Math.floor(Date.now() / 1000) - Number(time)) < 60);
+      const signature = createHmac('sha256', Buffer.from(secret, 'hex')).update(time + '.').update(entry.body).digest('hex');
+      assert.equal(entry.headers['x-zekvar-signature'], `v1=${signature}`);
+      assert.equal(entry.headers.authorization, undefined);
+      assert.equal(entry.headers['content-type'], 'application/json');
+      assert.equal(entry.method, 'POST');
+      const payload = JSON.parse(entry.body);
+      assert.equal(payload.deliveryId, entry.headers['x-zekvar-delivery-id']);
+      assert.equal(payload.organization, organization);
+      assert.deepEqual(Object.keys(payload).sort(), [
+        'alertId', 'appId', 'deliveryId', 'organization', 'rollout', 'rolloutGroupId', 'schemaVersion',
+        'threshold', 'triggeredAt', 'type', 'windowEnd', 'windowStart',
+      ]);
+      return payload;
+    }
+    const payload = checkSignature(message);
+    assert.equal(message.path, '/notify');
+    assert.equal(payload.type, 'security.alert.opened');
+    assert.equal(payload.schemaVersion, 1);
+    assert.equal(payload.appId, 'gemini');
+    assert.equal(payload.alertId, delivered.id);
+    assert.equal(payload.threshold, 2);
+    if (again) {
+      assert.deepEqual(checkSignature(again), payload);
+      assert.deepEqual(again.body, message.body);
+    }
+    const auditor = await post('access', { name: 'Webhook auditor', role: 'auditor', hours: 1 });
+    assert.deepEqual((await detail(delivered, { token: auditor.token })).webhook, sent);
+    await detail(delivered, { token: second, expect: 404 });
+    const recorded = JSON.stringify(await detail(delivered));
+    assert.ok(!recorded.includes(endpoint) && !recorded.includes(secret) && !recorded.includes(payload.deliveryId));
+
+    const foreign = (path, options) => admin(path, { token: alertsAdmin, ...options });
+    const foreignPost = (path, body) => foreign(path, { method: 'POST', body });
+    const prior = await foreign('alerts/settings');
+    const previousForeignAlerts = new Set((await foreign('alerts?appId=chatgpt')).entries.map(({ id }) => id));
+    const disabled = await foreignPost('alerts/settings', { enabled: false, threshold: 2, expectedRevision: prior.revision });
+    await foreignPost('alerts/settings', { enabled: true, threshold: 2, expectedRevision: disabled.revision });
+    const [foreignPolicy] = await foreign('policies');
+    const foreignGrant = (await foreignPost('enrollment-grants')).grant;
+    const unrouted = await call('/v1/enroll', { method: 'POST', body: { grant: foreignGrant } });
+    const remaining = 900_000 - Date.now() % 900_000;
+    if (remaining < 3000) await delay(remaining + 50);
+    await Promise.all(Array.from({ length: 2 }, () => {
+      const eventId = randomUUID();
+      return call('/v1/browser/events', { method: 'POST', token: unrouted.token, expect: 204, body: {
+        ...contract.event, eventId, appId: 'chatgpt', policyVersion: foreignPolicy.version, decision: 'block', timestamp: new Date().toISOString(),
+      } });
+    }));
+    const otherAlert = (await foreign('alerts?appId=chatgpt')).entries.find(({ id }) => !previousForeignAlerts.has(id));
+    assert.ok(otherAlert);
+    assert.equal((await foreign(`alerts/${otherAlert.id}`)).webhook, undefined);
+    await delay(2200);
+    assert.equal(inbox.length, postgres ? 2 : 1);
+
+    replies.push({ status: 302, headers: { Location: '/should-not-receive' } });
+    const redirect = await raise();
+    const failed = await state(redirect, 'failed');
+    assert.equal(failed.attempts, 1);
+    assert.equal(failed.lastHttpStatus, 302);
+    assert.ok(inbox.every(({ path }) => path === '/notify'));
+    if (!postgres) return;
+
+    replies.push({ hold: true });
+    const interrupted = await raise();
+    const attempted = await eventually(() => inbox.find(({ body }) => JSON.parse(body).alertId === interrupted.id),
+      'The pending webhook did not reach its receiver.');
+    await stop();
+    await start(3600, { ...route, Control__AlertWebhooks__0__Endpoint: endpoint + '-replacement' });
+    const unavailable = await state(interrupted, 'paused');
+    assert.equal(unavailable.attempts, 1);
+    assert.equal(unavailable.nextAttemptAt, null);
+    assert.ok(inbox.every(({ path }) => path === '/notify'));
+    await stop();
+    await retentionFixture(`UPDATE alert_webhook_deliveries SET lease_until = now() - interval '1 second'
+      WHERE alert_id = '${interrupted.id}';`);
+    await start(3600, route);
+    assert.equal((await state(interrupted, 'sent')).attempts, 2);
+    const recovered = inbox.filter(({ body }) => JSON.parse(body).alertId === interrupted.id);
+    assert.equal(recovered.length, 2);
+    assert.deepEqual(recovered[1].body, attempted.body);
+    checkSignature(recovered[1]);
+
+    replies.push({ status: 503 }, { status: 503 });
+    const exhausted = await raise('gemini');
+    await state(exhausted, 'retrying');
+    await retentionFixture(`UPDATE alert_webhook_deliveries SET attempts = 5, available_at = now()
+      WHERE alert_id = '${exhausted.id}';`);
+    const terminal = await state(exhausted, 'failed');
+    assert.equal(terminal.attempts, 6);
+    assert.equal(terminal.lastHttpStatus, 503);
+    assert.equal(terminal.nextAttemptAt, null);
+
+    replies.push({ status: 503 });
+    const restored = await raise();
+    await state(restored, 'retrying');
+    await stop();
+    await retentionFixture(await readFile(new URL('../../../deploy/pilot/recover-access.sql', import.meta.url), 'utf8'));
+    await start(3600, route);
+    const cancelled = await state(restored, 'failed');
+    assert.equal(cancelled.failureCode, 'recovery_cancelled');
+    assert.equal(cancelled.attempts, 1);
+    assert.equal((await detail(interrupted)).webhook.status, 'sent');
   });
 });

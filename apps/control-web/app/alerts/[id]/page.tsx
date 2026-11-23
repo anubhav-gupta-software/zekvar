@@ -1,6 +1,6 @@
 import { notFound, redirect } from 'next/navigation';
 import { canWrite } from '../../../lib/access';
-import { alertNumber, alertPath, alertRollout, alertStatus } from '../../../lib/alerts';
+import { alertNumber, alertPath, alertRollout, alertStatus, type AlertWebhook } from '../../../lib/alerts';
 import { ApiError, controlApi } from '../../../lib/api';
 import { fileCheckUnavailableLabel, isId, promptAppLabels, ruleLabels, utc } from '../../../lib/control';
 import { readEventCursor, setEventCursor } from '../../../lib/events';
@@ -14,6 +14,33 @@ import { DeploymentBadge, Sidebar } from '../../workspace';
 const evidenceLabels: Record<string, string> = {
   ...ruleLabels, [uploadRule]: 'AI file upload', [fileInspectionUnavailableRule]: fileCheckUnavailableLabel,
 };
+const webhookStatuses: Record<AlertWebhook['status'], string> = {
+  queued: 'Queued', sending: 'Sending', retrying: 'Retry scheduled', sent: 'Delivered', failed: 'Failed', paused: 'Destination unavailable',
+};
+const webhookFailures: Record<string, string> = {
+  http_status: 'Receiver rejected the request',
+  network_error: 'Connection failed',
+  request_timeout: 'Receiver timed out',
+  delivery_unconfirmed: 'Final delivery attempt unconfirmed',
+  recovery_cancelled: 'Cancelled during database recovery',
+};
+
+function AlertDelivery({ delivery }: { delivery: AlertWebhook }) {
+  const next = delivery.nextAttemptAt;
+  const last = delivery.lastAttemptAt;
+  const sent = delivery.sentAt;
+  const failure = delivery.failureCode && webhookFailures[delivery.failureCode];
+  return <section className="panel" aria-labelledby="webhook-delivery-heading">
+    <div className="panel-heading"><h2 id="webhook-delivery-heading">Webhook delivery</h2>
+      <RefreshSection label="Refresh delivery status" /></div>
+    <p><span className="badge">{webhookStatuses[delivery.status]}</span>{' '}
+      <span className="muted">{delivery.attempts} {delivery.attempts === 1 ? 'attempt' : 'attempts'}</span></p>
+    {sent ? <p className="muted">Delivered <time dateTime={sent}>{utc.format(new Date(sent))} UTC</time></p> :
+      last && <p className="muted">Last attempt <time dateTime={last}>{utc.format(new Date(last))} UTC</time></p>}
+    {failure && <p className="muted">{failure}{delivery.lastHttpStatus && <> · HTTP {delivery.lastHttpStatus}</>}</p>}
+    {next && delivery.status === 'retrying' && <p className="muted">Next attempt <time dateTime={next}>{utc.format(new Date(next))} UTC</time></p>}
+  </section>;
+}
 
 export default async function AlertDetail({ params, searchParams }: {
   params: Promise<{ id: string }>;
@@ -45,7 +72,7 @@ export default async function AlertDetail({ params, searchParams }: {
         <div>{session && <p className="eyebrow">{session.organization}</p>}<h1>Alert {alertNumber(id)}</h1></div>
         <DeploymentBadge />
       </header>
-      <div className="form-row"><a className="button small" href="/alerts">Back to alert inbox</a></div>
+      <div className="form-row mb-3"><a className="button small" href="/alerts">Back to alert inbox</a></div>
       {alert && evidence ? <>
         <section className="panel" aria-labelledby="alert-detail-heading">
           <div className="panel-heading"><h2 id="alert-detail-heading">Repeated AI blocks</h2>
@@ -58,6 +85,7 @@ export default async function AlertDetail({ params, searchParams }: {
             {utc.format(new Date(alert.acknowledgedAt))} UTC</time></p> : canWrite(session) &&
             <MutationForm action={acknowledgeAlert.bind(null, id)} label="Acknowledge alert" />}
         </section>
+        {detail.webhook && <AlertDelivery delivery={detail.webhook} />}
         <section className="panel table-panel" aria-labelledby="alert-evidence-heading">
           <div className="panel-heading"><h2 id="alert-evidence-heading">Blocked events</h2><RefreshSection label="Refresh alert evidence" /></div>
           {invalidCursor ? <div className="table-footer"><p role="alert">Choose a complete evidence cursor.</p>

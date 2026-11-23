@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Control;
 
 internal sealed record SecurityAlertSettings(bool Enabled, int Threshold, int Revision)
@@ -14,5 +16,6 @@ internal sealed record SecurityAlert(Guid Id, string AppId, EventRollout Rollout
     int Threshold, long BlockCount, DateTime TriggeredAt, DateTime? AcknowledgedAt);
 internal sealed record SecurityAlertCursor(DateTimeOffset TriggeredAt, Guid Id);
 internal sealed record SecurityAlertPage(IReadOnlyList<SecurityAlert> Entries, SecurityAlertCursor? Next);
-internal sealed record SecurityAlertDetails(SecurityAlert Alert, EventPage Evidence);
+internal sealed record SecurityAlertDetails(SecurityAlert Alert, EventPage Evidence,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] AlertWebhookDelivery? Webhook = null);
 internal sealed record SecurityAlertChange(Guid? AlertId = null, SecurityAlertSettings? Before = null, SecurityAlertSettings? After = null);

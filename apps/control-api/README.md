@@ -189,6 +189,8 @@ After enablement, each newly stored AI Block decision contributes once to its ap
 
 Alert windows expire after 30 days or when the first receipt in the window crosses the configured event cutoff, whichever comes first. Evidence follows the underlying event retention cutoff. Untriggered windows are eligible for cleanup an hour after the start of their window. Manual and scheduled cleanup report removed alert windows when applicable. Audit entries follow the audit retention window.
 
+For a configured webhook, the alert detail includes a `webhook` object with delivery status, attempt count, timestamps, and a categorized failure where applicable. Route configuration and signing keys remain in the deployment configuration. Jobs inherit the parent alert's visibility and retention.
+
 ## Incident cases
 
 - `GET /v1/admin/cases` lists up to 100 retained cases for the organization, newest first by creation time. Filter by `status` or `openOnly=true`. Use the returned `createdAt` and `id` as `beforeAt` and `beforeId` for the next page.

@@ -153,6 +153,8 @@ Open **Reports** in Control. Choose the last 7 or 30 UTC calendar days, an AI ap
 
 Alert settings apply to newly received decisions. Turning the rule off stops new counting and keeps existing alerts visible under their retention window. A change to the threshold starts a fresh count. Alert summaries are available for up to 30 days, subject to the organization's security-event retention policy. The evidence table follows individual event retention.
 
+If the deployment operator configured a webhook, open the alert's **Webhook delivery** section to see whether it was delivered, when Control will retry, or why an attempt failed. Refresh delivery status to check the latest attempt. [Configure alert delivery](../../deploy/pilot/README.md#send-alerts-to-a-webhook)
+
 ## Investigate an incident case
 
 1. Open a detection from **Events**. Under **Incident case**, choose a category and select **Open new case**. To add another detection, open that event, choose **Link to an existing case**, and select the case from the list.

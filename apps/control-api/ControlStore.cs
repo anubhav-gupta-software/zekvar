@@ -9,8 +9,10 @@ internal sealed partial class ControlStore
 {
     private readonly NpgsqlDataSource dataSource;
     private readonly ControlSso? sso;
+    private readonly AlertWebhooks alertWebhooks;
 
-    public ControlStore(NpgsqlDataSource dataSource, ControlSso? sso) => (this.dataSource, this.sso) = (dataSource, sso);
+    public ControlStore(NpgsqlDataSource dataSource, ControlSso? sso, AlertWebhooks alertWebhooks) =>
+        (this.dataSource, this.sso, this.alertWebhooks) = (dataSource, sso, alertWebhooks);
 
     public async Task Initialize(DemoOrganization[] organizations, CancellationToken ct)
     {
@@ -60,6 +62,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 35, "035_ai_discovery_presets.sql", ct);
         await ApplyMigration(connection, 36, "036_social_security_number.sql", ct);
         await ApplyMigration(connection, 37, "037_security_alerts.sql", ct);
+        await ApplyMigration(connection, 38, "038_alert_webhook_delivery.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -473,15 +476,21 @@ internal sealed partial class ControlStore
                     first_received_at = LEAST(security_alert_windows.first_received_at, EXCLUDED.first_received_at),
                     triggered_at = COALESCE(security_alert_windows.triggered_at,
                         CASE WHEN security_alert_windows.block_count + 1 >= security_alert_windows.threshold THEN clock_timestamp() END)
-                RETURNING organization_id, id
+                RETURNING organization_id, id, block_count, threshold
             ), linked AS (
                 INSERT INTO security_alert_events (organization_id, alert_id, installation_id, event_id)
                 SELECT c.organization_id, c.id, w.installation_id, w.event_id
                 FROM counted c JOIN written w USING (organization_id)
+            ), queued AS (
+                INSERT INTO alert_webhook_deliveries (organization_id, alert_id, route_fingerprint)
+                SELECT c.organization_id, c.id, route.value FROM counted c
+                JOIN organizations o ON o.id = c.organization_id
+                JOIN jsonb_each_text($10::jsonb) AS route ON route.key = o.slug
+                WHERE c.block_count = c.threshold
             )
             SELECT EXISTS (SELECT 1 FROM eligible)
             """, installationId, request.EventId, request.Timestamp.UtcDateTime, request.PolicyVersion, request.Decision, request.AppId,
-            request.RuleId, request.AssignmentVersion, (object?)request.UploadMethod ?? DBNull.Value);
+            request.RuleId, request.AssignmentVersion, (object?)request.UploadMethod ?? DBNull.Value, alertWebhooks.Routing);
         return (bool)(await command.ExecuteScalarAsync(ct))!;
     }
 

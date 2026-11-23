@@ -24,6 +24,7 @@ if (organizations is not { Length: > 0 } || organizations.Any(org => !ValidOrgan
     organizations.Select(org => org.AdminToken).Distinct().Count() != organizations.Length)
     throw new InvalidOperationException("Configure distinct organization slugs and 32-byte hex admin tokens.");
 var sso = ControlSso.Read(builder.Configuration, hostedPilot, organizations);
+var alertWebhooks = AlertWebhooks.Read(builder.Configuration, builder.Environment.IsDevelopment(), organizations);
 
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -34,9 +35,11 @@ builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadReq
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow);
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
-builder.Services.AddSingleton(services => new ControlStore(services.GetRequiredService<NpgsqlDataSource>(), sso));
+builder.Services.AddSingleton(alertWebhooks);
+builder.Services.AddSingleton(services => new ControlStore(services.GetRequiredService<NpgsqlDataSource>(), sso, alertWebhooks));
 builder.Services.AddHostedService<RetentionSweep>(services => new(services.GetRequiredService<ControlStore>(),
     services.GetRequiredService<ILogger<RetentionSweep>>(), TimeSpan.FromSeconds(sweepSeconds)));
+if (alertWebhooks.Enabled) builder.Services.AddHostedService<AlertWebhookDispatcher>();
 
 var app = builder.Build();
 var store = app.Services.GetRequiredService<ControlStore>();

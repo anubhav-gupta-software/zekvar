@@ -57,4 +57,14 @@ SELECT organization_id, 'policy_review_decided', jsonb_build_object(
     'reviewId', id, 'operation', operation, 'status', 'cancelled', 'groupId', group_id, 'baseVersion', base_version
 ) FROM cancelled;
 
+DO $$
+BEGIN
+    IF to_regclass('public.alert_webhook_deliveries') IS NOT NULL THEN
+        UPDATE public.alert_webhook_deliveries
+            SET status = 'failed', failure_code = 'recovery_cancelled', lease_id = NULL, lease_until = NULL
+        WHERE status = 'pending';
+    END IF;
+END;
+$$;
+
 COMMIT;

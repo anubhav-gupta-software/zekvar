@@ -119,11 +119,12 @@ internal sealed partial class ControlStore
         var entries = new List<StoredEvent>();
         await using (var rows = await evidence.ExecuteReaderAsync(ct))
             while (await rows.ReadAsync(ct)) entries.Add(ReadEvent(rows));
+        var webhook = await ReadAlertWebhook(snapshot, organizationId, alertId, ct);
         await snapshot.CommitAsync(ct);
-        if (entries.Count <= AlertPageSize) return new(alert, new(entries, null));
+        if (entries.Count <= AlertPageSize) return new(alert, new(entries, null), webhook);
         entries.RemoveAt(AlertPageSize);
         var last = entries[^1];
-        return new(alert, new(entries, new(last.ReceivedAt, last.EventId, last.InstallationId)));
+        return new(alert, new(entries, new(last.ReceivedAt, last.EventId, last.InstallationId)), webhook);
     }
 
     public async Task<bool> AcknowledgeSecurityAlert(RequestIdentity identity, Guid alertId, CancellationToken ct)

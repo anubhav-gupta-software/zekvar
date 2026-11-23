@@ -31,6 +31,18 @@ Run the hosted SSO lab before connecting a customer provider. It uses a disposab
 node scripts/verify-demo.mjs --sso --headed --artifacts /tmp/zekvar-sso
 ```
 
+## Send alerts to a webhook
+
+Set `ZEKVAR_ALERT_WEBHOOK_ENDPOINT` to the recipient's HTTPS URL and `ZEKVAR_ALERT_WEBHOOK_SIGNING_SECRET` to a separate 32-byte key in lowercase hexadecimal. Give the same key to the receiver through your organization's secret management process. Recreate the API service with the updated settings, then enable the alert rule in Control. Alert delivery begins with new alerts. Deployments serving multiple organizations can use indexed `Control__AlertWebhooks__0__OrganizationSlug`, `Control__AlertWebhooks__0__Endpoint`, and `Control__AlertWebhooks__0__SigningSecret` entries, with one destination per organization slug. Development on the same machine also accepts an HTTP receiver at `127.0.0.1`.
+
+Control posts JSON schema version 1 with type `security.alert.opened`. The envelope includes the delivery ID, alert ID, organization slug, application, recorded rollout scope, UTC window and trigger time, and threshold. Each retry uses identical JSON bytes and the same delivery ID. Configure the receiver to:
+
+1. Read the raw UTF-8 body and the `X-Zekvar-Timestamp`, `X-Zekvar-Signature`, and `X-Zekvar-Delivery-Id` headers.
+2. Decode the signing key from its hexadecimal form. Compute HMAC-SHA256 over the ASCII timestamp, a literal period, and the raw body bytes in that order. Compare the hexadecimal MAC to the value after `v1=` in constant time. Accept a short timestamp tolerance, such as five minutes, and compare the delivery header to the signed `deliveryId`.
+3. Record each delivery ID idempotently before returning a 2xx response. A repeat can occur after a lost acknowledgment or restart. Persistent deduplication lets the receiver return 2xx for a delivery it has already processed.
+
+Control retries timeouts, connection errors, HTTP 408, 425, 429, and 5xx responses up to six total attempts. Retry delays start at 15 seconds and double. Control honors a longer `Retry-After` up to one hour. Redirects and other HTTP rejections stop delivery. Existing pending jobs remain pinned to their original destination, and Control shows the destination as unavailable when it changes. Database recovery cancels pending jobs from the restored snapshot. Current status is available in **Alerts → Webhook delivery**.
+
 ## Build and enroll Browser
 
 Use the browser API hostname in the extension build and keep pilot output in its own directory.

@@ -702,6 +702,18 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
     const evidence = dashboard.getByRole('table', { name: 'Blocked events', exact: true });
     await evidence.getByRole('link', { name: /^Review event / }).first().waitFor();
     assert.equal(await evidence.getByRole('link', { name: /^Review event / }).count(), 2);
+    const delivery = dashboard.getByRole('region', { name: 'Webhook delivery', exact: true });
+    if (process.env.ZEKVAR_TEST_WEBHOOK_DELIVERY === '1') {
+      await delivery.waitFor();
+      await until(async () => {
+        if (await delivery.getByText('Delivered', { exact: true }).count()) return true;
+        await delivery.getByRole('button', { name: 'Refresh delivery status', exact: true }).click();
+        return false;
+      }, 'The webhook never showed as delivered in Control.');
+      await delivery.getByText('1 attempt', { exact: true }).waitFor();
+    } else {
+      assert.equal(await delivery.count(), 0);
+    }
     if (artifacts) await dashboard.screenshot({ path: join(artifacts, 'security-alert.png'), fullPage: true });
     const raw = await admin(`alerts/${created.id}`);
     assert.ok(raw.evidence.entries.every(({ eventId }) => eventId !== detected.eventId));

@@ -15,7 +15,16 @@ export type Alert = {
 };
 export type AlertCursor = { triggeredAt: string; id: string };
 export type AlertPage = { entries: Alert[]; next: AlertCursor | null };
-export type AlertDetails = { alert: Alert; evidence: { entries: SecurityEvent[]; next: EventCursor | null } };
+export type AlertWebhook = {
+  status: 'queued' | 'sending' | 'retrying' | 'sent' | 'failed' | 'paused';
+  attempts: number;
+  lastAttemptAt: string | null;
+  nextAttemptAt: string | null;
+  sentAt: string | null;
+  failureCode: string | null;
+  lastHttpStatus: number | null;
+};
+export type AlertDetails = { alert: Alert; evidence: { entries: SecurityEvent[]; next: EventCursor | null }; webhook?: AlertWebhook };
 export type AlertChange = { alertId: string | null; before: AlertSettings | null; after: AlertSettings | null };
 
 export const alertPath = (id: string) => `/alerts/${id}`;

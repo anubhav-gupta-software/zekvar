@@ -37,6 +37,9 @@ services:
       Control__Oidc__Issuer: ${ZEKVAR_OIDC_ISSUER:-}
       Control__Oidc__OrganizationSlug: ${ZEKVAR_ORGANIZATION_SLUG:?set the organization slug}
       Control__Oidc__ExchangeToken: ${ZEKVAR_OIDC_EXCHANGE_TOKEN:-}
+      Control__AlertWebhooks__0__OrganizationSlug: ${ZEKVAR_ORGANIZATION_SLUG:?set the organization slug}
+      Control__AlertWebhooks__0__Endpoint: ${ZEKVAR_ALERT_WEBHOOK_ENDPOINT:-}
+      Control__AlertWebhooks__0__SigningSecret: ${ZEKVAR_ALERT_WEBHOOK_SIGNING_SECRET:-}
       ConnectionStrings__Control: "Host=postgres;Database=zekvar;Username=zekvar_app;Password=${ZEKVAR_POSTGRES_APP_PASSWORD:?generate an app database password}"
 
   web:
