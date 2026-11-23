@@ -5,6 +5,7 @@ import type { PolicyReviewAudit } from './reviews';
 import type { EnrollmentBatchChange } from './enrollment';
 import type { EventTriageChange } from './triage';
 import type { CaseChange } from './cases';
+import type { AlertChange } from './alerts';
 
 export const auditActions = {
   policy_published: 'Policy published',
@@ -27,6 +28,8 @@ export const auditActions = {
   policy_review_decided: 'Policy review decided',
   event_triage_changed: 'Security event triaged',
   incident_case_changed: 'Incident case changed',
+  security_alert_settings_changed: 'Alert settings changed',
+  security_alert_acknowledged: 'Security alert acknowledged',
 } as const;
 
 export type AuditAction = keyof typeof auditActions;
@@ -40,6 +43,7 @@ export type AuditEntry = AuditCursor & {
   enrollmentBatchChange?: EnrollmentBatchChange;
   eventTriageChange?: EventTriageChange;
   incidentCaseChange?: CaseChange;
+  securityAlertChange?: AlertChange;
   policyVersion: number | null;
   restoredFrom: number | null;
   installationId: string | null;

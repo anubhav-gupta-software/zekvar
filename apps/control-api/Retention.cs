@@ -13,9 +13,10 @@ internal sealed record RetentionPolicy(
 }
 
 internal sealed record RetentionCleanup(int SecurityEvents, int AiObservations, int AuditEntries, string Source,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int IncidentCases = 0)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int IncidentCases = 0,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int AlertWindows = 0)
 {
-    public int Count() => SecurityEvents + AiObservations + AuditEntries + IncidentCases;
+    public int Count() => SecurityEvents + AiObservations + AuditEntries + IncidentCases + AlertWindows;
 }
 
 internal sealed class RetentionSweep(ControlStore store, ILogger<RetentionSweep> logger, TimeSpan interval) : BackgroundService

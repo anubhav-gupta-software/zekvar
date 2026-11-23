@@ -49,7 +49,7 @@ internal sealed partial class ControlStore
 
     public async Task<IReadOnlyList<Guid>> OrganizationsWithExpiredData(CancellationToken ct)
     {
-        await using var command = Command("""
+        await using var command = Command($"""
             SELECT r.organization_id FROM retention_cutoffs r
             WHERE EXISTS (SELECT 1 FROM security_events e WHERE e.organization_id = r.organization_id
                         AND LEAST(e.occurred_at, e.received_at) < r.event_cutoff)
@@ -58,7 +58,11 @@ internal sealed partial class ControlStore
                OR EXISTS (SELECT 1 FROM control_audit a WHERE a.organization_id = r.organization_id AND a.occurred_at < r.audit_cutoff)
                OR EXISTS (SELECT 1 FROM incident_cases c WHERE c.organization_id = r.organization_id
                         AND c.status = 'resolved' AND c.updated_at < r.audit_cutoff)
-            ORDER BY r.organization_id
+            UNION
+            SELECT a.organization_id FROM security_alert_windows a
+            LEFT JOIN retention_cutoffs r ON r.organization_id = a.organization_id
+            WHERE {AlertExpired}
+            ORDER BY organization_id
             """);
         var organizations = new List<Guid>();
         await using var rows = await command.ExecuteReaderAsync(ct);
@@ -75,9 +79,9 @@ internal sealed partial class ControlStore
         // Serialize cleanup with changes to the window and other cleanup runs for the same organization.
         await using var gate = new NpgsqlCommand("SELECT organization_id FROM organization_retention WHERE organization_id = $1 FOR UPDATE", connection, transaction);
         gate.Parameters.AddWithValue(organizationId);
-        if (await gate.ExecuteScalarAsync(ct) is null) return new(0, 0, 0, source);
+        await gate.ExecuteScalarAsync(ct);
 
-        await using var command = new NpgsqlCommand("""
+        await using var command = new NpgsqlCommand($$"""
             WITH cutoff AS (SELECT * FROM retention_cutoffs WHERE organization_id = $1),
             removed_events AS (
                 DELETE FROM security_events WHERE (installation_id, event_id) IN (
@@ -102,26 +106,34 @@ internal sealed partial class ControlStore
                     AND c.status = 'resolved' AND c.updated_at < r.audit_cutoff
                     ORDER BY c.updated_at, c.id LIMIT $2 FOR UPDATE OF c SKIP LOCKED
                 ) RETURNING 1
+            ), removed_alerts AS (
+                DELETE FROM security_alert_windows WHERE organization_id = $1 AND id IN (
+                    SELECT a.id FROM security_alert_windows a LEFT JOIN cutoff r ON r.organization_id = a.organization_id
+                    WHERE a.organization_id = $1 AND ({{AlertExpired}})
+                    ORDER BY a.first_received_at, a.id LIMIT $2 FOR UPDATE OF a SKIP LOCKED
+                ) RETURNING 1
             ), counts AS (
                 SELECT (SELECT count(*) FROM removed_events)::integer AS events,
                     (SELECT count(*) FROM removed_observations)::integer AS observations,
                     (SELECT count(*) FROM removed_audit)::integer AS audit_entries,
-                    (SELECT count(*) FROM removed_cases)::integer AS incidents
+                    (SELECT count(*) FROM removed_cases)::integer AS incidents,
+                    (SELECT count(*) FROM removed_alerts)::integer AS alert_windows
             ), audit AS (
                 INSERT INTO control_audit (organization_id, action, cleanup, actor_access_id)
                 SELECT $1, 'retention_cleanup', jsonb_build_object('securityEvents', events,
                     'aiObservations', observations, 'auditEntries', audit_entries, 'source', $3::text)
-                    || CASE WHEN incidents > 0 THEN jsonb_build_object('incidentCases', incidents) ELSE '{}'::jsonb END, $4
-                FROM counts WHERE events + observations + audit_entries + incidents > 0
+                    || CASE WHEN incidents > 0 THEN jsonb_build_object('incidentCases', incidents) ELSE '{}'::jsonb END
+                    || CASE WHEN alert_windows > 0 THEN jsonb_build_object('alertWindows', alert_windows) ELSE '{}'::jsonb END, $4
+                FROM counts WHERE events + observations + audit_entries + incidents + alert_windows > 0
             )
-            SELECT events, observations, audit_entries, incidents FROM counts
+            SELECT events, observations, audit_entries, incidents, alert_windows FROM counts
             """, connection, transaction);
         AddParameters(command, organizationId, batchSize, source, (object?)actorId ?? DBNull.Value);
         RetentionCleanup result;
         await using (var rows = await command.ExecuteReaderAsync(ct))
         {
             await rows.ReadAsync(ct);
-            result = new(rows.GetInt32(0), rows.GetInt32(1), rows.GetInt32(2), source, rows.GetInt32(3));
+            result = new(rows.GetInt32(0), rows.GetInt32(1), rows.GetInt32(2), source, rows.GetInt32(3), rows.GetInt32(4));
         }
         await transaction.CommitAsync(ct);
         return result;

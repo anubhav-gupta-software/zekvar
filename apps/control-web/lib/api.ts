@@ -13,6 +13,7 @@ import type { AiEnforcementReport } from './reports';
 import type { ExtensionDeployment } from './extension-deployment';
 import { eventPath, type EventDetails, type EventTriage, type TriageAssignee, type TriageUpdate } from './triage';
 import { casePath, type CaseCategory, type CaseDetails, type CasePage, type EventReference } from './cases';
+import { alertPath, type AlertDetails, type AlertPage, type AlertSettings } from './alerts';
 
 const port = Number(process.env.ZEKVAR_CONTROL_PORT ?? 5187);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid Control loopback port.');
@@ -122,6 +123,12 @@ export const controlApi = {
   changeCaseMembership: (token: string, id: string, event: EventReference, expectedRevision: number, linked: boolean) =>
     request<{ caseId: string }>(`${casePath(id)}/membership`, token, 'POST', { ...event, expectedRevision, linked }),
   exportCase: (token: string, id: string) => apiResponse(`${casePath(id)}/export`, token),
+  alerts: (token: string, query: URLSearchParams) => request<AlertPage>(`/alerts?${query}`, token),
+  alert: (token: string, id: string, query: URLSearchParams) => request<AlertDetails>(`${alertPath(id)}?${query}`, token),
+  alertSettings: (token: string) => request<AlertSettings>('/alerts/settings', token),
+  saveAlertSettings: (token: string, enabled: boolean, threshold: number, expectedRevision: number) =>
+    request<AlertSettings>('/alerts/settings', token, 'POST', { enabled, threshold, expectedRevision }),
+  acknowledgeAlert: (token: string, id: string) => request<void>(`${alertPath(id)}/acknowledge`, token, 'POST'),
   exportEvents: (token: string, filters: URLSearchParams, signal: AbortSignal) =>
     eventResponse('/events/export', token, filters, signal),
   aiEnforcement: (token: string, filters: URLSearchParams) => request<AiEnforcementReport>(`/reports/ai-enforcement?${filters}`, token),

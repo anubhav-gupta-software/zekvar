@@ -301,6 +301,37 @@ cases.MapPost("/{id:guid}/triage", async (Guid id, SetEventTriage request, HttpC
 cases.MapPost("/{id:guid}/membership", async (Guid id, SetCaseMembership request, HttpContext http, CancellationToken ct) =>
     request.IsValid() ? CaseOutcome(await store.ChangeCaseMembership(Identity(http), id, request, ct)) :
         Results.BadRequest(new { error = "Choose a valid case revision and event." }));
+var alerts = admin.MapGroup("/alerts");
+alerts.MapGet("/settings", async (HttpContext http, CancellationToken ct) =>
+    Results.Ok(await store.GetSecurityAlertSettings(Identity(http).OrganizationId, ct)));
+alerts.MapPost("/settings", async (SetSecurityAlertSettings request, HttpContext http, CancellationToken ct) =>
+{
+    if (!request.IsValid()) return Results.BadRequest(new { error = "Choose an alert mode, a threshold from 2 to 100, and a settings revision." });
+    return await store.UpdateSecurityAlertSettings(Identity(http), request, ct) is { } settings
+        ? Results.Ok(settings) : Results.Conflict(new { code = "alert_settings_changed" });
+});
+alerts.MapGet("", async (string? appId, string? status, DateTimeOffset? beforeAt, Guid? beforeId, HttpContext http, CancellationToken ct) =>
+{
+    if ((appId is not null && !FixtureContract.IsAiPromptApp(appId)) || status is not (null or "open" or "acknowledged") ||
+        beforeAt.HasValue != beforeId.HasValue || beforeId == Guid.Empty ||
+        http.Request.Query.Any(entry => entry.Value.Count != 1 || entry.Key is not ("appId" or "status" or "beforeAt" or "beforeId")))
+        return Results.BadRequest(new { error = "Choose a supported app, alert status, and complete cursor." });
+    var cursor = beforeAt is { } at && beforeId is { } id ? new SecurityAlertCursor(at, id) : null;
+    return Results.Ok(await store.SecurityAlerts(Identity(http).OrganizationId, appId, status, cursor, ct));
+});
+alerts.MapGet("/{id:guid}", async (Guid id, DateTimeOffset? beforeAt, Guid? beforeEventId, Guid? beforeInstallationId,
+    HttpContext http, CancellationToken ct) =>
+{
+    var cursor = beforeAt is { } at && beforeEventId is { } eventId && beforeInstallationId is { } installationId
+        && eventId != Guid.Empty && installationId != Guid.Empty ? new EventCursor(at, eventId, installationId) : null;
+    if ((cursor is null && (beforeAt.HasValue || beforeEventId.HasValue || beforeInstallationId.HasValue)) ||
+        http.Request.Query.Any(entry => entry.Value.Count != 1 || entry.Key is not ("beforeAt" or "beforeEventId" or "beforeInstallationId")))
+        return Results.BadRequest(new { error = "Choose a complete evidence cursor." });
+    return await store.SecurityAlertDetail(Identity(http).OrganizationId, id, cursor, ct) is { } detail
+        ? Results.Ok(detail) : Results.NotFound();
+});
+alerts.MapPost("/{id:guid}/acknowledge", async (Guid id, HttpContext http, CancellationToken ct) =>
+    await store.AcknowledgeSecurityAlert(Identity(http), id, ct) ? Results.NoContent() : Results.NotFound());
 admin.MapGet("/reports/ai-enforcement", async (HttpContext http, CancellationToken ct) =>
 {
     var query = AiReportQuery.Parse(http.Request.Query, DateTimeOffset.UtcNow);

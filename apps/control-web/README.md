@@ -145,6 +145,14 @@ Open **Reports** in Control. Choose the last 7 or 30 UTC calendar days, an AI ap
 
 **Export report (JSON)** downloads the same time window and filters using current retention. It contains aggregate counts and excludes individual events and browser identifiers. Reload the report if its download link is more than 24 hours old. Owners, administrators, and auditors can read and export the report. [AI enforcement API](../control-api/README.md#ai-enforcement-report)
 
+## Review repeated AI block alerts
+
+1. In **Alerts**, set **Alert rule** to **On**, enter a threshold from 2 to 100 blocked events, and save. Start with a threshold that fits the pilot cohort's volume.
+2. Enrolled browsers report new blocks through their usual policy workflow. Control opens a single alert when one AI app and recorded rollout group reach the threshold in a 15-minute UTC reception window. Refresh **Alert inbox** to see new alerts. The rule starts Off.
+3. Open an alert to review its retained blocked events. Use an event's detail page to start or link an incident case. **Acknowledge alert** moves the item to the acknowledged view, where auditors can review it and the audit log. Counts can continue to increase in the same window after acknowledgment.
+
+Alert settings apply to newly received decisions. Turning the rule off stops new counting and keeps existing alerts visible under their retention window. A change to the threshold starts a fresh count. Alert summaries are available for up to 30 days, subject to the organization's security-event retention policy. The evidence table follows individual event retention.
+
 ## Investigate an incident case
 
 1. Open a detection from **Events**. Under **Incident case**, choose a category and select **Open new case**. To add another detection, open that event, choose **Link to an existing case**, and select the case from the list.

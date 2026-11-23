@@ -144,7 +144,7 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   for (const origin of [browserOrigin, dashboardOrigin]) {
     for (const path of ['/v1/admin/session', '/v1/admin/browser-releases', '/v1/admin/browser-health?rolloutGroup=baseline',
       '/v1/admin/enrollment-batches', '/v1/admin/reports/ai-enforcement', '/v1/admin/reports/composer-readiness',
-      '/v1/admin/events/triage-assignees', '/v1/admin/cases']) {
+      '/v1/admin/events/triage-assignees', '/v1/admin/cases', '/v1/admin/alerts']) {
       const blocked = await call(origin + path, { headers: { Authorization: `Bearer ${owner}` } });
       assert.equal(blocked.status, 404);
       assert.equal(blocked.headers['cache-control'], 'no-store');
@@ -659,6 +659,79 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
     await dashboard.getByRole('button', { name: 'Apply case filters', exact: true }).click();
     await dashboard.waitForURL((url) => url.searchParams.get('status') === 'resolved');
     await dashboard.getByRole('table', { name: 'Investigations', exact: true }).getByRole('link', { name: card, exact: true }).waitFor();
+  });
+  await t.test('raises an alert from two real managed Chrome blocks and connects it to case investigation', async () => {
+    const auditor = await admin('access', { name: 'Alert reviewer', role: 'auditor', hours: 1 });
+    await signInAs(owner);
+    await dashboard.getByRole('link', { name: 'Alerts', exact: true }).click();
+    await dashboard.getByRole('heading', { name: 'Security alerts', exact: true }).waitFor();
+    await dashboard.getByText('No alerts match this view.', { exact: true }).waitFor();
+    await dashboard.getByLabel('Alert rule', { exact: true }).selectOption('on');
+    await dashboard.getByLabel('Blocked events per window', { exact: true }).fill('2');
+    await dashboard.getByRole('button', { name: 'Save alert settings', exact: true }).click();
+    await dashboard.getByText('Alert settings saved.', { exact: true }).waitFor();
+    assert.deepEqual(await admin('alerts/settings'), { enabled: true, threshold: 2, revision: 1 });
+
+    const gap = 900_000 - Date.now() % 900_000;
+    if (gap < 8000) await delay(gap + 50);
+    await admin(`installations/${newId}/policy-group`, { groupId: group.id }, 204);
+    await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
+    await label(popup, `Connected to Control · BLOCK v${claudePolicy.version}`).waitFor();
+    await chat.reload();
+    await chat.getByText(/^Zekvar · BLOCK v/).waitFor();
+    const draft = chat.getByPlaceholder('Ask ChatGPT', { exact: true });
+    await draft.fill('Synthetic alert click ZEKVAR_TEST_SECRET');
+    await chat.getByRole('button', { name: 'Send message', exact: true }).click();
+    await chat.getByRole('alert').filter({ hasText: 'Submission blocked' }).waitFor();
+    await draft.fill('Synthetic alert keyboard ZEKVAR_TEST_SECRET');
+    await draft.press('Enter');
+    await chat.getByRole('alert').filter({ hasText: 'Submission blocked' }).waitFor();
+    assert.equal(await chat.locator('#fixture-sends').textContent(), '0');
+    const created = await until(async () => (await admin('alerts?appId=chatgpt&status=open')).entries[0],
+      'The repeated real Chrome blocks did not generate an alert.');
+    assert.equal(created.blockCount, 2);
+    assert.deepEqual(created.rollout, { kind: 'group', groupId: group.id, groupName: group.name });
+
+    await dashboard.getByRole('button', { name: 'Refresh alerts', exact: true }).click();
+    const inbox = dashboard.getByRole('table', { name: 'Alert inbox', exact: true });
+    await inbox.getByText(group.name, { exact: true }).waitFor();
+    const alertLabel = `Alert ${created.id.slice(0, 8).toUpperCase()}`;
+    await inbox.getByRole('link', { name: alertLabel, exact: true }).click();
+    const alertUrl = dashboardOrigin + `/alerts/${created.id}`;
+    await dashboard.waitForURL(alertUrl);
+    const evidence = dashboard.getByRole('table', { name: 'Blocked events', exact: true });
+    await evidence.getByRole('link', { name: /^Review event / }).first().waitFor();
+    assert.equal(await evidence.getByRole('link', { name: /^Review event / }).count(), 2);
+    if (artifacts) await dashboard.screenshot({ path: join(artifacts, 'security-alert.png'), fullPage: true });
+    const raw = await admin(`alerts/${created.id}`);
+    assert.ok(raw.evidence.entries.every(({ eventId }) => eventId !== detected.eventId));
+    assert.doesNotMatch(JSON.stringify(raw), /Synthetic alert|ZEKVAR_TEST_SECRET|tokenHash/);
+    await evidence.getByRole('link', { name: /^Review event / }).first().click();
+    await dashboard.getByLabel('Case category', { exact: true }).selectOption('repeated_policy_blocks');
+    await dashboard.getByRole('button', { name: 'Open new case', exact: true }).click();
+    await dashboard.waitForURL((url) => /^\/cases\/[a-f0-9-]+$/.test(url.pathname));
+    await dashboard.goto(alertUrl);
+    await dashboard.getByRole('button', { name: 'Acknowledge alert', exact: true }).click();
+    await dashboard.getByText('Acknowledged', { exact: true }).first().waitFor();
+    await dashboard.getByRole('link', { name: 'Back to alert inbox', exact: true }).click();
+    await dashboard.getByText('No alerts match this view.', { exact: true }).waitFor();
+    await dashboard.getByLabel('Status', { exact: true }).selectOption('acknowledged');
+    await dashboard.getByRole('button', { name: 'Apply alert filters', exact: true }).click();
+    await inbox.getByRole('link', { name: alertLabel, exact: true }).waitFor();
+    await signInAs(auditor.token);
+    await dashboard.goto(alertUrl);
+    await evidence.getByRole('link', { name: /^Review event / }).first().waitFor();
+    assert.equal(await dashboard.getByRole('button', { name: 'Acknowledge alert', exact: true }).count(), 0);
+    const viewport = dashboard.viewportSize();
+    await dashboard.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await dashboard.evaluate(() => document.documentElement.scrollWidth === document.documentElement.clientWidth), true);
+    if (viewport) await dashboard.setViewportSize(viewport);
+    await dashboard.getByRole('link', { name: 'Audit log', exact: true }).click();
+    const history = dashboard.getByRole('table', { name: 'Control activity', exact: true });
+    await history.getByText('Alert settings changed', { exact: true }).waitFor();
+    const ack = history.getByRole('row').filter({ hasText: 'Security alert acknowledged' });
+    await ack.getByRole('link', { name: alertLabel, exact: true }).click();
+    await dashboard.waitForURL(alertUrl);
   });
   await dashboard.getByRole('button', { name: 'Sign out', exact: true }).click();
   await dashboard.getByRole('heading', { name: 'Sign in to Control', exact: true }).waitFor();

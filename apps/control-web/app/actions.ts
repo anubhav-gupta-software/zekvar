@@ -19,6 +19,7 @@ import { aiAppAccessCatalog, readBlockedAiAppHosts } from '../../../contracts/po
 import { domainRuleLimit, ruleCount } from '../../../contracts/policy/domains';
 import { eventPath, isTriageDisposition, isTriageId, isTriageStatus } from '../lib/triage';
 import { casePath, isCaseCategory, type EventReference } from '../lib/cases';
+import { alertPath } from '../lib/alerts';
 
 export async function signIn(_previous: Feedback, form: FormData): Promise<Feedback> {
   const token = form.get('token');
@@ -465,6 +466,43 @@ export async function publishExtensionDeployment(_previous: Feedback, form: Form
   });
 }
 
+export async function saveAlertSettings(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const enabled = form.get('enabled');
+  const threshold = Number(form.get('threshold'));
+  const revision = form.get('revision');
+  if ((enabled !== 'on' && enabled !== 'off') || !Number.isInteger(threshold) || threshold < 2 || threshold > 100 ||
+      typeof revision !== 'string' || !/^\d{1,10}$/.test(revision) || Number(revision) >= 2_147_483_647) {
+    return { error: 'Choose a mode and a threshold from 2 to 100.' };
+  }
+  return perform(async (token) => {
+    try {
+      await controlApi.saveAlertSettings(token, enabled === 'on', threshold, Number(revision));
+      revalidatePath('/alerts');
+      return { message: 'Alert settings saved.' };
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'alert_settings_changed') {
+        return { error: 'Alert settings changed. Refresh the inbox and review the current settings before saving again.' };
+      }
+      throw error;
+    }
+  });
+}
+
+export async function acknowledgeAlert(id: string): Promise<Feedback> {
+  if (!isId(id)) return { error: 'Choose a valid alert.' };
+  return perform(async (token) => {
+    try {
+      await controlApi.acknowledgeAlert(token, id);
+      revalidatePath('/alerts');
+      revalidatePath(alertPath(id));
+      return { message: 'Alert acknowledged.' };
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return { error: 'This alert is unavailable.' };
+      throw error;
+    }
+  });
+}
+
 export async function restorePolicy(_previous: Feedback, form: FormData): Promise<Feedback> {
   const version = Number(form.get('version'));
   const groupId = form.get('groupId');
@@ -609,7 +647,7 @@ export async function cleanupRetention(): Promise<Feedback> {
   return perform(async (token) => {
     const result = await controlApi.cleanupRetention(token);
     revalidatePath('/retention');
-    return { message: result.securityEvents || result.aiObservations || result.auditEntries || result.incidentCases
+    return { message: result.securityEvents || result.aiObservations || result.auditEntries || result.incidentCases || result.alertWindows
       ? `Deleted ${cleanupCounts(result)}.` : 'No expired records found.' };
   });
 }

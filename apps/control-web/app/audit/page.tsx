@@ -9,6 +9,7 @@ import { sessionToken } from '../../lib/session';
 import { DeploymentBadge, Sidebar } from '../workspace';
 import { eventPath, triageDispositions, triageStatuses } from '../../lib/triage';
 import { CaseActivityDetails } from '../cases/case-activity';
+import { alertNumber, alertPath } from '../../lib/alerts';
 
 export default async function Audit({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const token = await sessionToken();
@@ -85,6 +86,9 @@ const actorLabels = { organization_admin: 'Organization admin', named_administra
   sso_identity: 'Single sign-on identity', browser_enrollment: 'Browser enrollment', system: 'Scheduled cleanup' };
 
 function auditDetails(entry: AuditEntry) {
+  const alertChange = entry.securityAlertChange;
+  if (alertChange?.alertId) return <a className="underline" href={alertPath(alertChange.alertId)}>Alert {alertNumber(alertChange.alertId)}</a>;
+  if (alertChange?.after) return `${alertChange.after.enabled ? 'On' : 'Off'} · ${alertChange.after.threshold} blocks in 15 minutes`;
   if (entry.incidentCaseChange) return <CaseActivityDetails change={entry.incidentCaseChange} showCase />;
   const triage = entry.eventTriageChange;
   if (triage) return <><a className="underline" href={eventPath(triage.installationId, triage.eventId)}>Review event</a>

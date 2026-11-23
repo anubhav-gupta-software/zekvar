@@ -33,6 +33,7 @@ const identifiersAdmin = randomBytes(32).toString('hex');
 const casesAdmin = randomBytes(32).toString('hex');
 const presetsAdmin = randomBytes(32).toString('hex');
 const ssnAdmin = randomBytes(32).toString('hex');
+const alertsAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -54,7 +55,15 @@ const undoIdentifierSchema = `
   ALTER TABLE policy_versions DROP COLUMN identifier_protection;
   ALTER TABLE policy_deliveries DROP COLUMN identifiers;
 `;
+const undoAlertSchema = `
+  DELETE FROM schema_migrations WHERE version = 37;
+  DROP TABLE security_alert_events;
+  DROP TABLE security_alert_windows;
+  DROP TABLE security_alert_settings;
+  ALTER TABLE control_audit DROP COLUMN security_alert_change;
+`;
 const undoIncidentSchema = `
+  ${undoAlertSchema}
   DELETE FROM schema_migrations WHERE version = 34;
   DROP TABLE incident_case_events;
   DROP TABLE incident_cases;
@@ -157,6 +166,8 @@ async function start(sweepSeconds = 3600) {
       Control__Organizations__16__AdminToken: presetsAdmin,
       Control__Organizations__17__Slug: `ssn-${suffix}`,
       Control__Organizations__17__AdminToken: ssnAdmin,
+      Control__Organizations__18__Slug: `alerts-${suffix}`,
+      Control__Organizations__18__AdminToken: alertsAdmin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -3495,5 +3506,171 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(list.entries.length, 100);
     assert.equal(more.entries.length, 2);
     assert.equal(new Set([...list.entries, ...more.entries].map((entry) => entry.id)).size, 102);
+  });
+
+  await t.test('correlates new AI block decisions into auditable tenant alerts with retained evidence', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: alertsAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const enroll = async () => call('/v1/enroll', { method: 'POST', body: { grant: (await post('enrollment-grants')).grant } });
+    const [browser, canary] = await Promise.all([enroll(), enroll()]);
+    const policy = await post('policies', { mode: 'block' });
+    const legacy = { ...contract.event, eventId: randomUUID(), appId: 'chatgpt',
+      policyVersion: policy.version, timestamp: new Date().toISOString(), decision: 'block' };
+    const send = (data, token = browser.token, expect = 204) =>
+      call('/v1/browser/events', { token, method: 'POST', body: data, expect });
+    const event = (fields = {}) => ({ ...legacy, eventId: randomUUID(), timestamp: new Date().toISOString(), ...fields });
+    const save = (enabled, threshold, expectedRevision, options) => post('alerts/settings', { enabled, threshold, expectedRevision }, options);
+    const settings = { enabled: false, threshold: 5, revision: 0 };
+    assert.deepEqual(await admin('alerts/settings'), settings);
+    await send(legacy);
+    assert.deepEqual((await admin('alerts')).entries, []);
+    if (postgres) {
+      const before = await admin('events');
+      await stop();
+      await retentionFixture(undoAlertSchema);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 37'), '1');
+      assert.deepEqual(await admin('events'), before);
+      assert.deepEqual(await admin('alerts/settings'), settings);
+    }
+    const { token: operator } = await post('access', { name: 'Alert operator', role: 'administrator', hours: 1 });
+    const { token: auditor } = await post('access', { name: 'Alert auditor', role: 'auditor', hours: 1 });
+    await save(true, 1, 0, { expect: 400 });
+    await save(true, 2, 0, { token: auditor, expect: 403 });
+    await post('alerts/settings', { enabled: true, threshold: 2 }, { expect: 400 });
+    await admin('alerts', { token: browser.token, expect: 401 });
+    await admin('alerts', { token: undefined, expect: 401 });
+    await admin('alerts?status=open&status=acknowledged', { expect: 400 });
+    await admin('alerts?appId=local-prompt-fixture', { expect: 400 });
+    await admin('alerts?beforeId=' + randomUUID(), { expect: 400 });
+    const [configured, retry] = await Promise.all([save(true, 2, 0, { token: operator }), save(true, 2, 0, { token: operator })]);
+    assert.deepEqual(configured, { enabled: true, threshold: 2, revision: 1 });
+    assert.deepEqual(retry, configured);
+    assert.deepEqual(await save(true, 3, 0, { expect: 409 }), { code: 'alert_settings_changed' });
+    assert.deepEqual(await admin('alerts/settings', { token: second }), settings);
+
+    const leftInBucket = 900_000 - Date.now() % 900_000;
+    if (leftInBucket < 10_000) await delay(leftInBucket + 50);
+    const original = event();
+    await Promise.all([send(original), send(original), send(legacy)]);
+    await send(event({ appId: 'local-prompt-fixture' }));
+    await send(event({ appId: 'gemini' }));
+    await send(event({ prompt: 'synthetic secret text' }), browser.token, 400);
+    assert.deepEqual((await admin('alerts')).entries, []);
+    const group = await post('policy-groups', { name: 'Alert canary' });
+    await call('/v1/browser/policy', { token: canary.token, assignmentAware: true });
+    await post(`installations/${canary.installationId}/policy-group`, { groupId: group.id }, { expect: 204 });
+    const groupPolicy = await call('/v1/browser/policy', { token: canary.token, assignmentAware: true });
+    const inGroup = event({ policyVersion: groupPolicy.version, assignmentVersion: groupPolicy.assignmentVersion });
+    await send(inGroup, canary.token);
+    assert.deepEqual((await admin('alerts')).entries, []);
+    const next = event();
+    const also = event({ timestamp: new Date(Date.now() - 2 * 3600_000).toISOString() });
+    await Promise.all([send(next), send(also), send(next)]);
+    const [raised] = (await admin('alerts?appId=chatgpt&status=open')).entries;
+    assert.equal(raised.blockCount, 3);
+    assert.equal(raised.threshold, 2);
+    assert.deepEqual(raised.rollout, { kind: 'baseline' });
+    assert.equal(Date.parse(raised.windowStart) % 900_000, 0);
+    assert.equal(Date.parse(raised.windowEnd) - Date.parse(raised.windowStart), 900_000);
+    const path = `alerts/${raised.id}`;
+    const detail = await admin(path, { token: auditor });
+    assert.deepEqual(detail.alert, raised);
+    assert.deepEqual(detail.evidence.entries.map(({ eventId }) => eventId).sort(), [original.eventId, next.eventId, also.eventId].sort());
+    assert.doesNotMatch(JSON.stringify(detail), /synthetic secret text|token/);
+    await admin(path, { token: second, expect: 404 });
+    await admin(path, { token: browser.token, expect: 401 });
+    await admin(`${path}?beforeEventId=${next.eventId}`, { expect: 400 });
+    await post(`${path}/acknowledge`, {}, { token: auditor, expect: 403 });
+    await post(`${path}/acknowledge`, {}, { token: second, expect: 404 });
+    await Promise.all([
+      post(`${path}/acknowledge`, {}, { token: operator, expect: 204 }),
+      post(`${path}/acknowledge`, {}, { token: operator, expect: 204 }),
+    ]);
+    assert.deepEqual((await admin('alerts?status=open')).entries, []);
+    assert.equal((await admin('alerts?status=acknowledged')).entries[0].id, raised.id);
+    const acknowledged = (await admin('audit?action=security_alert_acknowledged')).entries;
+    assert.equal(acknowledged.length, 1);
+    assert.equal(acknowledged[0].securityAlertChange.alertId, raised.id);
+    assert.equal(acknowledged[0].actorAccess.name, 'Alert operator');
+    const changed = (await admin('audit?action=security_alert_settings_changed')).entries;
+    assert.equal(changed.length, 1);
+    assert.deepEqual(changed[0].securityAlertChange.after, configured);
+
+    await send(event({ assignmentVersion: groupPolicy.assignmentVersion }), canary.token);
+    const [scoped] = (await admin('alerts?status=open')).entries;
+    assert.equal(scoped.blockCount, 2);
+    assert.deepEqual(scoped.rollout, { kind: 'group', groupId: group.id, groupName: group.name });
+    const off = await save(false, 2, 1);
+    assert.equal(off.revision, 2);
+    await send(event());
+    assert.equal((await admin(path)).alert.blockCount, 3);
+    await save(true, 2, 2);
+    await send(event());
+    assert.equal((await admin('alerts')).entries.length, 2);
+    await Promise.all([send(event()), send(event())]);
+    const all = await admin('alerts');
+    assert.equal(all.entries.length, 3);
+    const latest = all.entries.find((entry) => entry.id !== raised.id && entry.id !== scoped.id);
+    assert.equal(latest.blockCount, 3);
+
+    if (postgres) {
+      for (let batch = 0; batch < 10; batch++) await Promise.all(Array.from({ length: 10 }, () => send(event())));
+      const latestPath = `alerts/${latest.id}`;
+      const full = await admin(latestPath);
+      assert.equal(full.alert.blockCount, 103);
+      assert.equal(full.evidence.entries.length, 100);
+      const cursor = full.evidence.next;
+      const older = await admin(`${latestPath}?${new URLSearchParams({ beforeAt: cursor.receivedAt,
+        beforeEventId: cursor.eventId, beforeInstallationId: cursor.installationId })}`);
+      assert.equal(older.evidence.entries.length, 3);
+      assert.equal(new Set([...full.evidence.entries, ...older.evidence.entries].map(({ eventId }) => eventId)).size, 103);
+      await retentionFixture(`UPDATE security_alert_windows SET window_start = window_start - interval '15 minutes'
+        WHERE id = '${latest.id}';`);
+      await send(event());
+      assert.equal((await admin(latestPath)).alert.blockCount, 103);
+      assert.equal((await admin('alerts')).entries.length, 3);
+      await retentionFixture(`INSERT INTO security_alert_windows (organization_id, setting_revision, app_id, rollout_attributed,
+          window_start, first_received_at, threshold, block_count, triggered_at)
+        SELECT id, 100 + n, 'gemini', true, now(), now(), 2, 2, now() - interval '1 second'
+        FROM organizations CROSS JOIN generate_series(1, 101) AS fixture(n) WHERE slug = 'alerts-${suffix}';`);
+      const page = await admin('alerts?appId=gemini');
+      assert.equal(page.entries.length, 100);
+      const last = await admin(`alerts?${new URLSearchParams({ appId: 'gemini', beforeAt: page.next.triggeredAt, beforeId: page.next.id })}`);
+      assert.equal(last.entries.length, 1);
+      assert.equal(new Set([...page.entries, ...last.entries].map(({ id }) => id)).size, 101);
+
+      await retentionFixture(`UPDATE security_alert_windows SET first_received_at = now() - interval '31 days'
+          WHERE id = '${last.entries[0].id}';
+        UPDATE security_alert_windows SET window_start = now() - interval '2 hours'
+          WHERE organization_id = (SELECT id FROM organizations WHERE slug = 'alerts-${suffix}')
+              AND triggered_at IS NULL AND app_id = 'gemini';`);
+      await admin(`alerts/${last.entries[0].id}`, { expect: 404 });
+      await stop();
+      await start(1);
+      let scheduled;
+      for (let attempt = 0; attempt < 25 && !scheduled; attempt++) {
+        scheduled = (await admin('audit?action=retention_cleanup')).entries.find((entry) => entry.cleanup.source === 'scheduled');
+        if (!scheduled) await delay(100);
+      }
+      assert.equal(scheduled?.cleanup.alertWindows, 2);
+      assert.equal(await retentionFixture(`SELECT count(*) FROM security_alert_windows WHERE id = '${last.entries[0].id}'`), '0');
+      await stop();
+      await start();
+
+      await retentionFixture(`UPDATE security_events SET occurred_at = now() - interval '2 days' WHERE event_id = '${original.eventId}';`);
+      await post('retention', { securityEventDays: 1, aiObservationDays: null, auditDays: null }, { expect: 204 });
+      const redactedEvidence = await admin(path);
+      assert.equal(redactedEvidence.alert.blockCount, 3);
+      assert.equal(redactedEvidence.evidence.entries.length, 2);
+      await retentionFixture(`UPDATE security_alert_windows SET first_received_at = now() - interval '2 days' WHERE id = '${raised.id}';`);
+      await admin(path, { expect: 404 });
+      await post(`${path}/acknowledge`, {}, { expect: 404 });
+      const cleanup = await post('retention/cleanup');
+      assert.equal(cleanup.alertWindows, 1);
+      assert.equal(cleanup.securityEvents, 1);
+      assert.equal(await retentionFixture(`SELECT count(*) FROM security_alert_events WHERE alert_id = '${raised.id}'`), '0');
+      assert.equal((await admin('audit?action=security_alert_acknowledged')).entries.length, 1);
+    }
   });
 });

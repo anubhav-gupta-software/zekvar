@@ -26,7 +26,7 @@ export function DeploymentBadge() {
 }
 
 export function Sidebar({ active, session }: {
-  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews' | 'extensions' | 'enrollment' | 'reports' | 'events' | 'cases';
+  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews' | 'extensions' | 'enrollment' | 'reports' | 'events' | 'cases' | 'alerts';
   session?: ControlSession;
 }) {
   const root = active ? '/' : '';
@@ -45,6 +45,7 @@ export function Sidebar({ active, session }: {
       <a href="/enrollment" aria-current={active === 'enrollment' ? 'page' : undefined}>Enrollment batches</a>
       <a href="/extensions" aria-current={active === 'extensions' ? 'page' : undefined}>Browser extensions</a>
       <a href={`${root}#events`} aria-current={active === 'events' ? 'page' : undefined}>Events</a>
+      <a href="/alerts" aria-current={active === 'alerts' ? 'page' : undefined}>Alerts</a>
       <a href="/cases" aria-current={active === 'cases' ? 'page' : undefined}>Incident cases</a>
       <a href="/reports" aria-current={active === 'reports' ? 'page' : undefined}>Reports</a>
       <a href="/audit" aria-current={active === 'audit' ? 'page' : undefined}>Audit log</a>

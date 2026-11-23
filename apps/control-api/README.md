@@ -179,6 +179,16 @@ Each accepted change increments the revision and writes one `event_triage_change
 
 `counts`, `daily`, `byApp`, `byRule`, and `bySource` report policy events per decision. The daily series has one row per date, including empty days. The app, rule, and source breakdowns include categories with matching events. The source IDs are `prompt`, `file_policy`, and `file_content`. A warning and a later override are separate events. The local prompt fixture is excluded. The response contains aggregate counts and report filters. Use the event export for individual decision records.
 
+## Security alerts
+
+`GET /v1/admin/alerts/settings` returns the current mode, threshold, and revision. Owners and administrators can post `{ "enabled": true, "threshold": 5, "expectedRevision": 0 }` to that path. Thresholds range from 2 to 100. Stale conflicting settings return HTTP 409. An identical retry produces one audited change.
+
+After enablement, each newly stored AI Block decision contributes once to its app, recorded rollout group, settings revision, and 15-minute UTC window of server receipt. Control stores the count and references to existing event metadata. It opens an alert at the threshold and keeps the alert acknowledged for the rest of its window if an operator reviews it. Duplicate deliveries preserve the count. The local prompt fixture stays outside the rule.
+
+`GET /v1/admin/alerts` accepts optional `appId` and `status` filters and a `beforeAt` and `beforeId` cursor pair. `GET /v1/admin/alerts/{id}` returns the alert and up to 100 retained events, with the event cursor when more remain. Supply that cursor as `beforeAt`, `beforeEventId`, and `beforeInstallationId`. Owners and administrators acknowledge at `POST /v1/admin/alerts/{id}/acknowledge`. A retry returns HTTP 204 and keeps one audit entry. Auditors can read settings, alerts, evidence, and the audit log. Missing, foreign, and expired alerts return HTTP 404.
+
+Alert windows expire after 30 days or when the first receipt in the window crosses the configured event cutoff, whichever comes first. Evidence follows the underlying event retention cutoff. Untriggered windows are eligible for cleanup an hour after the start of their window. Manual and scheduled cleanup report removed alert windows when applicable. Audit entries follow the audit retention window.
+
 ## Incident cases
 
 - `GET /v1/admin/cases` lists up to 100 retained cases for the organization, newest first by creation time. Filter by `status` or `openOnly=true`. Use the returned `createdAt` and `id` as `beforeAt` and `beforeId` for the next page.

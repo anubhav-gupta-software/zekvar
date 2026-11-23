@@ -59,6 +59,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 34, "034_incident_cases.sql", ct);
         await ApplyMigration(connection, 35, "035_ai_discovery_presets.sql", ct);
         await ApplyMigration(connection, 36, "036_social_security_number.sql", ct);
+        await ApplyMigration(connection, 37, "037_security_alerts.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -459,6 +460,24 @@ internal sealed partial class ControlStore
                     rollout_group_id, rollout_attributed)
                 SELECT organization_id, $1, $2, $3, $4, $5, $6, $7, $9, rollout_group_id, rollout_attributed FROM eligible
                 ON CONFLICT (installation_id, event_id) DO NOTHING
+                RETURNING organization_id, installation_id, event_id, app_id, rollout_group_id, rollout_attributed, received_at, decision
+            ), counted AS (
+                INSERT INTO security_alert_windows (organization_id, setting_revision, app_id, rollout_group_id, rollout_attributed,
+                    window_start, first_received_at, threshold)
+                SELECT w.organization_id, settings.revision, w.app_id, w.rollout_group_id, w.rollout_attributed,
+                    date_bin(interval '15 minutes', w.received_at, timestamptz '2000-01-01 00:00:00Z'), w.received_at, settings.threshold
+                FROM written w JOIN security_alert_settings settings ON settings.organization_id = w.organization_id AND settings.enabled
+                WHERE w.decision = 'block' AND w.app_id IN ('chatgpt', 'claude', 'gemini')
+                ON CONFLICT (organization_id, setting_revision, app_id, rollout_group_id, rollout_attributed, window_start) DO UPDATE
+                SET block_count = security_alert_windows.block_count + 1,
+                    first_received_at = LEAST(security_alert_windows.first_received_at, EXCLUDED.first_received_at),
+                    triggered_at = COALESCE(security_alert_windows.triggered_at,
+                        CASE WHEN security_alert_windows.block_count + 1 >= security_alert_windows.threshold THEN clock_timestamp() END)
+                RETURNING organization_id, id
+            ), linked AS (
+                INSERT INTO security_alert_events (organization_id, alert_id, installation_id, event_id)
+                SELECT c.organization_id, c.id, w.installation_id, w.event_id
+                FROM counted c JOIN written w USING (organization_id)
             )
             SELECT EXISTS (SELECT 1 FROM eligible)
             """, installationId, request.EventId, request.Timestamp.UtcDateTime, request.PolicyVersion, request.Decision, request.AppId,
@@ -617,7 +636,7 @@ internal sealed partial class ControlStore
         await using var command = Command("""
             SELECT a.id, occurred_at, action, policy_version, restored_from, installation_id, app_id, classification, retention, cleanup, group_change,
                 actor.id, actor.display_name, actor.role, subject.id, subject.display_name, subject.role, a.review_change, a.enrollment_batch_change,
-                a.event_triage_change, a.incident_case_change
+                a.event_triage_change, a.incident_case_change, a.security_alert_change
             FROM control_audit a LEFT JOIN retention_cutoffs r ON a.organization_id = r.organization_id
             LEFT JOIN control_access actor ON actor.organization_id = a.organization_id AND actor.id = a.actor_access_id
             LEFT JOIN control_access subject ON subject.organization_id = a.organization_id AND subject.id = a.subject_access_id
@@ -644,7 +663,8 @@ internal sealed partial class ControlStore
                 rows.IsDBNull(17) ? null : JsonSerializer.Deserialize<PolicyReviewAudit>(rows.GetString(17), JsonSerializerOptions.Web),
                 rows.IsDBNull(18) ? null : JsonSerializer.Deserialize<EnrollmentBatchChange>(rows.GetString(18), JsonSerializerOptions.Web),
                 rows.IsDBNull(19) ? null : JsonSerializer.Deserialize<EventTriageChange>(rows.GetString(19), JsonSerializerOptions.Web),
-                rows.IsDBNull(20) ? null : JsonSerializer.Deserialize<IncidentCaseChange>(rows.GetString(20), JsonSerializerOptions.Web)));
+                rows.IsDBNull(20) ? null : JsonSerializer.Deserialize<IncidentCaseChange>(rows.GetString(20), JsonSerializerOptions.Web),
+                rows.IsDBNull(21) ? null : JsonSerializer.Deserialize<SecurityAlertChange>(rows.GetString(21), JsonSerializerOptions.Web)));
         if (entries.Count <= filters.Limit) return new(entries, null);
         entries.RemoveAt(filters.Limit);
         var last = entries[^1];

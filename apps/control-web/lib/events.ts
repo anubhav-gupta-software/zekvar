@@ -10,7 +10,7 @@ function nonEmptyId(value: unknown) {
   return isId(value) && value !== emptyId ? value : undefined;
 }
 
-function timestamp(value: unknown): value is string {
+export function isEventTimestamp(value: unknown): value is string {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
     && Number.isFinite(Date.parse(value));
 }
@@ -19,6 +19,16 @@ export function setEventCursor(query: URLSearchParams, cursor: EventCursor) {
   query.set('beforeAt', cursor.receivedAt);
   query.set('beforeEventId', cursor.eventId);
   query.set('beforeInstallationId', cursor.installationId);
+}
+
+export function readEventCursor(search: Search) {
+  const { beforeAt, beforeEventId, beforeInstallationId } = search;
+  const eventId = nonEmptyId(beforeEventId);
+  const browserId = nonEmptyId(beforeInstallationId);
+  const cursor = isEventTimestamp(beforeAt) && eventId && browserId
+    ? { receivedAt: beforeAt, eventId, installationId: browserId } : undefined;
+  const invalidCursor = !cursor && [beforeAt, beforeEventId, beforeInstallationId].some((value) => value !== undefined);
+  return { cursor, invalidCursor };
 }
 
 export function eventFilters(search: Search) {
@@ -56,18 +66,13 @@ export function eventFilters(search: Search) {
     }
   }
   if (period) {
-    const since = timestamp(search.since) ? search.since
+    const since = isEventTimestamp(search.since) ? search.since
       : new Date(Date.now() - (period === 'day' ? 1 : 7) * 86_400_000).toISOString();
     page.set('period', period);
     page.set('since', since);
     query.set('since', since);
   }
-  const { beforeAt, beforeEventId, beforeInstallationId } = search;
-  const eventId = nonEmptyId(beforeEventId);
-  const browserId = nonEmptyId(beforeInstallationId);
-  const cursor = timestamp(beforeAt) && eventId && browserId
-    ? { receivedAt: beforeAt, eventId, installationId: browserId } : undefined;
-  const invalidCursor = !cursor && [beforeAt, beforeEventId, beforeInstallationId].some((value) => value !== undefined);
+  const { cursor, invalidCursor } = readEventCursor(search);
   return { app, decision, period, installation, rolloutGroup, triageStatus, triageAssignee,
     invalidInstallation, invalidTriage, invalidCursor, cursor, page, query };
 }
