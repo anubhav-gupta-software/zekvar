@@ -51,6 +51,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 26, "026_private_key_detection.sql", ct);
         await ApplyMigration(connection, 27, "027_file_content_inspection.sql", ct);
         await ApplyMigration(connection, 28, "028_event_rollout_attribution.sql", ct);
+        await ApplyMigration(connection, 29, "029_extension_deployment.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -143,7 +144,8 @@ internal sealed partial class ControlStore
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
                 p.allowed_domains, p.blocked_domains, p.payment_card_mode, p.chatgpt_upload_mode, p.gemini_upload_mode,
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
-                p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, p.private_key_mode, p.chatgpt_file_inspection, p.gemini_file_inspection
+                p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, p.private_key_mode, p.chatgpt_file_inspection, p.gemini_file_inspection,
+                p.extension_deployment
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.policy_group_id IS NOT DISTINCT FROM $2::uuid ORDER BY p.version DESC LIMIT 100
             """, organizationId, (object?)groupId ?? DBNull.Value);
@@ -200,7 +202,7 @@ internal sealed partial class ControlStore
             """, installationId, assignmentAware, claudeAware, (object?)extensionVersion ?? DBNull.Value, privateKeyAware, fileInspectionAware);
         await using var rows = await command.ExecuteReaderAsync(ct);
         if (!await rows.ReadAsync(ct)) return null;
-        var policy = ReadPolicy(rows);
+        var policy = ReadPolicy(rows, includeDeployment: false);
         return policy with { AssignmentVersion = rows.GetInt32(22), PromptExceptions = rows.GetBoolean(23) ? policy.PromptExceptions : [] };
     }
 
@@ -606,12 +608,13 @@ internal sealed partial class ControlStore
         foreach (var value in values) command.Parameters.Add(new NpgsqlParameter { Value = value });
     }
 
-    private static Policy ReadPolicy(NpgsqlDataReader rows) => new(rows.GetInt32(0), rows.GetString(1),
+    private static Policy ReadPolicy(NpgsqlDataReader rows, bool includeDeployment = true) => new(rows.GetInt32(0), rows.GetString(1),
         rows.GetDateTime(2), rows.IsDBNull(3) ? null : rows.GetInt32(3), rows.GetString(4), rows.GetBoolean(5),
         new(rows.GetFieldValue<string[]>(6), rows.GetFieldValue<string[]>(7)), rows.GetString(8), new(rows.GetString(9), rows.GetString(10)),
         new(rows.GetFieldValue<string[]>(11), rows.GetFieldValue<string[]>(12)), rows.GetBoolean(13),
         new(rows.GetFieldValue<string[]>(14), rows.GetFieldValue<string[]>(15)),
         JsonSerializer.Deserialize<CustomApp[]>(rows.GetString(16), JsonSerializerOptions.Web),
         JsonSerializer.Deserialize<PromptException[]>(rows.GetString(17), JsonSerializerOptions.Web), ClaudePromptEnabled: rows.GetBoolean(18),
-        PrivateKeyMode: rows.GetString(19), FileInspection: new(rows.GetBoolean(20), rows.GetBoolean(21)));
+        PrivateKeyMode: rows.GetString(19), FileInspection: new(rows.GetBoolean(20), rows.GetBoolean(21)),
+        ExtensionDeployment: includeDeployment ? JsonSerializer.Deserialize<ExtensionDeployment>(rows.GetString(22), JsonSerializerOptions.Web) : null);
 }

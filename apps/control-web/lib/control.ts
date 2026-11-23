@@ -50,6 +50,7 @@ export type Policy = {
   customApps?: CustomApp[];
   promptExceptions?: PromptException[];
   extensionInventoryEnabled?: boolean;
+  extensionDeployment?: import('./extension-deployment').ExtensionDeployment;
   claudePromptEnabled?: boolean;
   domainRules?: DomainRules;
   pathRules?: PathRules;

@@ -131,6 +131,12 @@ Policy publishes accept `extensionInventoryEnabled` as an optional boolean. Exis
 - Reports replace the latest per-installation snapshot. Older reports and replays cannot replace a more recent snapshot. Browsers resend changed reports on sync and periodically refresh identical reports.
 - `GET /v1/admin/extension-inventory` lists status and counts for the latest 100 active installations in the organization. `GET /v1/admin/extension-inventory/{id}` includes entries for one active installation. The response shows data only for the current effective policy and assignment. Control hides reports after 30 days and clears revoked installations or expired and disabled snapshots as part of the documented retention lifecycle.
 
+## Chrome extension deployment plans
+
+Read `extensionDeployment` in the organization or group policy history. Publish it through `POST /v1/admin/policies` or `POST /v1/admin/policy-groups/{groupId}/policies` with `expectedVersion` set to the current effective Control version. `unlisted` is `preserve` or `block`. `rules` accepts up to 100 distinct 32-character Chrome IDs using the letters `a` through `p`. Set `mode` to `allow`, `block`, or `force`. Force installs require an HTTPS `updateUrl` with no credentials, query, or fragment. URLs may use up to 512 characters each and 7,000 total.
+
+Changes use the same audit, approvals, promotion, and restore workflow as other versioned policy. Migration 029 starts earlier policy versions with an empty plan that preserves the native default. The browser policy endpoint keeps the Control agent's existing policy shape. Device managers apply the Chrome policy downloaded from Control. [Export a Chrome deployment plan](../control-web/README.md#deploy-chrome-extension-rules)
+
 ## Security event history and export
 
 - `GET /v1/admin/events` returns an array of up to 100 events for existing clients.

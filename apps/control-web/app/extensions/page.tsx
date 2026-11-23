@@ -27,7 +27,10 @@ export default async function ExtensionsPage({ searchParams }: { searchParams: P
         <section className="panel table-panel" aria-labelledby="inventory-heading">
           <div className="panel-heading">
             <h2 id="inventory-heading">Browser inventory status</h2>
-            <RefreshSection label="Refresh extension inventory" />
+            <div className="form-row">
+              <a className="button small" href="/extensions/deployment">Manage Chrome deployment</a>
+              <RefreshSection label="Refresh extension inventory" />
+            </div>
           </div>
           <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="inventory-heading">
             <table aria-labelledby="inventory-heading">

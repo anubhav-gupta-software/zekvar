@@ -8,6 +8,7 @@ import type { PolicyChange, PolicyReviewQueue } from './reviews';
 import type { InventoryInstallation } from './extension-inventory';
 import type { EnrollmentBatch, IssuedEnrollmentBatch } from './enrollment';
 import type { AiEnforcementReport } from './reports';
+import type { ExtensionDeployment } from './extension-deployment';
 
 const port = Number(process.env.ZEKVAR_CONTROL_PORT ?? 5187);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid Control loopback port.');
@@ -89,6 +90,8 @@ export const controlApi = {
     throw error;
   }),
   extensionInventory: (token: string) => request<InventoryInstallation[]>('/extension-inventory', token),
+  publishExtensionDeployment: (token: string, extensionDeployment: ExtensionDeployment, expectedVersion: number, review: boolean, groupId?: string) =>
+    request<PolicyChange>(policiesPath(groupId), token, 'POST', { extensionDeployment, expectedVersion }, review),
   browserExtensionInventory: (token: string, id: string) => request<InventoryInstallation>(`/extension-inventory/${id}`, token),
   events: async (token: string, filters: URLSearchParams): Promise<EventPage> => {
     const response = await eventResponse('/events/history', token, filters);

@@ -8,10 +8,12 @@ import { allUploadTypes, matchesUploadType, sameUploadTypes, uploadApps, uploads
 import type { Policy } from './control';
 import { sameCustomApps, type CustomAppSetting } from '../../../contracts/policy/discovery';
 import { evaluatePromptWithExceptions, exceptionDecision, samePromptExceptions, type PromptException } from '../../../contracts/policy/prompt-exceptions';
+import { sameExtensionDeployment, type ExtensionDeployment } from './extension-deployment';
 
 export type PreviewPolicy = {
   mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; privateKeyMode?: DetectorMode; discoveryEnabled: boolean;
   extensionInventoryEnabled: boolean;
+  extensionDeployment?: ExtensionDeployment;
   claudePromptEnabled: boolean;
   fileInspection?: FileInspection;
   domainRules: DomainRules; pathRules: PathRules; uploadModes: UploadModes; uploadTypes: UploadTypes;
@@ -32,6 +34,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     customApps: (policy.customApps ?? []).map(({ host, name }) => ({ host, name })),
     promptExceptions: policy.promptExceptions ?? [],
     extensionInventoryEnabled: policy.extensionInventoryEnabled ?? false,
+    extensionDeployment: policy.extensionDeployment,
     claudePromptEnabled: policy.claudePromptEnabled ?? false,
     domainRules: policy.domainRules ?? emptyDomainRules,
     pathRules: policy.pathRules ?? emptyPathRules,
@@ -45,6 +48,7 @@ export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
   return a.mode === b.mode && a.githubPatMode === b.githubPatMode && a.paymentCardMode === b.paymentCardMode &&
     a.privateKeyMode === b.privateKeyMode &&
     a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
+    sameExtensionDeployment(a.extensionDeployment, b.extensionDeployment) &&
     a.claudePromptEnabled === b.claudePromptEnabled &&
     uploadApps.every((app) => a.uploadModes[app] === b.uploadModes[app] && sameUploadTypes(a.uploadTypes[app], b.uploadTypes[app]) &&
       a.fileInspection?.[app] === b.fileInspection?.[app]) &&

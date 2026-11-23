@@ -3,6 +3,20 @@ import { uploadApps } from '../../../contracts/policy/uploads';
 import type { PreviewPolicy } from '../lib/preview';
 import { exceptionKey, samePromptExceptions } from '../../../contracts/policy/prompt-exceptions';
 import { fixtureRule } from '../../../contracts/policy/prompt';
+import { extensionDeploymentChanges, extensionModeLabels, unlistedLabels, type ExtensionDeployment, type ExtensionRule } from '../lib/extension-deployment';
+
+export function ExtensionDeploymentChanges({ reference, candidate }: { reference?: ExtensionDeployment; candidate?: ExtensionDeployment }) {
+  const before = reference?.unlisted ?? 'preserve';
+  const after = candidate?.unlisted ?? 'preserve';
+  const format = (rule?: ExtensionRule) => rule
+    ? `${extensionModeLabels[rule.mode]}${rule.updateUrl ? ` · ${rule.updateUrl}` : ''}`
+    : 'No rule';
+  return <>
+    {before !== after && <li>Unlisted extensions · {unlistedLabels[before]} → {unlistedLabels[after]}</li>}
+    {extensionDeploymentChanges(reference, candidate).map(({ id, prior, next }) =>
+      <li key={id}><code>{id}</code> · {format(prior)} → {format(next)}</li>)}
+  </>;
+}
 
 export function PolicyChanges({ reference, candidate }: { reference: PreviewPolicy; candidate: PreviewPolicy }) {
   const toggle = (value: boolean) => value ? 'On' : 'Off';
@@ -24,6 +38,7 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
   return <ul className="preview-changes" aria-label="Policy setting changes">
     {fields.filter(([, before, after]) => before !== after).map(([field, before, after]) =>
       <li key={field}>{field} · {before} → {after}</li>)}
+    <ExtensionDeploymentChanges reference={reference.extensionDeployment} candidate={candidate.extensionDeployment} />
     {candidate.customApps.map(({ host, name }) => {
       const before = reference.customApps.find((app) => app.host === host);
       if (!before) return <li key={host}>Add {name} · <code>{host}</code></li>;

@@ -69,7 +69,7 @@ internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode 
     DomainRules? DomainRules = null, int? ExpectedVersion = null, string? PaymentCardMode = null, UploadModes? UploadModes = null,
     PathRules? PathRules = null, bool? ExtensionInventoryEnabled = null, UploadTypes? UploadTypes = null,
     CustomAppSetting?[]? CustomApps = null, PromptException?[]? PromptExceptions = null, bool? ClaudePromptEnabled = null,
-    string? PrivateKeyMode = null, FileInspection? FileInspection = null);
+    string? PrivateKeyMode = null, FileInspection? FileInspection = null, ExtensionDeployment? ExtensionDeployment = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null)
 {
     public bool HasSettings() => Chatgpt is not null || Gemini is not null;
@@ -104,7 +104,8 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int AssignmentVersion = 0,
     bool ClaudePromptEnabled = false,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? PrivateKeyMode = "off",
-    FileInspection? FileInspection = null)
+    FileInspection? FileInspection = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ExtensionDeployment? ExtensionDeployment = null)
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => ClaudePromptEnabled
@@ -127,6 +128,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
             ClaudePromptEnabled = claudeEnabled,
             PrivateKeyMode = privateKeyAware ? PrivateKeyMode : "off",
             FileInspection = fileInspectionAware ? FileInspection : new(false, false),
+            ExtensionDeployment = null,
             PromptExceptions = PromptExceptions is { Length: > 0 } ? null : PromptExceptions,
             PromptExceptionLease = exceptions is { Length: > 0 } ? new(nowMs, exceptions) : null
         };

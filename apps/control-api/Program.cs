@@ -321,7 +321,7 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
               request.PathRules is not null || request.UploadModes?.HasSettings() == true ||
               request.UploadTypes?.HasSettings() == true || request.ExtensionInventoryEnabled.HasValue || request.CustomApps is not null ||
               request.PromptExceptions is not null || request.ClaudePromptEnabled.HasValue || request.PrivateKeyMode is not null ||
-              request.FileInspection?.HasSettings() == true)) ||
+              request.FileInspection?.HasSettings() == true || request.ExtensionDeployment is not null)) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode) ||
         !FixtureContract.IsOptionalDetectorMode(request.PrivateKeyMode))
         return Results.BadRequest(new { error = "Choose a valid rule mode." });
@@ -337,7 +337,10 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
         return Results.BadRequest(new { error = "Enter up to 50 domains with no domain in both lists." });
     if (!PathRules.TryNormalize(request.PathRules, out var pathRules))
         return Results.BadRequest(new { error = "Use distinct hostname/path prefixes with paths up to 64 characters long." });
-    var normalized = request with { DomainRules = domainRules, PathRules = pathRules, UploadTypes = uploadTypes };
+    if (!ExtensionDeployment.TryNormalize(request.ExtensionDeployment, out var extensionDeployment) ||
+        (extensionDeployment is not null && request.ExpectedVersion is null))
+        return Results.BadRequest(new { error = "Use a current policy version, distinct Chrome extension IDs, and HTTPS update manifest URLs for force installs." });
+    var normalized = request with { DomainRules = domainRules, PathRules = pathRules, UploadTypes = uploadTypes, ExtensionDeployment = extensionDeployment };
     var result = await store.ChangePolicy(Identity(http), normalized, null, ExpectsReview(http), ct, groupId,
         customApps: customApps, promptExceptions: exceptions);
     return PolicyOutcome(result, request.ExpectedVersion.HasValue

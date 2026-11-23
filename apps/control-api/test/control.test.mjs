@@ -26,6 +26,7 @@ const coverageAdmin = randomBytes(32).toString('hex');
 const keyAdmin = randomBytes(32).toString('hex');
 const fileAdmin = randomBytes(32).toString('hex');
 const rolloutHistoryAdmin = randomBytes(32).toString('hex');
+const deploymentAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -41,6 +42,10 @@ async function retentionFixture(query) {
   assert.match(postgres ?? '', /^zekvar-demo-[a-f0-9]{10}$/);
   const { stdout } = await sql('docker', ['exec', postgres, 'psql', '-XAtq', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'zekvar', '-c', query]);
   return stdout.trim();
+}
+
+function browserPolicyOnly({ extensionDeployment: _extensionDeployment, ...browserPolicy }) {
+  return browserPolicy;
 }
 
 async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false,
@@ -102,6 +107,8 @@ async function start(sweepSeconds = 3600) {
       Control__Organizations__9__AdminToken: fileAdmin,
       Control__Organizations__10__Slug: `rollout-history-${suffix}`,
       Control__Organizations__10__AdminToken: rolloutHistoryAdmin,
+      Control__Organizations__11__Slug: `extension-deployment-${suffix}`,
+      Control__Organizations__11__AdminToken: deploymentAdmin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -166,7 +173,8 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(current.restoredFrom, 1);
     const history = await call('/v1/admin/policies', { token: first });
     assert.deepEqual(history.map((policy) => policy.version), [4, 3, 2, 1]);
-    assert.deepEqual(await call('/v1/browser/policy', { token: client.token }), current);
+    assert.deepEqual(current.extensionDeployment, { unlisted: 'preserve', rules: [] });
+    assert.deepEqual(await call('/v1/browser/policy', { token: client.token }), browserPolicyOnly(current));
     assert.equal((await call('/v1/admin/policies', { token: second })).length, 1);
   });
 
@@ -211,7 +219,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual(await call('/v1/admin/events', { token: second }), []);
     assert.deepEqual(await call('/v1/admin/installations', { token: second }), []);
     await call(`/v1/admin/installations/${client.installationId}/revoke`, { method: 'POST', token: second, expect: 404 });
-    assert.deepEqual(await call('/v1/browser/policy', { token: client.token }), current);
+    assert.deepEqual(await call('/v1/browser/policy', { token: client.token }), browserPolicyOnly(current));
   });
 
   await t.test('the migration is repeatable and revocation survives an API restart', async () => {
@@ -566,7 +574,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await scoped(`/${before.version}/restore`, { method: 'POST', expect: 404 });
     const acknowledgment = { policyVersion: candidate.version, assignmentVersion: 1, domainRulesApplied: true };
     await browserPost('heartbeat', canary, acknowledgment, 400);
-    assert.deepEqual(await fetchPolicy(canary), { ...candidate, assignmentVersion: 1 });
+    assert.deepEqual(await fetchPolicy(canary), { ...browserPolicyOnly(candidate), assignmentVersion: 1 });
     assert.deepEqual(await fetchPolicy(control), before);
     await browserPost('heartbeat', canary, { ...acknowledgment, assignmentVersion: 0 }, 400);
     await browserPost('heartbeat', canary, acknowledgment);
@@ -584,27 +592,27 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(active.version, restored.version);
     assert.equal(active.assignmentVersion, 1);
     await assign(canary, null);
-    assert.deepEqual(await fetchPolicy(canary), { ...newBaseline, assignmentVersion: 2 });
+    assert.deepEqual(await fetchPolicy(canary), { ...browserPolicyOnly(newBaseline), assignmentVersion: 2 });
     await browserPost('heartbeat', canary, { ...acknowledgment, policyVersion: restored.version }, 400);
     await browserPost('heartbeat', canary, { policyVersion: newBaseline.version, assignmentVersion: 2 });
     await browserPost('events', canary, scopedEvent);
     await browserPost('ai-app-observations', canary, observation, 400);
     assert.equal((await admin('events')).find(({ eventId }) => eventId === scopedEvent.eventId).policyVersion, candidate.version);
     await admin(`${groupPath}/promote`, { method: 'POST', body: { expectedVersion: candidate.version }, expect: 409 });
-    assert.deepEqual(await fetchPolicy(control), newBaseline);
+    assert.deepEqual(await fetchPolicy(control), browserPolicyOnly(newBaseline));
     const promoted = await admin(`${groupPath}/promote`, { method: 'POST', body: { expectedVersion: restored.version } });
     assert.equal(promoted.mode, restored.mode);
     assert.equal(promoted.githubPatMode, restored.githubPatMode);
     assert.equal(promoted.discoveryEnabled, restored.discoveryEnabled);
     assert.deepEqual(promoted.domainRules, restored.domainRules);
-    assert.deepEqual(await fetchPolicy(control), promoted);
+    assert.deepEqual(await fetchPolicy(control), browserPolicyOnly(promoted));
     const actions = await admin('audit?action=policy_group_assigned');
     assert.deepEqual(actions.entries.map(({ groupChange }) => groupChange.groupId), [null, pilot.id]);
     assert.ok((await admin('audit?action=policy_published')).entries.some(({ policyVersion, groupChange }) =>
       policyVersion === promoted.version && groupChange.groupId === pilot.id && groupChange.sourceVersion === restored.version));
     await stop();
     await start();
-    assert.deepEqual(await fetchPolicy(canary), { ...promoted, assignmentVersion: 2 });
+    assert.deepEqual(await fetchPolicy(canary), { ...browserPolicyOnly(promoted), assignmentVersion: 2 });
     assert.deepEqual((await scoped()).map(({ version }) => version), [restored.version, warn.version, candidate.version]);
   });
 
@@ -2582,5 +2590,90 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
         rollout_attributed = true WHERE event_id = '${knownBeta.eventId}'`), /violates foreign key constraint/);
       assert.deepEqual((await exportEvents(beta.id))[0].rollout, groupRollout(beta));
     }
+  });
+
+  await t.test('versions Chrome deployment rules with tenant isolation, rollback, and audited review', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: deploymentAdmin, ...options });
+    const post = (path, body, options = {}) => admin(path, { method: 'POST', body, ...options });
+    const [initial] = await admin('policies');
+    const empty = { unlisted: 'preserve', rules: [] };
+    assert.deepEqual(initial.extensionDeployment, empty);
+    if (postgres) {
+      await stop();
+      await retentionFixture(`DELETE FROM schema_migrations WHERE version = 29;
+        ALTER TABLE policy_versions DROP COLUMN extension_deployment;`);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 29'), '1');
+      assert.deepEqual((await admin('policies'))[0], initial);
+    }
+    const a = 'a'.repeat(32);
+    const b = 'b'.repeat(32);
+    const c = 'c'.repeat(32);
+    const url = 'https://updates.fixture.test:8443/channel/update.xml';
+    const rules = [{ id: a, mode: 'allow' }, { id: b, mode: 'block' }, { id: c, mode: 'force', updateUrl: url }];
+    const deployment = { unlisted: 'preserve', rules };
+    for (const invalid of [
+      {}, { unlisted: 'other', rules }, { unlisted: 'block', rules: null },
+      { unlisted: 'block', rules: [null] }, { unlisted: 'block', rules: [rules[0], rules[0]] },
+      { unlisted: 'block', rules: [{ id: '*', mode: 'block' }] },
+      { unlisted: 'block', rules: [{ id: a, mode: 'removed' }] },
+      { unlisted: 'block', rules: [{ id: a, mode: 'allow', updateUrl: url }] },
+      ...['http://updates.fixture.test/x', 'https://user@updates.fixture.test/x', 'https:///updates.fixture.test/x',
+        'https://updates.fixture.test/x?', 'https://updates.fixture.test/x#', 'https://updates.fixture.test/with space',
+        'https://updates.fixture.test\\x', null].map((updateUrl) =>
+        ({ unlisted: 'preserve', rules: [{ id: a, mode: 'force', updateUrl }] })),
+    ]) await post('policies', { extensionDeployment: invalid, expectedVersion: initial.version }, { expect: 400 });
+    await post('policies', { extensionDeployment: deployment }, { expect: 400 });
+    const published = await post('policies', { extensionDeployment: { ...deployment, rules: [
+      { ...rules[2], updateUrl: ` ${url} ` }, rules[0], rules[1],
+    ] }, expectedVersion: initial.version });
+    assert.deepEqual(published.extensionDeployment, deployment);
+    await post('policies', { extensionDeployment: empty, expectedVersion: initial.version }, { expect: 409 });
+    assert.deepEqual((await admin('policies', { token: second }))[0].extensionDeployment, empty);
+
+    const group = await post('policy-groups', { name: 'Deployment canary' });
+    const groupPolicies = `policy-groups/${group.id}/policies`;
+    await post(groupPolicies, { extensionDeployment: deployment, expectedVersion: published.version }, { token: rolloutHistoryAdmin, expect: 409 });
+    const inherited = await post(groupPolicies, { mode: 'warn', expectedVersion: published.version });
+    assert.deepEqual(inherited.extensionDeployment, deployment);
+    const separate = { unlisted: 'block', rules: [rules[0], rules[2]] };
+    const reviewer = await post('access', { name: 'Deployment reviewer', role: 'administrator', hours: 1 });
+    const proposer = await post('access', { name: 'Deployment proposer', role: 'administrator', hours: 1 });
+    const auditor = await post('access', { name: 'Deployment auditor', role: 'auditor', hours: 1 });
+    const foreignReviewer = await post('access', { name: 'Foreign deployment reviewer', role: 'administrator', hours: 1 }, { token: rolloutHistoryAdmin });
+    assert.deepEqual((await admin(groupPolicies, { token: auditor.token }))[0].extensionDeployment, deployment);
+    await post(groupPolicies, { extensionDeployment: separate, expectedVersion: inherited.version }, { token: auditor.token, expect: 403 });
+    await post('policy-reviews/setting', { required: true }, { expect: 204 });
+    const { reviewId } = await post(groupPolicies, { extensionDeployment: separate, expectedVersion: inherited.version },
+      { token: proposer.token, expectReview: true, expect: 202 });
+    const reviewed = (await admin('policy-reviews')).entries.find(({ id }) => id === reviewId);
+    assert.deepEqual(reviewed.snapshots.before.extensionDeployment, deployment);
+    assert.deepEqual(reviewed.snapshots.candidate.extensionDeployment, separate);
+    assert.deepEqual((await admin(groupPolicies))[0].extensionDeployment, deployment);
+    await post(`policy-reviews/${reviewId}/decision`, { approve: true }, { token: proposer.token, expect: 403 });
+    await post('policy-reviews/setting', { required: true }, { token: rolloutHistoryAdmin, expect: 204 });
+    await post(`policy-reviews/${reviewId}/decision`, { approve: true }, { token: foreignReviewer.token, expect: 404 });
+    const approved = await post(`policy-reviews/${reviewId}/decision`, { approve: true }, { token: reviewer.token });
+    assert.deepEqual(approved.extensionDeployment, separate);
+    assert.deepEqual((await admin('policies'))[0].extensionDeployment, deployment);
+    await post('policy-reviews/setting', { required: false }, { expect: 204 });
+    const promoted = await post(`policy-groups/${group.id}/promote`, { expectedVersion: approved.version });
+    assert.deepEqual(promoted.extensionDeployment, separate);
+    const unrelated = await post('policies', { mode: 'block' });
+    assert.deepEqual(unrelated.extensionDeployment, separate);
+    const restored = await post(`policies/${initial.version}/restore`, undefined);
+    assert.deepEqual(restored.extensionDeployment, empty);
+    assert.deepEqual((await admin(groupPolicies))[0].extensionDeployment, separate);
+
+    const { grant } = await post('enrollment-grants', {});
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    await call('/v1/browser/policy', { token: browser.token, assignmentAware: true });
+    await post(`installations/${browser.installationId}/policy-group`, { groupId: group.id }, { expect: 204 });
+    const applied = await call('/v1/browser/policy', { token: browser.token, assignmentAware: true });
+    assert.equal(applied.version, approved.version);
+    assert.equal(Object.hasOwn(applied, 'extensionDeployment'), false);
+    assert.doesNotMatch(JSON.stringify(applied), /updates\.fixture\.test/);
+    const audit = (await admin('audit?action=policy_published')).entries.find(({ policyVersion }) => policyVersion === approved.version);
+    assert.equal(audit.actorAccess.id, reviewer.access.id);
   });
 });

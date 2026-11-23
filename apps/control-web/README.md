@@ -104,6 +104,13 @@ Choose **App inventory → Edit app catalog** for the baseline or **Preview grou
 
 Open **Policy preview** for the intended scope and add an entry under **Temporary prompt exceptions**. Choose the app, detector, UTC expiry, and reason. Compare outcomes for that destination, then publish or request review. Edit or remove an entry through the same workflow. **Policy history** records the scope's configured entries. Filter **Security events** to **Exception applied** for observed uses. [Browser test guide](../browser-extension/README.md#test-temporary-prompt-exceptions)
 
+## Deploy Chrome extension rules
+
+1. Open **Browser extensions → Manage Chrome deployment**. Choose the organization baseline or a rollout group. Copy an ID from **Browser extensions**, enter the rule, and select **Review changes**. The plan accepts up to 100 exact IDs. Use `ID, allow`, `ID, block`, or `ID, force, https://updates.example.test/channel/update.xml`. Use the approved update manifest for the extension. [Chrome ExtensionSettings](https://support.google.com/chrome/a/answer/9867568)
+2. Publish or request approval. The published plan follows Control's policy history, including promotion and restore. A group inherits the baseline until its first scoped publication. After publishing, the device group's native settings still come from its device manager.
+3. Paste the target device group's current **ExtensionSettings** JSON. Control merges it locally and retains the original for rollback. If you select **Block unlisted**, enter the pinned Zekvar Browser ID and keep its existing force-install rule in the source. The wildcard default applies alongside explicit settings for listed extensions. Review **Chrome policy changes** and **Review merged JSON** before downloading.
+4. Download the Chrome policy and the rollback file. Apply the Chrome policy's `ExtensionSettings` through the target group's device manager. Keep enrollment and other device policy settings in place. On a canary browser, reload policies at `chrome://policy` and verify installation behavior at `chrome://extensions`. Apply the saved rollback file's `ExtensionSettings` through the device manager if needed. Compare Chrome's effective configuration if other extension policies are present.
+
 ## Investigate and export security events
 
 Open **Events** in the sidebar. Filter by application, decision, time range, browser installation ID, or **Recorded rollout group**, then select **Apply filters**. Select an installation ID or recorded rollout in a result to narrow the current view. Use **Older events** and **Newest events** to review the matching records.

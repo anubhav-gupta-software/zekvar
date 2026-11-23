@@ -112,6 +112,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
     setResult(runComparison(reference, {
       mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode, privateKeyMode: editor.privateKeyMode,
       discoveryEnabled: editor.discoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled,
+      extensionDeployment: reference.extensionDeployment,
       claudePromptEnabled: editor.claudePromptEnabled, domainRules, pathRules,
       uploadModes: editor.uploadModes, uploadTypes: { chatgpt, gemini }, fileInspection: editor.fileInspection, customApps, promptExceptions,
     }, customPrompt, address, file, promptApp));

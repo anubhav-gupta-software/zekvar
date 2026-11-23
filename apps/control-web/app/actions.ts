@@ -13,6 +13,7 @@ import { isDetectorMode, isMode } from '../../../contracts/policy/prompt';
 import { isUploadMode, parseUploadTypes, uploadTypesError } from '../../../contracts/policy/uploads';
 import { customAppError, isCustomAppId, parseCustomApps } from '../../../contracts/policy/discovery';
 import { promptExceptionError, readPromptExceptions } from '../../../contracts/policy/prompt-exceptions';
+import { parseExtensionDeployment } from '../lib/extension-deployment';
 
 export async function signIn(_previous: Feedback, form: FormData): Promise<Feedback> {
   const token = form.get('token');
@@ -292,6 +293,30 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   });
 }
 
+export async function publishExtensionDeployment(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const groupId = form.get('groupId');
+  const expectedVersion = Number(form.get('expectedVersion'));
+  if ((groupId !== null && !isId(groupId)) || !Number.isInteger(expectedVersion) || expectedVersion < 1 || expectedVersion > 2147483647) {
+    return { error: 'Reload the current deployment plan before saving.' };
+  }
+  const draft = parseExtensionDeployment(form.get('unlisted'), form.get('rules'));
+  if ('error' in draft) return { error: draft.error };
+  return perform(async (token) => {
+    try {
+      const policy = await controlApi.publishExtensionDeployment(token, draft.deployment, expectedVersion,
+        form.get('expectReview') === 'on', groupId ?? undefined);
+      if ('reviewId' in policy) return queued(policy.reviewId);
+      refreshPolicyViews();
+      return { message: `Extension deployment plan published as version ${policy.version}.` };
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409 && !error.code) {
+        return { error: 'The policy changed. Reload and review the deployment plan again.' };
+      }
+      throw error;
+    }
+  });
+}
+
 export async function restorePolicy(_previous: Feedback, form: FormData): Promise<Feedback> {
   const version = Number(form.get('version'));
   const groupId = form.get('groupId');
@@ -311,6 +336,7 @@ function refreshPolicyViews() {
   revalidatePath('/preview');
   revalidatePath('/reviews');
   revalidatePath('/extensions');
+  revalidatePath('/extensions/deployment');
 }
 
 function queued(reviewId: string) {
