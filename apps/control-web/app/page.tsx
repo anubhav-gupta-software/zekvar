@@ -96,7 +96,9 @@ export default async function Control({ searchParams }: { searchParams: Promise<
             <div className="panel-heading"><h2 id="policies-heading">{session.reviewRequired ? 'Policy changes' : 'Publish a policy'}</h2>
               <span className="badge">Organization-wide</span></div>
             {policyWritable ? <><p className="muted">Set prompt protection, app discovery, and extension inventory for enrolled browsers.</p>
-              <PublishPolicyForm policy={current} review={session.reviewRequired} /></> :
+              <PublishPolicyForm policy={current} review={session.reviewRequired} />
+              {current?.identifierProtection && <a className="button small mt-3" href="/preview#draft-identifiers">Configure organization identifiers</a>}
+            </> :
               <p className="muted">Sign in as a named administrator to request policy changes.</p>}
           </section>
           <section className="panel" aria-labelledby="enrollment-heading">

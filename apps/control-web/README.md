@@ -92,6 +92,14 @@ The preview evaluates the supported text detectors, file metadata, and individua
 
 Use **Draft ChatGPT file content protection** or **Draft Gemini file content protection** to preview Off, Monitor, and Block. The preview includes matching and clean synthetic text and an unsupported file sample. Browser v0.27.0 can hold a file selection, release a clean scan, and stop a batch when it finds a match or cannot finish the check. Use Browser health to confirm the installed release across the rollout group. **Security events** shows the detector or **File check unavailable**, along with the intake method. **Reports → By activity** includes these decisions under **File content inspection**. [Block sensitive file contents](../browser-extension/README.md#block-sensitive-file-contents)
 
+## Protect organization identifiers
+
+1. Open **Policy preview** and choose a scope. Under **Organization identifier detection**, select **Monitor**, **Warn**, or **Block**. Enter one prefix and digit count per line in **Identifier formats**, such as `CUST- 8` or `CASE_ 6`. Use prefixes that distinguish your identifiers from ordinary text.
+2. Select **Run preview** to see a generated prompt and file sample for each format. Use a synthetic value in **Custom prompt** to check expected matches and near misses. The sample stays in the browser tab. Publish the draft or request independent approval and check **Browser health** for v0.28.0 and the applied policy.
+3. Look for **Organization identifier** under **Security events** and in the report's rule breakdown. All configured formats share this reporting label. Use **Policy history** or a review request to see the formats that were in effect for a version. Restore a previous version to roll back the setting.
+
+The detector uses exact ASCII digit counts and compares the prefix without case sensitivity. A letter, number, combining mark, dash, or connector next to the candidate makes it part of a larger token. A temporary prompt exception applies to every configured identifier format for the chosen app. Other matching detectors and the app's file content policy still apply. [Try organization identifier protection](../browser-extension/README.md#test-organization-identifier-protection)
+
 ## Pilot Claude prompt protection
 
 Enable **Claude prompt protection** in a rollout group and sync Browser v0.19.0 or later. **Browser health** shows **Off** when the assigned policy disables the adapter, **Unobserved** before a composer check for the assigned version, and the last observed **Detected** or **Unsupported** status. Filter **Security events** to Claude to review metadata-only decisions. [Experimental Claude test guide](../browser-extension/README.md#try-experimental-claude-prompt-protection)

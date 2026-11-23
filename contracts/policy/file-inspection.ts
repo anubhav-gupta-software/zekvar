@@ -3,7 +3,9 @@ import { evaluatePrompt, isMode, type PromptPolicy } from './prompt';
 export function fileInspectionDetectors(policy: PromptPolicy): PromptPolicy {
   return { mode: 'monitor', githubPatMode: isMode(policy.githubPatMode) ? 'monitor' : 'off',
     paymentCardMode: isMode(policy.paymentCardMode) ? 'monitor' : 'off',
-    privateKeyMode: isMode(policy.privateKeyMode) ? 'monitor' : 'off' };
+    privateKeyMode: isMode(policy.privateKeyMode) ? 'monitor' : 'off',
+    identifierProtection: isMode(policy.identifierProtection?.mode) ?
+      { mode: 'monitor', formats: policy.identifierProtection.formats } : undefined };
 }
 
 export function evaluateFileInspection(text: string, detectors: PromptPolicy) {

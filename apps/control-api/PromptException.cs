@@ -10,7 +10,7 @@ internal sealed record PromptException(string AppId, string RuleId, DateTimeOffs
     {
         normalized = null;
         if (submitted is null) return true;
-        if (submitted.Length > 12) return false;
+        if (submitted.Length > 15) return false;
         var entries = new Dictionary<(string, string), PromptException>();
         foreach (var entry in submitted)
         {

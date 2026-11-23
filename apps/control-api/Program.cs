@@ -314,11 +314,12 @@ browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
     var fileInspectionAware = http.Request.Headers["X-Zekvar-File-Inspection"] == "1";
     var fileBlockAware = fileInspectionAware && http.Request.Headers["X-Zekvar-File-Content-Block"] == "1";
     var aiAppAccessAware = http.Request.Headers["X-Zekvar-AI-App-Access"] == "1";
+    var identifiersAware = http.Request.Headers["X-Zekvar-Identifiers"] == "1";
     var versionHeader = http.Request.Headers["X-Zekvar-Extension-Version"];
     var extensionVersion = versionHeader.Count == 1 ? BrowserRelease.ReadVersion(versionHeader[0]) : null;
     if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, claudeAware, extensionVersion, privateKeyAware,
-        fileInspectionAware, aiAppAccessAware, fileBlockAware, ct) is { } policy)
-        return Results.Ok(policy.ForBrowser(claudeAware, privateKeyAware, fileInspectionAware, aiAppAccessAware, fileBlockAware));
+        fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware, ct) is { } policy)
+        return Results.Ok(policy.ForBrowser(claudeAware, privateKeyAware, fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware));
     return aware ? Results.Unauthorized() : Results.Conflict(new { error = "Update the browser to receive the assigned policy." });
 });
 browser.MapPost("/heartbeat", async (Heartbeat request, HttpContext http, CancellationToken ct) =>
@@ -350,7 +351,8 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
               request.UploadTypes?.HasSettings() == true || request.ExtensionInventoryEnabled.HasValue || request.CustomApps is not null ||
               request.PromptExceptions is not null || request.ClaudePromptEnabled.HasValue || request.PrivateKeyMode is not null ||
               request.FileInspection?.HasSettings() == true || request.ExtensionDeployment is not null ||
-              request.BlockedAiAppHosts is not null || request.FileContentModes?.HasSettings() == true)) ||
+              request.BlockedAiAppHosts is not null || request.FileContentModes?.HasSettings() == true ||
+              request.IdentifierProtection is not null)) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode) ||
         !FixtureContract.IsOptionalDetectorMode(request.PrivateKeyMode))
         return Results.BadRequest(new { error = "Choose a valid rule mode." });
@@ -373,8 +375,10 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
         return Results.BadRequest(new { error = "Use a current policy version, distinct Chrome extension IDs, and HTTPS update manifest URLs for force installs." });
     if (!AiAppAccess.TryNormalize(request.BlockedAiAppHosts, out var blockedAiAppHosts))
         return Results.BadRequest(new { error = "Select distinct AI app hostnames from the policy catalog." });
+    if (!IdentifierProtection.TryNormalize(request.IdentifierProtection, out var identifiers))
+        return Results.BadRequest(new { error = "Use a valid identifier mode and up to 16 distinct prefixes with 4 to 12 suffix digits." });
     var normalized = request with { DomainRules = domainRules, PathRules = pathRules, UploadTypes = uploadTypes,
-        ExtensionDeployment = extensionDeployment, BlockedAiAppHosts = blockedAiAppHosts };
+        ExtensionDeployment = extensionDeployment, BlockedAiAppHosts = blockedAiAppHosts, IdentifierProtection = identifiers };
     var result = await store.ChangePolicy(Identity(http), normalized, null, ExpectsReview(http), ct, groupId,
         customApps: customApps, promptExceptions: exceptions);
     return PolicyOutcome(result, request.ExpectedVersion.HasValue

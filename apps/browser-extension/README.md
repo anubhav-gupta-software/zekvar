@@ -86,6 +86,14 @@ AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 
 The local format check recognizes complete, base64-shaped PKCS #8, encrypted PKCS #8, RSA, EC, DSA, and OpenSSH blocks. It handles both native line breaks and JSON-escaped line breaks. Public key and certificate labels remain available for ordinary use. The detector checks the block's text format. File content inspection has separate coverage. [PKCS #8 textual encodings](https://www.rfc-editor.org/rfc/rfc7468.html#section-10) · [OpenSSH private key format](https://github.com/openssh/openssh-portable/blob/master/PROTOCOL.key)
 
+## Test organization identifier protection
+
+1. Load Browser v0.28.0 and set **Organization identifier detection** to **Warn** or **Block** in **Policy preview**. Enter a synthetic format such as `CUST- 8`, run the preview, and publish the policy to the test browser's scope.
+2. Click **Sync now**, then open a supported ChatGPT or Gemini composer. Enter `CUST-07392468` to test a match. Use **Redact detected values**, review the edited prompt, and send it separately. Try `CUST-073924680` to check that a longer value stays available.
+3. Enable file content protection for the app and try the same synthetic value in UTF-8 text or a supported Office part. The app's file content mode determines whether the attachment proceeds or is blocked. **Security events** records the action and detector without the matched identifier.
+
+The detector also runs on supported Claude composers when the experimental adapter is enabled. Use a scoped test group before enabling enforcement on partner layouts. [Configure organization identifiers](../control-web/README.md#protect-organization-identifiers)
+
 ## Test file upload policies
 
 1. Start the updated Control services and load Browser v0.15.0. In the baseline or a rollout group, choose **Off**, **Monitor**, or **Block** separately for **ChatGPT file uploads** and **Gemini file uploads**. Leave **File types** blank to apply the selected action to all files. Enter suffixes such as `.pdf` or `.tar.gz`, media types such as `application/pdf`, or media groups such as `image/*` to scope the action. **Policy preview** also accepts synthetic names and media types.

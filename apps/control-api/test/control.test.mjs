@@ -29,6 +29,7 @@ const rolloutHistoryAdmin = randomBytes(32).toString('hex');
 const deploymentAdmin = randomBytes(32).toString('hex');
 const aiAppAccessAdmin = randomBytes(32).toString('hex');
 const eventTriageAdmin = randomBytes(32).toString('hex');
+const identifiersAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -39,6 +40,11 @@ const undoSsoSchema = `
       DROP COLUMN oidc_issuer, DROP COLUMN oidc_subject, ALTER COLUMN expires_at SET NOT NULL,
       ADD CONSTRAINT control_access_check1 CHECK ((revoked_at IS NULL) = (token_hash IS NOT NULL));
 `;
+const undoIdentifierSchema = `
+  DELETE FROM schema_migrations WHERE version = 33;
+  ALTER TABLE policy_versions DROP COLUMN identifier_protection;
+  ALTER TABLE policy_deliveries DROP COLUMN identifiers;
+`;
 
 async function retentionFixture(query) {
   assert.match(postgres ?? '', /^zekvar-demo-[a-f0-9]{10}$/);
@@ -47,13 +53,13 @@ async function retentionFixture(query) {
 }
 
 function browserPolicyOnly({ extensionDeployment: _extensionDeployment, blockedAiAppHosts: _blockedAiAppHosts,
-  fileContentModes: _fileContentModes, ...browserPolicy }) {
+  fileContentModes: _fileContentModes, identifierProtection: _identifierProtection, ...browserPolicy }) {
   return browserPolicy;
 }
 
 async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false,
   extensionVersion, scopedEnrollment = false, composerAware = false, privateKeyAware = false, fileInspectionAware = false,
-  aiAppAccessAware = false, fileBlockAware = false } = {}) {
+  aiAppAccessAware = false, fileBlockAware = false, identifiersAware = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -67,6 +73,7 @@ async function call(path, { token, method = 'GET', body, expect = 200, assignmen
   if (fileInspectionAware) headers['X-Zekvar-File-Inspection'] = '1';
   if (aiAppAccessAware) headers['X-Zekvar-AI-App-Access'] = '1';
   if (fileBlockAware) headers['X-Zekvar-File-Content-Block'] = '1';
+  if (identifiersAware) headers['X-Zekvar-Identifiers'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
@@ -119,6 +126,8 @@ async function start(sweepSeconds = 3600) {
       Control__Organizations__12__AdminToken: aiAppAccessAdmin,
       Control__Organizations__13__Slug: `event-triage-${suffix}`,
       Control__Organizations__13__AdminToken: eventTriageAdmin,
+      Control__Organizations__14__Slug: `identifiers-${suffix}`,
+      Control__Organizations__14__AdminToken: identifiersAdmin,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -1622,6 +1631,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       const history = await admin('events');
       await stop();
       await retentionFixture(`
+        ${undoIdentifierSchema}
         DELETE FROM schema_migrations WHERE version = 19;
         ALTER TABLE policy_versions DROP COLUMN prompt_exceptions;
         DELETE FROM policy_deliveries WHERE assignment_version = 0;
@@ -2297,7 +2307,8 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(before.privateKeyMode, 'off');
     if (postgres) {
       await stop();
-      await retentionFixture(`DELETE FROM schema_migrations WHERE version = 26;
+      await retentionFixture(`${undoIdentifierSchema}
+        DELETE FROM schema_migrations WHERE version = 26;
         ALTER TABLE policy_versions DROP COLUMN private_key_mode;
         ALTER TABLE policy_deliveries DROP COLUMN private_key;`);
       await start();
@@ -2390,7 +2401,8 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual((await current()).fileInspection, off);
     if (postgres) {
       await stop();
-      await retentionFixture(`DELETE FROM schema_migrations WHERE version IN (27, 32);
+      await retentionFixture(`${undoIdentifierSchema}
+        DELETE FROM schema_migrations WHERE version IN (27, 32);
         ALTER TABLE policy_versions DROP COLUMN chatgpt_file_content_block, DROP COLUMN gemini_file_content_block,
           DROP COLUMN chatgpt_file_inspection, DROP COLUMN gemini_file_inspection;
         ALTER TABLE policy_deliveries DROP COLUMN file_inspection, DROP COLUMN file_content_block;`);
@@ -2472,7 +2484,8 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual(oldSetting.fileContentModes, { chatgpt: 'off', gemini: 'monitor' });
     if (postgres) {
       await stop();
-      await retentionFixture(`DELETE FROM schema_migrations WHERE version = 32;
+      await retentionFixture(`${undoIdentifierSchema}
+        DELETE FROM schema_migrations WHERE version = 32;
         ALTER TABLE policy_versions DROP COLUMN chatgpt_file_content_block, DROP COLUMN gemini_file_content_block;
         ALTER TABLE policy_deliveries DROP COLUMN file_content_block;`);
       await start();
@@ -2993,5 +3006,111 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       assert.deepEqual((await activity()).map(({ eventTriageChange }) => eventTriageChange.revision), [3, 2]);
       assert.equal((await admin(path(two))).event.eventId, eventId);
     });
+  });
+
+  await t.test('versions organization identifiers and requires capability for prompt, exception, and attachment evidence', async () => {
+    const admin = (path, options = {}) => call(`/v1/admin/${path}`, { token: identifiersAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const [initial] = await admin('policies');
+    const empty = { mode: 'off', formats: [] };
+    assert.deepEqual(initial.identifierProtection, empty);
+    if (postgres) {
+      await stop();
+      await retentionFixture(undoIdentifierSchema);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 33'), '1');
+      assert.deepEqual((await admin('policies'))[0], initial);
+    }
+    const proposed = { mode: 'block', formats: [{ prefix: '  cust- ', digits: 8 }, { prefix: 'CASE_', digits: 6 }] };
+    const canonical = { mode: 'block', formats: [{ prefix: 'CASE_', digits: 6 }, { prefix: 'CUST-', digits: 8 }] };
+    for (const identifierProtection of [
+      { mode: 'on', formats: [] }, { mode: 'block', formats: [] }, { mode: 'off', formats: [null] }, { mode: 'block' },
+      { ...proposed, formats: [{ prefix: 'CASE.*-', digits: 8 }] }, { ...proposed, formats: [{ prefix: '客户-', digits: 8 }] },
+      { ...proposed, formats: [{ prefix: 'CASE-', digits: 3 }] }, { ...proposed, formats: [{ prefix: 'CASE-', digits: 13 }] },
+      { ...proposed, formats: [{ prefix: 'CASE-', digits: 4 }, { prefix: 'case-', digits: 6 }] },
+      { ...proposed, formats: [{ prefix: 'CASE-', digits: 4, value: 'CASE-1234' }] },
+      { ...proposed, formats: Array.from({ length: 17 }, (_, i) => ({ prefix: `SYN${i}-`, digits: 6 })) },
+    ]) await post('policies', { identifierProtection }, { expect: 400 });
+    assert.deepEqual((await admin('policies'))[0], initial);
+    const expiry = new Date(Date.now() + 10 * 60_000).toISOString();
+    const grantSetting = { appId: 'chatgpt', ruleId: 'organization-identifier', expiresAt: expiry, reason: 'Synthetic workflow review' };
+    const active = await post('policies', { expectedVersion: initial.version, identifierProtection: proposed,
+      fileContentModes: { chatgpt: 'monitor', gemini: 'block' }, promptExceptions: [grantSetting] });
+    assert.deepEqual(active.identifierProtection, canonical);
+    assert.deepEqual((await admin('policies', { token: second }))[0].identifierProtection, empty);
+    await post('policies', { expectedVersion: initial.version, identifierProtection: empty }, { expect: 409 });
+    async function enroll() {
+      const { grant } = await post('enrollment-grants');
+      return call('/v1/enroll', { method: 'POST', body: { grant } });
+    }
+    const [one, two] = await Promise.all([enroll(), enroll()]);
+    const browser = (client, path, options = {}) => call(`/v1/browser/${path}`, { token: client.token, assignmentAware: true, ...options });
+    const fetchPolicy = (client, identifiersAware) => browser(client, 'policy', { identifiersAware, fileInspectionAware: true, fileBlockAware: true });
+    const old = await fetchPolicy(one, false);
+    assert.equal(old.identifierProtection, undefined);
+    assert.equal(old.promptExceptionLease, undefined);
+    const ack = (client, enabled, expect = 204) => browser(client, 'heartbeat', { method: 'POST', expect,
+      body: { policyVersion: active.version, identifiersApplied: enabled, promptExceptionsApplied: enabled,
+        fileInspectionApplied: true, fileContentBlockApplied: true } });
+    const applied = async (client) => (await admin('installations')).find(({ installationId }) => installationId === client.installationId).appliedPolicyVersion;
+    await ack(one, false);
+    assert.equal(await applied(one), null);
+    await ack(one, true, 400);
+    const attempt = { ...event, timestamp: new Date().toISOString(), appId: 'chatgpt', policyVersion: active.version,
+      ruleId: 'organization-identifier', detectorCategory: 'internal-identifier', decision: 'block' };
+    const send = (fields = {}, expect = 204, client = one) => browser(client, 'events', {
+      method: 'POST', expect, body: { ...attempt, eventId: randomUUID(), ...fields },
+    });
+    await send({}, 400);
+    const capable = await fetchPolicy(one, true);
+    assert.deepEqual(capable.identifierProtection, canonical);
+    assert.equal(capable.promptExceptionLease.grants[0].ruleId, grantSetting.ruleId);
+    await ack(one, true);
+    await ack(two, true, 400);
+    assert.equal(await applied(one), active.version);
+    await send({}, 400, two);
+    for (const invalid of [
+      { decision: 'warn' }, { decision: 'warn_override' }, { detectorCategory: 'synthetic-secret' }, { decision: 'block', uploadMethod: 'picker' },
+      { decision: 'exception_applied', appId: 'gemini' }, { rawText: 'CUST-73498765' }, { prefix: 'CUST-' },
+    ]) await send(invalid, 400);
+    const stable = randomUUID();
+    await Promise.all([send({ eventId: stable }), send({ eventId: stable })]);
+    await send({ decision: 'exception_applied' });
+    await send({ decision: 'monitor', uploadMethod: 'drop' });
+    await send({ appId: 'gemini', uploadMethod: 'picker' });
+    const exported = (await admin('events/export')).entries;
+    assert.equal(exported.length, 4);
+    assert.deepEqual(exported.map(({ decision }) => decision).sort(), ['block', 'block', 'exception_applied', 'monitor']);
+    assert.doesNotMatch(JSON.stringify(exported), /CUST-|CASE_|rawText|73498765/);
+    assert.deepEqual((await admin('events/export', { token: second })).entries.filter(({ ruleId }) => ruleId === grantSetting.ruleId), []);
+    const rule = (await admin('reports/ai-enforcement')).byRule.find(({ id }) => id === grantSetting.ruleId);
+    assert.equal(rule.counts.block, 2);
+    assert.equal(rule.counts.monitor, 1);
+
+    const [{ token: author }, { token: reviewer }] = await Promise.all(['Identifier author', 'Identifier reviewer'].map((name) =>
+      post('access', { name, role: 'administrator', hours: 1 })));
+    const group = await post('policy-groups', { name: 'Identifier canary' });
+    const groupPath = `policy-groups/${group.id}`;
+    await post('policy-reviews/setting', { required: true }, { expect: 204 });
+    const candidate = { mode: 'warn', formats: [{ prefix: 'LAB-', digits: 4 }] };
+    const pending = await post(`${groupPath}/policies`, { expectedVersion: active.version, identifierProtection: candidate },
+      { token: author, expectReview: true, expect: 202 });
+    const review = (await admin('policy-reviews')).entries.find(({ id }) => id === pending.reviewId);
+    assert.deepEqual(review.snapshots.before.identifierProtection, canonical);
+    assert.deepEqual(review.snapshots.candidate.identifierProtection, candidate);
+    await post(`policy-reviews/${pending.reviewId}/decision`, { approve: true }, { token: author, expect: 403 });
+    const approved = await post(`policy-reviews/${pending.reviewId}/decision`, { approve: true }, { token: reviewer });
+    assert.deepEqual(approved.identifierProtection, candidate);
+    assert.deepEqual((await admin('policies'))[0].identifierProtection, canonical);
+    await post(`installations/${one.installationId}/policy-group`, { groupId: group.id }, { expect: 204 });
+    const scoped = await fetchPolicy(one, true);
+    assert.deepEqual(scoped.identifierProtection, candidate);
+    await send({ policyVersion: scoped.version, assignmentVersion: scoped.assignmentVersion, decision: 'warn_override' });
+    await post('policy-reviews/setting', { required: false }, { expect: 204 });
+    const promoted = await post(`${groupPath}/promote`, { expectedVersion: approved.version });
+    assert.deepEqual(promoted.identifierProtection, candidate);
+    const restored = await post(`policies/${initial.version}/restore`);
+    assert.deepEqual(restored.identifierProtection, empty);
+    assert.deepEqual((await admin('policies'))[0].identifierProtection, empty);
   });
 });

@@ -9,7 +9,8 @@ import { aiApps, classifications, decisionLabels, detectorModes, isId, modes,
 import { endSession, sessionToken, startSession } from '../lib/session';
 import { cleanupCounts, retentionFields, type RetentionField, type RetentionPolicy } from '../lib/retention';
 import { navigationRuleLimitError, readNavigationRules } from '../lib/navigation';
-import { isDetectorMode, isMode } from '../../../contracts/policy/prompt';
+import { isDetectorMode, isMode, readIdentifierProtection, type IdentifierProtection } from '../../../contracts/policy/prompt';
+import { identifierFormatError } from '../../../contracts/policy/organization-identifiers';
 import { isUploadMode, parseUploadTypes, uploadTypesError } from '../../../contracts/policy/uploads';
 import { customAppError, isCustomAppId, parseCustomApps } from '../../../contracts/policy/discovery';
 import { promptExceptionError, readPromptExceptions } from '../../../contracts/policy/prompt-exceptions';
@@ -325,12 +326,22 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
     return { error: promptExceptionError };
   }
   if (!promptExceptions) return { error: promptExceptionError };
+  let identifierProtection: IdentifierProtection | undefined;
+  const identifierInput = form.get('identifierProtection');
+  if (identifierInput !== null) {
+    try {
+      if (typeof identifierInput === 'string') identifierProtection = readIdentifierProtection(JSON.parse(identifierInput));
+    } catch {
+      return { error: identifierFormatError };
+    }
+    if (!identifierProtection) return { error: identifierFormatError };
+  }
   return perform(async (token) => {
     try {
       const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, privateKeyMode: privateKeyMode ?? undefined,
         uploadModes, uploadTypes, ...fileContent,
         discoveryEnabled: discovery === 'on', extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on',
-        domainRules, pathRules, customApps, promptExceptions, blockedAiAppHosts },
+        domainRules, pathRules, customApps, promptExceptions, blockedAiAppHosts, identifierProtection },
         expectedVersion, form.get('expectReview') === 'on', groupId ?? undefined);
       if ('reviewId' in published) return queued(published.reviewId);
       refreshPolicyViews();

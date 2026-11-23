@@ -25,6 +25,9 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     ['GitHub classic PAT', detectorModeLabels[reference.githubPatMode], detectorModeLabels[candidate.githubPatMode]],
     ['Payment card number', detectorModeLabels[reference.paymentCardMode], detectorModeLabels[candidate.paymentCardMode]],
     ['Private key', detectorModeLabels[reference.privateKeyMode ?? 'off'], detectorModeLabels[candidate.privateKeyMode ?? 'off']],
+    ['Organization identifier detection', detectorModeLabels[reference.identifierProtection?.mode ?? 'off'],
+      detectorModeLabels[candidate.identifierProtection?.mode ?? 'off']],
+    ['Identifier formats', identifierFormats(reference), identifierFormats(candidate)],
     ['App discovery', toggle(reference.discoveryEnabled), toggle(candidate.discoveryEnabled)],
     ['Extension inventory', toggle(reference.extensionInventoryEnabled), toggle(candidate.extensionInventoryEnabled)],
     ['Claude prompt protection', toggle(reference.claudePromptEnabled), toggle(candidate.claudePromptEnabled)],
@@ -71,4 +74,8 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
         removed.length > 0 && <li key={`${field}-${action}-remove`}>Remove from {label} <code>{removed.join(', ')}</code></li>];
     }))}
   </ul>;
+}
+
+function identifierFormats(policy: PreviewPolicy) {
+  return policy.identifierProtection?.formats.map(({ prefix, digits }) => `${prefix} ${digits}`).join(', ') || 'None';
 }

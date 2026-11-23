@@ -1,6 +1,7 @@
 import { evaluateNavigation, parseWebAddress, sameDomainRules, emptyDomainRules, emptyPathRules,
   type DomainRules, type PathRules } from '../../../contracts/policy/domains';
-import { fixtureRule, ruleLabels, testMarker, type DetectorMode, type PolicyMode } from '../../../contracts/policy/prompt';
+import { fixtureRule, ruleLabels, sameIdentifierProtection, testMarker,
+  type DetectorMode, type IdentifierProtection, type PolicyMode } from '../../../contracts/policy/prompt';
 import { chatGptApp, claudeApp, promptAppLabels, type AiPromptApp } from '../../../contracts/policy/apps';
 import { evaluateFileInspection, fileInspectionDetectors } from '../../../contracts/policy/file-inspection';
 import { allUploadTypes, fileContentMode, matchesUploadType, sameUploadTypes, uploadApps, uploadsOff, type UploadFile, type UploadMode,
@@ -13,6 +14,7 @@ import { blockedAiAppAt } from '../../../contracts/policy/ai-app-access';
 
 export type PreviewPolicy = {
   mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; privateKeyMode?: DetectorMode; discoveryEnabled: boolean;
+  identifierProtection?: IdentifierProtection;
   extensionInventoryEnabled: boolean;
   extensionDeployment?: ExtensionDeployment;
   blockedAiAppHosts?: string[];
@@ -33,6 +35,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     version: policy.version, label: `${scope} v${policy.version}`,
     mode: policy.mode, githubPatMode: policy.githubPatMode ?? 'off', paymentCardMode: policy.paymentCardMode ?? 'off',
     privateKeyMode: policy.privateKeyMode,
+    identifierProtection: policy.identifierProtection,
     discoveryEnabled: policy.discoveryEnabled ?? false,
     customApps: (policy.customApps ?? []).map(({ host, name }) => ({ host, name })),
     promptExceptions: policy.promptExceptions ?? [],
@@ -52,6 +55,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
 export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
   return a.mode === b.mode && a.githubPatMode === b.githubPatMode && a.paymentCardMode === b.paymentCardMode &&
     a.privateKeyMode === b.privateKeyMode &&
+    sameIdentifierProtection(a.identifierProtection, b.identifierProtection) &&
     a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
     sameExtensionDeployment(a.extensionDeployment, b.extensionDeployment) &&
     (a.blockedAiAppHosts ?? []).join(',') === (b.blockedAiAppHosts ?? []).join(',') &&
@@ -112,7 +116,7 @@ function fileInspectionOutcome(policy: PreviewPolicy, app: typeof uploadApps[num
   if (mode === 'off') return beforeInspection;
   if (text === undefined && mode === 'block') return { action: 'block', rule: 'File check unavailable' };
   const match = text !== undefined && evaluateFileInspection(text, fileInspectionDetectors(policy));
-  return match ? { action: mode, rule: 'Test marker in file content' } : beforeInspection;
+  return match ? { action: mode, rule: `${match.ruleId === fixtureRule ? 'Test marker' : ruleLabels[match.ruleId]} in file content` } : beforeInspection;
 }
 
 export function runComparison(reference: PreviewSnapshot, candidate: PreviewPolicy, prompt: string, address?: URL,
@@ -121,6 +125,14 @@ export function runComparison(reference: PreviewSnapshot, candidate: PreviewPoli
   const rows: PreviewRow[] = prompts.map(({ name, content }) => ({
     name, current: promptOutcome(content, reference, app, now), draft: promptOutcome(content, candidate, app, now),
   }));
+  const identifierExamples = new Map<string, string>();
+  for (const { prefix, digits } of [...(reference.identifierProtection?.formats ?? []), ...(candidate.identifierProtection?.formats ?? [])]) {
+    identifierExamples.set(`${prefix} · ${digits} digits`, prefix + '0'.repeat(digits));
+  }
+  for (const [label, sample] of identifierExamples) {
+    rows.push({ name: `Organization identifier ${label}`, current: promptOutcome(sample, reference, app, now),
+      draft: promptOutcome(sample, candidate, app, now) });
+  }
   if (prompt.trim()) rows.push({ name: 'Custom prompt', current: promptOutcome(prompt, reference, app, now),
     draft: promptOutcome(prompt, candidate, app, now) });
   for (const { name, content } of navigations) {
@@ -141,6 +153,10 @@ export function runComparison(reference: PreviewSnapshot, candidate: PreviewPoli
         { name: 'unscannable PDF sample', file: { name: 'synthetic.pdf', type: 'application/pdf' }, text: undefined }];
       for (const { name, file, text } of samples) rows.push({ name: `${promptAppLabels[app]} ${name}`,
         current: fileInspectionOutcome(reference, app, file, text), draft: fileInspectionOutcome(candidate, app, file, text) });
+      for (const [label, sample] of identifierExamples) {
+        rows.push({ name: `${promptAppLabels[app]} identifier file ${label}`,
+          current: fileInspectionOutcome(reference, app, textFile, sample), draft: fileInspectionOutcome(candidate, app, textFile, sample) });
+      }
     }
     for (const [name, sample] of [
       ['TXT upload', { name: 'example.txt', type: 'text/plain' }],

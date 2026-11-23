@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { navigationRuleLimitError, readNavigationRules } from '../../lib/navigation';
-import { detectorModes, fixtureRule, modes, privateKeyRule, ruleLabels, type DetectorMode, type PolicyMode, type PromptRuleId } from '../../../../contracts/policy/prompt';
+import { detectorModes, fixtureRule, identifierRule, modes, privateKeyRule, readIdentifierProtection, ruleLabels,
+  type DetectorMode, type PolicyMode, type PromptRuleId } from '../../../../contracts/policy/prompt';
+import { identifierFormatError, identifierFormatHint, parseIdentifierFormats } from '../../../../contracts/policy/organization-identifiers';
 import { parseUploadTypes, uploadApps, uploadModes, uploadTypesError, uploadTypesHint, type UploadApp, type UploadMode } from '../../../../contracts/policy/uploads';
 import { aiPromptApps, decisionLabels, detectorModeLabels, promptAppLabels } from '../../lib/control';
 import { changedDecision, parseWebAddress, runComparison, samePolicy,
@@ -20,12 +22,15 @@ const navigationFields = [
   ['allow', 'Draft allowed domains'], ['block', 'Draft blocked domains'],
   ['allowPaths', 'Draft allowed paths'], ['blockPaths', 'Draft blocked paths'],
 ] as const;
-type Editor = Omit<PreviewPolicy, 'domainRules' | 'pathRules' | 'uploadTypes' | 'customApps'> &
-  Record<typeof navigationFields[number][0], string> & { uploadTypeText: Record<UploadApp, string>; catalog: string };
+type Editor = Omit<PreviewPolicy, 'domainRules' | 'pathRules' | 'uploadTypes' | 'customApps' | 'identifierProtection'> &
+  Record<typeof navigationFields[number][0], string> & { uploadTypeText: Record<UploadApp, string>; catalog: string;
+    identifierMode?: DetectorMode; identifierFormats: string };
 
 function editorFor(snapshot: PreviewSnapshot): Editor {
   return {
     mode: snapshot.mode, githubPatMode: snapshot.githubPatMode, paymentCardMode: snapshot.paymentCardMode, privateKeyMode: snapshot.privateKeyMode,
+    identifierMode: snapshot.identifierProtection?.mode,
+    identifierFormats: snapshot.identifierProtection?.formats.map(({ prefix, digits }) => `${prefix} ${digits}`).join('\n') ?? '',
     discoveryEnabled: snapshot.discoveryEnabled,
     extensionInventoryEnabled: snapshot.extensionInventoryEnabled,
     blockedAiAppHosts: snapshot.blockedAiAppHosts,
@@ -122,10 +127,18 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
       setError('Set each new or changed exception to expire within the next 24 hours.');
       return;
     }
+    const identifiers = editor.identifierMode === undefined ? undefined :
+      readIdentifierProtection({ mode: editor.identifierMode, formats: parseIdentifierFormats(editor.identifierFormats) });
+    if (editor.identifierMode !== undefined && !identifiers) {
+      setError(editor.identifierMode !== 'off' && !editor.identifierFormats.trim() ?
+        'Enter at least one identifier format or set the detector to Off.' : identifierFormatError);
+      return;
+    }
     const file = customFile.name || customFile.type.trim() ? customFile : undefined;
     setError('');
     setResult(runComparison(reference, {
       mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode, privateKeyMode: editor.privateKeyMode,
+      identifierProtection: identifiers,
       discoveryEnabled: editor.discoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled,
       extensionDeployment: reference.extensionDeployment,
       blockedAiAppHosts: editor.blockedAiAppHosts,
@@ -225,6 +238,19 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
       {editor.fileContentModes && <p className="muted" id="draft-file-content-hint">
         Block holds the batch and stops uploads with a sensitive match or an incomplete check.
       </p>}
+      {editor.identifierMode !== undefined && <div id="draft-identifiers" className="grid gap-2 mb-4">
+        <div className="form-row"><label htmlFor="draft-identifier-mode">Organization identifier detection</label>
+          <select id="draft-identifier-mode" value={editor.identifierMode}
+            onChange={(event) => edit('identifierMode', event.target.value as DetectorMode)}>
+            {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+          </select>
+        </div>
+        <label htmlFor="draft-identifier-formats">Identifier formats</label>
+        <textarea id="draft-identifier-formats" rows={3} maxLength={384} spellCheck={false} autoCapitalize="none" autoComplete="off"
+          placeholder={'CUST- 8\nCASE_ 6'} aria-describedby="draft-identifier-hint" value={editor.identifierFormats}
+          onChange={(event) => edit('identifierFormats', event.target.value)} />
+        <p className="muted" id="draft-identifier-hint">{identifierFormatHint}</p>
+      </div>}
       <div className="grid gap-1" id="draft-app-catalog">
         <label htmlFor="draft-custom-apps">Custom app catalog</label>
         <p className="muted" id="custom-apps-hint">Enter the exact hostname and display name for each HTTPS site, one per line.
@@ -271,7 +297,8 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
           <label htmlFor={`exception-rule-${index}`}>Detector</label>
           <select id={`exception-rule-${index}`} value={entry.ruleId}
             onChange={(event) => editException(index, { ruleId: event.target.value as PromptRuleId })}>
-            {Object.entries(ruleLabels).map(([rule, label]) => rule === privateKeyRule && editor.privateKeyMode === undefined ? null :
+            {Object.entries(ruleLabels).map(([rule, label]) => (rule === privateKeyRule && editor.privateKeyMode === undefined ||
+              rule === identifierRule && editor.identifierMode === undefined) ? null :
               <option key={rule} value={rule}>{rule === fixtureRule ? 'Test marker' : label}</option>)}
           </select>
         </div>
@@ -363,6 +390,7 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         <input type="hidden" name="githubPatMode" value={candidate.githubPatMode} />
         <input type="hidden" name="paymentCardMode" value={candidate.paymentCardMode} />
         {candidate.privateKeyMode !== undefined && <input type="hidden" name="privateKeyMode" value={candidate.privateKeyMode} />}
+        {candidate.identifierProtection && <input type="hidden" name="identifierProtection" value={JSON.stringify(candidate.identifierProtection)} />}
         <input type="hidden" name="discoveryEnabled" value={candidate.discoveryEnabled ? 'on' : 'off'} />
         <input type="hidden" name="customApps" value={candidate.customApps.map(({ host, name }) => `${host}, ${name}`).join('\n')} />
         {candidate.blockedAiAppHosts && <>
