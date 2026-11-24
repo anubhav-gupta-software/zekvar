@@ -9,6 +9,7 @@ import { builtInDiscoveryApps, type BuiltInDiscoveryApp, type CustomAppId, type 
 import { exceptionDecision } from '../../../contracts/policy/prompt-exceptions';
 import type { BrowserLease } from './prompt-exceptions';
 import { clipboardCategory, clipboardUnavailableRule, type ClipboardMode } from '../../../contracts/policy/clipboard';
+import type { PromptAppModes } from '../../../contracts/policy/prompt-app-modes';
 
 export { fixtureRule, fixtureDetector, githubPatRule, credentialDetector, isMode, isDetectorMode } from '../../../contracts/policy/prompt';
 export type { PolicyMode, DetectorMode, RuleMetadata } from '../../../contracts/policy/prompt';
@@ -33,6 +34,7 @@ export type Policy = PromptPolicy & {
   presetDiscovery?: boolean;
   clipboardMode?: ClipboardMode;
   promptExceptionRequestsAvailable?: boolean;
+  promptAppModes?: PromptAppModes;
 };
 export type PolicyEvent = {
   eventId: string;

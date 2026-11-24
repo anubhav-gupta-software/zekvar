@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { navigationRuleLimitError, readNavigationRules } from '../../lib/navigation';
-import { detectorModes, fixtureRule, githubTokenRule, identifierRule, modes, privateKeyRule, readIdentifierProtection, ruleLabels, ssnRule,
+import { detectorModes, fixtureRule, githubTokenRule, identifierRule, isMode, modes, privateKeyRule, readIdentifierProtection, ruleLabels, ssnRule,
   type DetectorMode, type PolicyMode, type PromptRuleId } from '../../../../contracts/policy/prompt';
 import { identifierFormatError, identifierFormatHint, parseIdentifierFormats } from '../../../../contracts/policy/organization-identifiers';
 import { parseUploadTypes, uploadApps, uploadModes, uploadTypesError, uploadTypesHint, type UploadApp, type UploadMode } from '../../../../contracts/policy/uploads';
@@ -35,6 +35,7 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
     mode: snapshot.mode, githubPatMode: snapshot.githubPatMode, paymentCardMode: snapshot.paymentCardMode, privateKeyMode: snapshot.privateKeyMode,
     ssnMode: snapshot.ssnMode,
     githubTokenMode: snapshot.githubTokenMode,
+    promptAppModes: snapshot.promptAppModes,
     clipboardMode: snapshot.clipboardMode,
     identifierMode: snapshot.identifierProtection?.mode,
     identifierFormats: snapshot.identifierProtection?.formats.map(({ prefix, digits }) => `${prefix} ${digits}`).join('\n') ?? '',
@@ -149,6 +150,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
       mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode, privateKeyMode: editor.privateKeyMode,
       ssnMode: editor.ssnMode,
       githubTokenMode: editor.githubTokenMode,
+      promptAppModes: editor.promptAppModes,
       clipboardMode: editor.clipboardMode,
       identifierProtection: identifiers,
       discoveryEnabled: editor.discoveryEnabled, presetDiscoveryEnabled: editor.presetDiscoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled,
@@ -327,6 +329,24 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
           </label>)}
       </div>
     </section>}
+    {editor.promptAppModes && <section className="panel" aria-labelledby="prompt-app-modes-heading">
+      <h2 id="prompt-app-modes-heading">Prompt modes by AI app</h2>
+      <p className="muted">Choose the action for enabled detectors when users send a prompt. Inherit uses each detector’s mode.
+        Clipboard and file protection use their own settings.</p>
+      <div className="policy-fields">
+        {aiPromptApps.map((app) => <div key={app} className="grid gap-1">
+          <label htmlFor={`draft-prompt-mode-${app}`}>{promptAppLabels[app]} prompt mode</label>
+          <select id={`draft-prompt-mode-${app}`} value={editor.promptAppModes?.[app] ?? ''}
+            onChange={(event) => {
+              const mode = event.target.value;
+              edit('promptAppModes', { ...editor.promptAppModes, [app]: isMode(mode) ? mode : undefined });
+            }}>
+            <option value="">Inherit detector modes</option>
+            {modes.map((mode) => <option key={mode} value={mode}>{decisionLabels[mode]}</option>)}
+          </select>
+        </div>)}
+      </div>
+    </section>}
     <section className="panel" aria-labelledby="prompt-exceptions-heading">
       <h2 id="prompt-exceptions-heading">Temporary prompt exceptions</h2>
       <p className="muted">An exception can allow a flagged prompt for one detector and app until its UTC expiry. Other matching detectors still apply.</p>
@@ -438,6 +458,7 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         <input type="hidden" name="mode" value={candidate.mode} />
         <input type="hidden" name="githubPatMode" value={candidate.githubPatMode} />
         {candidate.githubTokenMode !== undefined && <input type="hidden" name="githubTokenMode" value={candidate.githubTokenMode} />}
+        {candidate.promptAppModes !== undefined && <input type="hidden" name="promptAppModes" value={JSON.stringify(candidate.promptAppModes)} />}
         <input type="hidden" name="paymentCardMode" value={candidate.paymentCardMode} />
         {candidate.privateKeyMode !== undefined && <input type="hidden" name="privateKeyMode" value={candidate.privateKeyMode} />}
         {candidate.ssnMode !== undefined && <input type="hidden" name="ssnMode" value={candidate.ssnMode} />}

@@ -125,17 +125,7 @@ internal sealed partial class ControlStore
 
     private static bool HasLiveException(Policy policy, PromptExceptionRequest request)
     {
-        var mode = request.RuleId switch
-        {
-            FixtureContract.RuleId => policy.Mode,
-            FixtureContract.GitHubPatRule => policy.GithubPatMode,
-            FixtureContract.GithubTokenRule => policy.GithubTokenMode,
-            FixtureContract.PaymentCardRule => policy.PaymentCardMode,
-            FixtureContract.PrivateKeyRule => policy.PrivateKeyMode,
-            FixtureContract.OrganizationIdentifierRule => policy.IdentifierProtection?.Mode,
-            FixtureContract.SsnRule => policy.SsnMode,
-            _ => null
-        };
+        var mode = policy.PromptModeForApp(request.AppId, request.RuleId);
         return mode is "warn" or "block" && (request.AppId != FixtureContract.Claude || policy.ClaudePromptEnabled) &&
             policy.PromptExceptions?.Any(entry => entry.AppId == request.AppId && entry.RuleId == request.RuleId &&
                 entry.ExpiresAt > DateTimeOffset.UtcNow) == true;

@@ -228,7 +228,8 @@ try {
   });
   await run(process.execPath, ['--test', 'test/prompt-requests.test.mjs'], extension, {
     ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: promptRequestAdmin,
-    ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_ARTIFACTS: artifacts ?? '',
+    ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_LIVE: flags.has('--live') ? '1' : '0',
+    ZEKVAR_DEMO_ARTIFACTS: artifacts ?? '',
   });
   await run(process.execPath, ['--test', 'test/ai-app-access.test.mjs'], extension, {
     ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: aiAccessAdmin,

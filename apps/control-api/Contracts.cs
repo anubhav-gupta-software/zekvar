@@ -110,7 +110,7 @@ internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode 
     string? PrivateKeyMode = null, FileInspection? FileInspection = null, ExtensionDeployment? ExtensionDeployment = null,
     string[]? BlockedAiAppHosts = null, UploadModes? FileContentModes = null, IdentifierProtection? IdentifierProtection = null,
     bool? PresetDiscoveryEnabled = null, string? SsnMode = null, BrowserHardening? BrowserHardening = null, string? ClipboardMode = null,
-    string? GithubTokenMode = null);
+    string? GithubTokenMode = null, PromptAppModes? PromptAppModes = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null)
 {
     public bool HasSettings() => Chatgpt is not null || Gemini is not null;
@@ -126,7 +126,7 @@ internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = nu
     bool PathRulesApplied = false, bool UploadTypesApplied = false, bool CustomDiscoveryApplied = false,
     bool PromptExceptionsApplied = false, string? ClaudeCoverage = null, bool ClaudePromptApplied = false, bool PrivateKeyModeApplied = false,
     bool FileInspectionApplied = false, bool AiAppAccessApplied = false, bool FileContentBlockApplied = false, bool IdentifiersApplied = false,
-    bool SsnModeApplied = false, bool ClipboardModeApplied = false, bool GithubTokenModeApplied = false)
+    bool SsnModeApplied = false, bool ClipboardModeApplied = false, bool GithubTokenModeApplied = false, bool PromptAppModesApplied = false)
 {
     public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported") &&
         (GeminiCoverage is null or "ready" or "unsupported") &&
@@ -156,7 +156,8 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] BrowserHardening? BrowserHardening = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ClipboardMode = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? GithubTokenMode = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? PromptExceptionRequestsAvailable = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? PromptExceptionRequestsAvailable = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PromptAppModes? PromptAppModes = null)
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => ClaudePromptEnabled
@@ -168,18 +169,37 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     public UploadModes EffectiveFileContentModes() => FileContentModes ??
         new(FileInspection?.Chatgpt == true ? "monitor" : "off", FileInspection?.Gemini == true ? "monitor" : "off");
 
+    public string? PromptModeForApp(string appId, string ruleId, bool appModesAware = true)
+    {
+        var mode = ruleId switch
+        {
+            FixtureContract.RuleId => Mode,
+            FixtureContract.GitHubPatRule => GithubPatMode,
+            FixtureContract.GithubTokenRule => GithubTokenMode,
+            FixtureContract.PaymentCardRule => PaymentCardMode,
+            FixtureContract.PrivateKeyRule => PrivateKeyMode,
+            FixtureContract.OrganizationIdentifierRule => IdentifierProtection?.Mode,
+            FixtureContract.SsnRule => SsnMode,
+            _ => null
+        };
+        return appModesAware && FixtureContract.IsMode(mode) ? PromptAppModes?.ForApp(appId) ?? mode : mode;
+    }
+
     public Policy ForBrowser(bool claudeAware, bool privateKeyAware, bool fileInspectionAware, bool aiAppAccessAware,
-        bool fileBlockAware, bool identifiersAware, bool presetDiscoveryAware, bool ssnAware, bool clipboardAware, bool githubTokenAware)
+        bool fileBlockAware, bool identifiersAware, bool presetDiscoveryAware, bool ssnAware, bool clipboardAware, bool githubTokenAware,
+        bool promptAppModesAware)
     {
         var now = DateTimeOffset.UtcNow;
         var nowMs = now.ToUnixTimeMilliseconds();
         var claudeEnabled = claudeAware && ClaudePromptEnabled;
         var content = EffectiveFileContentModes();
         var exceptions = PromptExceptions?.Where(entry => (entry.AppId != FixtureContract.Claude || claudeEnabled) &&
-            (entry.RuleId != FixtureContract.PrivateKeyRule || privateKeyAware && PrivateKeyMode is "warn" or "block") &&
-            (entry.RuleId != FixtureContract.OrganizationIdentifierRule || identifiersAware && IdentifierProtection?.Mode is "warn" or "block") &&
-            (entry.RuleId != FixtureContract.SsnRule || ssnAware && SsnMode is "warn" or "block") &&
-            (entry.RuleId != FixtureContract.GithubTokenRule || githubTokenAware && GithubTokenMode is "warn" or "block"))
+            (entry.RuleId != FixtureContract.PrivateKeyRule || privateKeyAware) &&
+            (entry.RuleId != FixtureContract.OrganizationIdentifierRule || identifiersAware) &&
+            (entry.RuleId != FixtureContract.SsnRule || ssnAware) &&
+            (entry.RuleId != FixtureContract.GithubTokenRule || githubTokenAware) &&
+            (PromptAppModes?.ForApp(entry.AppId) is null && entry.RuleId is FixtureContract.RuleId or FixtureContract.GitHubPatRule or FixtureContract.PaymentCardRule ||
+                PromptModeForApp(entry.AppId, entry.RuleId, promptAppModesAware) is "warn" or "block"))
             .Select(entry => new PromptExceptionGrant(entry.AppId, entry.RuleId, entry.ExpiresAt.ToUnixTimeMilliseconds()))
             .Where(entry => entry.ExpiresAtMs > nowMs).ToArray();
         var browser = this with
@@ -194,6 +214,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
             SsnMode = ssnAware ? SsnMode : null,
             ClipboardMode = clipboardAware ? ClipboardMode : null,
             GithubTokenMode = githubTokenAware ? GithubTokenMode : null,
+            PromptAppModes = promptAppModesAware ? PromptAppModes : null,
             ExtensionDeployment = null,
             BrowserHardening = null,
             BlockedAiAppHosts = aiAppAccessAware ? BlockedAiAppHosts : null,

@@ -14,6 +14,7 @@ import { leaseTime, readExceptionLease, sampleClock, type BrowserLease } from '.
 import { readBlockedAiAppHosts } from '../../../contracts/policy/ai-app-access';
 import { readIdentifierProtection, sameIdentifierProtection } from '../../../contracts/policy/prompt';
 import { isClipboardMode } from '../../../contracts/policy/clipboard';
+import { readPromptAppModes, samePromptAppModes } from '../../../contracts/policy/prompt-app-modes';
 
 declare const CONTROL_ORIGIN: string;
 
@@ -146,6 +147,7 @@ async function request(path: string, token?: string, body?: object): Promise<unk
         'X-Zekvar-Private-Key': '1', 'X-Zekvar-File-Inspection': '1', 'X-Zekvar-File-Content-Block': '1', 'X-Zekvar-AI-App-Access': '1',
         'X-Zekvar-Identifiers': '1', 'X-Zekvar-Preset-Discovery': '1', 'X-Zekvar-SSN': '1', 'X-Zekvar-Clipboard-Paste': '1',
         'X-Zekvar-GitHub-Token': '1', 'X-Zekvar-Prompt-Exception-Requests': '1',
+        'X-Zekvar-Prompt-App-Modes': '1',
         'X-Zekvar-Extension-Version': extensionVersion } : {}),
       ...(path === 'browser/heartbeat' ? { 'X-Zekvar-Composer-Coverage': '1' } : {}),
       ...(path === 'enroll' ? { 'X-Zekvar-Scoped-Enrollment': '1' } : {}),
@@ -282,6 +284,8 @@ async function sync(state: State) {
     const ssnMode = policy.ssnMode ?? 'off';
     const githubTokenMode = policy.githubTokenMode;
     const clipboardMode = policy.clipboardMode;
+    const promptAppModes = readPromptAppModes(policy.promptAppModes);
+    if (policy.promptAppModes !== undefined && !promptAppModes) throw new Error('Invalid AI app prompt modes');
     const identifierProtection = readIdentifierProtection(policy.identifierProtection);
     if (policy.identifierProtection !== undefined && !identifierProtection) throw new Error('Invalid organization identifier policy');
     const fileInspection = policy.fileInspection;
@@ -323,6 +327,7 @@ async function sync(state: State) {
         (state.policy.ssnMode === undefined || ssnMode === state.policy.ssnMode) &&
         (state.policy.githubTokenMode === undefined || githubTokenMode === state.policy.githubTokenMode) &&
         (state.policy.clipboardMode === undefined || clipboardMode === state.policy.clipboardMode) &&
+        (state.policy.promptAppModes === undefined || samePromptAppModes(promptAppModes, state.policy.promptAppModes)) &&
         (!state.policy.identifierProtection || sameIdentifierProtection(state.policy.identifierProtection, identifierProtection)) &&
         (state.policy.fileInspection === undefined || fileInspection !== undefined &&
           uploadApps.every((app) => state.policy?.fileInspection?.[app] === fileInspection[app])) &&
@@ -343,6 +348,7 @@ async function sync(state: State) {
       state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, privateKeyMode, ssnMode, identifierProtection, fileInspection, fileContentModes,
         discoveryEnabled, presetDiscovery, customApps, extensionInventoryEnabled, claudePromptEnabled, clipboardMode, githubTokenMode,
         promptExceptionRequestsAvailable: policy.promptExceptionRequestsAvailable === true,
+        promptAppModes,
         assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini }, targetedUploads };
       promptLease = lease ? { installationId: state.enrollment.installationId, version: policy.version,
         assignment: policy.assignmentVersion, lease } : undefined;
@@ -418,6 +424,7 @@ async function heartbeat(state: State) {
     privateKeyModeApplied: isMode(state.policy.privateKeyMode) ? true : undefined,
     ssnModeApplied: isMode(state.policy.ssnMode) ? true : undefined,
     githubTokenModeApplied: isMode(state.policy.githubTokenMode) ? true : undefined,
+    promptAppModesApplied: Object.values(state.policy.promptAppModes ?? {}).some(isMode) ? true : undefined,
     clipboardModeApplied: state.policy.clipboardMode === 'monitor' || state.policy.clipboardMode === 'block' ? true : undefined,
     identifiersApplied: isMode(state.policy.identifierProtection?.mode) ? true : undefined,
     fileInspectionApplied: uploadApps.some((app) => state.policy?.fileInspection?.[app]) ? true : undefined,

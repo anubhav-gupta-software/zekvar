@@ -56,6 +56,10 @@ The adapter matches a single visible text editor and Send control in the same Ge
 
 The pilot recognizes a visible ProseMirror editor paired with one visible Send control in a marked composer on `/new` or `/chat/<conversation-id>`. The automated suite covers two controlled composer layouts, typed and pasted text on Send, warnings, redaction, and temporary exceptions. Signed-in Claude is pending live verification. Claude file attachments, voice, and other app surfaces have separate coverage requirements. [Claude web chat and sign-in](https://support.claude.com/en/articles/8114491-get-started-with-claude)
 
+## Test prompt modes by AI app
+
+Enroll Browser v0.34.0 and open **Policy preview** in Control. Set a different prompt mode for each enabled AI app. After publication and sync, send a synthetic test marker through each supported composer and check its decision and policy version in **Security events**. For setup and preview, see the Control guide. [Set prompt modes by AI app](../control-web/README.md#set-prompt-modes-by-ai-app)
+
 ## Try the GitHub classic PAT rule
 
 Set **GitHub classic PAT** under **Publish a policy** in Control, publish, and use **Sync now** in the Zekvar Browser popup. The rule starts **Off** and has its own setting. In **Monitor**, it records a matching attempt and allows Send. **Warn** asks the user to edit or continue. **Block** holds the attempt until the prompt is edited. When both rules match, Zekvar applies the stricter action and reports the rule that determined it. A tie is attributed to the GitHub rule.

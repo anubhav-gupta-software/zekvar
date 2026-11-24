@@ -517,12 +517,14 @@ browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
     var ssnAware = http.Request.Headers["X-Zekvar-SSN"] == "1";
     var clipboardAware = aware && http.Request.Headers["X-Zekvar-Clipboard-Paste"] == "1";
     var githubTokenAware = aware && http.Request.Headers["X-Zekvar-GitHub-Token"] == "1";
+    var promptAppModesAware = aware && http.Request.Headers["X-Zekvar-Prompt-App-Modes"] == "1";
     var versionHeader = http.Request.Headers["X-Zekvar-Extension-Version"];
     var extensionVersion = versionHeader.Count == 1 ? BrowserRelease.ReadVersion(versionHeader[0]) : null;
     if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, claudeAware, extensionVersion, privateKeyAware,
-        fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware, presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware, ct) is { } policy)
+        fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware, presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware,
+        promptAppModesAware, ct) is { } policy)
         return Results.Ok(policy.ForBrowser(claudeAware, privateKeyAware, fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware,
-            presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware) with
+            presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware, promptAppModesAware) with
         {
             PromptExceptionRequestsAvailable = aware && http.Request.Headers["X-Zekvar-Prompt-Exception-Requests"] == "1" ? true : null
         });
@@ -564,7 +566,8 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
               request.FileInspection?.HasSettings() == true || request.ExtensionDeployment is not null ||
               request.BlockedAiAppHosts is not null || request.FileContentModes?.HasSettings() == true ||
               request.IdentifierProtection is not null || request.PresetDiscoveryEnabled.HasValue || request.SsnMode is not null ||
-              request.BrowserHardening is not null || request.ClipboardMode is not null || request.GithubTokenMode is not null)) ||
+              request.BrowserHardening is not null || request.ClipboardMode is not null || request.GithubTokenMode is not null ||
+              request.PromptAppModes is not null)) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode) ||
         !FixtureContract.IsOptionalDetectorMode(request.PrivateKeyMode) || !FixtureContract.IsOptionalDetectorMode(request.SsnMode) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubTokenMode))
@@ -575,6 +578,8 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
         return Results.BadRequest(new { error = "Choose Off, Monitor, or Block for file contents on each supported app." });
     if (request.ClipboardMode is not null && !FixtureContract.IsClipboardMode(request.ClipboardMode))
         return Results.BadRequest(new { error = "Choose Off, Monitor, or Block for clipboard paste protection." });
+    if (request.PromptAppModes?.Valid() == false)
+        return Results.BadRequest(new { error = "Choose Monitor, Warn, Block, or inherit for each AI app prompt mode." });
     if (!UploadTypes.TryNormalize(request.UploadTypes, out var uploadTypes))
         return Results.BadRequest(new { error = "Enter up to 25 valid file extensions or media types per app, with at most 64 characters per type." });
     if (!CustomApps.TryNormalize(request.CustomApps, out var customApps))

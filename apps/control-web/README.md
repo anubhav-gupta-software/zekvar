@@ -126,6 +126,14 @@ The preview evaluates the supported text detectors, file metadata, and individua
 
 Use **Draft ChatGPT file content protection** or **Draft Gemini file content protection** to preview Off, Monitor, and Block. The preview includes matching and clean synthetic text and an unsupported file sample. Browser v0.27.0 can hold a file selection, release a clean scan, and stop a batch when it finds a match or cannot finish the check. Use Browser health to confirm the installed release across the rollout group. **Security events** shows the detector or **File check unavailable**, along with the intake method. **Reports → By activity** includes these decisions under **File content inspection**. [Block sensitive file contents](../browser-extension/README.md#block-sensitive-file-contents)
 
+## Set prompt modes by AI app
+
+1. Open **Policy preview** for the baseline or a rollout group.
+2. Under **Prompt modes by AI app**, choose **Monitor**, **Warn**, or **Block** for each destination. **Inherit detector modes** uses the action configured on each detector. An override applies to enabled detectors. Enable **Claude prompt protection** to use the Claude adapter.
+3. Choose a **Prompt sample destination** or import a test pack with cases for several apps. Run the preview, then publish or request review. Browser v0.34.0 can acknowledge the override after its next policy sync.
+
+These settings apply when a user sends text. Clipboard and file protection use their own settings.
+
 ## Test a policy with a reusable pack
 
 1. Open **Policy preview** for the baseline or a rollout group. Under **Test samples**, select **Download starter pack**.

@@ -122,6 +122,12 @@ For each active scoped destination, browser policy delivery sets its legacy `upl
 
 Upload attempt events use `ai-file-upload` and category `file-upload`. They require an `uploadMethod` of `picker`, `drop`, or `paste` and a decision matching the app's setting on the named policy version. The method appears on retained history and exports. Chrome evaluates the match locally and submits the same event metadata for scoped and unscoped matches.
 
+### Prompt modes by AI app
+
+Policy publication accepts a `promptAppModes` object with `chatgpt`, `gemini`, and `claude` keys. Each accepts `monitor`, `warn`, `block`, or `null` for inheritance. Omit the object to preserve existing settings. Supplying an object replaces all overrides. Use `{}` to clear them. The app action applies to enabled text detectors on Send. Clipboard and file checks use their own action modes.
+
+Browser v0.34.0 requests these settings with `X-Zekvar-Prompt-App-Modes: 1` on assignment-aware policy delivery and reports `promptAppModesApplied: true` when active overrides are loaded. An installation stays pending for a version with active overrides until it acknowledges a matching delivery. Control verifies prompt events for an overridden destination against the recorded delivery and the effective detector action for that app and version.
+
 ### Temporary prompt exceptions
 
 Publish `promptExceptions` as an array of `{ appId, ruleId, expiresAt, reason }` objects. Supported app IDs are `chatgpt`, `gemini`, and `claude`, with one entry per existing prompt detector. Claude grants are delivered when the adapter is enabled and the browser supports it. Use an absolute expiry within 24 hours and a 3 to 120 character reason. Omit the array to preserve the scope's entries or send an empty array to remove them. Reviews freeze expiry and reject an approval after a new or changed exception's deadline. Restoring or promoting a policy keeps the target scope's current entries.

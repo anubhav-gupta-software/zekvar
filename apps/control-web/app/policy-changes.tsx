@@ -1,4 +1,4 @@
-import { decisionLabels, detectorModeLabels, promptAppLabels, ruleLabels, utc } from '../lib/control';
+import { aiPromptApps, decisionLabels, detectorModeLabels, promptAppLabels, ruleLabels, utc } from '../lib/control';
 import { fileContentMode, uploadApps } from '../../../contracts/policy/uploads';
 import type { PreviewPolicy } from '../lib/preview';
 import { exceptionKey, samePromptExceptions } from '../../../contracts/policy/prompt-exceptions';
@@ -21,6 +21,7 @@ export function ExtensionDeploymentChanges({ reference, candidate }: { reference
 
 export function PolicyChanges({ reference, candidate }: { reference: PreviewPolicy; candidate: PreviewPolicy }) {
   const toggle = (value: boolean) => value ? 'On' : 'Off';
+  const promptModeLabel = (mode: PreviewPolicy['mode'] | undefined) => mode ? decisionLabels[mode] : 'Inherit detector modes';
   const fields = [
     ['Test marker', decisionLabels[reference.mode], decisionLabels[candidate.mode]],
     ['GitHub classic PAT', detectorModeLabels[reference.githubPatMode], detectorModeLabels[candidate.githubPatMode]],
@@ -35,6 +36,8 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     ['AI app preset discovery', toggle(reference.presetDiscoveryEnabled ?? false), toggle(candidate.presetDiscoveryEnabled ?? false)],
     ['Extension inventory', toggle(reference.extensionInventoryEnabled), toggle(candidate.extensionInventoryEnabled)],
     ['Claude prompt protection', toggle(reference.claudePromptEnabled), toggle(candidate.claudePromptEnabled)],
+    ...aiPromptApps.map((app) => [`${promptAppLabels[app]} prompt mode`, promptModeLabel(reference.promptAppModes?.[app]),
+      promptModeLabel(candidate.promptAppModes?.[app])]),
     ['Clipboard paste protection', detectorModeLabels[reference.clipboardMode ?? 'off'], detectorModeLabels[candidate.clipboardMode ?? 'off']],
     ...uploadApps.map((app) => [`${promptAppLabels[app]} file uploads`, detectorModeLabels[reference.uploadModes[app]],
       detectorModeLabels[candidate.uploadModes[app]]]),

@@ -44,6 +44,7 @@ const templateAdmin = randomBytes(32).toString('hex');
 const githubTokenAdmin = randomBytes(32).toString('hex');
 const impactAdmin = randomBytes(32).toString('hex');
 const promptRequestAdmin = randomBytes(32).toString('hex');
+const promptAppModesAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -54,7 +55,13 @@ const undoSsoSchema = `
       DROP COLUMN oidc_issuer, DROP COLUMN oidc_subject, ALTER COLUMN expires_at SET NOT NULL,
       ADD CONSTRAINT control_access_check1 CHECK ((revoked_at IS NULL) = (token_hash IS NOT NULL));
 `;
+const undoPromptAppModesSchema = `
+  DELETE FROM schema_migrations WHERE version = 46;
+  ALTER TABLE policy_versions DROP COLUMN prompt_app_modes;
+  ALTER TABLE policy_deliveries DROP COLUMN prompt_app_modes;
+`;
 const undoPromptRequestSchema = `
+  ${undoPromptAppModesSchema}
   DELETE FROM schema_migrations WHERE version = 45;
   DROP TABLE prompt_exception_requests;
 `;
@@ -137,14 +144,14 @@ async function retentionFixture(query) {
 
 function browserPolicyOnly({ extensionDeployment: _extensionDeployment, browserHardening: _browserHardening, blockedAiAppHosts: _blockedAiAppHosts,
   fileContentModes: _fileContentModes, identifierProtection: _identifierProtection, presetDiscoveryEnabled: _presetDiscovery,
-  ssnMode: _ssnMode, clipboardMode: _clipboardMode, githubTokenMode: _githubTokenMode, ...browserPolicy }) {
+  ssnMode: _ssnMode, clipboardMode: _clipboardMode, githubTokenMode: _githubTokenMode, promptAppModes: _promptAppModes, ...browserPolicy }) {
   return browserPolicy;
 }
 
 async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false,
   extensionVersion, scopedEnrollment = false, composerAware = false, privateKeyAware = false, fileInspectionAware = false,
   aiAppAccessAware = false, fileBlockAware = false, identifiersAware = false, presetAware = false, ssnAware = false, clipboardAware = false,
-  githubTokenAware = false } = {}) {
+  githubTokenAware = false, promptAppModesAware = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -163,6 +170,7 @@ async function call(path, { token, method = 'GET', body, expect = 200, assignmen
   if (ssnAware) headers['X-Zekvar-SSN'] = '1';
   if (clipboardAware) headers['X-Zekvar-Clipboard-Paste'] = '1';
   if (githubTokenAware) headers['X-Zekvar-GitHub-Token'] = '1';
+  if (promptAppModesAware) headers['X-Zekvar-Prompt-App-Modes'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
@@ -243,6 +251,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__26__AdminToken: impactAdmin,
       Control__Organizations__27__Slug: `prompt-requests-${suffix}`,
       Control__Organizations__27__AdminToken: promptRequestAdmin,
+      Control__Organizations__28__Slug: `prompt-app-modes-${suffix}`,
+      Control__Organizations__28__AdminToken: promptAppModesAdmin,
       ...overrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -4772,5 +4782,91 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       await post('retention/cleanup', {});
       assert.equal(await retentionFixture(`SELECT count(*) FROM prompt_exception_requests WHERE installation_id = '${browser.installationId}'`), '0');
     }
+  });
+
+  await t.test('versions per-app prompt actions and verifies delivery, event modes and scoped exception behavior', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: promptAppModesAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const [initial] = await admin('policies');
+    const baseline = (body, options) => post('policies', body, options);
+    assert.deepEqual(initial.promptAppModes, {});
+    if (postgres) {
+      await stop();
+      await retentionFixture(undoPromptAppModesSchema);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 46'), '1');
+      assert.deepEqual((await admin('policies'))[0], initial);
+    }
+    for (const promptAppModes of [{ chatgpt: 'off' }, { copilot: 'block' }, { gemini: 'BLOCK' }, ['block'], { claude: 42 }]) {
+      await baseline({ promptAppModes }, { expect: 400 });
+    }
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant: (await post('enrollment-grants')).grant } });
+    const browserCall = (route, options) => call(`/v1/browser/${route}`, { token: browser.token, ...options });
+    const write = (route, body, expect = 204) => browserCall(route, { method: 'POST', body, expect });
+    const caps = { assignmentAware: true, claudeAware: true, privateKeyAware: true, clipboardAware: true,
+      fileInspectionAware: true, fileBlockAware: true };
+    const deliver = () => browserCall('policy', { ...caps, promptAppModesAware: true });
+    const modes = { chatgpt: 'block', gemini: 'warn', claude: 'monitor' };
+    const [author, reviewer] = await Promise.all(['App mode author', 'App mode reviewer']
+      .map((name) => post('access', { name, role: 'administrator', hours: 1 })));
+    await post('policy-reviews/setting', { required: true }, { expect: 204 });
+    const lease = { appId: 'gemini', ruleId: 'pem-private-key', expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+      reason: 'Synthetic scope exception' };
+    const { reviewId } = await baseline({ promptAppModes: modes, claudePromptEnabled: true, privateKeyMode: 'monitor',
+      clipboardMode: 'monitor', fileContentModes: { chatgpt: 'block' }, promptExceptions: [lease] },
+      { token: author.token, expectReview: true, expect: 202 });
+    assert.deepEqual((await deliver()).promptAppModes, {});
+    const [{ snapshots }] = (await admin('policy-reviews')).entries;
+    assert.deepEqual(snapshots.candidate.promptAppModes, modes);
+    const current = await post(`policy-reviews/${reviewId}/decision`, { approve: true }, { token: reviewer.token });
+
+    const event = (appId, decision, fields = {}) => ({ ...contract.event, eventId: randomUUID(), appId, decision,
+      policyVersion: current.version, timestamp: new Date().toISOString(), ...fields });
+    const heartbeat = { policyVersion: current.version, claudePromptApplied: true, privateKeyModeApplied: true,
+      clipboardModeApplied: true, fileInspectionApplied: true, fileContentBlockApplied: true, promptExceptionsApplied: true };
+    const legacy = await browserCall('policy', caps);
+    assert.equal(legacy.promptAppModes, undefined);
+    assert.equal(legacy.promptExceptionLease, undefined);
+    await write('heartbeat', heartbeat);
+    assert.notEqual((await admin('installations'))[0].appliedPolicyVersion, current.version);
+    await write('heartbeat', { ...heartbeat, promptAppModesApplied: true }, 400);
+    await write('events', event('chatgpt', 'monitor'), 400);
+    await write('events', event('chatgpt', 'block'), 400);
+    const delivered = await deliver();
+    assert.deepEqual(delivered.promptAppModes, modes);
+    assert.equal(delivered.promptExceptionLease.grants[0].ruleId, lease.ruleId);
+    await write('heartbeat', { ...heartbeat, promptAppModesApplied: true });
+    assert.equal((await admin('installations'))[0].appliedPolicyVersion, current.version);
+    const detected = event('chatgpt', 'block');
+    await Promise.all([write('events', detected), write('events', detected)]);
+    await write('events', event('gemini', 'warn'));
+    await write('events', event('gemini', 'warn_override'));
+    await write('events', event('claude', 'monitor'));
+    await write('events', event('gemini', 'exception_applied', { ruleId: 'pem-private-key', detectorCategory: 'credential' }));
+    await write('events', event('chatgpt', 'monitor', { clipboardPaste: true }));
+    await write('events', event('chatgpt', 'block', { uploadMethod: 'picker' }));
+    for (const incorrect of [event('chatgpt', 'warn'), event('gemini', 'block'), event('claude', 'warn'),
+      event('chatgpt', 'block', { clipboardPaste: true }), event('chatgpt', 'block', { ruleId: 'github-classic-pat', detectorCategory: 'credential' }),
+      event('chatgpt', 'exception_applied', { ruleId: 'pem-private-key', detectorCategory: 'credential' })]) {
+      await write('events', incorrect, 400);
+    }
+    assert.equal((await admin('events')).length, 7);
+    const receipt = await browserCall('prompt-exception-requests', { method: 'POST',
+      body: { eventId: detected.eventId, appId: 'chatgpt' } });
+    const group = await post('policy-groups', { name: 'Scoped prompt modes' });
+    await post('policy-reviews/setting', { required: false }, { expect: 204 });
+    const path = `policy-groups/${group.id}/policies`;
+    const scoped = await post(path, { promptAppModes: { chatgpt: 'monitor', gemini: null } });
+    assert.deepEqual(scoped.promptAppModes, { chatgpt: 'monitor' });
+    assert.deepEqual((await admin('policies'))[0].promptAppModes, modes);
+    const cleared = await post(path, { promptAppModes: {} });
+    assert.deepEqual(cleared.promptAppModes, {});
+    assert.deepEqual((await post(`${path}/${scoped.version}/restore`)).promptAppModes, scoped.promptAppModes);
+    const reset = await post(`policies/${initial.version}/restore`);
+    assert.deepEqual(reset.promptAppModes, {});
+    assert.deepEqual((await deliver()).promptAppModes, {});
+    const decisionPath = `prompt-exception-requests/${receipt.id}/decision`;
+    await post(decisionPath, { status: 'exception_available' }, { expect: 409 });
+    await post(decisionPath, { status: 'declined' });
   });
 });

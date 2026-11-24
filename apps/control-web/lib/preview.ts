@@ -14,6 +14,7 @@ import { hardeningDifferences, type BrowserHardening } from './browser-hardening
 import { blockedAiAppAt } from '../../../contracts/policy/ai-app-access';
 import { inspectClipboard, type ClipboardMode } from '../../../contracts/policy/clipboard';
 import { ruleLabels as decisionRuleLabels } from './control';
+import { promptPolicyForApp, samePromptAppModes, type PromptAppModes } from '../../../contracts/policy/prompt-app-modes';
 
 export type PreviewPolicy = {
   mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; privateKeyMode?: DetectorMode; discoveryEnabled: boolean;
@@ -21,6 +22,7 @@ export type PreviewPolicy = {
   identifierProtection?: IdentifierProtection;
   ssnMode?: DetectorMode;
   githubTokenMode?: DetectorMode;
+  promptAppModes?: PromptAppModes;
   extensionInventoryEnabled: boolean;
   extensionDeployment?: ExtensionDeployment;
   browserHardening?: BrowserHardening;
@@ -45,6 +47,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     privateKeyMode: policy.privateKeyMode,
     ssnMode: policy.ssnMode,
     githubTokenMode: policy.githubTokenMode,
+    promptAppModes: policy.promptAppModes,
     identifierProtection: policy.identifierProtection,
     discoveryEnabled: policy.discoveryEnabled ?? false,
     presetDiscoveryEnabled: policy.presetDiscoveryEnabled,
@@ -70,6 +73,7 @@ export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
     (a.clipboardMode ?? 'off') === (b.clipboardMode ?? 'off') &&
     a.privateKeyMode === b.privateKeyMode && a.ssnMode === b.ssnMode &&
     (a.githubTokenMode ?? 'off') === (b.githubTokenMode ?? 'off') &&
+    samePromptAppModes(a.promptAppModes, b.promptAppModes) &&
     sameIdentifierProtection(a.identifierProtection, b.identifierProtection) &&
     a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
     a.presetDiscoveryEnabled === b.presetDiscoveryEnabled &&
@@ -110,7 +114,8 @@ const navigations = [
 export function promptOutcome(content: string, policy: PreviewPolicy, app: AiPromptApp, now: number): PreviewDecision {
   if (app === claudeApp && !policy.claudePromptEnabled) return { action: 'allow' };
   const grants = policy.promptExceptions.filter(({ appId, expiresAt }) => appId === app && Date.parse(expiresAt) > now);
-  const { match, exception } = evaluatePromptWithExceptions(content, policy, new Set(grants.map(({ ruleId }) => ruleId)));
+  const scoped = promptPolicyForApp(policy, policy.promptAppModes, app);
+  const { match, exception } = evaluatePromptWithExceptions(content, scoped, new Set(grants.map(({ ruleId }) => ruleId)));
   const outcome = exception ?? match;
   if (outcome.action === 'allow') return outcome;
   return { action: exception ? exceptionDecision : outcome.action,

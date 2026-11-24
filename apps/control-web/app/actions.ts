@@ -17,6 +17,7 @@ import { promptExceptionError, readPromptExceptions } from '../../../contracts/p
 import { parseExtensionDeployment } from '../lib/extension-deployment';
 import { parseBrowserHardening } from '../lib/browser-hardening';
 import { isClipboardMode } from '../../../contracts/policy/clipboard';
+import { readPromptAppModes, type PromptAppModes } from '../../../contracts/policy/prompt-app-modes';
 import type { FleetSelection } from '../lib/fleet';
 import { aiAppAccessCatalog, readBlockedAiAppHosts } from '../../../contracts/policy/ai-app-access';
 import { domainRuleLimit, ruleCount } from '../../../contracts/policy/domains';
@@ -464,6 +465,16 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
     }
     if (!identifierProtection) return { error: identifierFormatError };
   }
+  let promptAppModes: PromptAppModes | undefined;
+  const appModesInput = form.get('promptAppModes');
+  if (appModesInput !== null) {
+    try {
+      if (typeof appModesInput === 'string') promptAppModes = readPromptAppModes(JSON.parse(appModesInput));
+    } catch {
+      return { error: 'Choose a valid prompt mode for each AI app.' };
+    }
+    if (!promptAppModes) return { error: 'Choose a valid prompt mode for each AI app.' };
+  }
   return perform(async (token) => {
     try {
       const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, privateKeyMode: privateKeyMode ?? undefined,
@@ -471,7 +482,7 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
         uploadModes, uploadTypes, ...fileContent,
         discoveryEnabled: discovery === 'on', presetDiscoveryEnabled: presetDiscovery === null ? undefined : presetDiscovery === 'on',
         extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on',
-        domainRules, pathRules, customApps, promptExceptions, blockedAiAppHosts, identifierProtection },
+        domainRules, pathRules, customApps, promptExceptions, blockedAiAppHosts, identifierProtection, promptAppModes },
         expectedVersion, form.get('expectReview') === 'on', groupId ?? undefined);
       if ('reviewId' in published) return queued(published.reviewId);
       refreshPolicyViews();

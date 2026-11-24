@@ -11,6 +11,7 @@ import { leaseTime } from './prompt-exceptions';
 import { evaluatePromptWithExceptions, exceptionDecision } from '../../../contracts/policy/prompt-exceptions';
 import type { Policy } from './protocol';
 import { clipboardUnavailableRule, inspectClipboard } from '../../../contracts/policy/clipboard';
+import { promptPolicyForApp } from '../../../contracts/policy/prompt-app-modes';
 
 type PromptAdapter = {
   appId: AiPromptApp;
@@ -139,7 +140,8 @@ export function bindPromptGuard(adapter: PromptAdapter) {
 
     const installationId = control?.installationId;
     const policy = control?.policy;
-    const managedPolicy = installationId && enabled(control) ? policy : undefined;
+    const managedPolicy = installationId && enabled(control) && policy
+      ? promptPolicyForApp(policy, policy.promptAppModes, adapter.appId) : undefined;
     const github = managedPolicy?.githubPatMode;
     const githubToken = managedPolicy?.githubTokenMode;
     const card = managedPolicy?.paymentCardMode;
@@ -240,14 +242,15 @@ export function bindPromptGuard(adapter: PromptAdapter) {
   }
 
   function evaluate(value: string, policy: Policy) {
+    const scoped = promptPolicyForApp(policy, policy.promptAppModes, adapter.appId);
     const lease = control?.promptExceptionLease;
     const now = lease && leaseTime(lease);
-    if (!lease || now === undefined) return { match: evaluatePrompt(value, policy) };
+    if (!lease || now === undefined) return { match: evaluatePrompt(value, scoped) };
     const grants = lease.grants.filter((grant) => grant.appId === adapter.appId && grant.expiresAtMs > now);
     const except = new Set(grants.map(({ ruleId }) => ruleId));
-    const { match, exception } = evaluatePromptWithExceptions(value, policy, except);
+    const { match, exception } = evaluatePromptWithExceptions(value, scoped, except);
     const time = leaseTime(lease);
-    if (time === undefined || grants.some((grant) => grant.expiresAtMs <= time)) return { match: evaluatePrompt(value, policy) };
+    if (time === undefined || grants.some((grant) => grant.expiresAtMs <= time)) return { match: evaluatePrompt(value, scoped) };
     return { match: match.action === 'allow' ? match : withPolicyVersion(match, policy),
       exception: exception && { match: withPolicyVersion(exception, policy), time } };
   }

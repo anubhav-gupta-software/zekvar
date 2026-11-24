@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright';
 
 const { ZEKVAR_DEMO_API: api, ZEKVAR_DEMO_WEB: web, ZEKVAR_DEMO_TOKEN: owner, ZEKVAR_DEMO_ARTIFACTS: artifacts } = process.env;
@@ -79,12 +80,12 @@ test('employees request review of an actual blocked prompt and administrators re
   await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
   await popup.waitForFunction(() => !document.querySelector('#sync').disabled);
   const privateSample = 'private synthetic request ZEKVAR_TEST_SECRET';
-  async function open(address, filename, selector) {
+  async function open(address, filename, selector, expected = `BLOCK v${baseline.version}`) {
     const tab = await profile.newPage();
     const fixture = await readFile(new URL(filename, import.meta.url), 'utf8');
     await tab.route(`${new URL(address).origin}/**`, (route) => route.fulfill({ contentType: 'text/html', body: fixture }));
     await tab.goto(address);
-    await tab.getByText(new RegExp(`^Zekvar · BLOCK v${baseline.version}`)).waitFor();
+    await tab.getByText(new RegExp(`^Zekvar · ${expected}`)).waitFor();
     return { tab, editor: tab.locator(selector), request: tab.getByRole('button', { name: 'Request policy review', exact: true }) };
   }
   const chat = await open('https://chatgpt.com/c/prompt-request-lab', './chatgpt-composer.html', '#prompt-textarea');
@@ -175,4 +176,122 @@ test('employees request review of an actual blocked prompt and administrators re
   assert.equal(await gemini.tab.locator('#fixture-sends').textContent(), '1');
   assert.ok(!JSON.stringify({ recorded, decided, queued }).includes(privateSample));
   assert.ok(!recorded.some((post) => Object.keys(post).length !== 2));
+
+  await t.test('previews and enforces different prompt modes in three composers and preserves clipboard policy', async () => {
+    const groupPreview = `${web}/preview?group=${group.id}`;
+    await dashboard.goto(groupPreview);
+    await dashboard.getByLabel('ChatGPT prompt mode', { exact: true }).selectOption('warn');
+    await dashboard.getByLabel('Gemini prompt mode', { exact: true }).selectOption('monitor');
+    await dashboard.getByLabel('Claude prompt mode', { exact: true }).selectOption('block');
+    await dashboard.getByLabel('Draft Claude prompt protection', { exact: true }).selectOption('on');
+    await dashboard.getByLabel('Draft clipboard paste protection', { exact: true }).selectOption('block');
+    const pack = { version: 1, cases: [
+      { id: 'chatgpt-warning', kind: 'prompt', app: 'chatgpt', expect: 'warn', text: privateSample },
+      { id: 'gemini-monitor', kind: 'prompt', app: 'gemini', expect: 'monitor', text: privateSample },
+      { id: 'claude-block', kind: 'prompt', app: 'claude', expect: 'block', text: privateSample },
+      { id: 'gemini-paste', kind: 'clipboard', app: 'gemini', expect: 'block', text: privateSample },
+    ] };
+    await dashboard.getByLabel('Import test pack', { exact: true }).setInputFiles({ name: 'fixture.json', mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify(pack)) });
+    await dashboard.getByText('Loaded 4 cases.', { exact: true }).waitFor();
+    await dashboard.getByRole('button', { name: 'Run preview', exact: true }).click();
+    await dashboard.getByRole('status').filter({ hasText: 'Draft passes 4 of 4 cases' }).waitFor();
+    await dashboard.getByRole('list', { name: 'Policy setting changes', exact: true })
+      .getByText('Gemini prompt mode · Inherit detector modes → Monitor', { exact: true }).waitFor();
+    if (artifacts) {
+      const section = dashboard.getByRole('region', { name: 'Prompt modes by AI app', exact: true });
+      await section.screenshot({ path: join(artifacts, 'prompt-modes-by-app.png') });
+    }
+    dashboard.once('dialog', (dialog) => dialog.accept());
+    await dashboard.getByRole('button', { name: 'Publish previewed policy', exact: true }).click();
+    await dashboard.getByText(/Previewed policy published as version/).waitFor();
+    const [scoped] = await admin(`policy-groups/${group.id}/policies`);
+    assert.deepEqual(scoped.promptAppModes, { chatgpt: 'warn', gemini: 'monitor', claude: 'block' });
+    await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
+    await chat.tab.getByText(new RegExp(`^Zekvar · WARN v${scoped.version}`)).waitFor();
+    await gemini.tab.getByText(new RegExp(`^Zekvar · MONITOR v${scoped.version}`)).waitFor();
+    const claude = await open('https://claude.ai/new', './claude-composer.html', '.ProseMirror', `BLOCK v${scoped.version}`);
+    const priorChat = Number(await chat.tab.locator('#fixture-sends').textContent());
+    await chat.editor.fill(privateSample);
+    await chat.editor.press('Enter');
+    await chat.tab.getByRole('button', { name: 'Continue anyway', exact: true }).waitFor();
+    assert.equal(Number(await chat.tab.locator('#fixture-sends').textContent()), priorChat);
+    await chat.tab.getByRole('button', { name: 'Redact detected values', exact: true }).click();
+    await chat.editor.press('Enter');
+    assert.equal(Number(await chat.tab.locator('#fixture-sends').textContent()), priorChat + 1);
+    const priorGemini = Number(await gemini.tab.locator('#fixture-sends').textContent());
+    await gemini.editor.fill(privateSample);
+    await gemini.editor.press('Enter');
+    assert.equal(Number(await gemini.tab.locator('#fixture-sends').textContent()), priorGemini + 1);
+    await claude.editor.fill(privateSample);
+    await claude.tab.getByRole('button', { name: 'Send prompt', exact: true }).click();
+    await claude.tab.getByRole('alert').filter({ hasText: 'Submission blocked' }).waitFor();
+    assert.equal(await claude.tab.locator('#submitted').textContent(), '0');
+    await profile.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: 'https://gemini.google.com' });
+    await gemini.tab.bringToFront();
+    await gemini.editor.fill('Existing safe text');
+    await gemini.editor.focus();
+    await gemini.tab.evaluate((text) => navigator.clipboard.writeText(text), privateSample);
+    await gemini.editor.press('ControlOrMeta+V');
+    await gemini.tab.getByRole('alert').filter({ hasText: 'Paste blocked because sensitive text was detected' }).waitFor();
+    assert.equal(await gemini.editor.innerText(), 'Existing safe text');
+    let events;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      events = (await admin('events')).filter(({ policyVersion }) => policyVersion === scoped.version);
+      if (events.length >= 4) break;
+      await delay(100);
+    }
+    assert.deepEqual(events.map(({ appId, decision, clipboardPaste }) => `${appId}/${decision}/${!!clipboardPaste}`).sort(),
+      ['chatgpt/warn/false', 'claude/block/false', 'gemini/block/true', 'gemini/monitor/false']);
+    assert.ok(!JSON.stringify(events).includes(privateSample));
+    const restored = await admin(`policy-groups/${group.id}/policies/${warning.version}/restore`, {});
+    assert.deepEqual(restored.promptAppModes, {});
+    await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
+    await gemini.tab.getByText(new RegExp(`^Zekvar · WARN v${restored.version}`)).waitFor();
+    await gemini.editor.fill(privateSample);
+    await gemini.editor.press('Enter');
+    await gemini.tab.getByRole('button', { name: 'Continue anyway', exact: true }).waitFor();
+    assert.equal(Number(await gemini.tab.locator('#fixture-sends').textContent()), priorGemini + 1);
+  });
+
+  await t.test('blocks Send on signed-out Gemini with a live per-app override', {
+    skip: process.env.ZEKVAR_DEMO_LIVE !== '1',
+  }, async (live) => {
+    const page = await profile.newPage();
+    try {
+      await page.routeWebSocket('**/*', (socket) => socket.close());
+      const response = await page.goto('https://gemini.google.com/app', { waitUntil: 'domcontentloaded', timeout: 12_000 })
+        .catch(() => undefined);
+      if (!response?.ok()) return live.skip(response ? `Live Gemini returned HTTP ${response.status()}.` : 'Live Gemini was unreachable.');
+      const editor = page.getByRole('textbox', { name: 'Enter a prompt for Gemini', exact: true });
+      if (!await editor.waitFor({ timeout: 8000 }).then(() => true, () => false)) {
+        return live.skip('Signed-out Gemini did not expose its English text composer.');
+      }
+      const latest = await admin(`policy-groups/${group.id}/policies`, { mode: 'monitor', promptAppModes: { gemini: 'block' } });
+      await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
+      await page.getByText(new RegExp(`^Zekvar · BLOCK v${latest.version}`)).waitFor();
+
+      // Hold all further page requests while testing with a synthetic prompt.
+      await page.route('**/*', (route) => route.abort());
+      const attempts = [];
+      page.on('request', (request) => {
+        if (request.postData()?.includes('ZEKVAR_TEST_SECRET') || request.url().includes('ZEKVAR_TEST_SECRET')) attempts.push(request.method());
+      });
+      await editor.fill(privateSample);
+      await page.locator('input-area-v2').getByRole('button', { name: 'Send message', exact: true }).click();
+      await page.getByRole('alert').filter({ hasText: 'Submission blocked' }).waitFor();
+      await editor.press('Enter');
+      let events;
+      for (let attempt = 0; attempt < 50; attempt++) {
+        events = (await admin('events?appId=gemini')).filter(({ policyVersion }) => policyVersion === latest.version);
+        if (events.length >= 2) break;
+        await delay(100);
+      }
+      assert.deepEqual(events.map(({ decision }) => decision), ['block', 'block']);
+      assert.deepEqual(attempts, []);
+      assert.ok(!JSON.stringify(events).includes(privateSample));
+    } finally {
+      await page.close();
+    }
+  });
 });

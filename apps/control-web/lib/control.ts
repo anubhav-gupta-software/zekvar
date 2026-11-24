@@ -54,6 +54,7 @@ export type Policy = {
   privateKeyMode?: DetectorMode;
   ssnMode?: DetectorMode;
   githubTokenMode?: DetectorMode;
+  promptAppModes?: import('../../../contracts/policy/prompt-app-modes').PromptAppModes;
   identifierProtection?: import('../../../contracts/policy/prompt').IdentifierProtection;
   uploadModes?: UploadModes;
   uploadTypes?: UploadTypes;
