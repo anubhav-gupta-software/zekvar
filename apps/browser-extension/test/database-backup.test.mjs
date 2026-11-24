@@ -131,10 +131,10 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
     }, 'Control did not become ready with the recovered database.');
   }
 
-  async function call(route, { body, token, expected = 200 } = {}) {
+  async function call(route, { body, token, expected = 200, headers = {} } = {}) {
     const response = await fetch(`${origin}/v1/${route}`, {
       method: body === undefined ? 'GET' : 'POST', signal: AbortSignal.timeout(5000),
-      headers: { ...(token && { Authorization: `Bearer ${token}` }), ...(body !== undefined && { 'Content-Type': 'application/json' }) },
+      headers: { ...headers, ...(token && { Authorization: `Bearer ${token}` }), ...(body !== undefined && { 'Content-Type': 'application/json' }) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     assert.equal(response.status, expected, route);
@@ -149,7 +149,8 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
   const ssoSession = await ssoExchange();
   const retention = { securityEventDays: 30, aiObservationDays: 30, auditDays: 90 };
   await admin(source.owner, 'retention', retention, 204);
-  const policy = await admin(source.owner, 'policies', { mode: 'block' });
+  const policy = await admin(source.owner, 'policies', { mode: 'block', extensionInventoryEnabled: true });
+  const alertSettings = await admin(source.owner, 'alerts/extensions/settings', { enabled: true, expectedRevision: 0 });
   const pendingGrant = (await admin(source.owner, 'enrollment-grants', {})).grant;
   const group = await admin(source.owner, 'policy-groups', { name: 'Recovery rollout group' });
   const batch = await admin(source.owner, 'enrollment-batches', { requestId: randomUUID(), groupId: group.id, count: 1 });
@@ -193,6 +194,30 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
       'The blocked attempt did not appear in Control.');
   }
   const event = await blockPrompt(source.owner, previous.installationId);
+  async function enrollInventoryReporter(owner) {
+    const { grant } = await admin(owner, 'enrollment-grants', {});
+    const installation = await call('enroll', { body: { grant } });
+    await call('browser/policy', { token: installation.token, headers: { 'X-Zekvar-Assignment-Aware': '1' } });
+    return installation;
+  }
+  const inventoryReporter = await enrollInventoryReporter(source.owner);
+  const inventoryPath = `extension-inventory/${inventoryReporter.installationId}`;
+  const entry = { id: 'a'.repeat(32), name: 'Synthetic recovery inventory fixture', version: '1.0', enabled: true,
+    installType: 'normal', siteAccess: 'selected', permissions: ['tabs'] };
+  const capturedAt = Date.now() - 1000;
+  const reportInventory = (installation, entries, time, expected = 204) => call('browser/extension-inventory', {
+    token: installation.token, expected,
+    body: { policyVersion: policy.version, assignmentVersion: 0, status: 'reported', entries,
+      omitted: 0, capturedAt: new Date(time).toISOString() },
+  });
+  await reportInventory(inventoryReporter, [entry], capturedAt);
+  const upgraded = { ...entry, version: '2.0', siteAccess: 'all' };
+  await reportInventory(inventoryReporter, [upgraded], capturedAt + 1);
+  const savedInventory = await admin(source.owner, inventoryPath);
+  assert.deepEqual(savedInventory.entries, [upgraded]);
+  assert.equal(savedInventory.changeHistory.length, 1);
+  const [inventoryAlert] = (await admin(source.owner, 'alerts/extensions')).entries;
+  assert.equal(inventoryAlert.installationId, inventoryReporter.installationId);
   const { version: extensionVersion } = JSON.parse(await readFile(join(extension, 'manifest.json'), 'utf8'));
   assert.equal((await admin(source.owner, 'installations')).find(({ installationId }) =>
     installationId === previous.installationId).extensionVersion, extensionVersion);
@@ -308,20 +333,28 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
   await admin(source.owner, `installations/${previous.installationId}/revoke`, {}, 204);
   await admin(source.owner, `access/${access.access.id}/revoke`, {}, 204);
   await stopApi();
+  const restoreStartedAt = new Date().toISOString();
+  const restoreStart = performance.now();
+  const elapsed = () => Math.round(performance.now() - restoreStart);
   const restores = await Promise.allSettled([restore(), restore()]);
   assert.equal(restores.filter((result) => result.status === 'fulfilled').length, 1);
+  const databaseRestoredMs = elapsed();
   assert.match(restores.find((result) => result.status === 'rejected').reason.stderr, /already contains application objects/);
   assert.equal(await hasSchema(target), 't');
   assert.equal(await sql(target, 'SELECT count(*) FROM admin_memberships'), '0');
   assert.equal(await sql(target, 'SELECT count(*) FROM control_sso_sessions'), '0');
+  assert.equal(await sql(target, 'SELECT count(*) FROM extension_inventory_snapshots'), '0');
+  assert.equal(await sql(target, 'SELECT count(*) FROM extension_inventory_change_batches'), '0', 'Recovery must purge restored extension history and alert evidence.');
   await assert.rejects(restore(), /already contains application objects/);
   await startApi(target);
+  const controlReadyMs = elapsed();
 
   await admin(source.owner, 'session', undefined, 401);
   await admin(ssoSession.token, 'session', undefined, 401);
   await ssoExchange(401);
   await admin(access.token, 'session', undefined, 401);
   await call('browser/policy', { token: previous.token, expected: 401 });
+  await reportInventory(inventoryReporter, [upgraded], Date.now(), 401);
   for (const grant of [pendingGrant, usedGrant]) await call('enroll', { body: { grant }, expected: 401 });
   const savedBatch = (await admin(target.owner, 'enrollment-batches')).find(({ id }) => id === batch.id);
   assert.deepEqual([savedBatch.status, savedBatch.available], ['cancelled', 0]);
@@ -330,6 +363,9 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
   assert.equal(scopedRedeem.status, 401);
   assert.deepEqual((await admin(target.owner, 'policies'))[0], policy);
   assert.deepEqual(await admin(target.owner, 'retention'), retention);
+  assert.deepEqual(await admin(target.owner, 'alerts/extensions/settings'), alertSettings);
+  assert.deepEqual((await admin(target.owner, 'alerts/extensions')).entries, []);
+  await admin(target.owner, inventoryPath, undefined, 404);
   assert.deepEqual(await admin(target.owner, 'events'), [event]);
   assert.deepEqual(await admin(target.otherOwner, 'events'), []);
   assert.deepEqual(await admin(target.owner, 'browser-releases'), []);
@@ -340,23 +376,36 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
   const { entries } = await admin(target.owner, 'audit');
   const revoked = entries.filter((row) => row.action === 'access_revoked').map((row) => row.subjectAccess.name).sort();
   assert.deepEqual(revoked, ['Recovery SSO auditor', 'Recovery reviewer']);
-  for (const action of ['browser_revoked', 'policy_review_decided']) {
-    assert.equal(entries.filter((row) => row.action === action).length, 1, action);
-  }
+  assert.equal(entries.filter((row) => row.action === 'browser_revoked').length, 2);
+  assert.equal(entries.filter((row) => row.action === 'policy_review_decided').length, 1);
 
   if (await sync.isVisible()) await sync.click();
   await popup.getByText(/^Control access revoked/).waitFor();
   const replacement = await enroll((await admin(target.owner, 'enrollment-grants', {})).grant);
   assert.notEqual(replacement.installationId, previous.installationId);
   await blockPrompt(target.owner, replacement.installationId);
+  const browserEnforcedMs = elapsed();
   assert.deepEqual(await admin(target.owner, 'browser-releases'), [
     { kind: 'release', extensionVersion, installations: 1, recentReports: 1 },
   ]);
+  const freshReporter = await enrollInventoryReporter(target.owner);
+  const freshInventoryTime = Date.now() - 1000;
+  await reportInventory(freshReporter, [entry], freshInventoryTime);
+  assert.deepEqual((await admin(target.owner, `extension-inventory/${freshReporter.installationId}`)).changeHistory, []);
+  assert.deepEqual((await admin(target.owner, 'alerts/extensions')).entries, []);
+  await reportInventory(freshReporter, [upgraded], freshInventoryTime + 1);
+  const [freshAlert] = (await admin(target.owner, 'alerts/extensions')).entries;
+  assert.equal(freshAlert.installationId, freshReporter.installationId);
+  assert.notEqual(freshAlert.id, inventoryAlert.id);
   const exportData = await admin(target.owner, 'events/export');
   assert.equal(exportData.entries.length, 2);
   assert.doesNotMatch(JSON.stringify(exportData), /Backup recovery fixture|ZEKVAR_TEST_SECRET/);
+  t.diagnostic(`Restore committed in ${databaseRestoredMs} ms, Control was ready by ${controlReadyMs} ms, and Chrome reported an enforced decision by ${browserEnforcedMs} ms.`);
   if (artifacts) {
     await mkdir(artifacts, { recursive: true });
     await chat.screenshot({ path: join(artifacts, 'recovered-policy-block.png'), fullPage: true });
+    const report = { version: 1, backupType: offsite ? 's3-fixture' : 'local', extensionVersion,
+      restoreStartedAt, databaseRestoredMs, controlReadyMs, browserEnforcedMs };
+    await writeFile(join(artifacts, 'recovery-report.json'), JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
   }
 });

@@ -34,14 +34,19 @@ $$;
 WITH revoked AS (
     UPDATE public.installations SET revoked_at = CURRENT_TIMESTAMP
     WHERE revoked_at IS NULL RETURNING organization_id, id, revoked_at
-), cleared AS (
-    DELETE FROM public.extension_inventory_snapshots s USING revoked r WHERE s.installation_id = r.id
 )
 INSERT INTO public.control_audit (organization_id, occurred_at, action, installation_id)
 SELECT organization_id, revoked_at, 'browser_revoked', id FROM revoked;
 
 DO $$
 BEGIN
+    -- Every restored installation is revoked. Fresh enrollment starts with no inventory evidence.
+    IF to_regclass('public.extension_inventory_change_batches') IS NOT NULL THEN
+        DELETE FROM public.extension_inventory_change_batches;
+    END IF;
+    IF to_regclass('public.extension_inventory_snapshots') IS NOT NULL THEN
+        DELETE FROM public.extension_inventory_snapshots;
+    END IF;
     IF to_regclass('public.composer_observations') IS NOT NULL THEN
         DELETE FROM public.composer_observations;
     END IF;

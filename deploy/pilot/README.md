@@ -137,7 +137,7 @@ deploy/pilot/database-backup.sh restore zekvar-recovery /secure/recovery.env \
   /srv/backups/zekvar/2026-11-22T0000Z.age /secure/pilot-identity.txt
 ```
 
-Restore revokes previous browser enrollments, named Control credentials including SSO identities, and event feed keys. It deletes SSO sessions, expires unused grants, cancels pending policy reviews and webhook jobs, and changes the event feed generation in the same transaction. This prevents an older snapshot from reactivating revoked access or leaving a browser on a newer cached policy from before the outage. Start Control with the new owner token. Issue fresh delegated tokens and collector keys, reauthorize current SSO identities, and re-enroll Chrome with fresh grants. Reassign re-enrolled browsers to their rollout groups before restoring normal access.
+Restore revokes previous browser enrollments, named Control credentials including SSO identities, and event feed keys. In the same transaction it clears previous extension inventory snapshots, change history, and extension access alert evidence. It preserves the organization's inventory and alert settings for fresh enrollments. It also deletes SSO sessions, expires unused grants, cancels pending policy reviews and webhook jobs, and changes the event feed generation. This prevents an older snapshot from reactivating revoked access or leaving a browser on a newer cached policy from before the outage. Start Control with the new owner token. Issue fresh delegated tokens and collector keys, reauthorize current SSO identities, and re-enroll Chrome with fresh grants. Reassign re-enrolled browsers to their rollout groups before restoring normal access.
 
 Keep both origins on the recovery network while verifying policies, event export, enrollment, and retention. Reconcile post-backup policy changes, retention changes, and data deletions against the independent operator record before exposing the recovered environment. For an actual switch, keep the original environment offline to avoid divergent writes and measure data loss and recovery time from the backup and drill timestamps.
 
@@ -148,6 +148,8 @@ npm --prefix apps/browser-extension ci
 npm --prefix apps/browser-extension exec -- playwright install chromium --no-shell
 node --test apps/browser-extension/test/database-backup.test.mjs
 ```
+
+Set `ZEKVAR_BACKUP_TEST_ARTIFACTS` to a directory to save the controlled browser screenshot and `recovery-report.json`. The report records elapsed time from the start of the successful restore attempt through database commit, API readiness, and the first enforced browser decision received by Control. Use the actual staging drill and its full timeline for pilot recovery targets.
 
 ### Schedule off-host backups
 
