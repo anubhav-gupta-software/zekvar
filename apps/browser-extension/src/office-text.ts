@@ -1,4 +1,6 @@
 import { openOfficeZip, type OfficeReadBudget } from './office-zip';
+import { isElement, readOfficeXml } from './office-xml';
+import { readOpenDocumentText } from './opendocument-text';
 
 const transitional = 'http://schemas.openxmlformats.org/';
 const strict = 'http://purl.oclc.org/ooxml/';
@@ -17,20 +19,6 @@ const mainParts: Readonly<Record<string, string>> = {
   [workbookPart]: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml',
   [presentationPart]: 'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml',
 };
-
-function parseXml(bytes: Uint8Array) {
-  const encoding = bytes[0] === 0xff && bytes[1] === 0xfe ? 'utf-16le'
-    : bytes[0] === 0xfe && bytes[1] === 0xff ? 'utf-16be' : 'utf-8';
-  const text = new TextDecoder(encoding, { fatal: true }).decode(bytes);
-  // XML is parsed into a detached document. Reject DTDs before parsing and ignore relationships.
-  if (/<!DOCTYPE/i.test(text)) return;
-  const xml = new DOMParser().parseFromString(text, 'application/xml');
-  if (xml.getElementsByTagName('parsererror').length === 0) return xml.documentElement;
-}
-
-function isElement(element: Element | undefined, names: readonly string[], namespaces: readonly string[]): element is Element {
-  return !!element && names.includes(element.localName) && namespaces.includes(element.namespaceURI ?? '');
-}
 
 function pickMainPart(types: Element, names: readonly string[]) {
   if (!isElement(types, ['Types'], [packageTypes])) return;
@@ -98,15 +86,12 @@ function worksheetText(root: Element, shared: readonly string[]) {
 export async function* readOfficeText(bytes: Uint8Array<ArrayBuffer>, budget: OfficeReadBudget): AsyncGenerator<string, boolean> {
   const archive = openOfficeZip(bytes);
   if (!archive) return false;
-  const { names, read } = archive;
-  async function readPart(name: string) {
-    try {
-      const content = await read(name, budget);
-      if (content) return parseXml(content);
-    } catch {
-      // An unreadable part supplies no text. Other supported parts can still be inspected.
-    }
+  const { names } = archive;
+  if (names.includes('mimetype')) {
+    if (names.includes('[Content_Types].xml')) return false;
+    return yield* readOpenDocumentText(archive, budget);
   }
+  const readPart = (name: string) => readOfficeXml(archive, budget, name);
   const types = await readPart('[Content_Types].xml');
   const main = types && pickMainPart(types, names);
   if (!main) return false;

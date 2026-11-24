@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { officeFile, officeSamples, textXml, zipParts } from './office-fixture.mjs';
+import { odfXml, openDocumentFile, openDocumentSamples } from './opendocument-fixture.mjs';
 
 const marker = 'ZEKVAR_TEST_SECRET';
 const pat = `ghp_${'0'.repeat(36)}`;
@@ -116,5 +117,60 @@ test('extracts bounded Office text in Chrome', { timeout: 30_000 }, async (t) =>
     for (const file of [encrypted, embedded, oversized]) {
       assert.deepEqual(await scan([file], policy, true), { match: undefined, complete: false, snapshots: 0 });
     }
+  });
+
+  await t.test('reads OpenDocument formatted text, cell values, notes, and style text by package bytes', async () => {
+    const { odt, ods, odp } = openDocumentSamples(marker, pat, key);
+    assert.equal((await scan([odt])).ruleId, 'fixture-secret');
+    assert.equal((await scan([ods])).ruleId, 'github-classic-pat');
+    assert.equal((await scan([odp])).ruleId, 'pem-private-key');
+    const body = odfXml.body('odt', '<text:p>Approved document</text:p>', '<office:scripts/>');
+    const header = openDocumentFile('odt', body, {
+      extra: [['styles.xml', odfXml.styles(`<style:master-page><style:header><text:p>${marker}</text:p></style:header></style:master-page>`)]],
+    });
+    assert.equal((await scan([header])).ruleId, 'fixture-secret');
+    const numeric = openDocumentFile('ods', odfXml.body('ods', '<table:table-cell office:value="4242424242424242"/>'));
+    assert.equal((await scan([numeric])).ruleId, 'payment-card-number');
+    const separated = openDocumentFile('odt', odfXml.body('odt',
+      '<text:p>ZEKVAR_</text:p><text:p>TEST_SECRET</text:p><text:p>4242<text:s/>4242<text:s/>4242<text:s/>4242</text:p>'));
+    assert.equal((await scan([separated])).ruleId, 'payment-card-number');
+    const clean = openDocumentFile('odt', odfXml.body('odt',
+      '<text:p>Approved<text:s text:c="2"/>document</text:p><drawing:image xlink:href="./Pictures/raster.png"/>', '<office:scripts/>'), {
+      extra: [['Pictures/raster.png', 'Synthetic raster fixture bytes'], ['meta.xml', marker]],
+      mediaEntries: { 'Pictures/raster.png': 'image/png', 'Configurations2/': 'application/vnd.sun.xml.ui.configuration' },
+    });
+    assert.deepEqual(await scan([clean], policy, true), { match: undefined, complete: true, snapshots: 1 });
+  });
+
+  await t.test('keeps incomplete OpenDocument packages from counting as clean', async () => {
+    const body = odfXml.body('odt', '<text:p>Approved document</text:p>');
+    const files = [
+      openDocumentFile('odt', body, { encrypted: ['content.xml'] }),
+      openDocumentFile('odt', body, { extra: [['Object 1/content.xml', body]] }),
+      openDocumentFile('odt', body, { extra: [['styles.xml', '<broken']] }),
+      openDocumentFile('odt', body, { mediaEntries: { '/': 'application/vnd.oasis.opendocument.spreadsheet' } }),
+      openDocumentFile('odt', body, { mediaEntries: { 'styles.xml': 'text/xml' } }),
+      openDocumentFile('odt', body, { manifestExtra: '<manifest:file-entry manifest:full-path="content.xml"/>' }),
+      openDocumentFile('odt', odfXml.body('ods', '')),
+      openDocumentFile('odt', `<!DOCTYPE office:document-content [<!ENTITY xx SYSTEM "https://synthetic.invalid/external">]>${body}`),
+      openDocumentFile('odt', odfXml.body('odt', '', '<office:scripts><office:script/></office:scripts>')),
+      openDocumentFile('odt', odfXml.body('odt', '<drawing:object xlink:href="https://synthetic.invalid/document"/>')),
+      openDocumentFile('odt', odfXml.body('odt', '<drawing:image xlink:href="https://synthetic.invalid/image.png"/>')),
+      openDocumentFile('odt', odfXml.body('odt', '<text:p>Clean<text:s text:c="1000000000"/>sample</text:p>')),
+      openDocumentFile('odt', odfXml.body('odt', `<text:p>${'X'.repeat(256 * 1024)}</text:p>`)),
+      openDocumentFile('odt', { text: body, badCrc: true }),
+      zipParts([['mimetype', 'application/vnd.oasis.opendocument.text'], ['content.xml', body]]),
+    ];
+    for (const file of files) {
+      assert.deepEqual(await scan([file], policy, true), { match: undefined, complete: false, snapshots: 0 });
+    }
+    const visibleAndEmbedded = openDocumentFile('odt', odfXml.body('odt', `<text:p>${marker}</text:p>`), {
+      extra: [['Object 1/content.xml', body]],
+    });
+    const result = await scan([visibleAndEmbedded], policy, true);
+    assert.equal(result.match.ruleId, 'fixture-secret');
+    assert.equal(result.complete, false);
+    assert.equal(result.snapshots, 0);
+    assert.deepEqual(requests, []);
   });
 });

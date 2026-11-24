@@ -126,6 +126,8 @@ The preview evaluates the supported text detectors, file metadata, and individua
 
 Use **Draft ChatGPT file content protection** or **Draft Gemini file content protection** to preview Off, Monitor, and Block. The preview includes matching and clean synthetic text and an unsupported file sample. Browser v0.27.0 can hold a file selection, release a clean scan, and stop a batch when it finds a match or cannot finish the check. Use Browser health to confirm the installed release across the rollout group. **Security events** shows the detector or **File check unavailable**, along with the intake method. **Reports → By activity** includes these decisions under **File content inspection**. [Block sensitive file contents](../browser-extension/README.md#block-sensitive-file-contents)
 
+For OpenDocument uploads, use Browser v0.35.0 or later and test synthetic `.odt`, `.ods`, and `.odp` files through the enrolled browser. Policy preview scores supplied sample text. The native upload test verifies which text Browser can extract from the file. [Monitor file contents](../browser-extension/README.md#monitor-file-contents)
+
 ## Set prompt modes by AI app
 
 1. Open **Policy preview** for the baseline or a rollout group.

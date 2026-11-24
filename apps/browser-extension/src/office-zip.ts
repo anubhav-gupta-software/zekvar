@@ -5,6 +5,7 @@ const filenameDecoder = new TextDecoder('utf-8', { fatal: true });
 
 type ZipEntry = { flags: number; method: number; crc: number; compressedSize: number; size: number; offset: number };
 export type OfficeReadBudget = { remainingBytes: number; remainingParts: number };
+export type OfficeArchive = NonNullable<ReturnType<typeof openOfficeZip>>;
 
 const crcTable = Uint32Array.from({ length: 256 }, (_, index) => {
   let crc = index;
@@ -50,10 +51,11 @@ export function openOfficeZip(bytes: Uint8Array<ArrayBuffer>) {
   }
   if (at !== end) return;
 
-  async function read(name: string, budget: OfficeReadBudget) {
+  async function read(name: string, budget: OfficeReadBudget, { firstStored = false } = {}) {
     const entry = entries.get(name);
     if (!entry || !entry.size || budget.remainingParts === 0 || entry.size > Math.min(256 * 1024, budget.remainingBytes)) return;
     const { offset, flags, method } = entry;
+    if (firstStored && (offset !== 0 || method !== 0 || entry.size > 128 || u16(offset + 28) !== 0)) return;
     // Accept stored and deflated parts, including archives that write sizes after the data.
     if ((flags & ~0x080e) !== 0 || (method !== 0 && method !== 8) || offset + 30 > central ||
         u32(offset) !== localSignature || u16(offset + 6) !== flags || u16(offset + 8) !== method) return;

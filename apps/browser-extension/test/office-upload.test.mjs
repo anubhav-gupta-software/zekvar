@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { officeSamples } from './office-fixture.mjs';
+import { odfXml, openDocumentFile, openDocumentSamples } from './opendocument-fixture.mjs';
 
 const api = process.env.ZEKVAR_EXTENSION_TEST_API;
 const owner = process.env.ZEKVAR_EXTENSION_TEST_ADMIN_TOKEN;
@@ -285,5 +286,69 @@ test('protects Office and text files through native Chrome intake and Control re
     assert.deepEqual(stored.map(({ appId, ruleId, uploadMethod }) => `${appId}/${ruleId}/${uploadMethod}`).sort(), expected);
     assert.ok(stored.every(({ decision }) => decision === 'block'));
     assert.doesNotMatch(JSON.stringify([...posts, ...stored]), /synthetic-(?:office|slow|clean|sensitive|large|unsupported)|ZEKVAR_TEST_SECRET|%PDF/);
+  });
+
+  await t.test('monitors and blocks OpenDocument intake and releases clean document bytes', async () => {
+    const approval = odfXml.body('odt', '<text:p>Approved synthetic OpenDocument text</text:p>');
+    const odfDirectory = process.env.ZEKVAR_TEST_OPENDOCUMENT_DIRECTORY;
+    const docs = odfDirectory ? {
+      odt: await readFile(join(odfDirectory, 'synthetic-real.odt')),
+      ods: await readFile(join(odfDirectory, 'synthetic-real.ods')),
+      odp: await readFile(join(odfDirectory, 'synthetic-real.odp')),
+    } : openDocumentSamples(marker, pat, key);
+    const safeBytes = odfDirectory ? await readFile(join(odfDirectory, 'synthetic-approved.odt')) : openDocumentFile('odt', approval);
+    const fixtures = [
+      ['private-odf-disguised.jpg', docs.odt], ['private-odf-worksheet.ods', docs.ods], ['private-odf-slides.odp', docs.odp],
+      ['private-odf-approved.odt', safeBytes],
+      ['private-odf-protected.odt', openDocumentFile('odt', approval, { encrypted: ['content.xml'] })],
+    ];
+    const paths = await Promise.all(fixtures.map(async ([name, bytes]) => {
+      const path = join(root, name);
+      await writeFile(path, bytes);
+      return path;
+    }));
+    const [writer, spreadsheet, presentation, cleanOdf, encryptedOdf] = paths;
+    const transfers = [];
+    for (const [page, appId] of [[chat, 'chatgpt'], [gemini, 'gemini']]) {
+      await page.unroute('**/fixture-upload');
+      await page.route('**/fixture-upload', async (route) => {
+        transfers.push({ appId, bytes: route.request().postDataBuffer() });
+        await route.fulfill({ status: 204 });
+      });
+      await page.evaluate(() => { window.fileEvents = []; });
+    }
+    async function apply(fileContentModes) {
+      const applied = await admin('policies', { fileContentModes, uploadModes: { chatgpt: 'off', gemini: 'off' } });
+      await popup.getByRole('button', { name: 'Sync now' }).click();
+      await chat.getByText(new RegExp(`v${applied.version}.*File content ${fileContentModes.chatgpt}$`)).waitFor();
+      await gemini.getByText(new RegExp(`v${applied.version}.*File content ${fileContentModes.gemini}$`)).waitFor();
+      return applied.version;
+    }
+    const monitor = await apply({ chatgpt: 'monitor', gemini: 'monitor' });
+    await pick(chat, [writer]);
+    await until(() => transfers.length === 1, 'Monitor did not release the Writer attachment.');
+    assert.deepEqual(transfers[0], { appId: 'chatgpt', bytes: docs.odt });
+    const block = await apply({ chatgpt: 'block', gemini: 'block' });
+    await drop(gemini, gemini.locator('#drop-zone'), [spreadsheet]);
+    await gemini.getByRole('alert').filter({ hasText: 'sensitive content' }).waitFor();
+    await pick(chat, [presentation]);
+    await chat.getByRole('alert').filter({ hasText: 'sensitive content' }).waitFor();
+    await pick(gemini, [encryptedOdf]);
+    await gemini.getByRole('alert').filter({ hasText: 'could not complete' }).waitFor();
+    if (process.env.ZEKVAR_DEMO_ARTIFACTS) {
+      await gemini.getByRole('alert').screenshot({ path: join(process.env.ZEKVAR_DEMO_ARTIFACTS, 'opendocument-check-unavailable.png') });
+    }
+    assert.equal(transfers.length, 1);
+    await pick(chat, [cleanOdf]);
+    await until(() => transfers.length === 2, 'Block did not release the checked clean OpenDocument attachment.');
+    assert.deepEqual(transfers[1], { appId: 'chatgpt', bytes: safeBytes });
+    const stored = await until(async () => {
+      const entries = (await admin('events')).filter(({ policyVersion }) => [monitor, block].includes(policyVersion));
+      return entries.length === 4 && entries;
+    }, 'Control did not receive every OpenDocument decision.');
+    assert.deepEqual(stored.map(({ appId, decision, ruleId, uploadMethod }) => `${appId}/${decision}/${ruleId}/${uploadMethod}`).sort(),
+      ['chatgpt/block/pem-private-key/picker', 'chatgpt/monitor/fixture-secret/picker', 'gemini/block/file-inspection-unavailable/picker',
+        'gemini/block/github-classic-pat/drop']);
+    assert.doesNotMatch(JSON.stringify([...posts, ...stored]), /private-odf|ZEKVAR_TEST_SECRET|ghp_|BEGIN PRIVATE KEY|Approved synthetic/);
   });
 });
