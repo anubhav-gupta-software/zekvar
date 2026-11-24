@@ -1,3 +1,4 @@
+import { readBrowserState } from './browser-state.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { once } from 'node:events';
@@ -203,8 +204,7 @@ test('prompt exception applies only on its app and detector and expires in the e
   await chat.notice('Temporary policy exception applied');
   assert.equal(await chat.count(), '3');
   await until(async () => (await allowed()).length === 3, 'Control did not record the renewed exception use.');
-  assert.equal(await worker.evaluate(() => chrome.storage.local.get('controlState')
-    .then(({ controlState }) => JSON.stringify(controlState).includes('promptExceptionLease'))), false);
+  assert.equal(JSON.stringify(await readBrowserState(worker)).includes('promptExceptionLease'), false);
 
   offline = true;
   await browser.close();

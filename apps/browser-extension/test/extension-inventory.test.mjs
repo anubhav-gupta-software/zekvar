@@ -1,3 +1,4 @@
+import { readBrowserState } from './browser-state.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { once } from 'node:events';
@@ -133,7 +134,7 @@ test('Chrome inventory follows the policy and permission, with metadata-only upd
     await tab.getByRole('button', { name: 'Sync now', exact: true }).click();
     await tab.waitForFunction(() => !document.querySelector('#sync').disabled);
   };
-  const installationId = () => worker.evaluate(async () => (await chrome.storage.local.get('controlState')).controlState.enrollment.installationId);
+  const installationId = async () => (await readBrowserState(worker)).enrollment.installationId;
   const inventory = async (id) => {
     const response = await fetch(api + '/v1/admin/extension-inventory/' + id, {
       headers: { Authorization: 'Bearer ' + owner }, signal: AbortSignal.timeout(5000),
@@ -179,7 +180,7 @@ test('Chrome inventory follows the policy and permission, with metadata-only upd
   await enroll(second.popup);
   await second.popup.getByRole('button', { name: 'Allow extension inventory', exact: true }).waitFor();
   assert.ok(!await second.worker.evaluate(() => chrome.permissions.contains({ permissions: ['management'] })));
-  const secondId = await second.worker.evaluate(async () => (await chrome.storage.local.get('controlState')).controlState.enrollment.installationId);
+  const secondId = (await readBrowserState(second.worker)).enrollment.installationId;
   assert.equal((await inventory(secondId)).status, 'permission_required');
   assert.equal(reported.at(-1).entries.length, 0);
   await clean.close();
@@ -306,7 +307,7 @@ test('Chrome inventory follows the policy and permission, with metadata-only upd
   assert.equal((await inventory(id)).status, 'off');
   assert.equal((await inventory(id)).changeHistory, undefined);
   assert.equal(await popup.getByRole('button', { name: 'Allow extension inventory', exact: true }).count(), 0);
-  const cache = await worker.evaluate(async () => JSON.stringify(await chrome.storage.local.get('controlState')));
+  const cache = JSON.stringify(await readBrowserState(worker));
   assert.doesNotMatch(cache, /Inventory Inspector Fixture|Inventory Utility Fixture|private-inventory\.example\.test/);
   assert.doesNotMatch(JSON.stringify(reported), /private-inventory\.example\.test|Private fixture description|hostPermissions|homepageUrl|updateUrl/);
 });

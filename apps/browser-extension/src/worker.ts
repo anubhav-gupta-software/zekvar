@@ -18,6 +18,7 @@ import { readPromptAppModes, samePromptAppModes } from '../../../contracts/polic
 import { fileInspectionDetectors } from '../../../contracts/policy/file-inspection';
 import { isPdfPayload, pdfUnavailable, type PdfInspection } from './pdf-inspection';
 import { inspectPdfOffscreen } from './pdf-offscreen-client';
+import { migrateWorkerState, readWorkerState, restrictChromeStorage, saveWorkerState } from './state-storage';
 
 declare const CONTROL_ORIGIN: string;
 
@@ -47,7 +48,6 @@ type State = {
   usedManagedGrant?: string;
 };
 
-const key = 'controlState';
 const alarmName = 'control-sync';
 const maxQueue = 100;
 const pendingCoverageLifetimeMs = 60_000;
@@ -60,20 +60,16 @@ const managedGrantKey = 'EnrollmentGrant';
 const managedOriginKey = 'ControlOrigin';
 const hostedControl = CONTROL_ORIGIN.startsWith('https:');
 const extensionVersion = chrome.runtime.getManifest().version;
-const setup = Promise.all([
-  chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }),
-  chrome.storage.managed.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }),
-]);
+const managedStorageProtected = restrictChromeStorage(chrome.storage.managed);
 
 function serial<T>(operation: () => Promise<T>): Promise<T> {
-  const result = work.then(() => setup).then(operation);
+  const result = work.then(migrateWorkerState).then(operation);
   work = result.then(() => undefined, () => undefined);
   return result;
 }
 
 async function readState(): Promise<State> {
-  const stored = await chrome.storage.local.get(key);
-  const state = stored[key] as State | undefined;
+  const state = await readWorkerState<State>();
   if (!state) return { status: 'standalone', controlOrigin: CONTROL_ORIGIN, queue: [], discarded: 0 };
   if (state.controlOrigin === CONTROL_ORIGIN) return state;
   // Older development builds only addressed loopback. Never migrate their credentials to a hosted origin.
@@ -93,7 +89,7 @@ async function readState(): Promise<State> {
 }
 
 function save(state: State) {
-  return chrome.storage.local.set({ [key]: state });
+  return saveWorkerState(state);
 }
 
 function appEnabled(state: State, app: AiPromptApp) {
@@ -484,6 +480,7 @@ async function syncOrEnroll(state: State): Promise<Reply> {
     await applyDomainRules(state, emptyDomainRules).catch(() => undefined);
     await save(state);
   }
+  if (!await managedStorageProtected) return { summary: { ...summary(state), managedEnrollment: 'manual_required' } };
   const managed = await chrome.storage.managed.get([managedGrantKey, managedOriginKey]).catch(() => ({} as Record<string, unknown>));
   const grant = managed[managedGrantKey];
   if (!isToken(grant)) {

@@ -22,6 +22,8 @@ npm run fixture
 
 When Control is temporarily unreachable, the extension keeps enforcing the last saved policy. It queues up to 100 metadata events and retries during periodic or manual sync. If the queue fills, it discards the oldest item and reports the count in the popup. On revocation it retains the last policy for this test fixture, clears the credential and queued events, and prompts for a fresh grant. Before enrollment, the fixture's local mode selector remains available for standalone testing.
 
+Browser v0.37.0 stores its enrollment, applied policy, and delivery queue in the extension's private database. Reloading an existing installation moves the saved state there before clearing the previous copy. On Chrome versions that cannot restrict managed storage to trusted extension contexts, the popup guides you through manual enrollment.
+
 ## Try the experimental ChatGPT adapter
 
 1. Run the current [Control API and dashboard](../control-web/README.md#run-the-dashboard), reload Zekvar Browser in `chrome://extensions`, and enroll if needed. Set **Test marker** to **Block**, publish, then click **Sync now** in the extension popup.
@@ -256,7 +258,7 @@ From `apps/browser-extension`, with Docker running:
 npm run verify:demo -- --pilot --headed --artifacts /tmp/zekvar-pilot
 ```
 
-The runner opens two temporary Chrome for Testing profiles with the unpacked Zekvar extension. It applies one grant per profile through Chrome’s policy test UI, then checks that the profiles enroll and receive a Block policy in the background. It closes one browser, restores Monitor, waits for the stopped browser to show **Stale** in Control, and reopens it to verify the same installation catches up. Allow about 90 seconds for the stale check after the browser closes. Screenshots are saved when `--artifacts` is provided.
+The runner opens two temporary Chrome for Testing profiles with the unpacked Zekvar extension. Use a current Chrome for Testing release for automatic enrollment. It applies one grant per profile through Chrome’s policy test UI, then checks that the profiles enroll and receive a Block policy in the background. It closes one browser, restores Monitor, waits for the stopped browser to show **Stale** in Control, and reopens it to verify the same installation catches up. Allow about 90 seconds for the stale check after the browser closes. Screenshots are saved when `--artifacts` is provided.
 
 ### Apply a grant manually in a test profile
 

@@ -1,3 +1,4 @@
+import { readBrowserState } from './browser-state.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { once } from 'node:events';
@@ -139,7 +140,7 @@ test('Control custom app catalog reports only assigned HTTPS sites with optional
     await profile.popup.getByLabel('Enrollment grant').fill(grant);
     await profile.popup.getByRole('button', { name: 'Enroll this browser', exact: true }).click();
     await profile.popup.getByText(/^Connected to Control/).waitFor();
-    return profile.worker.evaluate(async () => (await chrome.storage.local.get('controlState')).controlState.enrollment.installationId);
+    return (await readBrowserState(profile.worker)).enrollment.installationId;
   }
   async function sync(profile) {
     await profile.popup.getByRole('button', { name: 'Sync now', exact: true }).click();
@@ -198,8 +199,7 @@ test('Control custom app catalog reports only assigned HTTPS sites with optional
   await sync(enrolled);
   const oldTime = (await app()).lastObservedAt;
   await visit(enrolled, target + '/offline' + privatePath);
-  await until(async () => enrolled.worker.evaluate((id) =>
-    chrome.storage.local.get('controlState').then(({ controlState }) => Boolean(controlState.observations?.[id])), id),
+  await until(async () => Boolean((await readBrowserState(enrolled.worker))?.observations?.[id]),
   'Chrome did not queue the observation during the outage.');
   assert.equal((await app()).lastObservedAt, oldTime);
   offline = false;
@@ -321,8 +321,7 @@ test('Control custom app catalog reports only assigned HTTPS sites with optional
     offline = true;
     await sync(enrolled);
     await visit(enrolled, 'https://grok.com/offline' + privatePath);
-    const pendingGrok = () => enrolled.worker.evaluate(() =>
-      chrome.storage.local.get('controlState').then(({ controlState }) => Boolean(controlState.observations?.grok)));
+    const pendingGrok = async () => Boolean((await readBrowserState(enrolled.worker))?.observations?.grok);
     await until(pendingGrok, 'Chrome did not queue the discovered preset offline.');
     await enrolled.popup.getByRole('button', { name: 'Remove catalog discovery permission', exact: true }).click();
     await enrolled.popup.getByRole('button', { name: 'Allow catalog discovery', exact: true }).waitFor();

@@ -1,3 +1,4 @@
+import { readBrowserState, writeBrowserState } from './browser-state.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -296,28 +297,23 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
       offline = true;
       await chatGpt.locator('#prompt-textarea').evaluate((element) => { element.id = 'renamed-composer'; });
       await chatGpt.getByText('Zekvar · Unsupported composer (editable field missing)', { exact: true }).waitFor();
-      await until(() => worker.evaluate(async () => {
-        const { controlState } = await chrome.storage.local.get('controlState');
-        return controlState.coveragePending?.coverage === 'unsupported';
-      }), 'The offline composer check did not reach the extension worker.');
+      await until(async () => (await readBrowserState(worker))?.coveragePending?.coverage === 'unsupported', 'The offline composer check did not reach the extension worker.');
       await chatGpt.close();
       if (changesPolicy) {
         await adminCall('policies', { mode: 'block' });
         assert.equal(await verified(), 'policy_pending');
       } else {
-        await worker.evaluate(async () => {
-          const { controlState } = await chrome.storage.local.get('controlState');
-          controlState.coveragePending.observedAt -= 61_000;
-          await chrome.storage.local.set({ controlState });
-        });
+        const state = await readBrowserState(worker);
+        state.coveragePending.observedAt -= 61_000;
+        await writeBrowserState(worker, state);
       }
       offline = false;
       await popup.getByRole('button', { name: 'Sync now' }).click();
       await popup.getByText(/Connected to Control/).waitFor();
-      await until(() => worker.evaluate(async () => {
-        const { controlState } = await chrome.storage.local.get('controlState');
-        return controlState.status === 'connected' && controlState.coveragePending === undefined;
-      }), 'The extension did not finish reconciling the offline composer check.');
+      await until(async () => {
+        const state = await readBrowserState(worker);
+        return state?.status === 'connected' && state.coveragePending === undefined;
+      }, 'The extension did not finish reconciling the offline composer check.');
       if (changesPolicy) await until(async () => await verified() === 'unobserved',
         'Control did not acknowledge the policy without carrying forward the outdated composer check.');
       assert.equal(await verified(), changesPolicy ? 'unobserved' : 'detected');

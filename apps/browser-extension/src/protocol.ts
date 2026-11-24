@@ -53,7 +53,7 @@ export type Summary = {
   policy?: Policy;
   promptApps?: AiPromptApp[];
   enrollmentSource?: 'managed' | 'manual';
-  managedEnrollment?: 'invalid' | 'rejected' | 'retrying' | 'origin_mismatch';
+  managedEnrollment?: 'invalid' | 'rejected' | 'retrying' | 'origin_mismatch' | 'manual_required';
   originChanged?: boolean;
   domainRuleCount?: number;
   pathRuleCount?: number;

@@ -152,6 +152,7 @@ try {
   const fleetAdmin = randomBytes(32).toString('hex');
   const templateAdmin = randomBytes(32).toString('hex');
   const promptRequestAdmin = randomBytes(32).toString('hex');
+  const browserStateAdmin = randomBytes(32).toString('hex');
   const apiServer = startService('dotnet', ['bin/Debug/net10.0/Control.Api.dll'], api, {
     DOTNET_ENVIRONMENT: 'Development', ASPNETCORE_ENVIRONMENT: 'Development', Control__Port: String(apiPort), ConnectionStrings__Control: db,
     Control__Organizations__0__Slug: 'demo', Control__Organizations__0__AdminToken: token,
@@ -170,6 +171,7 @@ try {
     Control__Organizations__15__Slug: 'browser-fleet', Control__Organizations__15__AdminToken: fleetAdmin,
     Control__Organizations__16__Slug: 'policy-templates', Control__Organizations__16__AdminToken: templateAdmin,
     Control__Organizations__17__Slug: 'prompt-exception-requests', Control__Organizations__17__AdminToken: promptRequestAdmin,
+    Control__Organizations__18__Slug: 'browser-state', Control__Organizations__18__AdminToken: browserStateAdmin,
     ...(flags.has('--pilot') ? {
       Control__Organizations__3__Slug: 'managed-pilot', Control__Organizations__3__AdminToken: pilotAdmin,
       Control__Organizations__4__Slug: 'review-pilot', Control__Organizations__4__AdminToken: reviewAdmin,
@@ -186,6 +188,10 @@ try {
     ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_ARTIFACTS: artifacts ?? '',
   });
   await run('npm', ['test'], extension);
+  await run(process.execPath, ['--test', 'test/state-storage.test.mjs'], extension, {
+    ZEKVAR_EXTENSION_TEST_API: apiOrigin, ZEKVAR_EXTENSION_TEST_ADMIN_TOKEN: browserStateAdmin,
+    ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0',
+  });
   await run(process.execPath, ['--test', 'test/demo.test.mjs'], extension, {
     ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: token,
     ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_LIVE: flags.has('--live') ? '1' : '0',

@@ -1,3 +1,4 @@
+import { readBrowserState } from './browser-state.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, X509Certificate } from 'node:crypto';
@@ -208,11 +209,11 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
     return { popup, worker };
   }
   const label = (popup, text) => popup.getByText(text, { exact: true });
-  const installation = (worker) => worker.evaluate(async () =>
-    (await chrome.storage.local.get('controlState')).controlState.enrollment?.installationId);
+  const installation = async (worker) => (await readBrowserState(worker))?.enrollment?.installationId;
 
   build(false);
   let { popup, worker } = await launch();
+  await label(popup, 'Ready to enroll').waitFor();
   const initialVersion = await admin('policies', { domainRules: { allow: [], block: ['old-browser.example.test'] } });
   const { grant: oldGrant } = await admin('enrollment-grants', {});
   await popup.getByLabel('Enrollment grant').fill(oldGrant);

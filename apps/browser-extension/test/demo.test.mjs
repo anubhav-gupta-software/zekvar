@@ -1,3 +1,4 @@
+import { readBrowserState, writeBrowserState } from './browser-state.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -383,6 +384,7 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
   const openApp = (host) => appPage.goto(`https://${host}/fixture/${privateDetail}?conversation=${privateDetail}#${privateDetail}`);
   const sync = () => popup.getByRole('button', { name: 'Sync now' }).click();
   const policyVersion = async () => Number((await policyHistory.locator('tbody tr').first().locator('td').first().innerText()).slice(1));
+  const builtinApps = ['chatgpt', 'claude', 'gemini'];
 
   await t.test('enabling discovery records only top-level visits on the three catalog origins', async () => {
     assert.equal(await discoveryMode.inputValue(), 'off');
@@ -403,9 +405,12 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
     await waitUntil(async () => (await inventory())[1].browsersSeen === 1, 'Claude was not recorded.');
     assert.deepEqual(observationAttempts.map(({ appId }) => appId), ['claude']);
     await openApp('chatgpt.com');
+    await waitUntil(async () => (await inventory()).find(({ appId }) => appId === 'chatgpt')?.browsersSeen === 1,
+      'ChatGPT was not recorded.');
     await openApp('gemini.google.com');
-    await waitUntil(async () => (await inventory()).every(({ browsersSeen }) => browsersSeen === 1),
+    await waitUntil(async () => (await inventory()).filter(({ browsersSeen }) => browsersSeen === 1).length === builtinApps.length,
       'Expected a browser for each catalog app.');
+    assert.deepEqual((await inventory()).filter(({ browsersSeen }) => browsersSeen > 0).map(({ appId }) => appId), builtinApps);
     assert.equal(observationAttempts.length, 3);
     for (const observation of observationAttempts) {
       assert.deepEqual(Object.keys(observation).sort(), ['appId', 'observedAt', 'policyVersion']);
@@ -420,7 +425,8 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
     await dashboard.getByLabel('ChatGPT classification', { exact: true }).selectOption('approved');
     await dashboard.getByRole('button', { name: 'Save ChatGPT classification' }).click();
     await dashboard.getByText('ChatGPT classification saved.', { exact: true }).waitFor();
-    assert.deepEqual((await inventory()).map(({ status }) => status), ['approved', 'unapproved', 'unreviewed']);
+    assert.deepEqual((await inventory()).filter(({ appId }) => builtinApps.includes(appId)).map(({ status }) => status),
+      ['approved', 'unapproved', 'unreviewed']);
     await screenshot(dashboard, '11-ai-app-inventory.png');
   });
 
@@ -546,13 +552,11 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
       'Expected warning and override metadata.');
 
     const block = await publish('block');
-    await worker.evaluate(async () => {
-      const { controlState } = await chrome.storage.local.get('controlState');
-      delete controlState.policy.paymentCardMode;
-      await chrome.storage.local.set({ controlState });
-    });
+    const state = await readBrowserState(worker);
+    delete state.policy.paymentCardMode;
+    await writeBrowserState(worker, state);
     await sync();
-    const cachedMode = () => worker.evaluate(async () => (await chrome.storage.local.get('controlState')).controlState.policy.paymentCardMode);
+    const cachedMode = async () => (await readBrowserState(worker))?.policy?.paymentCardMode;
     await waitUntil(async () => await cachedMode() === 'block', 'The browser did not add the detector to a legacy cache at the same version.');
     const [versionWithoutDetector] = await adminGet('policies');
     delete versionWithoutDetector.paymentCardMode;

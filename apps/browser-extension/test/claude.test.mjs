@@ -1,3 +1,4 @@
+import { readBrowserState } from './browser-state.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -114,7 +115,7 @@ test('Claude opt-in, coverage, and recovery with Control and real Chrome', { tim
   await popup.getByLabel('Enrollment grant').fill(await grant());
   await popup.getByRole('button', { name: 'Enroll this browser', exact: true }).click();
   await popup.getByText('Connected to Control · BLOCK v2', { exact: true }).waitFor();
-  const id = await worker.evaluate(async () => (await chrome.storage.local.get('controlState')).controlState.enrollment.installationId);
+  const id = (await readBrowserState(worker)).enrollment.installationId;
   await page.goto(`${origin}/new`);
   await editor.fill(draft);
   await submit.click();

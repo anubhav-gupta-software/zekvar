@@ -1,3 +1,4 @@
+import { readBrowserState } from './browser-state.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -120,7 +121,7 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     await popupA.getByText('Enrolled by Chrome policy.', { exact: true }).waitFor();
     [idA] = (await installations()).map(({ installationId }) => installationId);
     assert.ok(idA);
-    assert.equal(await first.worker.evaluate(async (value) => JSON.stringify(await chrome.storage.local.get()).includes(value), grantA), false);
+    assert.equal(JSON.stringify(await readBrowserState(first.worker)).includes(grantA), false);
 
     await setManagedGrant(second, grantA);
     const popupB = await popup(second);
@@ -339,14 +340,14 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     await checkUpload(first, 7, false, nonmatching);
     await domains.visit(first.browser, 'apps.test', false);
     await domains.visit(first.browser, 'work.other.test', false, '/restricted');
-    const stalePolicy = await first.worker.evaluate(async (origin) => {
-      const { controlState } = await chrome.storage.local.get('controlState');
+    const { enrollment: { token } } = await readBrowserState(first.worker);
+    const stalePolicy = await first.worker.evaluate(async ({ origin, token }) => {
       const response = await fetch(`${origin}/v1/browser/policy`, {
-        headers: { Authorization: `Bearer ${controlState.enrollment.token}`, 'X-Zekvar-Assignment-Aware': '1' },
+        headers: { Authorization: `Bearer ${token}`, 'X-Zekvar-Assignment-Aware': '1' },
       });
       if (!response.ok) throw new Error(`Policy fetch failed with status ${response.status}.`);
       return response.json();
-    }, api);
+    }, { origin: api, token });
     assert.equal(stalePolicy.version, 7);
     assert.equal(stalePolicy.assignmentVersion, 1);
     const [impact] = await Promise.all([dashboard.waitForEvent('popup'),

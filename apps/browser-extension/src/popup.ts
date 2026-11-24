@@ -85,6 +85,7 @@ function render(summary: Summary) {
     rejected: 'Chrome policy grant expired or was already used. Ask your admin for a fresh grant.',
     retrying: 'Waiting for Control to redeem the Chrome policy grant.',
     origin_mismatch: 'Chrome policy must specify this build’s Control origin before it can enroll.',
+    manual_required: 'Paste an enrollment grant to connect. Automatic enrollment requires protected managed settings.',
   };
   managed.textContent = summary.enrollmentSource === 'managed' ? 'Enrolled by Chrome policy.' :
     summary.managedEnrollment ? onboarding[summary.managedEnrollment] :

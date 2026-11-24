@@ -1,3 +1,4 @@
+import { readBrowserState } from './browser-state.mjs';
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
@@ -169,7 +170,7 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
   const worker = browser.serviceWorkers()[0] ?? await browser.waitForEvent('serviceworker');
   const popup = await browser.newPage();
   await popup.goto(new URL('popup.html', worker.url()).href);
-  const enrolled = () => worker.evaluate(async () => (await chrome.storage.local.get('controlState')).controlState.enrollment);
+  const enrolled = async () => (await readBrowserState(worker))?.enrollment;
   const sync = popup.getByRole('button', { name: 'Sync now', exact: true });
   async function enroll(grant) {
     await popup.getByLabel('Enrollment grant').fill(grant);
