@@ -181,6 +181,30 @@ admin.MapPost("/enrollment-batches/{id:guid}/cancel", async (Guid id, HttpContex
     await store.CancelEnrollmentBatch(Identity(http), id, ct) ? Results.NoContent() : Results.NotFound());
 admin.MapGet("/installations", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.Installations(Identity(http).OrganizationId, ct)));
+admin.MapGet("/installations/fleet", async (HttpContext http, CancellationToken ct) =>
+{
+    var query = http.Request.Query;
+    if (query.Any(entry => entry.Key is not ("rolloutGroup" or "beforeAt" or "beforeId") || entry.Value.Count != 1) ||
+        !BrowserHealthFilter.TryParse(query["rolloutGroup"].FirstOrDefault(), null, out var filter))
+        return Results.BadRequest(new { error = "Choose a valid rollout group and fleet cursor." });
+    FleetCursor? before = null;
+    if (query.ContainsKey("beforeAt") || query.ContainsKey("beforeId"))
+    {
+        if (!DateTimeOffset.TryParse(query["beforeAt"], CultureInfo.InvariantCulture, DateTimeStyles.None, out var enrolled) ||
+            !Guid.TryParse(query["beforeId"], out var id) || id == Guid.Empty)
+            return Results.BadRequest(new { error = "Use both values from the fleet cursor." });
+        before = new(enrolled.UtcDateTime, id);
+    }
+    return await store.ReadFleet(Identity(http).OrganizationId, filter, before, ct) is { } fleet ? Results.Ok(fleet) : Results.NotFound();
+});
+admin.MapPost("/installations/fleet", async (FleetRequest request, HttpContext http, CancellationToken ct) =>
+{
+    if (!request.IsValid()) return Results.BadRequest(new { error = "Choose an action and 1 to 25 distinct browsers from the fleet." });
+    var result = await store.ApplyFleetChange(Identity(http), request, ct);
+    if (result.Change is { } change) return Results.Ok(change);
+    return result.Error is "fleet_target_unavailable" or "fleet_selection_unavailable"
+        ? Results.NotFound(new { code = result.Error }) : Results.Conflict(new { code = result.Error });
+});
 admin.MapGet("/browser-releases", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.BrowserReleases(Identity(http).OrganizationId, ct)));
 admin.MapGet("/browser-health", async (HttpContext http, CancellationToken ct) =>

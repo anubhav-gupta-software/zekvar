@@ -2,6 +2,20 @@ namespace Control;
 
 internal sealed partial class ControlStore
 {
+    private const string WriteGroupAssignments = """
+        changed AS (
+            UPDATE installations i SET policy_group_id = $3, assignment_version = assignment_version + 1, applied_policy_version = NULL,
+                claude_coverage = NULL, claude_checked_at = NULL, claude_coverage_version = NULL
+            FROM target t WHERE i.id = t.id AND t.assignment_aware AND t.policy_group_id IS DISTINCT FROM $3
+            RETURNING i.organization_id, i.id, i.policy_group_id, t.group_name
+        ), cleared_composers AS (
+            DELETE FROM composer_observations o USING changed c WHERE o.installation_id = c.id
+        ), audit AS (
+            INSERT INTO control_audit (organization_id, action, group_change, actor_access_id)
+            SELECT organization_id, 'policy_group_assigned', jsonb_build_object(
+                'groupId', policy_group_id, 'groupName', group_name, 'installationId', id), $4 FROM changed
+        )
+        """;
     public async Task<IReadOnlyList<PolicyGroup>> Groups(Guid organizationId, CancellationToken ct)
     {
         await using var command = Command("""
@@ -36,24 +50,13 @@ internal sealed partial class ControlStore
 
     public async Task<string?> AssignGroup(RequestIdentity identity, Guid installationId, Guid? groupId, CancellationToken ct)
     {
-        await using var command = Command("""
+        await using var command = Command($"""
             WITH target AS (
                 SELECT i.id, i.organization_id, i.policy_group_id, i.assignment_aware, g.name AS group_name
                 FROM installations i LEFT JOIN policy_groups g ON g.organization_id = i.organization_id AND g.id = $3::uuid
                 WHERE i.organization_id = $1 AND i.id = $2 AND i.revoked_at IS NULL AND ($3 IS NULL OR g.id IS NOT NULL)
                 FOR UPDATE OF i
-            ), changed AS (
-                UPDATE installations i SET policy_group_id = $3, assignment_version = assignment_version + 1, applied_policy_version = NULL,
-                    claude_coverage = NULL, claude_checked_at = NULL, claude_coverage_version = NULL
-                FROM target t WHERE i.id = t.id AND t.assignment_aware AND t.policy_group_id IS DISTINCT FROM $3
-                RETURNING i.organization_id, i.id, i.policy_group_id, t.group_name
-            ), cleared_composers AS (
-                DELETE FROM composer_observations o USING changed c WHERE o.installation_id = c.id
-            ), audit AS (
-                INSERT INTO control_audit (organization_id, action, group_change, actor_access_id)
-                SELECT organization_id, 'policy_group_assigned', jsonb_build_object(
-                    'groupId', policy_group_id, 'groupName', group_name, 'installationId', id), $4 FROM changed
-            )
+            ), {WriteGroupAssignments}
             SELECT CASE WHEN assignment_aware OR policy_group_id IS NOT DISTINCT FROM $3 THEN 'assigned' ELSE 'upgrade_required' END FROM target
             """, identity.OrganizationId, installationId, (object?)groupId ?? DBNull.Value, (object?)identity.Access?.Id ?? DBNull.Value);
         return (string?)await command.ExecuteScalarAsync(ct);

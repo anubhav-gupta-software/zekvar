@@ -17,6 +17,7 @@ import { promptExceptionError, readPromptExceptions } from '../../../contracts/p
 import { parseExtensionDeployment } from '../lib/extension-deployment';
 import { parseBrowserHardening } from '../lib/browser-hardening';
 import { isClipboardMode } from '../../../contracts/policy/clipboard';
+import type { FleetSelection } from '../lib/fleet';
 import { aiAppAccessCatalog, readBlockedAiAppHosts } from '../../../contracts/policy/ai-app-access';
 import { domainRuleLimit, ruleCount } from '../../../contracts/policy/domains';
 import { eventPath, isTriageDisposition, isTriageId, isTriageStatus } from '../lib/triage';
@@ -655,6 +656,49 @@ export async function assignPolicyGroup(_previous: Feedback, form: FormData): Pr
       return { message: 'Browser assignment saved.' };
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) return { error: 'Update this browser and sync it before moving it.' };
+      throw error;
+    }
+  });
+}
+
+export async function applyFleetChange(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const requestId = form.get('requestId');
+  const operation = form.get('operation');
+  const group = form.get('groupId');
+  const rawVersion = form.get('expectedPolicyVersion');
+  const policyVersion = rawVersion === null ? null : Number(rawVersion);
+  const rawSelections = form.get('selections');
+  if (!isId(requestId) || (operation !== 'assign' && operation !== 'revoke') || (group && !isId(group)) ||
+      (operation === 'assign' && (policyVersion === null || !Number.isInteger(policyVersion) || policyVersion < 1 || policyVersion > 2_147_483_647)) ||
+      (operation === 'revoke' && (group !== null || policyVersion !== null)) ||
+      typeof rawSelections !== 'string' || rawSelections.length > 5000) return { error: 'Review the browser batch again before submitting.' };
+
+  let selection: unknown;
+  try { selection = JSON.parse(rawSelections); } catch { return { error: 'Choose a valid selection of browsers.' }; }
+  if (!Array.isArray(selection) || selection.length < 1 || selection.length > 25 || !selection.every((row): row is FleetSelection =>
+    row && isId(row.installationId) && Number.isInteger(row.assignmentVersion) && row.assignmentVersion >= 0 && row.assignmentVersion <= 2_147_483_647) ||
+    new Set(selection.map(({ installationId }) => installationId.toLowerCase())).size !== selection.length) {
+    return { error: 'Select 1 to 25 distinct browsers.' };
+  }
+  const selections = selection.map(({ installationId, assignmentVersion }) => ({ installationId, assignmentVersion }));
+  return perform(async (token) => {
+    try {
+      const fleetChange = await controlApi.applyFleetChange(token, { requestId, operation,
+        groupId: typeof group === 'string' && group ? group : null, expectedPolicyVersion: policyVersion, selections });
+      revalidatePath('/fleet');
+      revalidatePath('/groups');
+      revalidatePath('/');
+      revalidatePath('/audit');
+      return { fleetChange };
+    } catch (error) {
+      if (error instanceof ApiError) {
+        if (error.status === 404) return { error: 'A selected browser or destination is unavailable. Refresh the fleet and review a new batch.' };
+        if (error.code === 'fleet_selection_changed' || error.code === 'fleet_policy_changed') {
+          return { error: 'An assignment or destination policy changed. Refresh the fleet and review a new batch.' };
+        }
+        if (error.code === 'fleet_upgrade_required') return { error: 'A selected browser needs an update and a policy sync before it can move.' };
+        if (error.code === 'fleet_request_conflict') return { error: 'This request ID is unavailable. Review a new batch.' };
+      }
       throw error;
     }
   });

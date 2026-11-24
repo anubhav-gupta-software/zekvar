@@ -12,6 +12,7 @@ import type { EnrollmentBatch, IssuedEnrollmentBatch } from './enrollment';
 import type { AiEnforcementReport } from './reports';
 import type { ExtensionDeployment } from './extension-deployment';
 import type { BrowserHardening } from './browser-hardening';
+import type { FleetChange, FleetPage, FleetRequest } from './fleet';
 import { eventPath, type EventDetails, type EventTriage, type TriageAssignee, type TriageUpdate } from './triage';
 import { casePath, type CaseCategory, type CaseDetails, type CasePage, type EventReference } from './cases';
 import { alertPath, type AlertDetails, type AlertPage, type AlertSettings } from './alerts';
@@ -101,6 +102,8 @@ export const controlApi = {
   decidePolicyReview: (token: string, id: string, approve: boolean) =>
     request<Policy | undefined>(`/policy-reviews/${id}/decision`, token, 'POST', { approve }),
   installations: (token: string) => request<Installation[]>('/installations', token),
+  fleet: (token: string, filters: URLSearchParams) => request<FleetPage>(`/installations/fleet?${filters}`, token),
+  applyFleetChange: (token: string, change: FleetRequest) => request<FleetChange>('/installations/fleet', token, 'POST', change),
   browserHealth: (token: string, filters: URLSearchParams) => request<BrowserHealthView>(`/browser-health?${filters}`, token),
   composerReadiness: (token: string, filters: URLSearchParams) =>
     request<ComposerReadinessReport>(`/reports/composer-readiness?${filters}`, token),

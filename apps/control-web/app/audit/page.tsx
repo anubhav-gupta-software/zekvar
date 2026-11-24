@@ -86,6 +86,9 @@ const actorLabels = { organization_admin: 'Organization admin', named_administra
   sso_identity: 'Single sign-on identity', browser_enrollment: 'Browser enrollment', system: 'Scheduled cleanup' };
 
 function auditDetails(entry: AuditEntry) {
+  const fleet = entry.fleetChange;
+  if (fleet) return <>{fleet.operation === 'assign' ? `Assigned to ${fleet.groupName ?? 'Organization baseline'} · v${fleet.policyVersion}` : 'Revoked browser access'}
+    {' · '}{fleet.changedInstallations.length} of {fleet.selectedCount} changed · <code title={fleet.batchId}>{fleet.batchId.slice(0, 13)}</code></>;
   const feedKey = entry.eventFeedKeyChange;
   if (feedKey) return <>{feedKey.name} · <code title={feedKey.keyId}>{feedKey.keyId.slice(0, 13)}</code></>;
   const alertChange = entry.securityAlertChange;

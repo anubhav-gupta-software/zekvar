@@ -39,6 +39,7 @@ const webhooksAdmin = randomBytes(32).toString('hex');
 const eventFeedAdmin = randomBytes(32).toString('hex');
 const hardeningAdmin = randomBytes(32).toString('hex');
 const clipboardAdmin = randomBytes(32).toString('hex');
+const fleetAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -67,7 +68,13 @@ const undoIdentifierSchema = `
   ALTER TABLE policy_versions DROP COLUMN identifier_protection;
   ALTER TABLE policy_deliveries DROP COLUMN identifiers;
 `;
+const undoFleetSchema = `
+  DELETE FROM schema_migrations WHERE version = 42;
+  DROP INDEX installations_active_fleet_page;
+  ALTER TABLE control_audit DROP COLUMN fleet_change, DROP COLUMN fleet_request_hash;
+`;
 const undoEventFeedSchema = `
+  ${undoFleetSchema}
   DELETE FROM schema_migrations WHERE version = 39;
   DROP TRIGGER security_event_feed_sequence ON security_events;
   DROP FUNCTION assign_security_event_sequence();
@@ -201,6 +208,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__21__AdminToken: hardeningAdmin,
       Control__Organizations__22__Slug: `clipboard-${suffix}`,
       Control__Organizations__22__AdminToken: clipboardAdmin,
+      Control__Organizations__23__Slug: `browser-fleet-${suffix}`,
+      Control__Organizations__23__AdminToken: fleetAdmin,
       ...overrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -4201,5 +4210,132 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal((await deliver()).clipboardMode, 'off');
     await write('events', event(restored), 400);
     assert.equal((await admin('events')).find(({ eventId }) => eventId === incomplete.eventId).detectorCategory, 'clipboard');
+  });
+
+  await t.test('moves and revokes browser batches atomically with scoped receipts and stale-selection protection', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: fleetAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const path = 'installations/fleet';
+    const enroll = async (aware = true) => {
+      const { grant } = await post('enrollment-grants');
+      const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+      if (aware) await call('/v1/browser/policy', { token: browser.token, assignmentAware: true });
+      return browser;
+    };
+    const selection = (row) => ({ installationId: row.installationId, assignmentVersion: row.assignmentVersion });
+    const [firstBrowser, secondBrowser, legacy, thirdBrowser] = await Promise.all([enroll(), enroll(), enroll(false), enroll()]);
+    const original = await admin(path);
+    assert.equal(original.entries.length, 4);
+    if (postgres) {
+      await stop();
+      await retentionFixture(undoFleetSchema);
+      await start();
+      assert.deepEqual(await admin(path), original);
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 42'), '1');
+    }
+    const find = (browser, page = original) => page.entries.find(({ installationId }) => installationId === browser.installationId);
+    const [one, two, old, three] = [firstBrowser, secondBrowser, legacy, thirdBrowser].map((browser) => selection(find(browser)));
+    const group = await post('policy-groups', { name: 'Fleet rollout canary' });
+    const groupPath = `policy-groups/${group.id}/policies`;
+    const initial = await post(groupPath, { mode: 'block' });
+    const target = await post(groupPath, { mode: 'warn' });
+    const assign = (selections, fields = {}) => ({ requestId: randomUUID(), operation: 'assign', groupId: group.id,
+      expectedPolicyVersion: target.version, selections, ...fields });
+    const run = (body, options = {}) => post(path, body, options);
+    const scoped = async () => (await admin(`${path}?rolloutGroup=${group.id}`)).entries;
+    for (const query of ['beforeAt=2024-01-01', 'beforeAt=invalid&beforeId=' + randomUUID(), 'rolloutGroup=baseline&rolloutGroup=baseline', 'page=2']) {
+      await admin(`${path}?${query}`, { expect: 400 });
+    }
+    await admin(`${path}?rolloutGroup=${group.id}`, { token: clipboardAdmin, expect: 404 });
+    await run(assign([one, one]), { expect: 400 });
+    await run(assign([one, { ...two, assignmentVersion: -1 }]), { expect: 400 });
+    await run(assign([one], { operation: 'revoke' }), { expect: 400 });
+    await run(assign(Array.from({ length: 26 }, () => ({ installationId: randomUUID(), assignmentVersion: 0 }))), { expect: 400 });
+    assert.deepEqual(await run(assign([one, old]), { expect: 409 }), { code: 'fleet_upgrade_required' });
+    assert.deepEqual(await run(assign([one, two], { expectedPolicyVersion: initial.version }), { expect: 409 }), { code: 'fleet_policy_changed' });
+    await run(assign([one, { installationId: randomUUID(), assignmentVersion: 0 }]), { expect: 404 });
+    await run(assign([one], { groupId: randomUUID() }), { expect: 404 });
+    assert.deepEqual(await scoped(), []);
+
+    const actor = await post('access', { name: 'Fleet operator', role: 'administrator', hours: 1 });
+    const auditor = await post('access', { name: 'Fleet auditor', role: 'auditor', hours: 1 });
+    assert.equal((await admin(path, { token: auditor.token })).entries.length, 4);
+    await run(assign([one, two]), { token: auditor.token, expect: 403 });
+    const batch = assign([one, two]);
+    if (postgres) {
+      await retentionFixture(`ALTER TABLE control_audit ADD CONSTRAINT fleet_test_reject_receipt
+        CHECK (action <> 'browser_fleet_changed' OR fleet_change->>'batchId' <> '${batch.requestId}');`);
+      try {
+        const failure = await fetch(`${baseUrl}/v1/admin/${path}`, {
+          method: 'POST', body: JSON.stringify(batch), headers: { Authorization: `Bearer ${actor.token}`, 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(5000),
+        });
+        assert.equal(failure.status, 500);
+        await failure.body?.cancel();
+        assert.deepEqual(await scoped(), []);
+        assert.deepEqual((await admin('audit?action=policy_group_assigned')).entries, []);
+        assert.deepEqual((await admin('audit?action=browser_fleet_changed')).entries, []);
+      } finally {
+        await retentionFixture('ALTER TABLE control_audit DROP CONSTRAINT fleet_test_reject_receipt');
+      }
+    }
+    const [commit, replay] = await Promise.all([run(batch, { token: actor.token }),
+      run({ ...batch, selections: [two, one] }, { token: actor.token })]);
+    assert.deepEqual(commit, replay);
+    assert.deepEqual({ ...commit, changedInstallations: commit.changedInstallations.sort() }, {
+      batchId: batch.requestId, operation: 'assign', groupId: group.id, groupName: group.name,
+      policyVersion: target.version, selectedCount: 2, changedInstallations: [one.installationId, two.installationId].sort(),
+    });
+    assert.equal((await scoped()).length, 2);
+    assert.deepEqual(await run(batch, { expect: 409 }), { code: 'fleet_request_conflict' });
+    assert.deepEqual(await run({ ...batch, selections: [one] }, { token: actor.token, expect: 409 }), { code: 'fleet_request_conflict' });
+    assert.deepEqual(await run(assign([one, three]), { expect: 409 }), { code: 'fleet_selection_changed' });
+    assert.deepEqual(await run(batch, { token: clipboardAdmin, expect: 404 }), { code: 'fleet_target_unavailable' });
+    const installed = await call('/v1/browser/policy', { token: firstBrowser.token, assignmentAware: true });
+    assert.equal(installed.version, target.version);
+    assert.equal(installed.assignmentVersion, 1);
+    const same = await run(assign((await scoped()).map(selection)));
+    assert.deepEqual(same.changedInstallations, []);
+    const changes = (await admin('audit?action=browser_fleet_changed', { token: auditor.token })).entries;
+    const assignment = changes.find(({ fleetChange }) => fleetChange.batchId === batch.requestId);
+    assert.deepEqual(assignment.fleetChange, replay);
+    assert.equal(assignment.actorAccess.id, actor.access.id);
+    assert.equal(changes.length, 2);
+    assert.doesNotMatch(JSON.stringify(changes), /fleet_request_hash|requestHash|tokenHash/);
+
+    await post(`installations/${three.installationId}/policy-group`, { groupId: group.id }, { expect: 204 });
+    const removal = { requestId: randomUUID(), operation: 'revoke', groupId: null, expectedPolicyVersion: null, selections: [
+      { ...one, assignmentVersion: 1 }, { ...two, assignmentVersion: 1 },
+    ] };
+    assert.deepEqual(await run({ ...removal, selections: [removal.selections[0], three] }, { expect: 409 }), { code: 'fleet_selection_changed' });
+    assert.equal((await scoped()).length, 3);
+    const revoked = await run(removal);
+    assert.equal(revoked.changedInstallations.length, 2);
+    assert.deepEqual(await run(removal), revoked);
+    for (const browser of [firstBrowser, secondBrowser]) {
+      await call('/v1/browser/policy', { token: browser.token, assignmentAware: true, expect: 401 });
+      await post(`installations/${browser.installationId}/revoke`, undefined, { expect: 204 });
+    }
+    assert.deepEqual((await scoped()).map(({ installationId }) => installationId), [three.installationId]);
+    assert.equal((await admin('audit?action=browser_revoked')).entries.length, 2);
+    assert.deepEqual(await run(batch, { token: actor.token }), replay);
+    if (postgres) {
+      await retentionFixture(`UPDATE control_audit SET occurred_at = now() - interval '2 days' WHERE id = '${assignment.id}';`);
+      await post('retention', { securityEventDays: null, aiObservationDays: null, auditDays: 1 }, { expect: 204 });
+      assert.deepEqual(await run(batch, { token: actor.token, expect: 409 }), { code: 'fleet_request_conflict' });
+      assert.ok(!(await admin('audit?action=browser_fleet_changed')).entries.some(({ id }) => id === assignment.id));
+    }
+
+    const newBrowsers = [];
+    for (let offset = 0; offset < 50; offset += 10) {
+      newBrowsers.push(...await Promise.all(Array.from({ length: 10 }, () => enroll(false))));
+    }
+    const firstPage = await admin(`${path}?rolloutGroup=baseline`);
+    assert.equal(firstPage.entries.length, 50);
+    const query = new URLSearchParams({ rolloutGroup: 'baseline', beforeAt: firstPage.next.enrolledAt, beforeId: firstPage.next.installationId });
+    const lastPage = await admin(`${path}?${query}`);
+    assert.equal(lastPage.next, null);
+    assert.deepEqual([...firstPage.entries, ...lastPage.entries].map(({ installationId }) => installationId).sort(),
+      [...newBrowsers, legacy].map(({ installationId }) => installationId).sort());
   });
 });

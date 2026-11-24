@@ -26,7 +26,7 @@ export function DeploymentBadge() {
 }
 
 export function Sidebar({ active, session }: {
-  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews' | 'extensions' | 'enrollment' | 'reports' | 'events' | 'cases' | 'alerts' | 'hardening';
+  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews' | 'extensions' | 'enrollment' | 'reports' | 'events' | 'cases' | 'alerts' | 'hardening' | 'fleet';
   session?: ControlSession;
 }) {
   const root = active ? '/' : '';
@@ -42,6 +42,7 @@ export function Sidebar({ active, session }: {
       {canChangePolicy(session) && <a href={`${root}#domain-rules`}>Navigation rules</a>}
       <a href={`${root}#ai-apps`}>App inventory</a>
       <a href={`${root}#browsers`}>Browsers</a>
+      <a href="/fleet" aria-current={active === 'fleet' ? 'page' : undefined}>Browser fleet</a>
       <a href="/enrollment" aria-current={active === 'enrollment' ? 'page' : undefined}>Enrollment batches</a>
       <a href="/extensions" aria-current={active === 'extensions' ? 'page' : undefined}>Browser extensions</a>
       <a href="/hardening" aria-current={active === 'hardening' ? 'page' : undefined}>Chrome hardening</a>

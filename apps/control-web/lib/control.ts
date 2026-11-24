@@ -155,6 +155,7 @@ export type Grant = { grant: string; expiresAt: string };
 export type Feedback = {
   error?: string; message?: string; grant?: Grant; issuedAccess?: import('./access').IssuedControlAccess; reviewId?: string;
   issuedEventFeedKey?: import('./access').IssuedEventFeedKey;
+  fleetChange?: import('./fleet').FleetChange;
   issuedEnrollmentBatch?: import('./enrollment').IssuedEnrollmentBatch; enrollmentRequestId?: string;
 };
 

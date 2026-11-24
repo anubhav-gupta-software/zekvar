@@ -38,6 +38,14 @@ Open **Browser health** and choose the rollout group and, if needed, a reported 
 
 Select **Export composer readiness (JSON)** to save a fresh snapshot for those Browser health filters. The download includes the capture time, selected group and extension version, current target policy for a specific group or the baseline, and counts for every matching active browser. Keep that file with the pilot's enforcement report and hands-on workflow checks. A composer detected under the current policy is a coverage signal. Exercise the actual submit and attachment paths before enabling enforcement for the cohort.
 
+## Manage browser fleet batches
+
+1. Open **Browser fleet**. Filter by a rollout group or the organization baseline, or use **Older browsers** to page through active installations. Select up to 25 browsers on the current page.
+2. Choose **Assign to rollout group** or **Revoke browser access**, then select **Review browser batch**. An assignment review shows the destination and its current policy version. Check the selected installation IDs before confirming.
+3. After confirmation, Control shows how many browsers changed and records the batch in **Audit log**. Assigned browsers receive the reviewed destination policy on their next sync, or its latest version if it has since been published. Revoked browsers need fresh enrollment to reconnect.
+
+If a selected installation moves or the destination policy changes during review, refresh and review a new batch. The whole operation must pass these checks. Earlier Browser builds must sync with assignment support before moving. Auditors can inspect the fleet and audit log. [Fleet API and retry behavior](../control-api/README.md#browser-fleet-batches)
+
 ## Enroll a rollout group
 
 1. Publish or verify the group's policy in **Rollout groups**, then open **Enroll browsers in group**. **Enrollment batches** also lets you choose the group or organization baseline directly.
