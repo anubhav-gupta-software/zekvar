@@ -3,7 +3,7 @@ import { ApiError, controlApi } from '../../lib/api';
 import { roleLabels } from '../../lib/access';
 import { reviewOperations, reviewStatuses } from '../../lib/reviews';
 import { auditActions, auditFilters, type AuditEntry } from '../../lib/audit';
-import { classificationLabels, discoveryAppName, utc } from '../../lib/control';
+import { classificationLabels, discoveryAppName, promptAppLabels, utc } from '../../lib/control';
 import { cleanupCounts, retentionFields, type RetentionField } from '../../lib/retention';
 import { sessionToken } from '../../lib/session';
 import { DeploymentBadge, Sidebar } from '../workspace';
@@ -119,6 +119,9 @@ function auditDetails(entry: AuditEntry) {
   const credential = entry.subjectAccess;
   if (credential) return <span title={credential.id}>{credential.name} · {roleLabels[credential.role]}</span>;
   const group = entry.groupChange;
+  const gate = entry.composerGate;
+  if (gate) return <>{group?.groupName && `${group.groupName} · `}v{entry.policyVersion} · {gate.apps.map((app) => promptAppLabels[app]).join(', ')}
+    {' '}ready on {gate.browsers} {gate.browsers === 1 ? 'browser' : 'browsers'} under v{gate.referenceVersion}</>;
   if (group?.sourceVersion) return `v${entry.policyVersion} promoted from ${group.groupName} v${group.sourceVersion}`;
   if (group?.installationId) return <><code title={group.installationId}>{group.installationId.slice(0, 13)}</code> · {group.groupName ?? 'Organization baseline'}</>;
   if (group?.groupName) return `${group.groupName}${entry.policyVersion ? ` · v${entry.policyVersion}${entry.restoredFrom ? ` from v${entry.restoredFrom}` : ''}` : ''}`;

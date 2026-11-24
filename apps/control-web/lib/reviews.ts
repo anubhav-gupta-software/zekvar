@@ -1,6 +1,7 @@
 import type { AccessIdentity } from './access';
 import type { Policy } from './control';
 import type { PolicyTemplateOrigin } from './templates';
+import type { AiPromptApp } from '../../../contracts/policy/apps';
 
 export const reviewOperations = { publish: 'Publish policy', restore: 'Restore policy', promote: 'Promote group policy' };
 export const reviewStatuses = {
@@ -25,7 +26,7 @@ export type PolicyReview = {
   publishedVersion: number | null;
   requester: AccessIdentity;
   reviewer: AccessIdentity | null;
-  snapshots: { before: Policy; candidate: Policy; template?: PolicyTemplateOrigin };
+  snapshots: { before: Policy; candidate: Policy; template?: PolicyTemplateOrigin; requireComposerReady?: AiPromptApp[] };
 };
 
 export type PolicyReviewQueue = { required: boolean; entries: PolicyReview[] };

@@ -16,6 +16,7 @@ import type { FleetChange, FleetPage, FleetRequest } from './fleet';
 import type { PolicyTemplate, PolicyTemplateDetails, PolicyTemplatePreview } from './templates';
 import type { PolicyImpactReport } from './policy-impact';
 import type { PromptExceptionRequest, PromptRequestDecision } from './prompt-requests';
+import type { AiPromptApp } from '../../../contracts/policy/apps';
 import { eventPath, type EventDetails, type EventTriage, type TriageAssignee, type TriageUpdate } from './triage';
 import { casePath, type CaseCategory, type CaseDetails, type CasePage, type EventReference } from './cases';
 import { alertPath, extensionAlertPath, extensionAlertsPath, type AlertDetails, type AlertPage, type AlertSettings,
@@ -186,7 +187,7 @@ export const controlApi = {
     request<PolicyChange>(policiesPath(groupId), token, 'POST', policy, review),
   publishNavigation: (token: string, rules: Pick<PreviewPolicy, 'domainRules' | 'pathRules'>, expectedVersion: number, review: boolean, groupId?: string) =>
     request<PolicyChange>(policiesPath(groupId), token, 'POST', { ...rules, expectedVersion }, review),
-  publishPreview: (token: string, policy: PreviewPolicy, expectedVersion: number, review: boolean, groupId?: string) =>
+  publishPreview: (token: string, policy: PreviewPolicy & { requireComposerReady?: AiPromptApp[] }, expectedVersion: number, review: boolean, groupId?: string) =>
     request<PolicyChange>(policiesPath(groupId), token, 'POST', { ...policy, expectedVersion }, review),
   restore: (token: string, version: number, review: boolean, groupId?: string) =>
     request<PolicyChange>(`${policiesPath(groupId)}/${version}/restore`, token, 'POST', undefined, review),

@@ -451,7 +451,7 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         `Publish the draft settings to ${scopeName} after reviewing these results.`}</p>}
       <PolicyChanges reference={reference} candidate={candidate} />
       {writable && <MutationForm action={publishPreview} label={review ? 'Request review of previewed policy' : 'Publish previewed policy'}
-        appearance="primary" confirmation={review ? `Request review of these settings for ${scopeName}?` : `Publish the previewed settings to ${scopeName}?`}>
+        appearance="primary" preserveValues confirmation={review ? `Request review of these settings for ${scopeName}?` : `Publish the previewed settings to ${scopeName}?`}>
         {groupId && <input type="hidden" name="groupId" value={groupId} />}
         {review && <input type="hidden" name="expectReview" value="on" />}
         <input type="hidden" name="expectedVersion" value={reference.version} />
@@ -485,6 +485,16 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         <input type="hidden" name="block" value={candidate.domainRules.block.join('\n')} />
         <input type="hidden" name="allowPaths" value={candidate.pathRules.allow.join('\n')} />
         <input type="hidden" name="blockPaths" value={candidate.pathRules.block.join('\n')} />
+        <fieldset className="basis-full min-w-0">
+          <legend>Require fresh composer checks</legend>
+          <p className="muted">Every active browser in this scope must report the current policy and a recent composer detection for each selected app.</p>
+          <div className="form-row">
+            {aiPromptApps.map((app) => <label key={app} className="flex items-center gap-2">
+              <input type="checkbox" name="requireComposerReady" value={app} />{promptAppLabels[app]}
+            </label>)}
+            <PolicyImpactLink groupId={groupId} version={reference.version} />
+          </div>
+        </fieldset>
       </MutationForm>}
     </section>}
   </>;

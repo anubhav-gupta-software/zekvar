@@ -47,7 +47,7 @@ internal sealed partial class ControlStore
 
     private async Task<(BrowserComposerReadiness Summary, Dictionary<Guid, Dictionary<string, ComposerCheck>> Checks)> BrowserComposerReadiness(
         Guid organizationId, BrowserHealthFilter filter, IReadOnlyList<Installation> detail, NpgsqlTransaction snapshot, CancellationToken ct,
-        bool baselineImpact = false)
+        bool baselineImpact = false, DateTimeOffset? evaluatedAt = null)
     {
         var visible = detail.Where(row => row.RevokedAt is null).Select(row => row.InstallationId).ToArray();
         await using var command = BrowserRead(snapshot, """
@@ -56,8 +56,8 @@ internal sealed partial class ControlStore
                     CASE WHEN NOT app.enabled THEN 'off'
                         WHEN i.applied_policy_version IS DISTINCT FROM p.version THEN 'policy_pending'
                         WHEN o.checked_at IS NULL THEN 'unobserved'
-                        WHEN i.last_seen_at <= now() - make_interval(secs => $6)
-                            OR o.checked_at <= now() - make_interval(secs => $7) THEN 'stale'
+                        WHEN i.last_seen_at <= COALESCE($9::timestamptz, now()) - make_interval(secs => $6)
+                            OR o.checked_at <= COALESCE($9::timestamptz, now()) - make_interval(secs => $7) THEN 'stale'
                         WHEN o.coverage = 'ready' THEN 'detected' ELSE 'unsupported' END AS state,
                     CASE WHEN app.enabled AND i.applied_policy_version = p.version THEN o.checked_at END AS checked_at
                 FROM installations i JOIN organizations org ON org.id = i.organization_id
@@ -73,7 +73,7 @@ internal sealed partial class ControlStore
             SELECT app_id, state, count(*), jsonb_object_agg(id, checked_at) FILTER (WHERE id = ANY($5))
             FROM states GROUP BY app_id, state
             """, organizationId, filter.Scoped, (object?)filter.GroupId ?? DBNull.Value, (object?)filter.Version ?? DBNull.Value, visible,
-            ReadinessHeartbeatSeconds, ReadinessObservationSeconds, baselineImpact);
+            ReadinessHeartbeatSeconds, ReadinessObservationSeconds, baselineImpact, (object?)evaluatedAt ?? DBNull.Value);
         var counts = DiscoveryCatalog.ComposerAppIds.ToDictionary(app => app, _ => new Dictionary<string, long>(StringComparer.Ordinal)
         {
             ["detected"] = 0, ["unsupported"] = 0, ["stale"] = 0, ["unobserved"] = 0, ["policy_pending"] = 0, ["off"] = 0,
@@ -91,5 +91,17 @@ internal sealed partial class ControlStore
         }
         var apps = DiscoveryCatalog.ComposerAppIds.Select(app => new ComposerCounts(app, counts[app])).ToArray();
         return (new(apps[0].Counts.Values.Sum(), apps), checks);
+    }
+
+    private async Task<PolicyComposerGate?> CheckPolicyComposerGate(NpgsqlTransaction transaction, Guid org,
+        Guid? groupId, int version, string[] apps, CancellationToken ct)
+    {
+        await using var clock = BrowserRead(transaction, "SELECT statement_timestamp()");
+        var evaluatedAt = new DateTimeOffset((DateTime)(await clock.ExecuteScalarAsync(ct))!);
+        var (readiness, _) = await BrowserComposerReadiness(org, new(groupId.HasValue, groupId, null), [], transaction, ct,
+            baselineImpact: groupId is null, evaluatedAt: evaluatedAt);
+        return readiness.ActiveInstallations > 0 &&
+            readiness.Apps.Where(app => apps.Contains(app.AppId)).All(app => app.Counts["detected"] == readiness.ActiveInstallations)
+            ? new(version, apps, readiness.ActiveInstallations) : null;
     }
 }

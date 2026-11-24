@@ -62,11 +62,18 @@ internal sealed partial class ControlStore
             candidate.PathRules.Block.Length + (candidate.BlockedAiAppHosts?.Length ?? 0) > 50) return new(Error: "navigation_rule_limit");
         if (!AiAppAccess.InCatalog(candidate.BlockedAiAppHosts, candidate.CustomApps)) return new(Error: "ai_app_access_unknown_host");
 
+        PolicyComposerGate? composerGate = null;
+        if (request?.RequireComposerReady is { } apps)
+        {
+            composerGate = await CheckPolicyComposerGate(transaction, org, groupId, target.Version, apps, ct);
+            if (composerGate is null) return new(Error: "composer_coverage_incomplete");
+        }
+
         if (!required)
         {
             var auditGroup = sourceGroupId is not null ? new PolicyGroupChange(sourceGroupId, sourceGroupName, null, expectedSourceVersion) :
                 groupId is not null ? new PolicyGroupChange(groupId, target.Name, null, null) : null;
-            var published = await WritePolicy(transaction, identity, candidate, groupId, restoredFrom, auditGroup, ct);
+            var published = await WritePolicy(transaction, identity, candidate, groupId, restoredFrom, auditGroup, ct, composerGate);
             if (templateOrigin is not null) await AuditTemplate(transaction, identity, new("applied", templateOrigin, groupId, published.Version), ct);
             await transaction.CommitAsync(ct);
             return new(published);
@@ -83,7 +90,7 @@ internal sealed partial class ControlStore
             """, connection, transaction);
         AddParameters(insert, id, org, identity.Access!.Id, operation, (object?)groupId ?? DBNull.Value,
             (object?)sourceGroupId ?? DBNull.Value, (object?)sourceVersion ?? DBNull.Value, before.Version,
-            JsonSerializer.Serialize(new PolicySnapshots(before, candidate, templateOrigin), JsonSerializerOptions.Web));
+            JsonSerializer.Serialize(new PolicySnapshots(before, candidate, templateOrigin, composerGate?.Apps), JsonSerializerOptions.Web));
         await insert.ExecuteNonQueryAsync(ct);
         await AuditPolicyReview(transaction, identity, "policy_review_requested",
             new(id, operation, "pending", groupId, before.Version, sourceVersion), ct);
@@ -168,11 +175,17 @@ internal sealed partial class ControlStore
             }
             else
             {
+                PolicyComposerGate? composerGate = null;
+                if (review.Snapshots.RequireComposerReady is { } apps)
+                {
+                    composerGate = await CheckPolicyComposerGate(transaction, org, review.GroupId, review.Snapshots.Before.Version, apps, ct);
+                    if (composerGate is null) return new(Error: "composer_coverage_incomplete");
+                }
                 var group = review.SourceGroupId is not null ?
                     new PolicyGroupChange(review.SourceGroupId, review.SourceGroupName, null, review.SourceVersion) :
                     review.GroupId is not null ? new PolicyGroupChange(review.GroupId, review.GroupName, null, null) : null;
                 var restoredFrom = review.Operation == "restore" ? review.SourceVersion : null;
-                published = await WritePolicy(transaction, identity, review.Snapshots.Candidate, review.GroupId, restoredFrom, group, ct);
+                published = await WritePolicy(transaction, identity, review.Snapshots.Candidate, review.GroupId, restoredFrom, group, ct, composerGate);
                 if (review.Snapshots.Template is { } templateSource)
                     await AuditTemplate(transaction, identity, new("applied", templateSource, review.GroupId, published.Version), ct);
                 status = "approved";
@@ -283,7 +296,7 @@ internal sealed partial class ControlStore
     });
 
     private static async Task<Policy> WritePolicy(NpgsqlTransaction transaction, RequestIdentity identity, Policy policy,
-        Guid? targetGroupId, int? restoredFrom, PolicyGroupChange? groupAudit, CancellationToken ct)
+        Guid? targetGroupId, int? restoredFrom, PolicyGroupChange? groupAudit, CancellationToken ct, PolicyComposerGate? composerGate)
     {
         var content = policy.EffectiveFileContentModes();
         var inspectChatgpt = content.Chatgpt != "off";
@@ -310,9 +323,9 @@ internal sealed partial class ControlStore
                 INSERT INTO policy_audit (organization_id, version, restored_from)
                 SELECT organization_id, version, $13 FROM published
             ), audit AS (
-                INSERT INTO control_audit (organization_id, occurred_at, action, policy_version, restored_from, group_change, actor_access_id)
+                INSERT INTO control_audit (organization_id, occurred_at, action, policy_version, restored_from, group_change, actor_access_id, composer_gate)
                 SELECT organization_id, published_at, CASE WHEN $13::integer IS NULL THEN 'policy_published' ELSE 'policy_restored' END,
-                    version, $13, $14::jsonb, $15 FROM published
+                    version, $13, $14::jsonb, $15, $36::jsonb FROM published
             )
             SELECT version, published_at FROM published
             """, transaction.Connection, transaction);
@@ -330,7 +343,8 @@ internal sealed partial class ControlStore
             JsonSerializer.Serialize(policy.IdentifierProtection ?? IdentifierProtection.Disabled, JsonSerializerOptions.Web),
             policy.PresetDiscoveryEnabled ?? false, policy.SsnMode ?? "off",
             JsonSerializer.Serialize(policy.BrowserHardening ?? BrowserHardening.Empty, JsonSerializerOptions.Web), policy.ClipboardMode ?? "off",
-            policy.GithubTokenMode ?? "off", JsonSerializer.Serialize(policy.PromptAppModes ?? new(), JsonSerializerOptions.Web));
+            policy.GithubTokenMode ?? "off", JsonSerializer.Serialize(policy.PromptAppModes ?? new(), JsonSerializerOptions.Web),
+            composerGate is null ? DBNull.Value : JsonSerializer.Serialize(composerGate, JsonSerializerOptions.Web));
         await using var rows = await command.ExecuteReaderAsync(ct);
         await rows.ReadAsync(ct);
         return policy with { Version = rows.GetInt32(0), PublishedAt = rows.GetDateTime(1), RestoredFrom = restoredFrom,

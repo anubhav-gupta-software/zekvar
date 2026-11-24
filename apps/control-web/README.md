@@ -38,6 +38,14 @@ Open **Browser health** and choose the rollout group and, if needed, a reported 
 
 Select **Export composer readiness (JSON)** to save a fresh snapshot for those Browser health filters. The download includes the capture time, selected group and extension version, current target policy for a specific group or the baseline, and counts for every matching active browser. Keep that file with the pilot's enforcement report and hands-on workflow checks. A composer detected under the current policy is a coverage signal. Exercise the actual submit and attachment paths before enabling enforcement for the cohort.
 
+### Require composer readiness before publishing
+
+In **Policy preview**, choose the destination scope, make the draft changes, and select **Run preview**. Under **Require fresh composer checks**, select the apps to verify before you publish or request review. Control checks every active browser affected by the draft. A baseline draft reaches unassigned browsers and inheriting groups. A group draft checks only that group's browsers.
+
+Each selected app needs a detected composer on the browser's current policy and assignment. The observation must be less than 24 hours old and the browser must have checked in within 90 seconds. The scope needs at least one active browser. If a check fails, open **Review rollout impact**, resolve the missing coverage, and retry the same draft. To check Claude, first enable its adapter and gather observations on the current policy.
+
+For a two-person review, the request shows the selected apps and Control checks them again at approval. When coverage changes, the request stays pending until coverage recovers or the review expires. A successful publication records the app names, reference version, and browser count in **Audit log**. Continue testing the intended text submission and file workflows on the pilot profiles. [Control API contract](../control-api/README.md#require-composer-readiness-for-publication)
+
 ## Reuse a published policy
 
 1. Open **Policy templates**. If a template is already open, select **New template**. Choose the source rollout group or organization baseline and select **Load source policies**. Name the template, select a published version, and select **Create template**.

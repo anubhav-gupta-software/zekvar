@@ -8,6 +8,7 @@ import type { CaseChange } from './cases';
 import type { AlertChange } from './alerts';
 import type { FleetChange } from './fleet';
 import type { PolicyTemplateAudit } from './templates';
+import type { AiPromptApp } from '../../../contracts/policy/apps';
 
 export const auditActions = {
   policy_published: 'Policy published',
@@ -53,6 +54,7 @@ export type AuditEntry = AuditCursor & {
   eventFeedKeyChange?: { keyId: string; name: string; expiresAt?: string };
   fleetChange?: FleetChange;
   templateChange?: PolicyTemplateAudit;
+  composerGate?: { referenceVersion: number; apps: AiPromptApp[]; browsers: number };
   policyVersion: number | null;
   restoredFrom: number | null;
   installationId: string | null;

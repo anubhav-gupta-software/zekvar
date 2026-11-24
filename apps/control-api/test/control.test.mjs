@@ -47,6 +47,7 @@ const promptRequestAdmin = randomBytes(32).toString('hex');
 const promptAppModesAdmin = randomBytes(32).toString('hex');
 const inventoryChangesAdmin = randomBytes(32).toString('hex');
 const extensionAlertsAdmin = randomBytes(32).toString('hex');
+const composerGateAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -264,6 +265,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__29__AdminToken: inventoryChangesAdmin,
       Control__Organizations__30__Slug: `extension-alerts-${suffix}`,
       Control__Organizations__30__AdminToken: extensionAlertsAdmin,
+      Control__Organizations__31__Slug: `composer-gate-${suffix}`,
+      Control__Organizations__31__AdminToken: composerGateAdmin,
       ...overrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -4700,6 +4703,102 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal((await admin(`${ownPath}/policies`))[0].version, published.version);
     assert.deepEqual((await report()).scope, scope(null, promoted.version));
     assert.equal((await admin('audit?action=policy_published')).entries.filter(({ policyVersion }) => policyVersion === promoted.version).length, 1);
+  });
+
+  await t.test('guards a previewed publish and approval with current composer evidence in the affected scope', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: composerGateAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const initial = (await admin('policies'))[0].version;
+    const gate = (expectedVersion, apps = ['chatgpt']) => ({ mode: 'block', expectedVersion, requireComposerReady: apps });
+    const incomplete = { code: 'composer_coverage_incomplete' };
+    const baseline = 'policies';
+    const audit = async () => (await admin('audit?action=policy_published')).entries;
+    assert.deepEqual(await post(baseline, gate(initial), { expect: 409 }), incomplete);
+    for (const request of [gate(undefined), gate(initial, []), gate(initial, ['chatgpt', 'chatgpt']), gate(initial, ['other'])]) {
+      assert.deepEqual(await post(baseline, request, { expect: 400 }), { code: 'invalid_composer_gate' });
+    }
+    assert.deepEqual(await audit(), []);
+    const group = await post('policy-groups', { name: 'Inheriting pilot cohort' });
+    const independent = await post('policy-groups', { name: 'Independent policy cohort' });
+    const groupPath = `policy-groups/${group.id}/policies`;
+    const ownVersion = await post(`policy-groups/${independent.id}/policies`, { mode: 'monitor' });
+    async function enroll(groupId) {
+      const { grant } = await post('enrollment-grants');
+      const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+      browser.policy = () => call('/v1/browser/policy', { token: browser.token, assignmentAware: true });
+      if (groupId) {
+        await browser.policy();
+        await post(`installations/${browser.installationId}/policy-group`, { groupId }, { expect: 204 });
+      }
+      return browser;
+    }
+    async function observe(browser, coverage) {
+      const { version, assignmentVersion } = await browser.policy();
+      await call('/v1/browser/heartbeat', { token: browser.token, method: 'POST', composerAware: true, expect: 204,
+        body: { policyVersion: version, assignmentVersion: assignmentVersion ?? 0, ...coverage } });
+    }
+    const [base, pilot, outside, revoked] = await Promise.all([enroll(), enroll(group.id), enroll(independent.id), enroll(group.id)]);
+    await post(`installations/${revoked.installationId}/revoke`, {}, { expect: 204 });
+    await observe(base, { chatGptCoverage: 'ready' });
+    await observe(pilot, { chatGptCoverage: 'unsupported' });
+    assert.deepEqual(await post(baseline, gate(initial), { expect: 409 }), incomplete);
+    await observe(pilot, { chatGptCoverage: 'ready' });
+    assert.deepEqual(await post(baseline, gate(initial, ['chatgpt', 'gemini']), { expect: 409 }), incomplete);
+    assert.deepEqual(await post(baseline, gate(initial, ['claude']), { expect: 409 }), incomplete);
+    assert.equal((await outside.policy()).version, ownVersion.version);
+    if (postgres) {
+      await retentionFixture(`UPDATE composer_observations SET checked_at = now() - interval '25 hours' WHERE installation_id = '${pilot.installationId}';`);
+      assert.deepEqual(await post(baseline, gate(initial), { expect: 409 }), incomplete);
+      await observe(pilot, { chatGptCoverage: 'ready' });
+      await retentionFixture(`UPDATE installations SET last_seen_at = now() - interval '91 seconds' WHERE id = '${pilot.installationId}';`);
+      assert.deepEqual(await post(baseline, gate(initial), { expect: 409 }), incomplete);
+      await observe(pilot, { chatGptCoverage: 'ready' });
+      await stop();
+      await retentionFixture('ALTER TABLE control_audit DROP COLUMN composer_gate; DELETE FROM schema_migrations WHERE version = 49;');
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 49'), '1');
+    }
+    const auditor = await post('access', { name: 'Composer auditor', role: 'auditor', hours: 1 });
+    await post(baseline, gate(initial), { token: auditor.token, expect: 403 });
+    const foreignAdmin = await call('/v1/admin/access', { method: 'POST', token: second,
+      body: { name: 'Foreign gate reviewer', role: 'administrator', hours: 1 } });
+    await call(`/v1/admin/${groupPath}`, { method: 'POST', body: gate(initial), token: foreignAdmin.token, expect: 409 });
+    await Promise.all([base, pilot].map((browser) => observe(browser, { chatGptCoverage: 'ready', geminiCoverage: 'ready' })));
+    const attempts = await Promise.all([1, 2].map(() => fetch(`${baseUrl}/v1/admin/policies`, {
+      method: 'POST', headers: { Authorization: `Bearer ${composerGateAdmin}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(gate(initial, ['chatgpt', 'gemini'])), signal: AbortSignal.timeout(5000),
+    })));
+    assert.deepEqual(attempts.map(({ status }) => status).sort(), [200, 409]);
+    const published = await attempts.find(({ ok }) => ok).json();
+    const firstAudit = (await audit()).filter(({ policyVersion }) => policyVersion === published.version);
+    assert.equal(firstAudit.length, 1);
+    assert.deepEqual(firstAudit[0].composerGate, { referenceVersion: initial, apps: ['chatgpt', 'gemini'], browsers: 2 });
+    assert.equal((await audit()).find(({ policyVersion }) => policyVersion === ownVersion.version).composerGate, undefined);
+
+    const [author, reviewer] = await Promise.all(['Author', 'Reviewer'].map((name) =>
+      post('access', { name: `Gate ${name}`, role: 'administrator', hours: 1 })));
+    await post('policy-reviews/setting', { required: true }, { expect: 204 });
+    const request = () => post(groupPath, gate(published.version, ['gemini']), { token: author.token, expect: 202 });
+    await observe(pilot, { geminiCoverage: 'ready' });
+    const { reviewId } = await request();
+    const entry = async () => (await admin('policy-reviews')).entries.find(({ id }) => id === reviewId);
+    assert.deepEqual((await entry()).snapshots.requireComposerReady, ['gemini']);
+    const approve = (token, expect = 200) => post(`policy-reviews/${reviewId}/decision`, { approve: true }, { token, expect });
+    await approve(author.token, 403);
+    await observe(pilot, { geminiCoverage: 'unsupported' });
+    assert.deepEqual(await approve(reviewer.token, 409), incomplete);
+    assert.equal((await entry()).status, 'pending');
+    await observe(pilot, { geminiCoverage: 'ready' });
+    const approved = await approve(reviewer.token);
+    assert.equal((await entry()).status, 'approved');
+    const reviewAudit = (await audit()).find(({ policyVersion }) => policyVersion === approved.version);
+    assert.deepEqual(reviewAudit.composerGate, { referenceVersion: published.version, apps: ['gemini'], browsers: 1 });
+    assert.equal(reviewAudit.actorAccess.id, reviewer.access.id);
+    const evidence = JSON.stringify([firstAudit[0], reviewAudit]);
+    for (const browser of [base, pilot, outside, revoked]) {
+      assert.ok(!evidence.includes(browser.installationId) && !evidence.includes(browser.token));
+    }
+    await approve(reviewer.token, 409);
   });
 
   await t.test('receives deduplicated scoped prompt review requests and verifies the separately published exception', async () => {

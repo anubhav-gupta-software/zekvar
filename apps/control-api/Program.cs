@@ -580,6 +580,10 @@ await app.RunAsync();
 async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, CancellationToken ct, Guid? groupId = null)
 {
     if (request.ExpectedVersion is <= 0) return Results.BadRequest(new { error = "Choose a valid expected policy version." });
+    if (request.RequireComposerReady is { } apps &&
+        (!request.ExpectedVersion.HasValue || apps.Length == 0 || apps.Length > DiscoveryCatalog.ComposerAppIds.Length ||
+            apps.Distinct(StringComparer.Ordinal).Count() != apps.Length || apps.Any(app => !DiscoveryCatalog.ComposerAppIds.Contains(app))))
+        return Results.BadRequest(new { code = "invalid_composer_gate" });
     if (!(FixtureContract.IsMode(request.Mode) ||
           request.Mode is null && (request.DomainRules is not null || request.PaymentCardMode is not null ||
               request.PathRules is not null || request.UploadModes?.HasSettings() == true ||
@@ -663,7 +667,7 @@ static IResult PolicyOutcome(PolicyChangeResult result, IResult fallback)
         "exception_expired" => Results.BadRequest(new { error = "Choose a future expiry for each new or changed exception.", code }),
         "review_unavailable" or "template_unavailable" => Results.NotFound(),
         "named_administrator_required" or "self_approval" => Results.Json(new { code }, statusCode: StatusCodes.Status403Forbidden),
-        "review_mode_changed" or "review_closed" or "review_stale" => Results.Conflict(new { code }),
+        "review_mode_changed" or "review_closed" or "review_stale" or "composer_coverage_incomplete" => Results.Conflict(new { code }),
         _ => fallback
     };
 }

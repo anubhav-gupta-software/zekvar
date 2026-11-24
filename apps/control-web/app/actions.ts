@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../lib/api';
-import { classifications, decisionLabels, detectorModes, discoveryAppName, isDiscoveredAppId, isId, modes,
+import { aiPromptApps, classifications, decisionLabels, detectorModes, discoveryAppName, isDiscoveredAppId, isId, modes,
   type AppClassification, type DetectorMode, type Feedback, type Mode } from '../lib/control';
 import { endSession, sessionToken, startSession } from '../lib/session';
 import { cleanupCounts, retentionFields, type RetentionField, type RetentionPolicy } from '../lib/retention';
@@ -475,6 +475,11 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
     }
     if (!promptAppModes) return { error: 'Choose a valid prompt mode for each AI app.' };
   }
+  const composerApps = form.getAll('requireComposerReady');
+  const requireComposerReady = aiPromptApps.filter((app) => composerApps.includes(app));
+  if (requireComposerReady.length !== composerApps.length) {
+    return { error: 'Choose distinct AI apps for the composer requirement.' };
+  }
   return perform(async (token) => {
     try {
       const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, privateKeyMode: privateKeyMode ?? undefined,
@@ -482,7 +487,8 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
         uploadModes, uploadTypes, ...fileContent,
         discoveryEnabled: discovery === 'on', presetDiscoveryEnabled: presetDiscovery === null ? undefined : presetDiscovery === 'on',
         extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on',
-        domainRules, pathRules, customApps, promptExceptions, blockedAiAppHosts, identifierProtection, promptAppModes },
+        domainRules, pathRules, customApps, promptExceptions, blockedAiAppHosts, identifierProtection, promptAppModes,
+        requireComposerReady: requireComposerReady.length ? requireComposerReady : undefined },
         expectedVersion, form.get('expectReview') === 'on', groupId ?? undefined);
       if ('reviewId' in published) return queued(published.reviewId);
       refreshPolicyViews();
@@ -492,6 +498,9 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
         return { error: 'An exception expired. Choose a future expiry and run the preview again.' };
       }
       if (error instanceof ApiError && error.code === 'navigation_rule_limit') return { error: navigationRuleLimitError };
+      if (error instanceof ApiError && error.code === 'composer_coverage_incomplete') {
+        return { error: 'Composer coverage is incomplete. Review rollout impact, refresh the missing checks, and retry.' };
+      }
       if (error instanceof ApiError && error.code === 'ai_app_access_unknown_host') {
         return { error: 'Keep each blocked AI app in the draft catalog or clear its access block.' };
       }
@@ -765,6 +774,9 @@ export async function decidePolicyReview(_previous: Feedback, form: FormData): P
       refreshPolicyViews();
       return { message: policy ? `Review approved and version ${policy.version} published.` : 'Review closed.' };
     } catch (error) {
+      if (error instanceof ApiError && error.code === 'composer_coverage_incomplete') {
+        return { error: 'Composer coverage is incomplete. Refresh the missing checks and retry approval.' };
+      }
       if (error instanceof ApiError && (error.code === 'review_stale' || error.code === 'review_closed')) {
         revalidatePath('/reviews');
         return { error: error.code === 'review_stale' ?

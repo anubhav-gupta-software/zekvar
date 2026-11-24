@@ -134,6 +134,12 @@ Publish `promptExceptions` as an array of `{ appId, ruleId, expiresAt, reason }`
 
 Browser policy responses for the exact assigned scope deliver active `promptExceptionLease` grants with `serverTimeMs` and `expiresAtMs` timestamps. The response excludes the reason. A browser reports `promptExceptionsApplied` in its heartbeat when it can use the grant. Older Chrome builds continue normal prompt enforcement. Control verifies `exception_applied` events against the app, detector, already delivered assignment and policy, and event time before expiry. Audit and export retain the policy attribution and decision.
 
+### Require composer readiness for publication
+
+Send `requireComposerReady` with `expectedVersion` on a baseline or rollout-group policy publish. Supply one or more distinct supported app IDs from `chatgpt`, `claude`, and `gemini`. Control uses the same cohort and freshness rules as [policy rollout impact](#policy-rollout-impact). Every selected app needs fresh matching composer evidence from every active browser in the affected scope, and the scope must contain at least one active browser.
+
+Invalid selections return HTTP 400 with `invalid_composer_gate`. Incomplete coverage returns HTTP 409 with `composer_coverage_incomplete`. When policy reviews are required, the approved draft retains the selection and checks coverage again before publication. A coverage failure leaves the review pending. The successful publish audit entry includes `composerGate` with the reference policy version, selected apps, and aggregate browser count.
+
 ## Policy reviews
 
 Policy reviews are optional by default. The owner can enable the requirement with `POST /v1/admin/policy-reviews/setting` and `{ "required": true }`. `GET /v1/admin/session` includes `reviewRequired`. When required, a publish, restore, or promotion submitted by a named administrator returns HTTP 202 and `{ "reviewId": "…" }`. A request queues the exact candidate policy and its current reference version. It does not advance the policy version. Owners and auditors cannot submit or approve requests while review is required.

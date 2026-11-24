@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation';
 import type { ControlSession } from '../../lib/access';
 import { ApiError, controlApi } from '../../lib/api';
-import { utc } from '../../lib/control';
+import { promptAppLabels, utc } from '../../lib/control';
 import { previewSnapshot, samePolicy } from '../../lib/preview';
 import { reviewOperations, reviewStatuses, type PolicyReview } from '../../lib/reviews';
 import { sessionToken } from '../../lib/session';
@@ -74,6 +74,9 @@ function ReviewRequest({ entry, session, required }: { entry: PolicyReview; sess
         {' '}from policy v{entry.snapshots.template.sourceVersion}</>}
       {entry.publishedVersion && <> · Published v{entry.publishedVersion}</>}
     </p>
+    {entry.snapshots.requireComposerReady && <p>
+      Required composer checks · {entry.snapshots.requireComposerReady.map((app) => promptAppLabels[app]).join(', ')}
+    </p>}
     {entry.status === 'pending' && <div className="form-row mb-3">
       <p className="muted">Expires {utc.format(new Date(entry.expiresAt))} UTC</p>
       <PolicyImpactLink groupId={entry.groupId} version={before.version} />

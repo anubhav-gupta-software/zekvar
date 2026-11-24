@@ -28,7 +28,8 @@ internal sealed record AuditEntry(Guid Id, DateTime OccurredAt, string Action, i
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SecurityAlertChange? SecurityAlertChange,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] EventFeedKeyChange? EventFeedKeyChange,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] FleetChange? FleetChange,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PolicyTemplateAudit? TemplateChange)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PolicyTemplateAudit? TemplateChange,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PolicyComposerGate? ComposerGate)
 {
     public string Actor => Action switch
     {
