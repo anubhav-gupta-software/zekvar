@@ -259,6 +259,12 @@ Owners and administrators can `POST /v1/admin/installations/fleet` with a UUID `
 
 An accepted batch returns `batchId`, `operation`, `groupId`, `groupName`, `policyVersion`, `selectedCount`, and `changedInstallations`. The transaction writes a `browser_fleet_changed` audit receipt and the usual per-installation changes. An identical retry from the same owner or named administrator returns the retained receipt even if the selection has since changed. Reusing a retained request ID with a different action, selection, or actor returns HTTP 409. Receipts follow the organization's audit retention settings. Auditors can list and review fleet records.
 
+## Prompt exception requests
+
+Browser v0.33.0 negotiates `promptExceptionRequestsAvailable` with `X-Zekvar-Prompt-Exception-Requests: 1` and the assignment capability header. An enrolled browser can post `{ eventId, appId }` to `/v1/browser/prompt-exception-requests`. The event must be a retained Warn or Block for a supported AI prompt from that installation, with the browser's current policy and rollout scope. Events older than one hour are ineligible. Recent requests for the same browser, app, detector, policy version, and rollout scope reuse their receipt for 24 hours. The receipt contains its ID and current status.
+
+`GET /v1/admin/prompt-exception-requests` accepts `status=pending` (the default) or `status=decided`. The queue returns up to 100 records and includes detection references and decision metadata. `POST /v1/admin/prompt-exception-requests/{id}/decision` accepts `{ status: "declined" }` or `{ status: "exception_available" }`. Recording an available exception requires an active matching exception on the current exact-scope policy and an active browser still assigned there. It records the existing version. Repeating the same decision is idempotent. Auditors can read only. Request visibility and cleanup follow the underlying security event retention.
+
 ## Policy rollout impact
 
 `GET /v1/admin/reports/policy-impact` accepts `scope=baseline` (default) or a rollout group UUID. Add `expectedVersion` to pin the report to a reviewed destination version. A different current version returns HTTP 409 with `policy_impact_stale`. Invalid or repeated parameters return HTTP 400. Missing and foreign groups return HTTP 404. Owners, administrators, and auditors can read the authenticated organization's aggregates.

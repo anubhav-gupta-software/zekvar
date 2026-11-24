@@ -155,7 +155,8 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SsnMode = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] BrowserHardening? BrowserHardening = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ClipboardMode = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? GithubTokenMode = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? GithubTokenMode = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? PromptExceptionRequestsAvailable = null)
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => ClaudePromptEnabled

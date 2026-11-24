@@ -15,6 +15,7 @@ import type { BrowserHardening } from './browser-hardening';
 import type { FleetChange, FleetPage, FleetRequest } from './fleet';
 import type { PolicyTemplate, PolicyTemplateDetails, PolicyTemplatePreview } from './templates';
 import type { PolicyImpactReport } from './policy-impact';
+import type { PromptExceptionRequest, PromptRequestDecision } from './prompt-requests';
 import { eventPath, type EventDetails, type EventTriage, type TriageAssignee, type TriageUpdate } from './triage';
 import { casePath, type CaseCategory, type CaseDetails, type CasePage, type EventReference } from './cases';
 import { alertPath, type AlertDetails, type AlertPage, type AlertSettings } from './alerts';
@@ -115,6 +116,10 @@ export const controlApi = {
   promoteGroup: (token: string, groupId: string, expectedVersion: number, review: boolean, expectedBaselineVersion?: number) =>
     request<PolicyChange>(`/policy-groups/${groupId}/promote`, token, 'POST', { expectedVersion, expectedBaselineVersion }, review),
   policyReviews: (token: string) => request<PolicyReviewQueue>('/policy-reviews', token),
+  promptExceptionRequests: (token: string, status: 'pending' | 'decided') =>
+    request<PromptExceptionRequest[]>(`/prompt-exception-requests?status=${status}`, token),
+  decidePromptExceptionRequest: (token: string, id: string, status: PromptRequestDecision) =>
+    request<{ id: string; status: PromptRequestDecision }>(`/prompt-exception-requests/${id}/decision`, token, 'POST', { status }),
   setPolicyReview: (token: string, required: boolean) => request<void>('/policy-reviews/setting', token, 'POST', { required }),
   decidePolicyReview: (token: string, id: string, approve: boolean) =>
     request<Policy | undefined>(`/policy-reviews/${id}/decision`, token, 'POST', { approve }),

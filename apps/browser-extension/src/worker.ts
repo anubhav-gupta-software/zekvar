@@ -145,7 +145,7 @@ async function request(path: string, token?: string, body?: object): Promise<unk
       ...(path === 'browser/policy' ? { 'X-Zekvar-Assignment-Aware': '1', 'X-Zekvar-Claude-Prompt': '1',
         'X-Zekvar-Private-Key': '1', 'X-Zekvar-File-Inspection': '1', 'X-Zekvar-File-Content-Block': '1', 'X-Zekvar-AI-App-Access': '1',
         'X-Zekvar-Identifiers': '1', 'X-Zekvar-Preset-Discovery': '1', 'X-Zekvar-SSN': '1', 'X-Zekvar-Clipboard-Paste': '1',
-        'X-Zekvar-GitHub-Token': '1',
+        'X-Zekvar-GitHub-Token': '1', 'X-Zekvar-Prompt-Exception-Requests': '1',
         'X-Zekvar-Extension-Version': extensionVersion } : {}),
       ...(path === 'browser/heartbeat' ? { 'X-Zekvar-Composer-Coverage': '1' } : {}),
       ...(path === 'enroll' ? { 'X-Zekvar-Scoped-Enrollment': '1' } : {}),
@@ -342,6 +342,7 @@ async function sync(state: State) {
       if (policy.version !== state.policy?.version || assignment !== previousAssignment) clearCoverage(state);
       state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, privateKeyMode, ssnMode, identifierProtection, fileInspection, fileContentModes,
         discoveryEnabled, presetDiscovery, customApps, extensionInventoryEnabled, claudePromptEnabled, clipboardMode, githubTokenMode,
+        promptExceptionRequestsAvailable: policy.promptExceptionRequestsAvailable === true,
         assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini }, targetedUploads };
       promptLease = lease ? { installationId: state.enrollment.installationId, version: policy.version,
         assignment: policy.assignmentVersion, lease } : undefined;
@@ -510,6 +511,9 @@ async function onMessage(message: Record<string, unknown>, app: AppId | undefine
   const state = await readState();
   if (message.type === 'enroll') return enroll(state, message.grant);
   if (message.type === 'sync') return syncOrEnroll(state);
+  if (message.type === 'request-prompt-exception' && app && app !== fixtureApp) {
+    return sendPromptRequest(state, message, app);
+  }
   if (message.type === 'coverage' && app && app !== fixtureApp && appEnabled(state, app) && state.enrollment &&
       message.installationId === state.enrollment.installationId &&
       (message.coverage === 'ready' || message.coverage === 'unsupported')) {
@@ -545,6 +549,34 @@ async function onMessage(message: Record<string, unknown>, app: AppId | undefine
     if (state.status === 'connected') scheduleDelivery();
   }
   return { summary: summary(state) };
+}
+
+async function sendPromptRequest(state: State, message: Record<string, unknown>, app: AiPromptApp): Promise<Reply> {
+  if (!isId(message.eventId)) return { error: 'This submission could not be identified.' };
+  if (state.enrollment && state.status === 'offline') await sync(state);
+  if (!state.enrollment || state.status !== 'connected') return { error: 'Control is unavailable. Try again when connected.' };
+  if (!appEnabled(state, app) || !state.policy?.promptExceptionRequestsAvailable || message.installationId !== state.enrollment.installationId ||
+      message.version !== state.policy.version || message.assignmentVersion !== state.policy.assignmentVersion) {
+    return { error: 'The policy changed. Review the prompt and try again.' };
+  }
+  if (state.queue.some(({ eventId }) => eventId === message.eventId)) await deliver(state);
+  if (!state.enrollment || state.status !== 'connected') return { error: 'Control is unavailable. Try again when connected.' };
+  if (state.queue.some(({ eventId }) => eventId === message.eventId))
+    return { error: 'The detection is still syncing. Try again in a moment.' };
+  try {
+    const receipt = await request('browser/prompt-exception-requests', state.enrollment.token, { eventId: message.eventId, appId: app });
+    if (isRecord(receipt) && (receipt.status === 'pending' || receipt.status === 'declined' || receipt.status === 'exception_available'))
+      return { promptRequestStatus: receipt.status };
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 404)
+      return { error: 'This submission is no longer eligible. Review the prompt and policy before trying again.' };
+    if (error instanceof HttpError && error.status === 401) {
+      await lostConnection(state, error);
+      await save(state);
+      return { error: 'This browser must be enrolled with Control to request a review.' };
+    }
+  }
+  return { error: 'Control could not confirm the request. Try again.' };
 }
 
 async function observeApp(state: State, appId: DiscoveryApp, observedAt: string) {
@@ -599,7 +631,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, reply: (response
   const app = sender.tab && sender.frameId === 0 && sender.documentLifecycle === 'active' ? promptApp(sender.url) : undefined;
   const allowed = message.type === 'status' || message.type === 'sync' ||
     (popup && message.type === 'enroll') || (app && message.type === 'decision') ||
-    (app && app !== fixtureApp && message.type === 'coverage');
+    (app && app !== fixtureApp && (message.type === 'coverage' || message.type === 'request-prompt-exception'));
   if (!(popup || app) || !allowed) return;
   serial(() => onMessage(message, app)).then(reply, () => reply({ error: 'The extension could not access local storage.' }));
   return true;

@@ -6,10 +6,12 @@ import type { inspectClipboard } from '../../../contracts/policy/clipboard';
 export function recordDecision(appId: AppId, match: MatchedDecision, installationId: string | undefined,
   decision: PolicyEvent['decision'] = match.action, timestamp = new Date().toISOString()) {
   const { action: _action, reason: _reason, policyVersion, ...rule } = match;
+  const eventId = crypto.randomUUID();
   report({
-    eventId: crypto.randomUUID(), appId, timestamp,
+    eventId, appId, timestamp,
     ...rule, policyVersion, decision,
   }, installationId);
+  return eventId;
 }
 
 export function recordUploadDecision(appId: UploadApp, policy: Policy, installationId: string, decision: UploadDecision, uploadMethod: UploadMethod) {

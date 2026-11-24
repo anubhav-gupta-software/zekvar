@@ -70,6 +70,12 @@ Use `ghp_000000000000000000000000000000000000` in the local prompt fixture to te
 
 The rule starts Off and covers structurally recognizable fine-grained PATs, OAuth tokens, App user and refresh tokens, and older opaque and newer stateless App installation tokens. It uses the token shape and never contacts GitHub to validate a credential. [GitHub credential types](https://docs.github.com/en/organizations/managing-programmatic-access-to-your-organization/github-credential-types) · [GitHub installation token format](https://github.blog/changelog/2026-10-02-stateless-github-app-installation-tokens-rolled-out/)
 
+## Request review of a blocked prompt
+
+In enrolled Browser v0.33.0 or later, choose **Request policy review** after a Warn or Block on a supported ChatGPT, Gemini, or enabled Claude composer. Browser sends the existing detection reference and application. The prompt and matched values stay in the tab, and the current policy continues to apply.
+
+Retry from the warning or block if Browser cannot confirm the request. Repeat requests from the same browser for the same app, detector, and effective policy reuse the recent request. If an administrator publishes an exception, select **Sync now** and try the prompt again. [Administrator workflow](../control-web/README.md#review-employee-prompt-exception-requests)
+
 ## Test payment card detection
 
 1. Start the updated Control services and build and reload Browser v0.11.0. In Control, set **Payment card number** to **Monitor**, **Warn**, or **Block** in the baseline or a rollout group. The detector starts **Off**. Use **Policy preview** to compare the built-in valid and invalid examples before publishing.

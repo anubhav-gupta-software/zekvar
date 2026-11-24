@@ -26,7 +26,7 @@ export function DeploymentBadge() {
 }
 
 export function Sidebar({ active, session }: {
-  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews' | 'extensions' | 'enrollment' | 'reports' | 'events' | 'cases' | 'alerts' | 'hardening' | 'fleet' | 'templates';
+  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews' | 'extensions' | 'enrollment' | 'reports' | 'events' | 'cases' | 'alerts' | 'hardening' | 'fleet' | 'templates' | 'prompt-requests';
   session?: ControlSession;
 }) {
   const root = active ? '/' : '';
@@ -39,6 +39,7 @@ export function Sidebar({ active, session }: {
       <a href="/preview" aria-current={active === 'preview' ? 'page' : undefined}>Policy preview</a>
       <a href="/templates" aria-current={active === 'templates' ? 'page' : undefined}>Policy templates</a>
       <a href="/reviews" aria-current={active === 'reviews' ? 'page' : undefined}>Policy reviews</a>
+      <a href="/prompt-requests" aria-current={active === 'prompt-requests' ? 'page' : undefined}>Prompt exception requests</a>
       <a href="/groups" aria-current={active === 'groups' ? 'page' : undefined}>Rollout groups</a>
       {canChangePolicy(session) && <a href={`${root}#domain-rules`}>Navigation rules</a>}
       <a href={`${root}#ai-apps`}>App inventory</a>

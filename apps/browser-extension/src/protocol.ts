@@ -32,6 +32,7 @@ export type Policy = PromptPolicy & {
   fileContentModes?: UploadModes;
   presetDiscovery?: boolean;
   clipboardMode?: ClipboardMode;
+  promptExceptionRequestsAvailable?: boolean;
 };
 export type PolicyEvent = {
   eventId: string;
@@ -65,6 +66,7 @@ export type Summary = {
 
 type Message = { type: 'status' | 'sync' | 'observe-app' } | { type: 'enroll'; grant: string } |
   { type: 'decision'; installationId: string; event: PolicyEvent } |
+  { type: 'request-prompt-exception'; installationId: string; eventId: string; version: number; assignmentVersion?: number } |
   { type: 'coverage'; installationId: string; coverage: Coverage; version: number; assignmentVersion?: number };
 
 export function chatGptRoute(url: string | undefined): 'home' | 'conversation' | 'guest-conversation' | 'other' {
@@ -102,7 +104,7 @@ export function promptApp(url: string | undefined): AppId | undefined {
   if (claudeRoute(url) !== 'other') return claudeApp;
 }
 
-export type Reply = { summary?: Summary; error?: string };
+export type Reply = { summary?: Summary; error?: string; promptRequestStatus?: 'pending' | 'declined' | 'exception_available' };
 
 export function send(message: Message): Promise<Reply> {
   return chrome.runtime.sendMessage(message);

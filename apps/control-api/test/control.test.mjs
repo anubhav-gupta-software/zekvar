@@ -43,6 +43,7 @@ const fleetAdmin = randomBytes(32).toString('hex');
 const templateAdmin = randomBytes(32).toString('hex');
 const githubTokenAdmin = randomBytes(32).toString('hex');
 const impactAdmin = randomBytes(32).toString('hex');
+const promptRequestAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -53,7 +54,12 @@ const undoSsoSchema = `
       DROP COLUMN oidc_issuer, DROP COLUMN oidc_subject, ALTER COLUMN expires_at SET NOT NULL,
       ADD CONSTRAINT control_access_check1 CHECK ((revoked_at IS NULL) = (token_hash IS NOT NULL));
 `;
+const undoPromptRequestSchema = `
+  DELETE FROM schema_migrations WHERE version = 45;
+  DROP TABLE prompt_exception_requests;
+`;
 const undoGithubTokenSchema = `
+  ${undoPromptRequestSchema}
   DELETE FROM schema_migrations WHERE version = 44;
   ALTER TABLE policy_versions DROP COLUMN github_token_mode;
   ALTER TABLE policy_deliveries DROP COLUMN github_token;
@@ -235,6 +241,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__25__AdminToken: githubTokenAdmin,
       Control__Organizations__26__Slug: `policy-impact-${suffix}`,
       Control__Organizations__26__AdminToken: impactAdmin,
+      Control__Organizations__27__Slug: `prompt-requests-${suffix}`,
+      Control__Organizations__27__AdminToken: promptRequestAdmin,
       ...overrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -4671,5 +4679,98 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal((await admin(`${ownPath}/policies`))[0].version, published.version);
     assert.deepEqual((await report()).scope, scope(null, promoted.version));
     assert.equal((await admin('audit?action=policy_published')).entries.filter(({ policyVersion }) => policyVersion === promoted.version).length, 1);
+  });
+
+  await t.test('receives deduplicated scoped prompt review requests and verifies the separately published exception', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: promptRequestAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const queue = (status = 'pending', options) => admin(`prompt-exception-requests?status=${status}`, options);
+    const decide = (id, status, options) => post(`prompt-exception-requests/${id}/decision`, { status }, options);
+    const group = await post('policy-groups', { name: 'Request cohort' });
+    const baseline = await post('policies', { mode: 'block', clipboardMode: 'block', uploadModes: { chatgpt: 'block' } });
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant: (await post('enrollment-grants')).grant } });
+    const other = await call('/v1/enroll', { method: 'POST', body: { grant: (await post('enrollment-grants')).grant } });
+    const deliver = () => call('/v1/browser/policy', { token: browser.token, assignmentAware: true, clipboardAware: true });
+    await deliver();
+    await post(`installations/${browser.installationId}/policy-group`, { groupId: group.id }, { expect: 204 });
+    const policy = await deliver();
+    const newEvent = (fields = {}) => ({ ...contract.event, eventId: randomUUID(), appId: 'chatgpt', decision: 'block',
+      timestamp: new Date().toISOString(), policyVersion: baseline.version, assignmentVersion: policy.assignmentVersion, ...fields });
+    const emit = async (body) => {
+      await call('/v1/browser/events', { token: browser.token, method: 'POST', body, expect: 204 });
+      return body;
+    };
+    const submit = ({ eventId, appId }, options) => call('/v1/browser/prompt-exception-requests',
+      { token: browser.token, method: 'POST', body: { eventId, appId }, ...options });
+    const [first, secondEvent] = await Promise.all([emit(newEvent()), emit(newEvent())]);
+    if (postgres) {
+      await stop();
+      await retentionFixture(undoPromptRequestSchema);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 45'), '1');
+      assert.equal((await admin('events')).length, 2);
+    }
+    assert.deepEqual(await queue(), []);
+    await submit(newEvent(), { expect: 404 });
+    await submit({ ...first, appId: 'gemini' }, { expect: 404 });
+    await submit(first, { token: other.token, expect: 404 });
+    await submit(first, { token: promptRequestAdmin, expect: 401 });
+    await submit(first, { body: { ...first, prompt: 'private placeholder' }, expect: 400 });
+    await submit(await emit(newEvent({ clipboardPaste: true })), { expect: 404 });
+    await submit(await emit(newEvent({ ruleId: 'ai-file-upload', detectorCategory: 'file-upload', uploadMethod: 'picker' })), { expect: 404 });
+    await submit(await emit(newEvent({ timestamp: new Date(Date.now() - 7200_000).toISOString() })), { expect: 404 });
+    const [receipt, duplicate] = await Promise.all([submit(first), submit(secondEvent)]);
+    assert.deepEqual(receipt, duplicate);
+    assert.deepEqual(await submit(first), receipt);
+    const auditor = await post('access', { name: 'Prompt request auditor', role: 'auditor', hours: 1 });
+    const [entry] = await queue('pending', { token: auditor.token });
+    assert.equal(entry.id, receipt.id);
+    assert.equal(entry.groupId, group.id);
+    assert.equal(entry.appId, 'chatgpt');
+    assert.equal(entry.ruleId, 'fixture-secret');
+    assert.equal(entry.policyVersion, baseline.version);
+    assert.equal(entry.status, 'pending');
+    assert.doesNotMatch(JSON.stringify(entry), /private placeholder|promptText|token/);
+    assert.deepEqual(await queue('pending', { token: impactAdmin }), []);
+    await decide(receipt.id, 'declined', { token: impactAdmin, expect: 404 });
+    await decide(receipt.id, 'declined', { token: auditor.token, expect: 403 });
+    await decide(receipt.id, 'accept', { expect: 400 });
+    for (const query of ['status=open', 'status=pending&status=decided', 'organization=other']) {
+      await admin(`prompt-exception-requests?${query}`, { expect: 400 });
+    }
+    assert.deepEqual(await decide(receipt.id, 'exception_available', { expect: 409 }), { code: 'prompt_request_exception_required' });
+    const exceptions = [{ appId: 'chatgpt', ruleId: 'fixture-secret', expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+      reason: 'Reviewed work request' }];
+    await post('policies', { promptExceptions: exceptions });
+    await submit(first, { expect: 404 });
+    assert.deepEqual(await decide(receipt.id, 'exception_available', { expect: 409 }), { code: 'prompt_request_exception_required' });
+    const author = await post('access', { name: 'Request exception author', role: 'administrator', hours: 1 });
+    const reviewer = await post('access', { name: 'Request exception reviewer', role: 'administrator', hours: 1 });
+    await post('policy-reviews/setting', { required: true }, { expect: 204 });
+    const path = `policy-groups/${group.id}/policies`;
+    const { reviewId } = await post(path, { promptExceptions: exceptions }, { token: author.token, expectReview: true, expect: 202 });
+    await decide(receipt.id, 'exception_available', { expect: 409 });
+    const published = await post(`policy-reviews/${reviewId}/decision`, { approve: true }, { token: reviewer.token });
+    const accepted = await decide(receipt.id, 'exception_available', { token: reviewer.token });
+    assert.deepEqual(await decide(receipt.id, 'exception_available'), accepted);
+    assert.deepEqual(await decide(receipt.id, 'declined', { expect: 409 }), { code: 'prompt_request_decided' });
+    const [completed] = await queue('decided');
+    assert.equal(completed.publishedVersion, published.version);
+    assert.equal(completed.decidedBy, reviewer.access.name);
+    const renewed = await deliver();
+    const deniedEvent = await emit(newEvent({ policyVersion: renewed.version, appId: 'gemini' }));
+    const rejected = await submit(deniedEvent);
+    await post(`installations/${browser.installationId}/policy-group`, { groupId: null }, { expect: 204 });
+    assert.deepEqual(await decide(rejected.id, 'exception_available', { expect: 409 }), { code: 'prompt_request_assignment_changed' });
+    await decide(rejected.id, 'declined');
+    assert.deepEqual(await queue(), []);
+    if (postgres) {
+      await post('retention', { securityEventDays: 1, aiObservationDays: null, auditDays: null }, { expect: 204 });
+      await retentionFixture(`UPDATE security_events SET occurred_at = now() - interval '2 days'
+        WHERE installation_id = '${browser.installationId}';`);
+      assert.deepEqual(await queue('decided'), []);
+      await post('retention/cleanup', {});
+      assert.equal(await retentionFixture(`SELECT count(*) FROM prompt_exception_requests WHERE installation_id = '${browser.installationId}'`), '0');
+    }
   });
 });

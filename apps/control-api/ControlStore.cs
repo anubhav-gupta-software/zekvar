@@ -69,6 +69,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 42, "042_browser_fleet_batches.sql", ct);
         await ApplyMigration(connection, 43, "043_policy_templates.sql", ct);
         await ApplyMigration(connection, 44, "044_github_tokens.sql", ct);
+        await ApplyMigration(connection, 45, "045_prompt_exception_requests.sql", ct);
 
         foreach (var organization in organizations)
         {

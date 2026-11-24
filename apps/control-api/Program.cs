@@ -289,6 +289,22 @@ templates.MapPost("/{id:guid}/apply", async (Guid id, ApplyPolicyTemplate reques
         template: (id, request.Revision, request.ExpectedVersion)), Results.Conflict(new { code = "template_target_changed" }));
 });
 var reviews = admin.MapGroup("/policy-reviews");
+admin.MapGet("/prompt-exception-requests", async (HttpContext http, CancellationToken ct) =>
+{
+    var query = http.Request.Query;
+    var status = query["status"].ToString();
+    if (query.Any(entry => entry.Key != "status" || entry.Value.Count != 1) ||
+        (query.ContainsKey("status") && status is not ("pending" or "decided")))
+        return Results.BadRequest(new { error = "Choose pending or decided requests." });
+    return Results.Ok(await store.PromptExceptionRequests(Identity(http).OrganizationId, status != "decided", ct));
+});
+admin.MapPost("/prompt-exception-requests/{id:guid}/decision", async (Guid id, DecidePromptException request, HttpContext http, CancellationToken ct) =>
+{
+    if (id == Guid.Empty || request.Status is not ("declined" or "exception_available")) return Results.BadRequest();
+    var result = await store.DecideException(Identity(http), id, request.Status, ct);
+    return result.Receipt is { } receipt ? Results.Ok(receipt) : result.Error is { } error
+        ? Results.Conflict(new { code = error }) : Results.NotFound();
+});
 reviews.MapGet("", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.PolicyReviews(Identity(http).OrganizationId, ct)));
 reviews.MapPost("/setting", async (SetPolicyReview request, HttpContext http, CancellationToken ct) =>
@@ -506,7 +522,10 @@ browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
     if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, claudeAware, extensionVersion, privateKeyAware,
         fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware, presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware, ct) is { } policy)
         return Results.Ok(policy.ForBrowser(claudeAware, privateKeyAware, fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware,
-            presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware));
+            presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware) with
+        {
+            PromptExceptionRequestsAvailable = aware && http.Request.Headers["X-Zekvar-Prompt-Exception-Requests"] == "1" ? true : null
+        });
     return aware ? Results.Unauthorized() : Results.Conflict(new { error = "Update the browser to receive the assigned policy." });
 });
 browser.MapPost("/heartbeat", async (Heartbeat request, HttpContext http, CancellationToken ct) =>
@@ -516,6 +535,11 @@ browser.MapPost("/heartbeat", async (Heartbeat request, HttpContext http, Cancel
 browser.MapPost("/events", async (PolicyEvent request, HttpContext http, CancellationToken ct) =>
     FixtureContract.IsEvent(request) && await store.Ingest(Identity(http).InstallationId!.Value, request, ct)
         ? Results.NoContent() : Results.BadRequest(new { error = "Invalid policy event." }));
+browser.MapPost("/prompt-exception-requests", async (RequestPromptException request, HttpContext http, CancellationToken ct) =>
+{
+    if (request.EventId == Guid.Empty || !FixtureContract.IsAiPromptApp(request.AppId)) return Results.BadRequest();
+    return await store.RequestException(Identity(http), request, ct) is { } receipt ? Results.Ok(receipt) : Results.NotFound();
+});
 browser.MapPost("/ai-app-observations", async (AppObservation request, HttpContext http, CancellationToken ct) =>
     DiscoveryCatalog.IsApp(request.AppId) && request.PolicyVersion > 0 &&
     await store.ObserveApp(Identity(http).InstallationId!.Value, request, ct)

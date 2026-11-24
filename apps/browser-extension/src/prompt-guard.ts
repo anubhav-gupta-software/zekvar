@@ -1,7 +1,7 @@
 import { redactPrompt } from '../../../contracts/policy/prompt';
 import { recordClipboardDecision, recordDecision, recordFileInspection, recordUploadDecision } from './decisions';
 import { evaluatePrompt, withPolicyVersion, type MatchedDecision } from './policy';
-import { isMode, send, type AiPromptApp, type Coverage, type Summary } from './protocol';
+import { isMode, send, type AiPromptApp, type Coverage, type Reply, type Summary } from './protocol';
 import { promptAppLabels } from '../../../contracts/policy/apps';
 import { fileContentMode, fileInspectionUnavailableRule, isUploadApp, uploadCategory, type UploadFile, type UploadMethod } from '../../../contracts/policy/uploads';
 import { bindUploadGuard, type UploadCheck } from './upload-guard';
@@ -20,7 +20,7 @@ type PromptAdapter = {
   hideWhenDisabled?: boolean;
 };
 
-type InterruptedDraft = { input: HTMLElement; page: string; value: string; installationId: string; match: MatchedDecision };
+type InterruptedDraft = { input: HTMLElement; page: string; value: string; installationId: string; match: MatchedDecision; eventId: string };
 
 function controls(appId: AiPromptApp) {
   const host = document.createElement('div');
@@ -34,8 +34,8 @@ function controls(appId: AiPromptApp) {
       background: #101927; box-shadow: 0 1px 8px #0004; }
     p { margin: 0; }
     #status { color: #8aecc8; }
-    #notice, #upload-notice, #clipboard-notice { margin-top: .4rem; }
-    #notice:empty, #upload-notice:empty, #clipboard-notice:empty, [hidden] { display: none; }
+    #notice, #upload-notice, #clipboard-notice, #request-status { margin-top: .4rem; }
+    #notice:empty, #upload-notice:empty, #clipboard-notice:empty, #request-status:empty, [hidden] { display: none; }
     button { margin: .55rem .35rem 0 0; padding: .3rem .55rem; border: 1px solid #627b8b;
       border-radius: .35rem; color: #fff; background: #203045; cursor: pointer; font: inherit; }
     button:focus-visible { outline: 2px solid #59e6b5; outline-offset: 2px; }
@@ -66,8 +66,13 @@ function controls(appId: AiPromptApp) {
   edit.textContent = 'Edit prompt';
   const proceed = document.createElement('button');
   proceed.textContent = 'Continue anyway';
+  const request = document.createElement('button');
+  request.textContent = 'Request policy review';
+  const requestStatus = document.createElement('p');
+  requestStatus.id = 'request-status';
+  requestStatus.setAttribute('role', 'status');
   actions.hidden = true;
-  actions.append(redact, edit, proceed);
+  actions.append(redact, edit, proceed, request, requestStatus);
   const copy = document.createElement('button');
   copy.textContent = 'Copy composer diagnostics';
   const diagnostics = document.createElement('textarea');
@@ -76,7 +81,7 @@ function controls(appId: AiPromptApp) {
   diagnostics.setAttribute('aria-label', 'Composer diagnostics');
   panel.append(status, uploadNotice, clipboardNotice, notice, actions, copy, diagnostics);
   root.append(style, panel);
-  return { host, status, notice, uploadNotice, clipboardNotice, actions, redact, edit, proceed, copy, diagnostics };
+  return { host, status, notice, uploadNotice, clipboardNotice, actions, redact, edit, proceed, request, requestStatus, copy, diagnostics };
 }
 
 export function bindPromptGuard(adapter: PromptAdapter) {
@@ -95,6 +100,7 @@ export function bindPromptGuard(adapter: PromptAdapter) {
   function clearInterruption() {
     pending = undefined;
     ui.notice.textContent = '';
+    ui.requestStatus.textContent = '';
     ui.actions.hidden = true;
   }
 
@@ -216,11 +222,13 @@ export function bindPromptGuard(adapter: PromptAdapter) {
         pending.match.policyVersion === match.policyVersion && pending.match.assignmentVersion === match.assignmentVersion) return;
 
     clearInterruption();
-    recordDecision(adapter.appId, match, installationId);
+    const eventId = recordDecision(adapter.appId, match, installationId);
     if (match.action === 'monitor') return;
-    pending = { input: current.input, page: location.href, value, installationId, match };
+    pending = { input: current.input, page: location.href, value, installationId, match, eventId };
     ui.redact.hidden = !supportsRedaction(current.input);
     ui.proceed.hidden = match.action !== 'warn';
+    ui.request.hidden = control?.policy?.promptExceptionRequestsAvailable !== true;
+    ui.request.disabled = false;
     ui.actions.hidden = false;
     if (match.action === 'block') {
       ui.notice.textContent = `Submission blocked. ${match.reason} Edit the prompt and try again.`;
@@ -316,6 +324,24 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     if (review?.draft.match.action !== 'warn') return;
     recordDecision(adapter.appId, review.draft.match, review.draft.installationId, 'warn_override');
     review.button.click();
+  });
+
+  ui.request.addEventListener('click', async (event) => {
+    const draft = pending;
+    if (!event.isTrusted || !draft || !supported() || draft.page !== location.href ||
+        adapter.inspect().composer?.input !== draft.input || promptText(draft.input) !== draft.value) return;
+    ui.request.disabled = true;
+    ui.requestStatus.textContent = 'Sending review request…';
+    const result = await send({
+      type: 'request-prompt-exception', installationId: draft.installationId, eventId: draft.eventId,
+      version: draft.match.policyVersion, assignmentVersion: draft.match.assignmentVersion,
+    }).catch((): Reply => ({ error: 'Control could not confirm the request. Try again.' }));
+    if (draft !== pending) return;
+    ui.request.disabled = Boolean(result.promptRequestStatus);
+    ui.requestStatus.textContent = result.promptRequestStatus === 'pending' ? 'Review requested. The current policy still applies.' :
+      result.promptRequestStatus === 'declined' ? 'An administrator declined this request.' :
+        result.promptRequestStatus === 'exception_available' ? 'An administrator published an exception. Sync with Control and try again.' :
+          result.error ?? 'Control could not confirm the request. Try again.';
   });
 
   ui.copy.addEventListener('click', async (event) => {

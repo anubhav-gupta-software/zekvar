@@ -170,6 +170,14 @@ Choose **App inventory → Edit app catalog** for the baseline or **Preview grou
 
 Open **Policy preview** for the intended scope and add an entry under **Temporary prompt exceptions**. Choose the app, detector, UTC expiry, and reason. Compare outcomes for that destination, then publish or request review. Edit or remove an entry through the same workflow. **Policy history** records the scope's configured entries. Filter **Security events** to **Exception applied** for observed uses. [Browser test guide](../browser-extension/README.md#test-temporary-prompt-exceptions)
 
+## Review employee prompt exception requests
+
+1. Open **Prompt exception requests** in Control. Each pending request links to the original detection and shows the browser's rollout scope, policy version, AI app, and detector. The inspector can work through the oldest pending requests first.
+2. Choose **Decline request** or open **Open scoped policy preview** and add a time-limited exception for the request's app and detector. Review and publish through the organization's normal policy approval workflow. An exception affects the destination scope, including other browsers assigned there.
+3. Return to the inbox and select **Record published exception**. Control checks that the browser still belongs to the scope and that its policy contains a matching active exception. The **Decided** view records the decision, the administrator, and the published version when applicable.
+
+Auditors can read the queue and the linked detections. Request metadata follows security event retention. The resulting policy and its publication audit follow their own retention. [Employee workflow](../browser-extension/README.md#request-review-of-a-blocked-prompt)
+
 ## Deploy Chrome extension rules
 
 1. Open **Browser extensions → Manage Chrome deployment**. Choose the organization baseline or a rollout group. Copy an ID from **Browser extensions**, enter the rule, and select **Review changes**. The plan accepts up to 100 exact IDs. Use `ID, allow`, `ID, block`, or `ID, force, https://updates.example.test/channel/update.xml`. Use the approved update manifest for the extension. [Chrome ExtensionSettings](https://support.google.com/chrome/a/answer/9867568)

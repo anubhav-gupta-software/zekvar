@@ -693,6 +693,27 @@ export async function setPolicyReview(_previous: Feedback, form: FormData): Prom
   });
 }
 
+export async function decidePromptRequest(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const id = form.get('id');
+  const status = form.get('status');
+  if (!isId(id) || (status !== 'declined' && status !== 'exception_available')) return { error: 'Choose a request and decision.' };
+  return perform(async (token) => {
+    try {
+      await controlApi.decidePromptExceptionRequest(token, id, status);
+      revalidatePath('/prompt-requests');
+      return { message: status === 'declined' ? 'Request declined.' : 'Published exception recorded.' };
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'prompt_request_exception_required')
+        return { error: 'Publish a matching active exception in this policy scope before closing the request.' };
+      if (error instanceof ApiError && error.code === 'prompt_request_assignment_changed')
+        return { error: 'The browser is no longer active in this policy scope.' };
+      if (error instanceof ApiError && error.code === 'prompt_request_decided')
+        return { error: 'This request has already been decided. Refresh the inbox.' };
+      throw error;
+    }
+  });
+}
+
 export async function decidePolicyReview(_previous: Feedback, form: FormData): Promise<Feedback> {
   const id = form.get('id');
   const decision = form.get('decision');

@@ -145,7 +145,7 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   for (const origin of [browserOrigin, dashboardOrigin]) {
     for (const path of ['/v1/admin/session', '/v1/admin/browser-releases', '/v1/admin/browser-health?rolloutGroup=baseline',
       '/v1/admin/enrollment-batches', '/v1/admin/reports/ai-enforcement', '/v1/admin/reports/composer-readiness',
-      '/v1/admin/events/triage-assignees', '/v1/admin/cases', '/v1/admin/alerts']) {
+      '/v1/admin/events/triage-assignees', '/v1/admin/cases', '/v1/admin/alerts', '/v1/admin/prompt-exception-requests']) {
       const blocked = await call(origin + path, { headers: { Authorization: `Bearer ${owner}` } });
       assert.equal(blocked.status, 404);
       assert.equal(blocked.headers['cache-control'], 'no-store');
@@ -157,6 +157,8 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   assert.equal((await call(browserOrigin + '/reports/export')).status, 404);
   assert.equal((await call(browserOrigin + '/v1/enroll')).status, 404);
   assert.equal((await call(browserOrigin + '/v1/browser/policy', { headers: { Authorization: `Bearer ${owner}` } })).status, 401);
+  assert.equal((await call(browserOrigin + '/v1/browser/prompt-exception-requests', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401);
   assert.equal((await call(browserOrigin + '/v1/enroll', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ grant: '0'.repeat(64) }) })).status, 401);
 
@@ -346,6 +348,15 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   const detected = await until(async () => (await admin(`events?rolloutGroup=${group.id}`)).find(({ installationId, decision }) =>
     installationId === newId && decision === 'block'),
     'The hosted browser did not report a decision.');
+  await t.test('routes a managed Chrome prompt request over TLS and keeps its inbox private', async () => {
+    await chat.getByRole('button', { name: 'Request policy review', exact: true }).click();
+    await chat.getByText('Review requested. The current policy still applies.', { exact: true }).waitFor();
+    const [request] = await admin('prompt-exception-requests');
+    assert.equal(request.eventId, detected.eventId);
+    assert.equal(request.groupId, group.id);
+    assert.equal(await chat.locator('#fixture-sends').textContent(), '0');
+    assert.doesNotMatch(JSON.stringify(request), /Synthetic pilot draft|ZEKVAR_TEST_SECRET/);
+  });
   await dashboard.reload();
   await dashboard.getByRole('table', { name: 'Security events', exact: true }).getByText('ChatGPT', { exact: true }).waitFor();
   if (artifacts) await dashboard.screenshot({ path: join(artifacts, '27-hosted-control.png'), fullPage: true });
