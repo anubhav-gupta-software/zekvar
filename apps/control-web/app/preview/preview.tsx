@@ -18,6 +18,8 @@ import { chatGptApp, type AiPromptApp } from '../../../../contracts/policy/apps'
 import { aiAppAccessCatalog } from '../../../../contracts/policy/ai-app-access';
 import { domainRuleLimit, ruleCount } from '../../../../contracts/policy/domains';
 import { clipboardModes, type ClipboardMode } from '../../../../contracts/policy/clipboard';
+import { compareTestPack, type TestPack, type TestPackReport } from '../../lib/test-pack';
+import { TestPackInput, TestPackResults } from './verification-pack';
 
 const navigationFields = [
   ['allow', 'Draft allowed domains'], ['block', 'Draft blocked domains'],
@@ -59,7 +61,8 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
   const [customUrl, setCustomUrl] = useState('');
   const [customFile, setCustomFile] = useState({ name: '', type: '' });
   const [promptApp, setPromptApp] = useState<AiPromptApp>(chatGptApp);
-  const [result, setResult] = useState<PreviewResult>();
+  const [pack, setPack] = useState<TestPack>();
+  const [result, setResult] = useState<PreviewResult & { packReport?: TestPackReport }>();
   const [error, setError] = useState('');
   const [ready, setReady] = useState(false);
   const selectedAccess = editor.blockedAiAppHosts;
@@ -140,7 +143,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
     }
     const file = customFile.name || customFile.type.trim() ? customFile : undefined;
     setError('');
-    setResult(runComparison(reference, {
+    const candidate: PreviewPolicy = {
       mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode, privateKeyMode: editor.privateKeyMode,
       ssnMode: editor.ssnMode,
       clipboardMode: editor.clipboardMode,
@@ -152,7 +155,11 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
       claudePromptEnabled: editor.claudePromptEnabled, domainRules, pathRules,
       uploadModes: editor.uploadModes, uploadTypes: { chatgpt, gemini }, fileInspection: editor.fileInspection,
       fileContentModes: editor.fileContentModes, customApps, promptExceptions,
-    }, customPrompt, address, file, promptApp));
+    };
+    setResult({
+      ...runComparison(reference, candidate, customPrompt, address, file, promptApp, now),
+      packReport: pack && compareTestPack(pack, reference, candidate, scopeName, source, now),
+    });
   }
 
   return <fieldset disabled={!ready} className="m-0 min-w-0 border-0 p-0">
@@ -376,9 +383,11 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
             onChange={(event) => { setCustomUrl(event.target.value); invalidate(); }} />
         </div>
       </div>
+      <TestPackInput pack={pack} onChange={(value) => { setPack(value); invalidate(); }} />
       <button type="button" className="button primary" onClick={run}>Run preview</button>
       {error && <p className="feedback error" role="alert">{error}</p>}
     </section>
+    {result?.packReport && <TestPackResults report={result.packReport} />}
     {result && <PreviewResults result={result} groupId={groupId} scopeName={scopeName} writable={writable} review={review} />}
   </fieldset>;
 }

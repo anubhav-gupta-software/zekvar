@@ -118,6 +118,24 @@ The preview evaluates the supported text detectors, file metadata, and individua
 
 Use **Draft ChatGPT file content protection** or **Draft Gemini file content protection** to preview Off, Monitor, and Block. The preview includes matching and clean synthetic text and an unsupported file sample. Browser v0.27.0 can hold a file selection, release a clean scan, and stop a batch when it finds a match or cannot finish the check. Use Browser health to confirm the installed release across the rollout group. **Security events** shows the detector or **File check unavailable**, along with the intake method. **Reports → By activity** includes these decisions under **File content inspection**. [Block sensitive file contents](../browser-extension/README.md#block-sensitive-file-contents)
 
+## Test a policy with a reusable pack
+
+1. Open **Policy preview** for the baseline or a rollout group. Under **Test samples**, select **Download starter pack**.
+2. Edit the JSON with synthetic cases and expected decisions. Import the file and select **Run preview** to compare the published version and the draft.
+3. Review **Regression** for an expectation met only by the current policy, **Fixed** for one met only by the draft, **Mismatch** when both miss it, and **Pass** when both meet it. Rerun after editing the draft.
+4. Select **Download test results** to save the scope, current version, draft source version, capture time, case IDs, and decisions. Use non-sensitive IDs. The report excludes sample text, URLs, and file details. The imported cases stay in the tab until you clear the pack, change scope, or reload.
+
+Use `{"version":1,"cases":[...]}`. A pack can contain 1–100 cases and be up to 256 KiB. Each case needs a unique `id` of 1–64 ASCII letters, digits, hyphens, or underscores, starting with a letter or digit, plus `kind` and `expect`.
+
+| Kind | Case fields | Expected decisions |
+| --- | --- | --- |
+| `prompt` | `app` of `chatgpt`, `gemini`, or `claude`, plus `text`. | `allow`, `monitor`, `warn`, `block`, `exception_applied` |
+| `clipboard` | Same app choices. Omit `text` to simulate a paste without inspectable text. | `allow`, `monitor`, `block` |
+| `navigation` | Complete HTTP or HTTPS `url`. | `allow`, `block` |
+| `upload` | `app` of `chatgpt` or `gemini`, `file` with `name` and `type`, and optional simulated extracted `text`. Omit `text` to test an unavailable content check. | `allow`, `monitor`, `block` |
+
+The pack scores policy decisions locally. Exercise native prompt submission, paste, file parsing, and navigation in a managed rollout group before promoting the policy.
+
 ## Protect organization identifiers
 
 1. Open **Policy preview** and choose a scope. Under **Organization identifier detection**, select **Monitor**, **Warn**, or **Block**. Enter one prefix and digit count per line in **Identifier formats**, such as `CUST- 8` or `CASE_ 6`. Use prefixes that distinguish your identifiers from ordinary text.

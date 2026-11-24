@@ -750,7 +750,13 @@ test('Control dashboard signs in and manages a real browser installation and eve
       assert.equal(await auditPage.getByRole('button', { name: /^(Publish|Create enrollment grant|Restore|Revoke)/ }).count(), 0);
       await auditPage.getByRole('link', { name: 'Policy preview', exact: true }).click();
       await auditPage.getByLabel('Draft test marker').selectOption('warn');
+      await auditPage.getByLabel('Import test pack', { exact: true }).setInputFiles({ name: 'auditor-pack.json', mimeType: 'application/json',
+        buffer: Buffer.from(JSON.stringify({ version: 1, cases: [
+          { id: 'auditor-marker', kind: 'prompt', app: 'chatgpt', text: 'ZEKVAR_TEST_SECRET', expect: 'warn' },
+        ] })) });
+      await auditPage.getByText('Loaded 1 case.', { exact: true }).waitFor();
       await auditPage.getByRole('button', { name: 'Run preview', exact: true }).click();
+      await auditPage.getByRole('table', { name: 'Test pack results', exact: true }).getByRole('row', { name: /auditor-marker.*(?:Pass|Fixed)/ }).waitFor();
       await auditPage.getByRole('table', { name: 'Preview results' }).waitFor();
       assert.equal(await auditPage.getByRole('button', { name: 'Publish previewed policy', exact: true }).count(), 0);
       await auditPage.getByRole('link', { name: 'Rollout groups', exact: true }).click();
@@ -796,6 +802,146 @@ test('Control dashboard signs in and manages a real browser installation and eve
       await reviewerContext.close();
     }
     await page.goto(dashboard);
+  });
+
+  await t.test('runs reusable test packs locally against a rollout policy and an unpublished draft', async () => {
+    const group = await post('/admin/policy-groups', { name: 'Test pack lab' }, token);
+    const scope = `/admin/policy-groups/${group.id}/policies`;
+    const published = await post(scope, {
+      mode: 'warn', githubPatMode: 'off', clipboardMode: 'monitor', claudePromptEnabled: false,
+      domainRules: { allow: [], block: ['workflow.example.test'] },
+      pathRules: { allow: ['workflow.example.test/allowed'], block: [] },
+      fileContentModes: { chatgpt: 'off', gemini: 'monitor' },
+      uploadModes: { chatgpt: 'off', gemini: 'off' }, promptExceptions: [],
+    }, token);
+    const readApi = async (route) => {
+      const response = await context.request.get(`${api}${route}`, { headers: { Authorization: `Bearer ${token}` } });
+      assert.equal(response.status(), 200);
+      return response.json();
+    };
+    const marker = 'ZEKVAR_TEST_SECRET';
+    const sentinel = 'private-synthetic-pack-78ae1';
+    const sample = `${sentinel} ${marker}`;
+    const cases = [
+      { id: 'blocked-prompt', kind: 'prompt', app: 'chatgpt', expect: 'block', text: sample },
+      { id: 'warn-prompt', kind: 'prompt', app: 'gemini', expect: 'warn', text: marker },
+      { id: 'clean-prompt', kind: 'prompt', app: 'chatgpt', expect: 'allow', text: 'Synthetic meeting notes.' },
+      { id: 'disabled-claude', kind: 'prompt', app: 'claude', expect: 'block', text: marker },
+      { id: 'blocked-paste', kind: 'clipboard', app: 'gemini', expect: 'block', text: marker },
+      { id: 'missing-paste', kind: 'clipboard', app: 'chatgpt', expect: 'allow' },
+      { id: 'oversized-paste', kind: 'clipboard', app: 'chatgpt', expect: 'block', text: 'x'.repeat(64_001) },
+      { id: 'allowed-path', kind: 'navigation', expect: 'allow', url: `https://work.workflow.example.test/allowed/start?demo=${sentinel}` },
+      { id: 'blocked-path', kind: 'navigation', expect: 'block', url: 'https://work.workflow.example.test/elsewhere' },
+      { id: 'lookalike-host', kind: 'navigation', expect: 'allow', url: 'https://workflow.example.test.other.test/' },
+      { id: 'file-contents', kind: 'upload', app: 'gemini', expect: 'block', file: { name: `${sentinel}.txt`, type: 'text/plain' }, text: sample },
+      { id: 'unavailable-file', kind: 'upload', app: 'gemini', expect: 'block', file: { name: 'sample.pdf', type: 'application/pdf' } },
+    ];
+    const toFile = (value) => ({ name: 'test-pack.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(value)) });
+    const [history, audit] = await Promise.all([readApi(scope), readApi('/admin/audit?action=policy_published')]);
+    await page.goto(`${dashboard}/preview?group=${group.id}`);
+    const packInput = page.getByLabel('Import test pack', { exact: true });
+    const run = page.getByRole('button', { name: 'Run preview', exact: true });
+    const table = page.getByRole('table', { name: 'Test pack results', exact: true });
+    const getDownload = async (name) => {
+      const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name, exact: true }).click()]);
+      return { filename: download.suggestedFilename(), value: JSON.parse(await readFile(await download.path(), 'utf8')) };
+    };
+    const requests = [];
+    const capture = (request) => requests.push({ url: request.url(), body: request.postData(), method: request.method() });
+    page.on('request', capture);
+    try {
+      const starter = await getDownload('Download starter pack');
+      assert.equal(starter.filename, 'zekvar-test-pack.json');
+      await packInput.setInputFiles(toFile(starter.value));
+      await page.getByText(`Loaded ${starter.value.cases.length} cases.`, { exact: true }).waitFor();
+      await run.click();
+      await table.waitFor();
+      await page.getByRole('button', { name: 'Clear test pack', exact: true }).click();
+      await table.waitFor({ state: 'detached' });
+
+      const invalidPacks = [
+        [toFile({ version: 2, cases }), /Use test pack version 1/],
+        [toFile({ version: 1, cases: [cases[0], { ...cases[0], id: 'BLOCKED-PROMPT' }] }), /unique case ID in case 2/],
+        [toFile({ version: 1, cases: [{ ...cases[7], url: 'javascript:alert(1)' }] }), /fields and expected outcome in case 1/],
+        [toFile({ version: 1, cases: [{ ...cases[0], text: { value: sample } }] }), /fields and expected outcome in case 1/],
+        [toFile({ version: 1, cases: [{ ...cases[10], app: 'claude' }] }), /fields and expected outcome in case 1/],
+        [toFile({ version: 1, cases: [{ ...cases[1], payload: sample }] }), /fields and expected outcome in case 1/],
+        [{ ...toFile({}), buffer: Buffer.from('{') }, /valid JSON/],
+        [{ ...toFile({}), buffer: Buffer.alloc(256 * 1024 + 1, 32) }, /256 KiB/],
+      ];
+      for (const [file, error] of invalidPacks) {
+        await packInput.setInputFiles(file);
+        await page.getByRole('alert').filter({ hasText: error }).waitFor();
+        assert.equal(await table.count(), 0);
+      }
+      await packInput.setInputFiles(toFile({ version: 1, cases }));
+      await page.getByText(`Loaded ${cases.length} cases.`, { exact: true }).waitFor();
+      await page.getByLabel('Draft test marker', { exact: true }).selectOption('block');
+      await page.getByLabel('Draft clipboard paste protection', { exact: true }).selectOption('block');
+      await page.getByLabel('Draft Gemini file content protection', { exact: true }).selectOption('block');
+      await run.click();
+      const expected = [
+        ['warn', 'block', 'fixed'], ['warn', 'block', 'regression'], ['allow', 'allow', 'pass'], ['allow', 'allow', 'mismatch'],
+        ['monitor', 'block', 'fixed'], ['allow', 'block', 'regression'], ['allow', 'block', 'fixed'], ['allow', 'allow', 'pass'],
+        ['block', 'block', 'pass'], ['allow', 'allow', 'pass'], ['monitor', 'block', 'fixed'], ['allow', 'block', 'fixed'],
+      ];
+      await table.getByRole('row', { name: /blocked-prompt.*Fixed/ }).waitFor();
+      await table.getByRole('row', { name: /warn-prompt.*Regression/ }).waitFor();
+      await page.setViewportSize({ width: 390, height: 844 });
+      await assertFitsViewport(page);
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      const screenshot = process.env.ZEKVAR_TEST_PACK_SCREENSHOT;
+      if (screenshot) {
+        await table.scrollIntoViewIfNeeded();
+        await page.screenshot({ path: screenshot });
+      }
+      const report = await getDownload('Download test results');
+      assert.equal(report.filename, 'zekvar-test-results.json');
+      assert.equal(report.value.version, 1);
+      assert.equal(report.value.scope, group.name);
+      assert.equal(report.value.currentVersion, published.version);
+      assert.equal(report.value.draftSourceVersion, published.version);
+      assert.ok(Number.isFinite(Date.parse(report.value.evaluatedAt)));
+      assert.deepEqual(report.value.summary, { currentPassed: 6, draftPassed: 9, fixes: 5, regressions: 2 });
+      assert.deepEqual(report.value.cases, cases.map(({ id, kind, app, expect }, index) => {
+        const [current, draft, result] = expected[index];
+        return { id, kind, ...(app && { app }), expect, current, draft, result };
+      }));
+      const privateData = new RegExp(`${sentinel}|${marker}|workflow\\.example\\.test/allowed/start`);
+      assert.doesNotMatch(JSON.stringify(report.value), privateData);
+      assert.ok(!requests.some(({ url, body, method }) => privateData.test(`${url} ${body}`) || method !== 'GET'));
+      assert.deepEqual(await readApi(scope), history);
+      assert.deepEqual(await readApi('/admin/audit?action=policy_published'), audit);
+
+      await page.getByLabel('Draft test marker', { exact: true }).selectOption('warn');
+      await table.waitFor({ state: 'detached' });
+      assert.equal(await page.getByRole('button', { name: 'Download test results', exact: true }).count(), 0);
+      await run.click();
+      await table.getByRole('row', { name: /warn-prompt.*Pass/ }).waitFor();
+      await page.getByRole('button', { name: 'Add prompt exception', exact: true }).click();
+      const exception = page.getByRole('group', { name: 'Exception 1', exact: true });
+      await exception.getByLabel('App', { exact: true }).selectOption('gemini');
+      await exception.getByLabel('Expires (UTC)', { exact: true }).fill(new Date(Date.now() + 120_000).toISOString().slice(0, 16));
+      await exception.getByLabel('Reason', { exact: true }).fill('Test pack exception');
+      await packInput.setInputFiles(toFile({ version: 1, cases: [
+        { ...cases[1], expect: 'exception_applied' }, cases[4],
+      ] }));
+      await page.getByText('Loaded 2 cases.', { exact: true }).waitFor();
+      await run.click();
+      await table.getByRole('row', { name: /warn-prompt.*Exception.*Fixed/ }).waitFor();
+      await table.getByRole('row', { name: /blocked-paste.*Fixed/ }).waitFor();
+      await packInput.setInputFiles(toFile({ version: 1, cases: [] }));
+      await table.waitFor({ state: 'detached' });
+      await packInput.setInputFiles(toFile({ version: 1, cases }));
+      await page.getByText(`Loaded ${cases.length} cases.`, { exact: true }).waitFor();
+      await page.reload();
+      await run.click();
+      await table.waitFor({ state: 'detached' });
+      await page.getByRole('table', { name: 'Preview results', exact: true }).waitFor();
+      assert.equal(await page.getByRole('button', { name: 'Clear test pack', exact: true }).count(), 0);
+    } finally {
+      page.off('request', capture);
+    }
   });
 
   await t.test('a different administrator must approve the exact previewed policy in Control', async () => {
@@ -866,7 +1012,8 @@ test('Control dashboard signs in and manages a real browser installation and eve
       await reviewed.getByText('Approved', { exact: true }).waitFor();
       await reviewed.getByText('Approved by Review approver', { exact: true }).waitFor();
       const [current] = await history();
-      assert.equal(current.version, prior.version + 1);
+      assert.ok(current.version > prior.version);
+      await reviewed.getByText(`Reference v${prior.version} · Published v${current.version}`, { exact: true }).waitFor();
       assert.equal(current.mode, 'block');
       assert.equal(current.extensionInventoryEnabled, true);
       assert.equal(current.promptExceptions[0].reason, 'Review fixture change EX-101');

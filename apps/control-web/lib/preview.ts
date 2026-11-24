@@ -102,7 +102,7 @@ const navigations = [
   { name: 'Similar domain', content: 'https://pilot.example.test.other.test/' },
 ];
 
-function promptOutcome(content: string, policy: PreviewPolicy, app: AiPromptApp, now: number): PreviewDecision {
+export function promptOutcome(content: string, policy: PreviewPolicy, app: AiPromptApp, now: number): PreviewDecision {
   if (app === claudeApp && !policy.claudePromptEnabled) return { action: 'allow' };
   const grants = policy.promptExceptions.filter(({ appId, expiresAt }) => appId === app && Date.parse(expiresAt) > now);
   const { match, exception } = evaluatePromptWithExceptions(content, policy, new Set(grants.map(({ ruleId }) => ruleId)));
@@ -112,14 +112,14 @@ function promptOutcome(content: string, policy: PreviewPolicy, app: AiPromptApp,
     rule: outcome.ruleId === fixtureRule ? 'Test marker' : ruleLabels[outcome.ruleId] };
 }
 
-function navigationOutcome(url: URL, policy: PreviewPolicy): PreviewDecision {
+export function navigationOutcome(url: URL, policy: PreviewPolicy): PreviewDecision {
   const blockedHost = blockedAiAppAt(url, policy.blockedAiAppHosts ?? []);
   if (blockedHost) return { action: 'block', rule: `AI app access · ${blockedHost}` };
   const outcome = evaluateNavigation(url, policy.domainRules, policy.pathRules);
   return { action: outcome.action, rule: outcome.pathRule ?? outcome.domain };
 }
 
-function clipboardOutcome(text: string | undefined, policy: PreviewPolicy, app: AiPromptApp): PreviewDecision {
+export function clipboardOutcome(text: string | undefined, policy: PreviewPolicy, app: AiPromptApp): PreviewDecision {
   if (app === claudeApp && !policy.claudePromptEnabled) return { action: 'allow' };
   const result = inspectClipboard(text, policy, policy.clipboardMode ?? 'off');
   return result ? { action: result.decision, rule: result.ruleId === fixtureRule ? 'Test marker' : decisionRuleLabels[result.ruleId] } : { action: 'allow' };
@@ -130,7 +130,7 @@ function uploadOutcome(mode: UploadMode, types: string[], file: UploadFile): Pre
   return { action: mode, rule: 'File upload policy' };
 }
 
-function fileInspectionOutcome(policy: PreviewPolicy, app: typeof uploadApps[number], file: UploadFile, text?: string): PreviewDecision {
+export function fileInspectionOutcome(policy: PreviewPolicy, app: typeof uploadApps[number], file: UploadFile, text?: string): PreviewDecision {
   const beforeInspection = uploadOutcome(policy.uploadModes[app], policy.uploadTypes[app], file);
   if (beforeInspection.action === 'block') return beforeInspection;
   const mode = fileContentMode(policy, app);
@@ -141,8 +141,7 @@ function fileInspectionOutcome(policy: PreviewPolicy, app: typeof uploadApps[num
 }
 
 export function runComparison(reference: PreviewSnapshot, candidate: PreviewPolicy, prompt: string, address?: URL,
-  file?: UploadFile, app: AiPromptApp = chatGptApp): PreviewResult {
-  const now = Date.now();
+  file?: UploadFile, app: AiPromptApp = chatGptApp, now = Date.now()): PreviewResult {
   const rows: PreviewRow[] = prompts.map(({ name, content }) => ({
     name, current: promptOutcome(content, reference, app, now), draft: promptOutcome(content, candidate, app, now),
   }));
