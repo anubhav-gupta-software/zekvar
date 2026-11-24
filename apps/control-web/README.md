@@ -243,6 +243,14 @@ Alert settings apply to newly received decisions. Turning the rule off stops new
 
 If the deployment operator configured a webhook, open the alert's **Webhook delivery** section to see whether it was delivered, when Control will retry, or why an attempt failed. Refresh delivery status to check the latest attempt. [Configure alert delivery](../../deploy/pilot/README.md#send-alerts-to-a-webhook)
 
+## Review extension access alerts
+
+1. Open **Alerts → Extension access alerts**. Turn **Alert on expanded access** on and save. The rule starts Off and uses browsers with extension inventory enabled and Chrome permission granted.
+2. Refresh the extension inbox after a browser reports. Control opens one alert per report with new risk signals. These include broader site access, newly granted privileged permissions, and newly enabled extensions with broad access, privileged permissions, or an unpacked or sideloaded install source.
+3. Open the alert to compare the before and after states or follow the link to the browser's current inventory. Select **Acknowledge alert** when reviewed. The acknowledged view and audit log preserve the review while the records are retained.
+
+The rule starts with the next change report. Turning it off stops new alerts. Each alert follows the underlying inventory report, with up to 20 changed reports per browser from the last 30 days. The inbox uses the current rollout assignment and inventory policy. Auditors can review the evidence and acknowledgment log. [Extension access alert API](../control-api/README.md#extension-access-alerts)
+
 ## Investigate an incident case
 
 1. Open a detection from **Events**. Under **Incident case**, choose a category and select **Open new case**. To add another detection, open that event, choose **Link to an existing case**, and select the case from the list.

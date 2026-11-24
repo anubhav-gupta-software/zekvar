@@ -22,6 +22,10 @@ internal sealed partial class ControlStore
                 WHERE scoped.organization_id = i.organization_id AND scoped.policy_group_id = g.id AND scoped.version < stopped.version
             ))
         """;
+    private const string InventoryHistoryVisible = $"""
+        b.assignment_version = i.assignment_version AND b.policy_version > ({InventoryGap})
+        AND b.received_at >= now() - interval '30 days'
+        """;
 
     public async Task<bool> ReportInventory(Guid installationId, ReportExtensionInventory report, CancellationToken ct)
     {
@@ -74,14 +78,17 @@ internal sealed partial class ControlStore
         {
             await using var history = BrowserRead(transaction, """
                 WITH added AS (
-                    INSERT INTO extension_inventory_change_batches (installation_id, organization_id, policy_version, assignment_version, changes)
-                    VALUES ($1, $2, $3, $4, $5::jsonb)
+                    INSERT INTO extension_inventory_change_batches (installation_id, organization_id, policy_version, assignment_version, changes, alert_id)
+                    VALUES ($1, $2, $3, $4, $5::jsonb, CASE WHEN $7 AND EXISTS (
+                        SELECT 1 FROM extension_access_alert_settings WHERE organization_id = $2 AND enabled
+                    ) THEN gen_random_uuid() END)
                 )
                 DELETE FROM extension_inventory_change_batches WHERE id IN (
                     SELECT id FROM extension_inventory_change_batches WHERE installation_id = $1 ORDER BY id DESC OFFSET $6
                 )
                 """, installationId, organizationId, report.PolicyVersion, report.AssignmentVersion,
-                JsonSerializer.Serialize(changes, JsonSerializerOptions.Web), InventoryHistoryLimit - 1);
+                JsonSerializer.Serialize(changes, JsonSerializerOptions.Web), InventoryHistoryLimit - 1,
+                changes.Any(change => change.ReviewAccess));
             await history.ExecuteNonQueryAsync(ct);
         }
         await transaction.CommitAsync(ct);
@@ -100,8 +107,7 @@ internal sealed partial class ControlStore
                         'reportedAt', b.received_at, 'changes', b.changes) ORDER BY b.id DESC), '[]'::jsonb)
                     FROM extension_inventory_change_batches b
                     WHERE b.organization_id = i.organization_id AND b.installation_id = i.id
-                        AND b.assignment_version = i.assignment_version AND b.policy_version > ({InventoryGap})
-                        AND b.received_at >= now() - interval '30 days'
+                        AND {InventoryHistoryVisible}
                 ) END
             {InventoryScope}
             LEFT JOIN extension_inventory_snapshots s ON p.extension_inventory_enabled AND s.installation_id = i.id

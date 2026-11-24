@@ -141,6 +141,13 @@ test('Chrome inventory follows the policy and permission, with metadata-only upd
     assert.equal(response.status, 200);
     return response.json();
   };
+  const alertInbox = async () => {
+    const response = await fetch(api + '/v1/admin/alerts/extensions?status=open', {
+      headers: { Authorization: 'Bearer ' + owner }, signal: AbortSignal.timeout(5000),
+    });
+    assert.equal(response.status, 200);
+    return (await response.json()).entries;
+  };
   await enroll(popup);
   const id = await installationId();
   const baseline = await inventory(id);
@@ -191,6 +198,12 @@ test('Chrome inventory follows the policy and permission, with metadata-only upd
   if (artifacts) await dashboard.screenshot({ path: join(artifacts, '24-control-extension-inventory.png'), fullPage: true });
   await dashboard.setViewportSize({ width: 390, height: 844 });
   assert.ok(await dashboard.evaluate(() => document.documentElement.scrollWidth === document.documentElement.clientWidth));
+  await dashboard.getByRole('link', { name: 'Extension access alerts', exact: true }).click();
+  await dashboard.getByLabel('Alert on expanded access', { exact: true }).selectOption('on');
+  await dashboard.getByRole('button', { name: 'Save extension alert settings', exact: true }).click();
+  await dashboard.getByText('Extension alert settings saved.', { exact: true }).waitFor();
+  assert.deepEqual(await alertInbox(), []);
+  await dashboard.goto(web + path);
 
   const manager = await browser.newPage();
   await manager.goto('chrome://extensions/');
@@ -219,6 +232,7 @@ test('Chrome inventory follows the policy and permission, with metadata-only upd
   await manager.locator('extensions-item').filter({ hasText: 'Inventory Utility Fixture' }).waitFor({ state: 'detached' });
   await sync();
   assert.equal((await inventory(id)).entries.some(({ id }) => id === utilityId), false);
+  assert.deepEqual(await alertInbox(), []);
   const removed = (await inventory(id)).changeHistory[0].changes.find(({ extensionId }) => extensionId === utilityId);
   assert.equal(removed.before.version, '2.1');
   assert.equal(removed.after, null);
@@ -227,9 +241,15 @@ test('Chrome inventory follows the policy and permission, with metadata-only upd
 
   await writeFile(join(inspector, 'manifest.json'), JSON.stringify({ ...inspectionManifest, version: '1.2',
     permissions: ['tabs'], host_permissions: [] }));
+  dropAcknowledgment = true;
   const restarted = await launch('consented', [reviewExtension]);
   ({ popup, worker } = await openPopup(restarted));
+  await popup.getByText('Extension inventory is unavailable. Zekvar will retry.', { exact: true }).waitFor();
+  const [opened] = await alertInbox();
+  assert.ok(opened && opened.installationId === id);
+  await sync();
   await popup.getByText('Extension inventory reported to Control.', { exact: true }).waitFor();
+  assert.deepEqual((await alertInbox()).map(({ id }) => id), [opened.id]);
   assert.equal(await installationId(), id);
   const updated = (await inventory(id)).entries.find(({ id }) => id === inspectorId);
   assert.equal(updated.version, '1.2');
@@ -254,6 +274,26 @@ test('Chrome inventory follows the policy and permission, with metadata-only upd
   if (artifacts) await history.screenshot({ path: join(artifacts, 'extension-change-history.png') });
   await dashboard.setViewportSize({ width: 390, height: 844 });
   assert.ok(await dashboard.evaluate(() => document.documentElement.scrollWidth === document.documentElement.clientWidth));
+  await dashboard.getByRole('link', { name: 'Extension access alerts', exact: true }).click();
+  const label = 'Extension alert ' + opened.id.slice(0, 8).toUpperCase();
+  await dashboard.getByRole('link', { name: label, exact: true }).click();
+  const evidence = dashboard.getByRole('table', { name: 'Alert changes', exact: true });
+  await evidence.getByText(added.extensionId, { exact: true }).waitFor();
+  assert.equal(await evidence.getByText(inspectorId, { exact: true }).count(), 0);
+  assert.ok(await dashboard.evaluate(() => document.documentElement.scrollWidth === document.documentElement.clientWidth));
+  if (artifacts) {
+    await dashboard.setViewportSize({ width: 1280, height: 850 });
+    await dashboard.screenshot({ path: join(artifacts, 'extension-access-alert.png'), fullPage: true });
+  }
+  await dashboard.getByRole('button', { name: 'Acknowledge alert', exact: true }).click();
+  await dashboard.getByText('Acknowledged', { exact: true }).waitFor();
+  assert.deepEqual(await alertInbox(), []);
+  await dashboard.getByRole('link', { name: 'Back to extension alerts', exact: true }).click();
+  await dashboard.getByLabel('Status', { exact: true }).selectOption('acknowledged');
+  await dashboard.getByRole('button', { name: 'Apply alert filters', exact: true }).click();
+  await dashboard.getByRole('link', { name: label, exact: true }).waitFor();
+  await dashboard.getByRole('link', { name: 'Audit log', exact: true }).click();
+  await dashboard.getByRole('link', { name: label, exact: true }).waitFor();
   await popup.getByRole('button', { name: 'Remove extension inventory permission', exact: true }).click();
   await popup.getByRole('button', { name: 'Allow extension inventory', exact: true }).waitFor();
   await sync();

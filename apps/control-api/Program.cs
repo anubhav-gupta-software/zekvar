@@ -465,6 +465,28 @@ alerts.MapGet("/{id:guid}", async (Guid id, DateTimeOffset? beforeAt, Guid? befo
 });
 alerts.MapPost("/{id:guid}/acknowledge", async (Guid id, HttpContext http, CancellationToken ct) =>
     await store.AcknowledgeSecurityAlert(Identity(http), id, ct) ? Results.NoContent() : Results.NotFound());
+var extensionAlerts = alerts.MapGroup("/extensions");
+extensionAlerts.MapGet("/settings", async (HttpContext http, CancellationToken ct) =>
+    Results.Ok(await store.GetExtensionAccessSettings(Identity(http).OrganizationId, ct)));
+extensionAlerts.MapPost("/settings", async (SetExtensionAccessSettings request, HttpContext http, CancellationToken ct) =>
+{
+    if (!request.IsValid()) return Results.BadRequest(new { error = "Choose an alert mode and a settings revision." });
+    return await store.UpdateExtensionAccessSettings(Identity(http), request, ct) is { } settings
+        ? Results.Ok(settings) : Results.Conflict(new { code = "alert_settings_changed" });
+});
+extensionAlerts.MapGet("", async (string? status, DateTimeOffset? beforeAt, Guid? beforeId, HttpContext http, CancellationToken ct) =>
+{
+    if (status is not (null or "open" or "acknowledged") || beforeAt.HasValue != beforeId.HasValue || beforeId == Guid.Empty ||
+        http.Request.Query.Any(entry => entry.Value.Count != 1 || entry.Key is not ("status" or "beforeAt" or "beforeId")))
+        return Results.BadRequest(new { error = "Choose a valid alert status and a complete cursor." });
+    var cursor = beforeAt is { } at && beforeId is { } id ? new SecurityAlertCursor(at, id) : null;
+    return Results.Ok(await store.ExtensionAccessAlerts(Identity(http).OrganizationId, status, cursor, ct));
+});
+extensionAlerts.MapGet("/{id:guid}", async (Guid id, HttpContext http, CancellationToken ct) =>
+    await store.ExtensionAccessAlertDetails(Identity(http).OrganizationId, id, ct) is { } detail
+        ? Results.Ok(detail) : Results.NotFound());
+extensionAlerts.MapPost("/{id:guid}/acknowledge", async (Guid id, HttpContext http, CancellationToken ct) =>
+    await store.AcknowledgeExtensionAccessAlert(Identity(http), id, ct) ? Results.NoContent() : Results.NotFound());
 admin.MapGet("/reports/ai-enforcement", async (HttpContext http, CancellationToken ct) =>
 {
     var query = AiReportQuery.Parse(http.Request.Query, DateTimeOffset.UtcNow);

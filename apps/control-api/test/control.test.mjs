@@ -46,6 +46,7 @@ const impactAdmin = randomBytes(32).toString('hex');
 const promptRequestAdmin = randomBytes(32).toString('hex');
 const promptAppModesAdmin = randomBytes(32).toString('hex');
 const inventoryChangesAdmin = randomBytes(32).toString('hex');
+const extensionAlertsAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -60,6 +61,11 @@ const undoPromptAppModesSchema = `
   DELETE FROM schema_migrations WHERE version = 46;
   ALTER TABLE policy_versions DROP COLUMN prompt_app_modes;
   ALTER TABLE policy_deliveries DROP COLUMN prompt_app_modes;
+`;
+const undoExtensionAccessAlertsSchema = `
+  DELETE FROM schema_migrations WHERE version = 48;
+  DROP TABLE extension_access_alert_settings;
+  ALTER TABLE extension_inventory_change_batches DROP COLUMN alert_acknowledged_at, DROP COLUMN alert_id;
 `;
 const undoPromptRequestSchema = `
   ${undoPromptAppModesSchema}
@@ -256,6 +262,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__28__AdminToken: promptAppModesAdmin,
       Control__Organizations__29__Slug: `inventory-history-${suffix}`,
       Control__Organizations__29__AdminToken: inventoryChangesAdmin,
+      Control__Organizations__30__Slug: `extension-alerts-${suffix}`,
+      Control__Organizations__30__AdminToken: extensionAlertsAdmin,
       ...overrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -4811,7 +4819,9 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual(await history(), []);
     if (postgres) {
       await stop();
-      await retentionFixture('DELETE FROM schema_migrations WHERE version = 47; DROP TABLE extension_inventory_change_batches;');
+      await retentionFixture(`${undoExtensionAccessAlertsSchema}
+        DELETE FROM schema_migrations WHERE version = 47;
+        DROP TABLE extension_inventory_change_batches;`);
       await start();
       assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 47'), '1');
       assert.deepEqual((await admin(path)).entries, [entry]);
@@ -4848,7 +4858,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(batch.changes.length, 2);
     const previous = { version: '1.0', enabled: true, installType: 'normal', siteAccess: 'selected', permissions: ['cookies', 'tabs'] };
     assert.deepEqual(batch.changes[0], { extensionId: entry.id, before: previous, after: { ...previous,
-      version: '2.0', siteAccess: 'all', permissions: ['cookies', 'debugger', 'tabs'] } });
+      version: '2.0', siteAccess: 'all', permissions: ['cookies', 'debugger', 'tabs'] }, reviewAccess: true });
     assert.equal(batch.changes[1].before, null);
     assert.doesNotMatch(JSON.stringify(batch), /private fixture|Private review|second private|"name"|hostPermissions/i);
     await report({ ...update, entries: [entry] });
@@ -4933,6 +4943,116 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     } else await revoke();
     await admin(path, { expect: 404 });
     if (postgres) assert.equal(await count(), '0');
+  });
+
+  await t.test('opens opt-in extension access alerts once and audits review inside the reporting scope', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: extensionAlertsAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const root = 'alerts/extensions';
+    const settings = `${root}/settings`;
+    const [reviewer, auditor] = await Promise.all(['administrator', 'auditor'].map((role) =>
+      post('access', { name: `Extension alert ${role}`, role, hours: 1 })));
+    const configure = (enabled, expectedRevision, options) => post(settings, { enabled, expectedRevision }, { token: reviewer.token, ...options });
+    assert.deepEqual(await admin(settings), { enabled: false, revision: 0 });
+    const aiSettings = await post('alerts/settings', { enabled: true, threshold: 4, expectedRevision: 0 });
+    const baseline = await post('policies', { extensionInventoryEnabled: true });
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant: (await post('enrollment-grants')).grant } });
+    const browserPolicy = () => call('/v1/browser/policy', { token: browser.token, assignmentAware: true });
+    await browserPolicy();
+    const inventory = () => admin(`extension-inventory/${browser.installationId}`);
+    const report = (body, expect = 204) => call('/v1/browser/extension-inventory', { method: 'POST', token: browser.token, body, expect });
+    const core = { name: 'Private test extension title', version: '1.0', enabled: true, installType: 'normal',
+      siteAccess: 'none', permissions: [] };
+    const extensions = ['a', 'b', 'c'].map((letter) => ({ ...core, id: letter.repeat(32) }));
+    let time = Date.now() - 1500;
+    const snapshot = (entries, fields) => ({ policyVersion: baseline.version, assignmentVersion: 0, status: 'reported',
+      omitted: 0, entries, capturedAt: new Date(time++).toISOString(), ...fields });
+    await report(snapshot(extensions));
+    const [entry, other, harmless] = extensions;
+    const broad = { ...entry, siteAccess: 'all' };
+    await report(snapshot([broad, other, harmless]));
+    assert.equal((await inventory()).changeHistory[0].changes[0].reviewAccess, true);
+    assert.deepEqual((await admin(root)).entries, []);
+    if (postgres) {
+      await stop();
+      await retentionFixture(`${undoExtensionAccessAlertsSchema}
+        UPDATE extension_inventory_change_batches SET changes =
+          (SELECT jsonb_agg(change - 'reviewAccess') FROM jsonb_array_elements(changes) change)
+        WHERE installation_id = '${browser.installationId}';`);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 48'), '1');
+      assert.equal((await inventory()).changeHistory[0].changes[0].reviewAccess, true);
+      assert.deepEqual((await admin(root)).entries, []);
+    }
+    await configure(true, 0, { token: auditor.token, expect: 403 });
+    await configure(true, -1, { expect: 400 });
+    const enabled = await Promise.all([configure(true, 0), configure(true, 0)]);
+    assert.deepEqual(enabled, [{ enabled: true, revision: 1 }, { enabled: true, revision: 1 }]);
+    await configure(false, 0, { expect: 409 });
+    assert.deepEqual(await admin('alerts/settings'), aiSettings);
+    assert.deepEqual((await admin(root)).entries, []);
+
+    await report(snapshot([{ ...broad, version: '1.1' }, other, harmless]));
+    await report(snapshot([entry, other, harmless]));
+    assert.deepEqual((await admin(root)).entries, []);
+    const elevated = { ...other, permissions: ['debugger'] };
+    const candidate = snapshot([{ ...entry, siteAccess: 'selected' }, elevated, { ...harmless, version: '2.0' }], { omitted: 1 });
+    await Promise.all([report(candidate), report(candidate)]);
+    await report({ ...candidate, capturedAt: new Date(time - 3).toISOString() });
+    const opened = (await admin(`${root}?status=open`)).entries;
+    assert.equal(opened.length, 1);
+    const [alert] = opened;
+    assert.equal(alert.changeCount, 2);
+    assert.deepEqual([alert.installationId, alert.groupName, alert.policyVersion], [browser.installationId, null, baseline.version]);
+    const detailPath = `${root}/${alert.id}`;
+    const detail = await admin(detailPath, { token: auditor.token });
+    assert.deepEqual(detail.changes.map(({ extensionId, reviewAccess }) => [extensionId, reviewAccess]), [[entry.id, true], [other.id, true]]);
+    assert.doesNotMatch(JSON.stringify(detail), /Private test extension title|hostPermissions|"name"/);
+    await admin(detailPath, { token: first, expect: 404 });
+    await admin(detailPath, { token: browser.token, expect: 401 });
+    assert.deepEqual((await admin(root, { token: first })).entries, []);
+    assert.deepEqual((await admin(`${root}?${new URLSearchParams({ beforeAt: alert.triggeredAt, beforeId: alert.id })}`)).entries, []);
+    for (const invalid of ['status=all', 'beforeId=' + alert.id, 'appId=chatgpt', 'status=open&status=acknowledged']) {
+      await admin(`${root}?${invalid}`, { expect: 400 });
+    }
+    const acknowledge = (options) => post(`${detailPath}/acknowledge`, {}, { token: reviewer.token, expect: 204, ...options });
+    await acknowledge({ token: auditor.token, expect: 403 });
+    await Promise.all([acknowledge(), acknowledge()]);
+    assert.deepEqual((await admin(`${root}?status=open`)).entries, []);
+    assert.equal((await admin(`${root}?status=acknowledged`)).entries[0].id, alert.id);
+    assert.ok((await admin(detailPath)).alert.acknowledgedAt);
+    await configure(false, 1);
+    await report(snapshot([entry, { ...elevated, installType: 'sideload' }, harmless]));
+    assert.equal((await admin(root)).entries.length, 1);
+    await configure(true, 2);
+    await report(snapshot([entry, elevated, harmless]));
+    await report(snapshot([broad, elevated, harmless]));
+    const [latest] = (await admin(`${root}?status=open`)).entries;
+    assert.ok(latest && latest.id !== alert.id);
+    if (postgres) {
+      await retentionFixture(`UPDATE extension_inventory_change_batches SET received_at = now() - interval '31 days'
+        WHERE alert_id = '${latest.id}'`);
+      await admin(`${root}/${latest.id}`, { expect: 404 });
+    }
+    const group = await post('policy-groups', { name: 'Extension alert scope' });
+    await post(`installations/${browser.installationId}/policy-group`, { groupId: group.id }, { expect: 204 });
+    await admin(detailPath, { expect: 404 });
+    await acknowledge({ expect: 404 });
+    const assigned = await browserPolicy();
+    const scoped = (entries) => snapshot(entries, { policyVersion: assigned.version, assignmentVersion: assigned.assignmentVersion });
+    await report(scoped([entry, other, harmless]));
+    await report(scoped([broad, elevated, harmless]));
+    const [scopedAlert] = (await admin(root)).entries;
+    assert.equal(scopedAlert.groupName, group.name);
+    await post('policies', { extensionInventoryEnabled: false });
+    assert.deepEqual((await admin(root)).entries, []);
+    await admin(`${root}/${scopedAlert.id}`, { expect: 404 });
+    const audit = await admin('audit?limit=100');
+    const recorded = audit.entries.filter(({ securityAlertChange }) => securityAlertChange?.extensionAccess === true);
+    assert.equal(recorded.filter(({ action }) => action === 'security_alert_settings_changed').length, 3);
+    assert.deepEqual(recorded.filter(({ action }) => action === 'security_alert_acknowledged').map((entry) =>
+      [entry.securityAlertChange.alertId, entry.actorAccess.id]), [[alert.id, reviewer.access.id]]);
+    assert.doesNotMatch(JSON.stringify(recorded), /Private test extension title|debugger|hostPermissions/);
   });
 
   await t.test('versions per-app prompt actions and verifies delivery, event modes and scoped exception behavior', async () => {

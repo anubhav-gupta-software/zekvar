@@ -2,8 +2,9 @@ import { redirect } from 'next/navigation';
 import type { InventoryExtension } from '../../../../contracts/policy/extension-inventory';
 import { ApiError, controlApi } from '../../lib/api';
 import { isId, utc } from '../../lib/control';
-import { hasExpandedAccess, installTypeLabels, inventoryStatusLabels, needsReview, siteAccessLabels,
-  type InventoryExtensionChange, type InventoryInstallation } from '../../lib/extension-inventory';
+import { installTypeLabels, inventoryStatusLabels, needsReview, siteAccessLabels, type InventoryInstallation } from '../../lib/extension-inventory';
+import { extensionAlertsPath } from '../../lib/alerts';
+import { ExtensionChangesTable } from './change-table';
 import { sessionToken } from '../../lib/session';
 import { RefreshSection } from '../forms';
 import { DeploymentBadge, Sidebar } from '../workspace';
@@ -30,6 +31,7 @@ export default async function ExtensionsPage({ searchParams }: { searchParams: P
             <h2 id="inventory-heading">Browser inventory status</h2>
             <div className="form-row">
               <a className="button small" href="/extensions/deployment">Manage Chrome deployment</a>
+              <a className="button small" href={extensionAlertsPath}>Extension access alerts</a>
               <RefreshSection label="Refresh extension inventory" />
             </div>
           </div>
@@ -121,34 +123,8 @@ function ExtensionChangeHistory({ inventory }: { inventory: InventoryInstallatio
           <time dateTime={batch.reportedAt}>{historyTime.format(new Date(batch.reportedAt))}</time>
           {' · '}{batch.changes.length} {batch.changes.length === 1 ? 'change' : 'changes'} · Policy v{batch.policyVersion}
         </summary>
-        <div className="table-scroll" tabIndex={0} role="region" aria-label={`Changes from report ${batch.id}`}>
-          <table aria-label={`Extension changes from report ${batch.id}`}>
-            <thead><tr><th>Extension</th><th>Action</th><th>Changes</th><th>Review</th></tr></thead>
-            <tbody>{batch.changes.map((change) =>
-              <ExtensionChangeRow key={change.extensionId} change={change} name={names.get(change.extensionId)} />)}</tbody>
-          </table>
-        </div>
+        <ExtensionChangesTable changes={batch.changes} label={`Extension changes from report ${batch.id}`} names={names} />
       </details>)}
     </>}
   </section>;
-}
-
-function ExtensionChangeRow({ change, name }: { change: InventoryExtensionChange; name?: string }) {
-  const { before, after, extensionId } = change;
-  const fields: [string, string | undefined, string | undefined][] = [
-    ['Version', before?.version, after?.version],
-    ['State', before ? (before.enabled ? 'Enabled' : 'Disabled') : undefined, after ? (after.enabled ? 'Enabled' : 'Disabled') : undefined],
-    ['Install source', before ? installTypeLabels[before.installType] : undefined, after ? installTypeLabels[after.installType] : undefined],
-    ['Site access', before ? siteAccessLabels[before.siteAccess] : undefined, after ? siteAccessLabels[after.siteAccess] : undefined],
-    ['Selected API permissions', before ? before.permissions.join(', ') || 'None reported' : undefined,
-      after ? after.permissions.join(', ') || 'None reported' : undefined],
-  ];
-  return <tr>
-    <th scope="row">{name && <>{name}<br /></>}<code title={extensionId}>{extensionId}</code></th>
-    <td>{!before ? 'Added' : !after ? 'Removed' : 'Updated'}</td>
-    <td><ul>{fields.filter(([, prior, next]) => prior !== next).map(([field, prior, next]) => <li key={field}>
-      <strong>{field}</strong> {prior && next ? `${prior} → ${next}` : prior ?? next}
-    </li>)}</ul></td>
-    <td>{hasExpandedAccess(change) ? <span className="badge warn">Review access</span> : '—'}</td>
-  </tr>;
 }

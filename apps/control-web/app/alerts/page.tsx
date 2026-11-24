@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 import { canWrite } from '../../lib/access';
-import { alertFilters, alertNumber, alertPath, alertRollout, alertStatus } from '../../lib/alerts';
+import { alertFilters, alertNumber, alertPath, alertRollout, alertStatus, extensionAlertsPath } from '../../lib/alerts';
 import { ApiError, controlApi } from '../../lib/api';
 import { aiPromptApps, promptAppLabels, utc } from '../../lib/control';
 import { sessionToken } from '../../lib/session';
@@ -30,7 +30,10 @@ export default async function Alerts({ searchParams }: { searchParams: Promise<R
     <main className="dashboard">
       <header className="page-heading">
         <div>{session && <p className="eyebrow">{session.organization}</p>}<h1>Security alerts</h1></div>
-        <DeploymentBadge />
+        <div className="form-row">
+          <a className="button small" href={extensionAlertsPath}>Extension access alerts</a>
+          <DeploymentBadge />
+        </div>
       </header>
       {settings && <section className="panel" aria-labelledby="alert-settings-heading">
         <div className="panel-heading"><h2 id="alert-settings-heading">Repeated AI blocks</h2>

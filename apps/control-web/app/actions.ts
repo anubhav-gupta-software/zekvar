@@ -23,7 +23,7 @@ import { aiAppAccessCatalog, readBlockedAiAppHosts } from '../../../contracts/po
 import { domainRuleLimit, ruleCount } from '../../../contracts/policy/domains';
 import { eventPath, isTriageDisposition, isTriageId, isTriageStatus } from '../lib/triage';
 import { casePath, isCaseCategory, type EventReference } from '../lib/cases';
-import { alertPath } from '../lib/alerts';
+import { alertPath, extensionAlertPath, extensionAlertsPath } from '../lib/alerts';
 
 export async function signIn(_previous: Feedback, form: FormData): Promise<Feedback> {
   const token = form.get('token');
@@ -572,15 +572,45 @@ export async function saveAlertSettings(_previous: Feedback, form: FormData): Pr
 }
 
 export async function acknowledgeAlert(id: string): Promise<Feedback> {
+  return recordAlertAcknowledgment(id, '/alerts', alertPath, controlApi.acknowledgeAlert);
+}
+
+export async function acknowledgeExtensionAlert(id: string): Promise<Feedback> {
+  return recordAlertAcknowledgment(id, extensionAlertsPath, extensionAlertPath, controlApi.acknowledgeExtensionAlert);
+}
+
+async function recordAlertAcknowledgment(id: string, inbox: string, path: (id: string) => string,
+  acknowledge: (token: string, id: string) => Promise<void>): Promise<Feedback> {
   if (!isId(id)) return { error: 'Choose a valid alert.' };
   return perform(async (token) => {
     try {
-      await controlApi.acknowledgeAlert(token, id);
-      revalidatePath('/alerts');
-      revalidatePath(alertPath(id));
+      await acknowledge(token, id);
+      revalidatePath(inbox);
+      revalidatePath(path(id));
       return { message: 'Alert acknowledged.' };
     } catch (error) {
       if (error instanceof ApiError && error.status === 404) return { error: 'This alert is unavailable.' };
+      throw error;
+    }
+  });
+}
+
+export async function saveExtensionAlertSettings(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const enabled = form.get('enabled');
+  const revision = form.get('revision');
+  if ((enabled !== 'on' && enabled !== 'off') || typeof revision !== 'string' ||
+      !/^\d{1,10}$/.test(revision) || Number(revision) >= 2_147_483_647) {
+    return { error: 'Choose an extension alert mode and reload the current settings.' };
+  }
+  return perform(async (token) => {
+    try {
+      await controlApi.saveExtensionAlertSettings(token, enabled === 'on', Number(revision));
+      revalidatePath(extensionAlertsPath);
+      return { message: 'Extension alert settings saved.' };
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'alert_settings_changed') {
+        return { error: 'Extension alert settings changed. Refresh and review the current settings before saving again.' };
+      }
       throw error;
     }
   });

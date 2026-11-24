@@ -18,7 +18,8 @@ import type { PolicyImpactReport } from './policy-impact';
 import type { PromptExceptionRequest, PromptRequestDecision } from './prompt-requests';
 import { eventPath, type EventDetails, type EventTriage, type TriageAssignee, type TriageUpdate } from './triage';
 import { casePath, type CaseCategory, type CaseDetails, type CasePage, type EventReference } from './cases';
-import { alertPath, type AlertDetails, type AlertPage, type AlertSettings } from './alerts';
+import { alertPath, extensionAlertPath, extensionAlertsPath, type AlertDetails, type AlertPage, type AlertSettings,
+  type ExtensionAccessDetails, type ExtensionAccessPage, type ExtensionAccessSettings } from './alerts';
 
 const port = Number(process.env.ZEKVAR_CONTROL_PORT ?? 5187);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid Control loopback port.');
@@ -164,6 +165,12 @@ export const controlApi = {
   saveAlertSettings: (token: string, enabled: boolean, threshold: number, expectedRevision: number) =>
     request<AlertSettings>('/alerts/settings', token, 'POST', { enabled, threshold, expectedRevision }),
   acknowledgeAlert: (token: string, id: string) => request<void>(`${alertPath(id)}/acknowledge`, token, 'POST'),
+  extensionAlerts: (token: string, query: URLSearchParams) => request<ExtensionAccessPage>(`${extensionAlertsPath}?${query}`, token),
+  extensionAlert: (token: string, id: string) => request<ExtensionAccessDetails>(extensionAlertPath(id), token),
+  extensionAlertSettings: (token: string) => request<ExtensionAccessSettings>(`${extensionAlertsPath}/settings`, token),
+  saveExtensionAlertSettings: (token: string, enabled: boolean, expectedRevision: number) =>
+    request<ExtensionAccessSettings>(`${extensionAlertsPath}/settings`, token, 'POST', { enabled, expectedRevision }),
+  acknowledgeExtensionAlert: (token: string, id: string) => request<void>(`${extensionAlertPath(id)}/acknowledge`, token, 'POST'),
   exportEvents: (token: string, filters: URLSearchParams, signal: AbortSignal) =>
     eventResponse('/events/export', token, filters, signal),
   aiEnforcement: (token: string, filters: URLSearchParams) => request<AiEnforcementReport>(`/reports/ai-enforcement?${filters}`, token),

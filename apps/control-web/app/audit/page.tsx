@@ -9,7 +9,7 @@ import { sessionToken } from '../../lib/session';
 import { DeploymentBadge, Sidebar } from '../workspace';
 import { eventPath, triageDispositions, triageStatuses } from '../../lib/triage';
 import { CaseActivityDetails } from '../cases/case-activity';
-import { alertNumber, alertPath } from '../../lib/alerts';
+import { alertNumber, alertPath, extensionAlertPath } from '../../lib/alerts';
 
 export default async function Audit({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const token = await sessionToken();
@@ -95,7 +95,10 @@ function auditDetails(entry: AuditEntry) {
   const feedKey = entry.eventFeedKeyChange;
   if (feedKey) return <>{feedKey.name} · <code title={feedKey.keyId}>{feedKey.keyId.slice(0, 13)}</code></>;
   const alertChange = entry.securityAlertChange;
-  if (alertChange?.alertId) return <a className="underline" href={alertPath(alertChange.alertId)}>Alert {alertNumber(alertChange.alertId)}</a>;
+  if (alertChange?.alertId) return <a className="underline"
+    href={(alertChange.extensionAccess ? extensionAlertPath : alertPath)(alertChange.alertId)}>
+    {alertChange.extensionAccess ? 'Extension alert' : 'Alert'} {alertNumber(alertChange.alertId)}</a>;
+  if (alertChange?.extensionAfter) return `Extension access alerts · ${alertChange.extensionAfter.enabled ? 'On' : 'Off'}`;
   if (alertChange?.after) return `${alertChange.after.enabled ? 'On' : 'Off'} · ${alertChange.after.threshold} blocks in 15 minutes`;
   if (entry.incidentCaseChange) return <CaseActivityDetails change={entry.incidentCaseChange} showCase />;
   const triage = entry.eventTriageChange;

@@ -72,6 +72,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 45, "045_prompt_exception_requests.sql", ct);
         await ApplyMigration(connection, 46, "046_prompt_app_modes.sql", ct);
         await ApplyMigration(connection, 47, "047_extension_inventory_changes.sql", ct);
+        await ApplyMigration(connection, 48, "048_extension_access_alerts.sql", ct);
 
         foreach (var organization in organizations)
         {

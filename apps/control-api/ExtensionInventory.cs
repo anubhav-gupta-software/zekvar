@@ -53,6 +53,20 @@ internal sealed record InventoryExtensionState(string Version, bool Enabled, str
 
 internal sealed record InventoryExtensionChange(string ExtensionId, InventoryExtensionState? Before, InventoryExtensionState? After)
 {
+    private static readonly HashSet<string> PrivilegedPermissions = new(StringComparer.Ordinal)
+        { "cookies", "debugger", "management", "nativeMessaging", "proxy" };
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ReviewAccess => After is { Enabled: true } current && (
+        Before is not { Enabled: true } prior
+            ? current.SiteAccess == "all" || RiskySource(current.InstallType) || current.Permissions.Any(PrivilegedPermissions.Contains)
+            : AccessRank(current.SiteAccess) > AccessRank(prior.SiteAccess) ||
+                (current.InstallType != prior.InstallType && RiskySource(current.InstallType)) ||
+                current.Permissions.Any(permission => PrivilegedPermissions.Contains(permission) && !prior.Permissions.Contains(permission)));
+
+    private static bool RiskySource(string source) => source is "development" or "sideload";
+    private static int AccessRank(string siteAccess) => siteAccess switch { "all" => 2, "selected" => 1, _ => 0 };
+
     public static InventoryExtensionChange[] Compare(InventoryExtension[] previous, ReportExtensionInventory report, bool fullSnapshot)
     {
         var before = previous.ToDictionary(extension => extension.Id, InventoryExtensionState.From, StringComparer.Ordinal);

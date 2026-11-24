@@ -107,7 +107,7 @@ label { font-size: .9rem; font-weight: 600; }
 .browser-releases summary { cursor: pointer; padding: .7rem 1.15rem; font-size: .9rem; font-weight: 600; }
 .extension-change-batch { border-top: 1px solid var(--line); }
 .extension-change-batch summary { cursor: pointer; padding: .7rem 1.15rem; font-size: .9rem; font-weight: 600; }
-.extension-change-batch td ul { margin: 0; padding: 0; list-style: none; }
+.extension-changes-table td ul { margin: 0; padding: 0; list-style: none; }
 .table-scroll { overflow-x: auto; }
 .table-scroll:focus-visible { outline-offset: -2px; }
 table { width: 100%; border-collapse: collapse; text-align: left; font-size: .875rem; }

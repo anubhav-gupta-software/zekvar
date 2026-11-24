@@ -220,6 +220,14 @@ Alert windows expire after 30 days or when the first receipt in the window cross
 
 For a configured webhook, the alert detail includes a `webhook` object with delivery status, attempt count, timestamps, and a categorized failure where applicable. Route configuration and signing keys remain in the deployment configuration. Jobs inherit the parent alert's visibility and retention.
 
+## Extension access alerts
+
+`GET /v1/admin/alerts/extensions/settings` returns `enabled` and `revision`. Owners and administrators can post `{ "enabled": true, "expectedRevision": 0 }` to that path. The opt-in rule uses a revision dedicated to extension alerts.
+
+Control opens one alert for a new change report accepted while the rule is enabled and containing at least one `reviewAccess` flag. Control calculates the flag from the previous and current metadata. The alert detail shows the changes that triggered it.
+
+`GET /v1/admin/alerts/extensions` accepts optional `status` of `open` or `acknowledged`, and `beforeAt` and `beforeId` as a cursor pair. `GET /v1/admin/alerts/extensions/{id}` returns the alert and the triggering changes. Owners and administrators acknowledge at `POST /v1/admin/alerts/extensions/{id}/acknowledge`. Retries return HTTP 204 and preserve one audit entry. Auditors have read access. Alert evidence excludes extension names and site URLs. Alerts follow inventory history retention, assignment changes, disabled inventory, and revocation.
+
 ## Incident cases
 
 - `GET /v1/admin/cases` lists up to 100 retained cases for the organization, newest first by creation time. Filter by `status` or `openOnly=true`. Use the returned `createdAt` and `id` as `beforeAt` and `beforeId` for the next page.
