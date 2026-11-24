@@ -315,6 +315,7 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
   const paymentCardMode = form.get('paymentCardMode');
   const privateKeyMode = form.get('privateKeyMode');
   const ssnMode = form.get('ssnMode');
+  const githubTokenMode = form.get('githubTokenMode');
   const clipboardMode = form.get('clipboardMode');
   const uploadModes = readUploadSettings(form);
   const uploadTypes = readUploadTypes(form);
@@ -330,6 +331,7 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
   }
   if (!modes.includes(mode) || !detectorModes.includes(githubPatMode) || !isDetectorMode(paymentCardMode) ||
       (privateKeyMode !== null && !isDetectorMode(privateKeyMode)) || (ssnMode !== null && !isDetectorMode(ssnMode)) ||
+      (githubTokenMode !== null && !isDetectorMode(githubTokenMode)) ||
       (clipboardMode !== null && !isClipboardMode(clipboardMode)) || !uploadModes || !fileContent ||
       (discovery !== 'on' && discovery !== 'off') || (presetDiscovery !== null && presetDiscovery !== 'on' && presetDiscovery !== 'off') ||
       (inventory !== 'on' && inventory !== 'off') || (claude !== 'on' && claude !== 'off')) {
@@ -339,7 +341,7 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
   return perform(async (token) => {
     try {
       const policy = await controlApi.publish(token, { mode, githubPatMode, paymentCardMode, privateKeyMode: privateKeyMode ?? undefined,
-        ssnMode: ssnMode ?? undefined, clipboardMode: clipboardMode ?? undefined,
+        ssnMode: ssnMode ?? undefined, githubTokenMode: githubTokenMode ?? undefined, clipboardMode: clipboardMode ?? undefined,
         uploadModes, uploadTypes, ...fileContent,
         discoveryEnabled: discovery === 'on', presetDiscoveryEnabled: presetDiscovery === null ? undefined : presetDiscovery === 'on',
         extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on', expectedVersion },
@@ -409,6 +411,7 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   const paymentCardMode = form.get('paymentCardMode');
   const privateKeyMode = form.get('privateKeyMode');
   const ssnMode = form.get('ssnMode');
+  const githubTokenMode = form.get('githubTokenMode');
   const clipboardMode = form.get('clipboardMode');
   const uploadModes = readUploadSettings(form);
   const uploadTypes = readUploadTypes(form);
@@ -421,6 +424,7 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   const expectedVersion = Number(form.get('expectedVersion'));
   if (!isMode(mode) || !isDetectorMode(githubPatMode) || !isDetectorMode(paymentCardMode) ||
       (privateKeyMode !== null && !isDetectorMode(privateKeyMode)) || (ssnMode !== null && !isDetectorMode(ssnMode)) ||
+      (githubTokenMode !== null && !isDetectorMode(githubTokenMode)) ||
       (clipboardMode !== null && !isClipboardMode(clipboardMode)) || !uploadModes || !fileContent ||
       (discovery !== 'on' && discovery !== 'off') || (presetDiscovery !== null && presetDiscovery !== 'on' && presetDiscovery !== 'off') ||
       (inventory !== 'on' && inventory !== 'off') ||
@@ -463,7 +467,7 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   return perform(async (token) => {
     try {
       const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, privateKeyMode: privateKeyMode ?? undefined,
-        ssnMode: ssnMode ?? undefined, clipboardMode: clipboardMode ?? undefined,
+        ssnMode: ssnMode ?? undefined, githubTokenMode: githubTokenMode ?? undefined, clipboardMode: clipboardMode ?? undefined,
         uploadModes, uploadTypes, ...fileContent,
         discoveryEnabled: discovery === 'on', presetDiscoveryEnabled: presetDiscovery === null ? undefined : presetDiscovery === 'on',
         extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on',

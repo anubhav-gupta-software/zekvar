@@ -24,6 +24,7 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
   const fields = [
     ['Test marker', decisionLabels[reference.mode], decisionLabels[candidate.mode]],
     ['GitHub classic PAT', detectorModeLabels[reference.githubPatMode], detectorModeLabels[candidate.githubPatMode]],
+    ['GitHub App, OAuth, or fine-grained token', detectorModeLabels[reference.githubTokenMode ?? 'off'], detectorModeLabels[candidate.githubTokenMode ?? 'off']],
     ['Payment card number', detectorModeLabels[reference.paymentCardMode], detectorModeLabels[candidate.paymentCardMode]],
     ['Private key', detectorModeLabels[reference.privateKeyMode ?? 'off'], detectorModeLabels[candidate.privateKeyMode ?? 'off']],
     ['U.S. Social Security number', detectorModeLabels[reference.ssnMode ?? 'off'], detectorModeLabels[candidate.ssnMode ?? 'off']],

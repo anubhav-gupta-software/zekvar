@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { navigationRuleLimitError, readNavigationRules } from '../../lib/navigation';
-import { detectorModes, fixtureRule, identifierRule, modes, privateKeyRule, readIdentifierProtection, ruleLabels, ssnRule,
+import { detectorModes, fixtureRule, githubTokenRule, identifierRule, modes, privateKeyRule, readIdentifierProtection, ruleLabels, ssnRule,
   type DetectorMode, type PolicyMode, type PromptRuleId } from '../../../../contracts/policy/prompt';
 import { identifierFormatError, identifierFormatHint, parseIdentifierFormats } from '../../../../contracts/policy/organization-identifiers';
 import { parseUploadTypes, uploadApps, uploadModes, uploadTypesError, uploadTypesHint, type UploadApp, type UploadMode } from '../../../../contracts/policy/uploads';
@@ -33,6 +33,7 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
   return {
     mode: snapshot.mode, githubPatMode: snapshot.githubPatMode, paymentCardMode: snapshot.paymentCardMode, privateKeyMode: snapshot.privateKeyMode,
     ssnMode: snapshot.ssnMode,
+    githubTokenMode: snapshot.githubTokenMode,
     clipboardMode: snapshot.clipboardMode,
     identifierMode: snapshot.identifierProtection?.mode,
     identifierFormats: snapshot.identifierProtection?.formats.map(({ prefix, digits }) => `${prefix} ${digits}`).join('\n') ?? '',
@@ -146,6 +147,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
     const candidate: PreviewPolicy = {
       mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode, privateKeyMode: editor.privateKeyMode,
       ssnMode: editor.ssnMode,
+      githubTokenMode: editor.githubTokenMode,
       clipboardMode: editor.clipboardMode,
       identifierProtection: identifiers,
       discoveryEnabled: editor.discoveryEnabled, presetDiscoveryEnabled: editor.presetDiscoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled,
@@ -185,6 +187,13 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
             {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
           </select>
         </div>
+        {editor.githubTokenMode !== undefined && <div className="grid gap-1">
+          <label htmlFor="draft-github-token">Draft GitHub App, OAuth, or fine-grained token</label>
+          <select id="draft-github-token" value={editor.githubTokenMode}
+            onChange={(event) => edit('githubTokenMode', event.target.value as DetectorMode)}>
+            {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+          </select>
+        </div>}
         <div className="grid gap-1">
           <label htmlFor="draft-payment-card">Draft payment card number</label>
           <select id="draft-payment-card" value={editor.paymentCardMode}
@@ -331,6 +340,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
           <select id={`exception-rule-${index}`} value={entry.ruleId}
             onChange={(event) => editException(index, { ruleId: event.target.value as PromptRuleId })}>
             {Object.entries(ruleLabels).map(([rule, label]) => (rule === privateKeyRule && editor.privateKeyMode === undefined ||
+              rule === githubTokenRule && editor.githubTokenMode === undefined ||
               rule === identifierRule && editor.identifierMode === undefined || rule === ssnRule && editor.ssnMode === undefined) ? null :
               <option key={rule} value={rule}>{rule === fixtureRule ? 'Test marker' : label}</option>)}
           </select>
@@ -423,6 +433,7 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         <input type="hidden" name="expectedVersion" value={reference.version} />
         <input type="hidden" name="mode" value={candidate.mode} />
         <input type="hidden" name="githubPatMode" value={candidate.githubPatMode} />
+        {candidate.githubTokenMode !== undefined && <input type="hidden" name="githubTokenMode" value={candidate.githubTokenMode} />}
         <input type="hidden" name="paymentCardMode" value={candidate.paymentCardMode} />
         {candidate.privateKeyMode !== undefined && <input type="hidden" name="privateKeyMode" value={candidate.privateKeyMode} />}
         {candidate.ssnMode !== undefined && <input type="hidden" name="ssnMode" value={candidate.ssnMode} />}

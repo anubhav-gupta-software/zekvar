@@ -62,6 +62,14 @@ Set **GitHub classic PAT** under **Publish a policy** in Control, publish, and u
 
 Use `ghp_000000000000000000000000000000000000` in the local prompt fixture to test each setting. Refresh **Security events** in Control and look for **GitHub classic PAT** under **Detector**. The extension matches the classic token format locally. Control receives the decision and its metadata. Automated credential checks use a controlled composer and a synthetic token-shaped string. [Open the local fixture](http://127.0.0.1:4173/zekvar-fixture/)
 
+## Protect GitHub App, OAuth, and fine-grained tokens
+
+1. Build and reload Browser v0.32.0 or later. In Control, open **Policy preview** for the baseline or a rollout group and set **Draft GitHub App, OAuth, or fine-grained token** to **Monitor**. Run the **Synthetic GitHub fine-grained token** sample, publish the reviewed policy, and select **Sync now** in Browser.
+2. Start with a synthetic credential in a controlled composer. Choose Warn or Block to exercise **Redact detected values** in an eligible draft. Review the result before sending it. The GitHub classic PAT setting remains independent.
+3. Enable **Clipboard paste protection** or per-app **File content protection** to monitor or block the same token formats at those entry points. Review **Security events** for the detector, app, action, and source. Inspection and redaction run in the browser. Control receives decision metadata.
+
+The rule starts Off and covers structurally recognizable fine-grained PATs, OAuth tokens, App user and refresh tokens, and older opaque and newer stateless App installation tokens. It uses the token shape and never contacts GitHub to validate a credential. [GitHub credential types](https://docs.github.com/en/organizations/managing-programmatic-access-to-your-organization/github-credential-types) · [GitHub installation token format](https://github.blog/changelog/2026-10-02-stateless-github-app-installation-tokens-rolled-out/)
+
 ## Test payment card detection
 
 1. Start the updated Control services and build and reload Browser v0.11.0. In Control, set **Payment card number** to **Monitor**, **Warn**, or **Block** in the baseline or a rollout group. The detector starts **Off**. Use **Policy preview** to compare the built-in valid and invalid examples before publishing.

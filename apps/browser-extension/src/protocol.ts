@@ -1,4 +1,4 @@
-import { credentialDetector, fixtureDetector, fixtureRule, githubPatRule, identifierDetector, identifierRule, isMode,
+import { credentialDetector, fixtureDetector, fixtureRule, githubPatRule, githubTokenRule, identifierDetector, identifierRule, isMode,
   paymentCardRule, paymentDetector, privateKeyRule, ssnDetector, ssnRule, type PolicyMode,
   type PromptPolicy, type RuleMetadata } from '../../../contracts/policy/prompt';
 import { chatGptApp, claudeApp, fixtureApp, geminiApp, isPromptApp, type AiPromptApp, type AppId } from '../../../contracts/policy/apps';
@@ -152,8 +152,8 @@ export function readMetadata(value: unknown): PolicyEvent | undefined {
   if (value.ruleId === fixtureRule && value.detectorCategory === fixtureDetector) {
     return { ...event, ...source, ruleId: fixtureRule, detectorCategory: fixtureDetector };
   }
-  if (value.ruleId === githubPatRule && value.detectorCategory === credentialDetector) {
-    return { ...event, ...source, ruleId: githubPatRule, detectorCategory: credentialDetector };
+  if ((value.ruleId === githubPatRule || value.ruleId === githubTokenRule) && value.detectorCategory === credentialDetector) {
+    return { ...event, ...source, ruleId: value.ruleId, detectorCategory: credentialDetector };
   }
   if (value.ruleId === paymentCardRule && value.detectorCategory === paymentDetector) {
     return { ...event, ...source, ruleId: paymentCardRule, detectorCategory: paymentDetector };

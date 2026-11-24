@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -260,7 +260,88 @@ test('guards native text paste before it reaches supported AI composers and repo
   assert.ok(!(await pasteEvents()).some(({ policyVersion }) => policyVersion === restored.version));
   await dashboard.goto(`${web}/events/${incomplete.installationId}/${incomplete.eventId}`);
   await dashboard.getByText(/Clipboard check unavailable.*Clipboard paste/).waitFor();
+  const fineGrained = `github_pat_${'F'.repeat(22)}_${'0'.repeat(59)}`;
+  const stateless = `ghs_900001_${'A'.repeat(30)}.${'a-_'.repeat(128)}.${'Z'.repeat(87)}`;
+  const ruleId = 'github-app-or-fine-grained-token';
+  await dashboard.goto(`${web}/preview`);
+  await dashboard.getByLabel('Draft GitHub classic PAT', { exact: true }).selectOption('off');
+  await dashboard.getByLabel('Draft GitHub App, OAuth, or fine-grained token', { exact: true }).selectOption('warn');
+  await dashboard.getByLabel('Draft ChatGPT file content protection', { exact: true }).selectOption('block');
+  await dashboard.getByLabel('Draft clipboard paste protection', { exact: true }).selectOption('block');
+  await dashboard.getByLabel('Custom prompt', { exact: true }).fill(stateless);
+  await dashboard.getByRole('button', { name: 'Run preview', exact: true }).click();
+  const preview = dashboard.getByRole('table', { name: 'Preview results', exact: true });
+  await preview.getByRole('row', { name: /^Custom prompt / }).getByText('Warn', { exact: true }).waitFor();
+  await preview.getByRole('row', { name: /^Synthetic GitHub fine-grained token / }).getByText('Warn', { exact: true }).waitFor();
+  await preview.getByRole('row', { name: /^ChatGPT synthetic GitHub token file / }).getByText('Block', { exact: true }).waitFor();
+  dashboard.once('dialog', (dialog) => dialog.accept());
+  await dashboard.getByRole('button', { name: 'Publish previewed policy', exact: true }).click();
+  await dashboard.getByText(/Previewed policy published as version/).waitFor();
+  const [githubPolicy] = await admin('policies');
+  assert.equal(githubPolicy.githubTokenMode, 'warn');
+  assert.equal(githubPolicy.githubPatMode, 'off');
+  await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
+  for (const { page } of [chat, gemini, attachment]) {
+    await page.getByText(new RegExp(`v${githubPolicy.version}.*GitHub tokens warn`)).waitFor();
+  }
+
+  const sendCount = await chat.page.locator('#fixture-sends').textContent();
+  await chat.editor.fill(`Review this value ${stateless}.`);
+  await chat.editor.press('Enter');
+  const redact = chat.page.getByRole('button', { name: 'Redact detected values', exact: true });
+  await redact.waitFor();
+  assert.equal(await chat.page.locator('#fixture-sends').textContent(), sendCount);
+  await redact.click();
+  assert.equal(await editValue(chat), 'Review this value [REDACTED].');
+  if (process.env.ZEKVAR_DEMO_ARTIFACTS) {
+    await chat.page.screenshot({ path: join(process.env.ZEKVAR_DEMO_ARTIFACTS, 'github-token-redaction.png') });
+  }
+  await chat.editor.press('Enter');
+  assert.equal(Number(await chat.page.locator('#fixture-sends').textContent()), Number(sendCount) + 1);
+
+  await gemini.editor.fill('');
+  const beforeTokenPaste = await editValue(gemini);
+  const beforeNativePastes = await count(gemini);
+  await paste(gemini, fineGrained);
+  await gemini.page.getByRole('alert').filter({ hasText: 'Paste blocked because sensitive text was detected' }).waitFor();
+  assert.equal(await editValue(gemini), beforeTokenPaste);
+  assert.equal(await count(gemini), beforeNativePastes);
+  await paste(gemini, tokenFixture);
+  await until(async () => (await editValue(gemini)).trim() === tokenFixture, 'Disabling the classic rule did not allow the classic PAT.');
+  assert.equal(await count(gemini), beforeNativePastes + 1);
+
+  const field = attachment.page.getByLabel('Attach fixture files');
+  async function pick(name, text) {
+    const file = join(scratch, name);
+    await writeFile(file, text, { mode: 0o600 });
+    const chooser = attachment.page.waitForEvent('filechooser');
+    await field.click();
+    await (await chooser).setFiles(file);
+  }
+  const priorFiles = await attachment.page.evaluate(() => window.fileEvents.length);
+  await pick('synthetic.txt', `config=${stateless}`);
+  await attachment.page.getByRole('alert').filter({ hasText: 'File upload blocked because sensitive content was detected' }).waitFor();
+  assert.equal(await attachment.page.evaluate(() => window.fileEvents.length), priorFiles);
+  await pick('clean.txt', 'A safe synthetic attachment.');
+  await attachment.page.waitForFunction((before) => window.fileEvents.length > before, priorFiles);
+  const githubEvents = await until(async () => {
+    const detections = (await events()).filter((entry) => entry.ruleId === ruleId);
+    return detections.length === 3 && detections;
+  }, 'The prompt, paste, and file decisions were not reported.');
+  assert.equal(githubEvents.filter(({ decision, clipboardPaste, uploadMethod }) => decision === 'warn' && !clipboardPaste && !uploadMethod).length, 1);
+  assert.equal(githubEvents.filter(({ decision, clipboardPaste }) => decision === 'block' && clipboardPaste).length, 1);
+  assert.equal(githubEvents.filter(({ decision, uploadMethod }) => decision === 'block' && uploadMethod === 'picker').length, 1);
+  assert.ok(githubEvents.every(({ policyVersion, detectorCategory }) => policyVersion === githubPolicy.version && detectorCategory === 'credential'));
+  const unprotected = await admin(`policies/${restored.version}/restore`, {});
+  await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
+  await chat.page.getByText(new RegExp(`MONITOR v${unprotected.version}`)).waitFor();
+  const beforeRollbackSend = Number(await chat.page.locator('#fixture-sends').textContent());
+  await chat.editor.fill(fineGrained);
+  await chat.editor.press('Enter');
+  assert.equal(Number(await chat.page.locator('#fixture-sends').textContent()), beforeRollbackSend + 1);
   const exported = await admin('events/export');
   const json = JSON.stringify({ exported, requests });
-  for (const sample of [candidate, tokenFixture, 'Clean replacement', 'clipboardText', 'clipboardData']) assert.ok(!json.includes(sample));
+  for (const sample of [candidate, tokenFixture, fineGrained, stateless, 'Clean replacement', 'clipboardText', 'clipboardData']) {
+    assert.ok(!json.includes(sample));
+  }
 });

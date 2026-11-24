@@ -58,9 +58,11 @@ function attachFixture() {
       sync.hidden = control.status === 'standalone';
       if (mode.disabled && control.policy) mode.value = control.policy.mode;
       const github = control.policy?.githubPatMode;
+      const githubToken = control.policy?.githubTokenMode;
       const card = control.policy?.paymentCardMode;
       const privateKey = control.policy?.privateKeyMode;
-      const detectors = (isMode(github) ? ` · GitHub PAT ${github}` : '') + (isMode(card) ? ` · Payment card ${card}` : '') +
+      const detectors = (isMode(github) ? ` · GitHub PAT ${github}` : '') +
+        (isMode(githubToken) ? ` · GitHub tokens ${githubToken}` : '') + (isMode(card) ? ` · Payment card ${card}` : '') +
         (isMode(privateKey) ? ` · Private key ${privateKey}` : '') +
         (isMode(control.policy?.ssnMode) ? ` · U.S. SSN ${control.policy.ssnMode}` : '');
       const label = control.policy ? `${control.policy.mode.toUpperCase()} · v${control.policy.version}${detectors}` : 'waiting for a policy';

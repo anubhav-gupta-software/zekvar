@@ -475,12 +475,13 @@ browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
     var presetDiscoveryAware = aware && http.Request.Headers["X-Zekvar-Preset-Discovery"] == "1";
     var ssnAware = http.Request.Headers["X-Zekvar-SSN"] == "1";
     var clipboardAware = aware && http.Request.Headers["X-Zekvar-Clipboard-Paste"] == "1";
+    var githubTokenAware = aware && http.Request.Headers["X-Zekvar-GitHub-Token"] == "1";
     var versionHeader = http.Request.Headers["X-Zekvar-Extension-Version"];
     var extensionVersion = versionHeader.Count == 1 ? BrowserRelease.ReadVersion(versionHeader[0]) : null;
     if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, claudeAware, extensionVersion, privateKeyAware,
-        fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware, presetDiscoveryAware, ssnAware, clipboardAware, ct) is { } policy)
+        fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware, presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware, ct) is { } policy)
         return Results.Ok(policy.ForBrowser(claudeAware, privateKeyAware, fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware,
-            presetDiscoveryAware, ssnAware, clipboardAware));
+            presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware));
     return aware ? Results.Unauthorized() : Results.Conflict(new { error = "Update the browser to receive the assigned policy." });
 });
 browser.MapPost("/heartbeat", async (Heartbeat request, HttpContext http, CancellationToken ct) =>
@@ -514,9 +515,10 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
               request.FileInspection?.HasSettings() == true || request.ExtensionDeployment is not null ||
               request.BlockedAiAppHosts is not null || request.FileContentModes?.HasSettings() == true ||
               request.IdentifierProtection is not null || request.PresetDiscoveryEnabled.HasValue || request.SsnMode is not null ||
-              request.BrowserHardening is not null || request.ClipboardMode is not null)) ||
+              request.BrowserHardening is not null || request.ClipboardMode is not null || request.GithubTokenMode is not null)) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode) ||
-        !FixtureContract.IsOptionalDetectorMode(request.PrivateKeyMode) || !FixtureContract.IsOptionalDetectorMode(request.SsnMode))
+        !FixtureContract.IsOptionalDetectorMode(request.PrivateKeyMode) || !FixtureContract.IsOptionalDetectorMode(request.SsnMode) ||
+        !FixtureContract.IsOptionalDetectorMode(request.GithubTokenMode))
         return Results.BadRequest(new { error = "Choose a valid rule mode." });
     if (request.UploadModes?.IsValid() == false)
         return Results.BadRequest(new { error = "Choose Off, Monitor, or Block for each upload destination." });

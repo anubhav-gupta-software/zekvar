@@ -20,6 +20,7 @@ export type PreviewPolicy = {
   presetDiscoveryEnabled?: boolean;
   identifierProtection?: IdentifierProtection;
   ssnMode?: DetectorMode;
+  githubTokenMode?: DetectorMode;
   extensionInventoryEnabled: boolean;
   extensionDeployment?: ExtensionDeployment;
   browserHardening?: BrowserHardening;
@@ -43,6 +44,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     mode: policy.mode, githubPatMode: policy.githubPatMode ?? 'off', paymentCardMode: policy.paymentCardMode ?? 'off',
     privateKeyMode: policy.privateKeyMode,
     ssnMode: policy.ssnMode,
+    githubTokenMode: policy.githubTokenMode,
     identifierProtection: policy.identifierProtection,
     discoveryEnabled: policy.discoveryEnabled ?? false,
     presetDiscoveryEnabled: policy.presetDiscoveryEnabled,
@@ -67,6 +69,7 @@ export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
   return a.mode === b.mode && a.githubPatMode === b.githubPatMode && a.paymentCardMode === b.paymentCardMode &&
     (a.clipboardMode ?? 'off') === (b.clipboardMode ?? 'off') &&
     a.privateKeyMode === b.privateKeyMode && a.ssnMode === b.ssnMode &&
+    (a.githubTokenMode ?? 'off') === (b.githubTokenMode ?? 'off') &&
     sameIdentifierProtection(a.identifierProtection, b.identifierProtection) &&
     a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
     a.presetDiscoveryEnabled === b.presetDiscoveryEnabled &&
@@ -85,10 +88,12 @@ export function changedDecision(row: PreviewRow) {
 }
 
 const fakePat = `ghp_${'0'.repeat(36)}`;
+const fakeFineGrainedPat = `github_pat_${'0'.repeat(22)}_${'0'.repeat(59)}`;
 const prompts = [
   { name: 'Clean prompt', content: 'Summarize the quarterly planning notes.' },
   { name: 'Synthetic test marker', content: testMarker },
   { name: 'Synthetic GitHub token', content: `token=${fakePat}` },
+  { name: 'Synthetic GitHub fine-grained token', content: `token=${fakeFineGrainedPat}` },
   { name: 'Both detectors match', content: `${testMarker} ${fakePat}` },
   { name: 'Token embedded in a longer string', content: `prefix_${fakePat}_suffix` },
   { name: 'Synthetic payment card', content: 'Test card 4242 4242 4242 4242' },
@@ -179,6 +184,7 @@ export function runComparison(reference: PreviewSnapshot, candidate: PreviewPoli
       const samples = [{ name: 'synthetic text file', file: textFile, text: testMarker },
         { name: 'clean text file', file: textFile, text: 'Quarterly planning notes.' },
         { name: 'synthetic SSN file', file: textFile, text: 'SSN: 899-97-4321' },
+        { name: 'synthetic GitHub token file', file: textFile, text: fakeFineGrainedPat },
         { name: 'unscannable PDF sample', file: { name: 'synthetic.pdf', type: 'application/pdf' }, text: undefined }];
       for (const { name, file, text } of samples) rows.push({ name: `${promptAppLabels[app]} ${name}`,
         current: fileInspectionOutcome(reference, app, file, text), draft: fileInspectionOutcome(candidate, app, file, text) });

@@ -41,6 +41,7 @@ const hardeningAdmin = randomBytes(32).toString('hex');
 const clipboardAdmin = randomBytes(32).toString('hex');
 const fleetAdmin = randomBytes(32).toString('hex');
 const templateAdmin = randomBytes(32).toString('hex');
+const githubTokenAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -51,7 +52,13 @@ const undoSsoSchema = `
       DROP COLUMN oidc_issuer, DROP COLUMN oidc_subject, ALTER COLUMN expires_at SET NOT NULL,
       ADD CONSTRAINT control_access_check1 CHECK ((revoked_at IS NULL) = (token_hash IS NOT NULL));
 `;
+const undoGithubTokenSchema = `
+  DELETE FROM schema_migrations WHERE version = 44;
+  ALTER TABLE policy_versions DROP COLUMN github_token_mode;
+  ALTER TABLE policy_deliveries DROP COLUMN github_token;
+`;
 const undoClipboardSchema = `
+  ${undoGithubTokenSchema}
   DELETE FROM schema_migrations WHERE version = 41;
   ALTER TABLE policy_versions DROP COLUMN clipboard_mode;
   ALTER TABLE policy_deliveries DROP COLUMN clipboard_paste;
@@ -70,6 +77,7 @@ const undoIdentifierSchema = `
   ALTER TABLE policy_deliveries DROP COLUMN identifiers;
 `;
 const undoTemplateSchema = `
+  ${undoGithubTokenSchema}
   DELETE FROM schema_migrations WHERE version = 43;
   DROP TABLE policy_template_revisions;
   DROP TABLE policy_templates;
@@ -122,13 +130,14 @@ async function retentionFixture(query) {
 
 function browserPolicyOnly({ extensionDeployment: _extensionDeployment, browserHardening: _browserHardening, blockedAiAppHosts: _blockedAiAppHosts,
   fileContentModes: _fileContentModes, identifierProtection: _identifierProtection, presetDiscoveryEnabled: _presetDiscovery,
-  ssnMode: _ssnMode, clipboardMode: _clipboardMode, ...browserPolicy }) {
+  ssnMode: _ssnMode, clipboardMode: _clipboardMode, githubTokenMode: _githubTokenMode, ...browserPolicy }) {
   return browserPolicy;
 }
 
 async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false,
   extensionVersion, scopedEnrollment = false, composerAware = false, privateKeyAware = false, fileInspectionAware = false,
-  aiAppAccessAware = false, fileBlockAware = false, identifiersAware = false, presetAware = false, ssnAware = false, clipboardAware = false } = {}) {
+  aiAppAccessAware = false, fileBlockAware = false, identifiersAware = false, presetAware = false, ssnAware = false, clipboardAware = false,
+  githubTokenAware = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -146,6 +155,7 @@ async function call(path, { token, method = 'GET', body, expect = 200, assignmen
   if (presetAware) headers['X-Zekvar-Preset-Discovery'] = '1';
   if (ssnAware) headers['X-Zekvar-SSN'] = '1';
   if (clipboardAware) headers['X-Zekvar-Clipboard-Paste'] = '1';
+  if (githubTokenAware) headers['X-Zekvar-GitHub-Token'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
@@ -220,6 +230,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__23__AdminToken: fleetAdmin,
       Control__Organizations__24__Slug: `policy-templates-${suffix}`,
       Control__Organizations__24__AdminToken: templateAdmin,
+      Control__Organizations__25__Slug: `github-tokens-${suffix}`,
+      Control__Organizations__25__AdminToken: githubTokenAdmin,
       ...overrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -4473,5 +4485,86 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const [baselineAudit] = (await admin('audit?action=policy_template_changed')).entries;
     assert.equal(baselineAudit.templateChange.groupId, null);
     assert.equal(baselineAudit.templateChange.publishedVersion, toBaseline.version);
+  });
+
+  await t.test('versions GitHub token protection with negotiated delivery, private evidence and rollback', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: githubTokenAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const [initial] = await admin('policies');
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant: (await post('enrollment-grants')).grant } });
+    const browserCall = (path, options) => call(`/v1/browser/${path}`, { token: browser.token, ...options });
+    const write = (path, body, expect = 204) => browserCall(path, { method: 'POST', body, expect });
+    const deliver = () => browserCall('policy', { assignmentAware: true, githubTokenAware: true, clipboardAware: true,
+      fileInspectionAware: true, fileBlockAware: true });
+    await write('events', { ...contract.event, eventId: randomUUID(), timestamp: new Date().toISOString(), policyVersion: initial.version });
+    const originalEvents = await admin('events');
+    if (postgres) {
+      await stop();
+      await retentionFixture(undoGithubTokenSchema);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 44'), '1');
+      assert.deepEqual(await admin('events'), originalEvents);
+    }
+    assert.equal((await deliver()).githubTokenMode, 'off');
+    await post('policies', { githubTokenMode: 'always' }, { expect: 400 });
+    const ruleId = 'github-app-or-fine-grained-token';
+    const warn = await post('policies', { githubTokenMode: 'warn', githubPatMode: 'off', clipboardMode: 'block',
+      fileContentModes: { chatgpt: 'block' } });
+    const event = (policy, fields = {}) => ({
+      ...contract.event, eventId: randomUUID(), timestamp: new Date().toISOString(), policyVersion: policy.version,
+      appId: 'chatgpt', ruleId, detectorCategory: 'credential', decision: 'warn', ...fields,
+    });
+    const heartbeat = (modeApplied) => ({ policyVersion: warn.version, githubTokenModeApplied: modeApplied,
+      clipboardModeApplied: true, fileInspectionApplied: true, fileContentBlockApplied: true });
+    assert.equal((await browserCall('policy', { githubTokenAware: true })).githubTokenMode, undefined);
+    await write('heartbeat', { policyVersion: warn.version });
+    assert.notEqual((await admin('installations'))[0].appliedPolicyVersion, warn.version);
+    await write('heartbeat', heartbeat(true), 400);
+    await write('events', event(warn), 400);
+    assert.equal((await deliver()).githubTokenMode, 'warn');
+    await write('heartbeat', heartbeat(false));
+    assert.notEqual((await admin('installations'))[0].appliedPolicyVersion, warn.version);
+    await write('heartbeat', heartbeat(true));
+    assert.equal((await admin('installations'))[0].appliedPolicyVersion, warn.version);
+    const detected = event(warn);
+    await Promise.all([write('events', detected), write('events', detected)]);
+    await write('events', event(warn, { decision: 'warn_override' }));
+    await write('events', event(warn, { decision: 'block', clipboardPaste: true }));
+    await write('events', event(warn, { decision: 'block', uploadMethod: 'picker' }));
+    for (const fields of [{ decision: 'block' }, { detectorCategory: 'synthetic-secret' },
+      { decision: 'exception_applied' }, { decision: 'monitor', clipboardPaste: true }, { content: 'synthetic private value' }]) {
+      await write('events', event(warn, fields), 400);
+    }
+    const path = `events/${browser.installationId}/${detected.eventId}`;
+    await admin(path, { token: templateAdmin, expect: 404 });
+    const { token } = await post('access/event-feed', { name: 'Token decision collector', days: 1, requestId: randomUUID() });
+    const feed = await call('/v1/integrations/events', { token });
+    const exported = await admin('events/export');
+    assert.equal(feed.entries.filter((entry) => entry.eventId === detected.eventId).length, 1);
+    assert.equal(feed.entries.filter((entry) => entry.ruleId === ruleId).length, 4);
+    assert.equal(exported.entries.filter((entry) => entry.ruleId === ruleId).length, 4);
+    assert.doesNotMatch(JSON.stringify({ exported, feed }), /synthetic private value/);
+
+    const author = await post('access', { name: 'Token policy author', role: 'administrator', hours: 1 });
+    const reviewer = await post('access', { name: 'Token policy reviewer', role: 'administrator', hours: 1 });
+    await post('policy-reviews/setting', { required: true }, { expect: 204 });
+    const { reviewId } = await post('policies', { githubTokenMode: 'block', expectedVersion: warn.version,
+      promptExceptions: [{ appId: 'chatgpt', ruleId, expiresAt: new Date(Date.now() + 3600_000).toISOString(), reason: 'Synthetic exception' }] },
+      { token: author.token, expectReview: true, expect: 202 });
+    const [{ snapshots }] = (await admin('policy-reviews')).entries;
+    assert.equal(snapshots.candidate.githubTokenMode, 'block');
+    await post(`policy-reviews/${reviewId}/decision`, { approve: true }, { token: author.token, expect: 403 });
+    const block = await post(`policy-reviews/${reviewId}/decision`, { approve: true }, { token: reviewer.token });
+    assert.equal((await deliver()).promptExceptionLease.grants[0].ruleId, ruleId);
+    const oldBrowser = await browserCall('policy', { assignmentAware: true });
+    assert.equal(oldBrowser.promptExceptionLease, undefined);
+    assert.equal(oldBrowser.githubTokenMode, undefined);
+    await write('events', event(block, { decision: 'exception_applied' }));
+    await write('events', event(block, { decision: 'exception_applied', appId: 'gemini' }), 400);
+    await post('policy-reviews/setting', { required: false }, { expect: 204 });
+    const restored = await post(`policies/${initial.version}/restore`);
+    assert.equal(restored.githubTokenMode, 'off');
+    assert.equal((await deliver()).githubTokenMode, 'off');
+    await write('events', event(restored), 400);
   });
 });

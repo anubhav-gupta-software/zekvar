@@ -24,6 +24,12 @@ export function PublishPolicyForm({ policy, groupId, review }: { policy?: Policy
         {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
       </select>
     </div>
+    {policy?.githubTokenMode !== undefined && <div className="grid gap-1">
+      <label htmlFor="github-token-mode">GitHub App, OAuth, or fine-grained token</label>
+      <select key={policy.version} id="github-token-mode" name="githubTokenMode" defaultValue={policy.githubTokenMode}>
+        {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+      </select>
+    </div>}
     <div className="grid gap-1">
       <label htmlFor="payment-card-mode">Payment card number</label>
       <select key={policy?.version} id="payment-card-mode" name="paymentCardMode" defaultValue={policy?.paymentCardMode ?? 'off'}>
@@ -111,25 +117,29 @@ export function PolicyVersionTable({ policies, groupId, writable, review }: {
 }) {
   const identifiersAvailable = policies.some((policy) => policy.identifierProtection !== undefined);
   const ssnAvailable = policies.some((policy) => policy.ssnMode !== undefined);
+  const githubTokensAvailable = policies.some((policy) => policy.githubTokenMode !== undefined);
   return <section className="panel table-panel" id="policy-history" aria-labelledby="history-heading">
     <div className="panel-heading"><h2 id="history-heading">{groupId ? 'Group policy history' : 'Policy history'}</h2>
       <span className="table-note">Latest 100 versions</span></div>
     <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="history-heading">
       <table aria-labelledby="history-heading">
-        <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th><th>Payment card number</th><th>Private key</th>
+        <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th>{githubTokensAvailable && <th>GitHub tokens</th>}
+          <th>Payment card number</th><th>Private key</th>
           {ssnAvailable && <th>U.S. SSN</th>}{identifiersAvailable && <th>Organization identifiers</th>}<th>App discovery</th>
           <th>Extension inventory</th><th>Claude prompt protection</th><th>Clipboard paste</th><th>File uploads</th><th>Navigation rules</th><th>Published (UTC)</th><th>Restore source</th>
           <th>Prompt exceptions</th><th>Action</th></tr></thead>
         <tbody>{policies.map((policy, index) => <PolicyRow key={policy.version} policy={policy} current={index === 0}
-          groupId={groupId} writable={writable} review={review} identifiersAvailable={identifiersAvailable} ssnAvailable={ssnAvailable} />)}</tbody>
+          groupId={groupId} writable={writable} review={review} identifiersAvailable={identifiersAvailable}
+          ssnAvailable={ssnAvailable} githubTokensAvailable={githubTokensAvailable} />)}</tbody>
       </table>
       {policies.length === 0 && <p className="empty">No policy versions have been published in this scope.</p>}
     </div>
   </section>;
 }
 
-function PolicyRow({ policy, current, groupId, writable, review, identifiersAvailable, ssnAvailable }: {
+function PolicyRow({ policy, current, groupId, writable, review, identifiersAvailable, ssnAvailable, githubTokensAvailable }: {
   policy: Policy; current: boolean; groupId?: string; writable: boolean; review: boolean; identifiersAvailable: boolean; ssnAvailable: boolean;
+  githubTokensAvailable: boolean;
 }) {
   const { allow = [], block = [] } = policy.domainRules ?? {};
   const { allow: allowPaths = [], block: blockPaths = [] } = policy.pathRules ?? {};
@@ -137,6 +147,7 @@ function PolicyRow({ policy, current, groupId, writable, review, identifiersAvai
   return <tr>
     <td className="emphasis">v{policy.version}</td><td><span className={`badge decision ${policy.mode}`}>{decisionLabels[policy.mode]}</span></td>
     <td>{detectorModeLabels[policy.githubPatMode ?? 'off']}</td>
+    {githubTokensAvailable && <td>{detectorModeLabels[policy.githubTokenMode ?? 'off']}</td>}
     <td>{detectorModeLabels[policy.paymentCardMode ?? 'off']}</td>
     <td>{detectorModeLabels[policy.privateKeyMode ?? 'off']}</td>
     {ssnAvailable && <td>{detectorModeLabels[policy.ssnMode ?? 'off']}</td>}

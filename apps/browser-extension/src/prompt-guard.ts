@@ -135,6 +135,7 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     const policy = control?.policy;
     const managedPolicy = installationId && enabled(control) ? policy : undefined;
     const github = managedPolicy?.githubPatMode;
+    const githubToken = managedPolicy?.githubTokenMode;
     const card = managedPolicy?.paymentCardMode;
     const privateKey = managedPolicy?.privateKeyMode;
     const ssn = managedPolicy?.ssnMode;
@@ -144,7 +145,8 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     const upload = targetedUpload?.mode ?? (uploadApp && managedPolicy?.uploadModes?.[uploadApp]);
     const content = uploadApp ? fileContentMode(managedPolicy, uploadApp) : 'off';
     if (upload !== 'block' && content !== 'block') ui.uploadNotice.textContent = '';
-    const detectors = (isMode(github) ? ` · GitHub PAT ${github}` : '') + (isMode(card) ? ` · Payment card ${card}` : '') +
+    const detectors = (isMode(github) ? ` · GitHub PAT ${github}` : '') +
+      (isMode(githubToken) ? ` · GitHub tokens ${githubToken}` : '') + (isMode(card) ? ` · Payment card ${card}` : '') +
       (isMode(privateKey) ? ` · Private key ${privateKey}` : '') +
       (isMode(ssn) ? ` · U.S. SSN ${ssn}` : '') +
       (isMode(identifiers) ? ` · Organization identifiers ${identifiers}` : '') +

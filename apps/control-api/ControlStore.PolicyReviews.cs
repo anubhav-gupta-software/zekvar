@@ -235,7 +235,7 @@ internal sealed partial class ControlStore
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
                 p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, p.private_key_mode, p.chatgpt_file_inspection, p.gemini_file_inspection,
                 p.blocked_ai_app_hosts, p.chatgpt_file_content_block, p.gemini_file_content_block, p.identifier_protection, p.extension_deployment,
-                p.preset_discovery_enabled, p.ssn_mode, p.browser_hardening, p.clipboard_mode
+                p.preset_discovery_enabled, p.ssn_mode, p.browser_hardening, p.clipboard_mode, p.github_token_mode
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.version = $2 AND (NOT $3 OR p.policy_group_id IS NOT DISTINCT FROM $4::uuid)
             """, transaction.Connection, transaction);
@@ -266,6 +266,7 @@ internal sealed partial class ControlStore
         ExtensionDeployment = request.ExtensionDeployment ?? current.ExtensionDeployment,
         BrowserHardening = request.BrowserHardening ?? current.BrowserHardening,
         ClipboardMode = request.ClipboardMode ?? current.ClipboardMode,
+        GithubTokenMode = request.GithubTokenMode ?? current.GithubTokenMode,
         BlockedAiAppHosts = request.BlockedAiAppHosts ?? current.BlockedAiAppHosts,
         FileContentModes = new(
             ResolveFileContentMode(request.FileContentModes?.Chatgpt, request.FileInspection?.Chatgpt, current.EffectiveFileContentModes().Chatgpt!),
@@ -295,9 +296,10 @@ internal sealed partial class ControlStore
                     allowed_domains, blocked_domains, payment_card_mode, chatgpt_upload_mode, gemini_upload_mode, allowed_paths, blocked_paths,
                     extension_inventory_enabled, chatgpt_upload_types, gemini_upload_types, custom_apps, prompt_exceptions, claude_prompt_enabled,
                     private_key_mode, chatgpt_file_inspection, gemini_file_inspection, extension_deployment, blocked_ai_app_hosts,
-                    chatgpt_file_content_block, gemini_file_content_block, identifier_protection, preset_discovery_enabled, ssn_mode, browser_hardening, clipboard_mode)
+                    chatgpt_file_content_block, gemini_file_content_block, identifier_protection, preset_discovery_enabled, ssn_mode,
+                    browser_hardening, clipboard_mode, github_token_mode)
                 SELECT id, policy_sequence, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $16, $17, $18, $19::jsonb, $20::jsonb,
-                    $21, $22, $23, $24, $25::jsonb, $26, $27, $28, $29::jsonb, $30, $31, $32::jsonb, $33
+                    $21, $22, $23, $24, $25::jsonb, $26, $27, $28, $29::jsonb, $30, $31, $32::jsonb, $33, $34
                 FROM next_version
                 RETURNING organization_id, version, published_at
             ), group_pointer AS (
@@ -325,7 +327,8 @@ internal sealed partial class ControlStore
             content.Chatgpt == "block", content.Gemini == "block",
             JsonSerializer.Serialize(policy.IdentifierProtection ?? IdentifierProtection.Disabled, JsonSerializerOptions.Web),
             policy.PresetDiscoveryEnabled ?? false, policy.SsnMode ?? "off",
-            JsonSerializer.Serialize(policy.BrowserHardening ?? BrowserHardening.Empty, JsonSerializerOptions.Web), policy.ClipboardMode ?? "off");
+            JsonSerializer.Serialize(policy.BrowserHardening ?? BrowserHardening.Empty, JsonSerializerOptions.Web), policy.ClipboardMode ?? "off",
+            policy.GithubTokenMode ?? "off");
         await using var rows = await command.ExecuteReaderAsync(ct);
         await rows.ReadAsync(ct);
         return policy with { Version = rows.GetInt32(0), PublishedAt = rows.GetDateTime(1), RestoredFrom = restoredFrom,
@@ -335,6 +338,7 @@ internal sealed partial class ControlStore
             SsnMode = policy.SsnMode ?? "off",
             BrowserHardening = policy.BrowserHardening ?? BrowserHardening.Empty,
             ClipboardMode = policy.ClipboardMode ?? "off",
+            GithubTokenMode = policy.GithubTokenMode ?? "off",
             ExtensionDeployment = policy.ExtensionDeployment ?? ExtensionDeployment.Empty, BlockedAiAppHosts = policy.BlockedAiAppHosts ?? [] };
     }
 
