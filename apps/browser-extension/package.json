@@ -1,6 +1,6 @@
 {
   "name": "@zekvar/browser-extension",
-  "version": "0.35.0",
+  "version": "0.36.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -16,5 +16,8 @@
     "esbuild": "0.28.2",
     "playwright": "1.65.1",
     "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "pdfjs-dist": "6.5.438"
   }
 }

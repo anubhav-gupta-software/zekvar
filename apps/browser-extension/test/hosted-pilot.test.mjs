@@ -3,6 +3,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { createHash, X509Certificate } from 'node:crypto';
 import { once } from 'node:events';
 import { officeFile, textXml } from './office-fixture.mjs';
+import { pdfFixture } from './pdf-fixture.mjs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -574,8 +575,9 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
     await attachment.getByText(/File content block$/).waitFor();
     const field = attachment.getByLabel('Attach fixture files');
     const disguisedFile = join(scratch, 'synthetic-hosted-attachment.png');
-    const safeFile = join(scratch, 'synthetic-safe.txt');
-    await Promise.all([writeFile(disguisedFile, 'ZEKVAR_TEST_SECRET'), writeFile(safeFile, 'Synthetic safe attachment')]);
+    const safeFile = join(scratch, 'synthetic-safe.pdf');
+    await Promise.all([writeFile(disguisedFile, pdfFixture([['ZEKVAR_TEST_SECRET']])),
+      writeFile(safeFile, pdfFixture([['Synthetic safe attachment']]))]);
     const rejected = attachment.waitForEvent('filechooser');
     await field.click();
     await (await rejected).setFiles(disguisedFile);
@@ -592,7 +594,7 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
     await dashboard.goto(dashboardOrigin + `/events/${row.installationId}/${row.eventId}`);
     await dashboard.getByRole('region', { name: 'Detection details' }).getByText(/Synthetic secret · File picker/).waitFor();
     const details = await admin(`events/${row.installationId}/${row.eventId}`);
-    assert.doesNotMatch(JSON.stringify(details), /synthetic-hosted-attachment|ZEKVAR_TEST_SECRET|image\/png/);
+    assert.doesNotMatch(JSON.stringify(details), /synthetic-hosted-attachment|ZEKVAR_TEST_SECRET|image\/png|%PDF|JVBERi/);
   });
   await t.test('groups real prompt and attachment detections into an auditable case over TLS', async () => {
     const investigator = await admin('access', { name: 'Case investigator', role: 'administrator', hours: 1 });

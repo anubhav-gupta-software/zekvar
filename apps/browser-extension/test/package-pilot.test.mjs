@@ -66,10 +66,16 @@ async function inspect(work, path, signingKey) {
   const zipPath = join(work, `${release.extensionId}-${release.version}.zip`);
   await writeFile(zipPath, zip);
   const entries = (await run('unzip', ['-Z1', zipPath])).stdout.trim().split('\n');
-  assert.ok(entries.every((file) => /^(?:[a-z0-9.-]+\.js|manifest\.json|managed-schema\.json|popup\.html)$/.test(file)));
+  const pdfAsset = /^pdf-assets\/(?:|LICENSE|pdf(?:\.worker)?\.min\.mjs|cmaps\/(?:[\w-]+\.bcmap|LICENSE)?|standard_fonts\/(?:[\w-]+\.(?:pfb|ttf)|LICENSE_\w+)?)$/;
+  assert.ok(entries.every((file) => /^(?:[a-z0-9.-]+\.js|manifest\.json|managed-schema\.json|(?:popup|pdf-offscreen)\.html)$/.test(file) || pdfAsset.test(file)));
+  for (const asset of ['pdf-offscreen.html', 'pdf-offscreen.js', 'pdf-assets/pdf.min.mjs', 'pdf-assets/pdf.worker.min.mjs', 'pdf-assets/LICENSE']) {
+    assert.ok(entries.includes(asset), `The signed build is missing ${asset}`);
+  }
   assert.ok(!entries.includes('content.js'));
   const manifest = JSON.parse((await run('unzip', ['-p', zipPath, 'manifest.json'])).stdout);
   assert.deepEqual(manifest.host_permissions, [`${hello}/*`]);
+  assert.ok(manifest.permissions.includes('offscreen'));
+  assert.equal(manifest.web_accessible_resources, undefined);
   assert.equal(manifest.version, release.version);
   assert.equal(manifest.update_url, release.updateUrl);
   assert.ok(entries.includes(manifest.background.service_worker));

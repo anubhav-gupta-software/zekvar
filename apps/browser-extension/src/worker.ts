@@ -6,7 +6,7 @@ import {
 } from './protocol';
 import { domainRuleLimit, emptyDomainRules, emptyPathRules, installDomainRules, readDomainRules, readPathRules,
   ruleCount, sameDomainRules, type DomainRules, type PathRules } from './domain-rules';
-import { fileContentMode, isFileInspection, isUploadModes, readTargetedUpload, sameUploadTypes, uploadApps, uploadsOff, type TargetedUploads } from '../../../contracts/policy/uploads';
+import { fileContentMode, isFileInspection, isUploadApp, isUploadModes, readTargetedUpload, sameUploadTypes, uploadApps, uploadsOff, type TargetedUploads } from '../../../contracts/policy/uploads';
 import { collectExtensionInventory } from './extension-inventory';
 import type { InventoryStatus } from '../../../contracts/policy/extension-inventory';
 import { discoveryPresetAt, isCustomAppId, isDiscoveryPreset, readCustomApps, type CustomApp } from '../../../contracts/policy/discovery';
@@ -15,6 +15,9 @@ import { readBlockedAiAppHosts } from '../../../contracts/policy/ai-app-access';
 import { readIdentifierProtection, sameIdentifierProtection } from '../../../contracts/policy/prompt';
 import { isClipboardMode } from '../../../contracts/policy/clipboard';
 import { readPromptAppModes, samePromptAppModes } from '../../../contracts/policy/prompt-app-modes';
+import { fileInspectionDetectors } from '../../../contracts/policy/file-inspection';
+import { isPdfPayload, pdfUnavailable, type PdfInspection } from './pdf-inspection';
+import { inspectPdfOffscreen } from './pdf-offscreen-client';
 
 declare const CONTROL_ORIGIN: string;
 
@@ -625,7 +628,7 @@ async function canDiscoverCatalogApps() {
     await chrome.permissions.contains(discoveryPermission);
 }
 
-chrome.runtime.onMessage.addListener((message: unknown, sender, reply: (response: Reply) => void) => {
+chrome.runtime.onMessage.addListener((message: unknown, sender, reply: (response: Reply | PdfInspection) => void) => {
   if (sender.id !== chrome.runtime.id || !isRecord(message)) return;
   if (message.type === 'observe-app') {
     const app = sender.tab && sender.frameId === 0 && sender.documentLifecycle === 'active' && discoveredApp(sender.url);
@@ -636,6 +639,20 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, reply: (response
   }
   const popup = sender.url === chrome.runtime.getURL('popup.html');
   const app = sender.tab && sender.frameId === 0 && sender.documentLifecycle === 'active' ? promptApp(sender.url) : undefined;
+  if (message.type === 'inspect-pdf') {
+    const encoded = message.encoded;
+    if (!isUploadApp(app) || !isPdfPayload(encoded)) return;
+    serial(async () => {
+      const state = await readState();
+      const { enrollment, policy } = state;
+      if (!enrollment || !policy || !appEnabled(state, app) ||
+          message.installationId !== enrollment.installationId || message.version !== policy.version ||
+          message.assignmentVersion !== policy.assignmentVersion || fileContentMode(policy, app) === 'off') return;
+      return fileInspectionDetectors(policy);
+    }).then((detectors) => detectors ? inspectPdfOffscreen(encoded, detectors) : pdfUnavailable)
+      .then(reply, () => reply(pdfUnavailable));
+    return true;
+  }
   const allowed = message.type === 'status' || message.type === 'sync' ||
     (popup && message.type === 'enroll') || (app && message.type === 'decision') ||
     (app && app !== fixtureApp && (message.type === 'coverage' || message.type === 'request-prompt-exception'));

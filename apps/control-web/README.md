@@ -128,6 +128,8 @@ Use **Draft ChatGPT file content protection** or **Draft Gemini file content pro
 
 For OpenDocument uploads, use Browser v0.35.0 or later and test synthetic `.odt`, `.ods`, and `.odp` files through the enrolled browser. Policy preview scores supplied sample text. The native upload test verifies which text Browser can extract from the file. [Monitor file contents](../browser-extension/README.md#monitor-file-contents)
 
+For PDF uploads, use Browser v0.36.0 and test a clean text PDF, one with a synthetic detector match, and one that requires a password. Check the Browser release and reported decisions before expanding the rollout. [Block sensitive file contents](../browser-extension/README.md#block-sensitive-file-contents)
+
 ## Set prompt modes by AI app
 
 1. Open **Policy preview** for the baseline or a rollout group.

@@ -12,6 +12,7 @@ import { evaluatePromptWithExceptions, exceptionDecision } from '../../../contra
 import type { Policy } from './protocol';
 import { clipboardUnavailableRule, inspectClipboard } from '../../../contracts/policy/clipboard';
 import { promptPolicyForApp } from '../../../contracts/policy/prompt-app-modes';
+import { inspectPdf } from './pdf-inspection';
 
 type PromptAdapter = {
   appId: AiPromptApp;
@@ -400,7 +401,7 @@ export function bindPromptGuard(adapter: PromptAdapter) {
   }, { capture: true });
 
   let scansInProgress = 0;
-  async function checkFileContent(files: readonly UploadFile[], policy: Policy): Promise<UploadCheck> {
+  async function checkFileContent(files: readonly UploadFile[], policy: Policy, installationId: string): Promise<UploadCheck> {
     if (scansInProgress >= 2 || !files.every((file): file is File => file instanceof File)) return { kind: 'unavailable' };
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -411,7 +412,9 @@ export function bindPromptGuard(adapter: PromptAdapter) {
       }, 3000);
     });
     scansInProgress++;
-    const scan = scanFileContents(files, policy, { signal: abort.signal, snapshot: true }).then((result): UploadCheck => {
+    const scan = scanFileContents(files, policy, {
+      signal: abort.signal, snapshot: true, pdf: (bytes) => inspectPdf(bytes, policy, installationId),
+    }).then((result): UploadCheck => {
       if (result.match) return { kind: 'blocked', rule: result.match };
       if (!result.complete || result.snapshots.length !== files.length) return { kind: 'unavailable' };
       return { kind: 'allow', files: result.snapshots };
@@ -433,11 +436,13 @@ export function bindPromptGuard(adapter: PromptAdapter) {
       if (!files.length || scansInProgress >= 2) return;
       const timestamp = new Date().toISOString();
       scansInProgress++;
-      void inspectFiles(files, policy).then((rule) => {
+      void inspectFiles(files, policy, {
+        signal: AbortSignal.timeout(3000), pdf: (bytes) => inspectPdf(bytes, policy, installationId),
+      }).then((rule) => {
         if (rule && control?.installationId === installationId) recordFileInspection(uploadApp, policy, installationId, rule, method, timestamp);
       }).catch(() => undefined).finally(() => { scansInProgress--; });
     } : undefined;
-    const check = content === 'block' ? (files: readonly UploadFile[]) => checkFileContent(files, policy) : undefined;
+    const check = content === 'block' ? (files: readonly UploadFile[]) => checkFileContent(files, policy, installationId) : undefined;
     if (filter || inspect || check) return { scope: `${installationId}/${policy.version}/${policy.assignmentVersion ?? 0}`, filter, inspect, check };
   }, (decision, method) => {
     if (decision !== 'block') ui.uploadNotice.textContent = '';

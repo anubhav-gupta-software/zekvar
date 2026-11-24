@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { officeSamples } from './office-fixture.mjs';
 import { odfXml, openDocumentFile, openDocumentSamples } from './opendocument-fixture.mjs';
+import { pdfFixture } from './pdf-fixture.mjs';
 
 const api = process.env.ZEKVAR_EXTENSION_TEST_API;
 const owner = process.env.ZEKVAR_EXTENSION_TEST_ADMIN_TOKEN;
@@ -41,6 +42,7 @@ test('protects Office and text files through native Chrome intake and Control re
   const root = await mkdtemp(join(tmpdir(), 'zekvar-office-upload-'));
   let browser;
   let loseNextAcknowledgment = false;
+  let fileDataSentToControl = false;
   const posts = [];
   const proxy = createServer(async (request, response) => {
     try {
@@ -48,6 +50,7 @@ test('protects Office and text files through native Chrome intake and Control re
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       const body = Buffer.concat(chunks);
+      fileDataSentToControl ||= body.includes('%PDF-') || body.includes('JVBERi') || body.includes(marker);
       const isEvent = request.url === '/v1/browser/events';
       if (isEvent) posts.push(JSON.parse(body));
       const headers = Object.fromEntries(Object.entries(request.headers).filter(([name]) =>
@@ -94,7 +97,7 @@ test('protects Office and text files through native Chrome intake and Control re
     fileInspection: { chatgpt: true, gemini: true }, uploadModes: { gemini: 'block' }, uploadTypes: { gemini: ['.bin'] } });
   const { grant } = await admin('enrollment-grants', {});
   browser = await chromium.launchPersistentContext(join(root, 'profile'), {
-    channel: 'chromium', headless: process.env.ZEKVAR_DEMO_HEADED !== '1',
+    channel: 'chromium', executablePath: process.env.ZEKVAR_TEST_CHROME, headless: process.env.ZEKVAR_DEMO_HEADED !== '1',
     args: [`--disable-extensions-except=${dist}`, `--load-extension=${dist}`],
   });
   browser.setDefaultTimeout(7_000);
@@ -113,6 +116,16 @@ test('protects Office and text files through native Chrome intake and Control re
     await page.getByText(/File content monitor$/).waitFor();
   }
   const actions = (page) => page.evaluate(() => window.fileEvents);
+  async function expectFileMode(page, version, mode) {
+    const badge = page.getByText(new RegExp(`v${version}.*File content ${mode}$`));
+    try {
+      await badge.waitFor();
+    } catch (error) {
+      const active = await page.getByText(/^Zekvar · /).allTextContents();
+      const popupStatus = await popup.locator('#status').textContent();
+      throw new Error(`Expected file mode ${mode} at v${version}. Composer: ${active.join(' / ')}. Popup: ${popupStatus}.`, { cause: error });
+    }
+  }
   const input = (page) => page.getByLabel('Attach fixture files');
   const events = async () => (await admin('events')).filter(({ policyVersion }) => policyVersion === policy.version);
   async function pick(page, files) {
@@ -269,7 +282,7 @@ test('protects Office and text files through native Chrome intake and Control re
       await until(() => extension('pendingFixtureReads.length'), 'The stale policy file read did not start.');
       const downgraded = await admin('policies', { fileContentModes: { chatgpt: 'monitor' } });
       await popup.getByRole('button', { name: 'Sync now' }).click();
-      await chat.getByText(new RegExp(`v${downgraded.version}.*File content monitor$`)).waitFor();
+      await expectFileMode(chat, downgraded.version, 'monitor');
       await extension('void pendingFixtureReads.shift()()');
       await pick(chat, [raw]);
       await seen(5);
@@ -320,8 +333,8 @@ test('protects Office and text files through native Chrome intake and Control re
     async function apply(fileContentModes) {
       const applied = await admin('policies', { fileContentModes, uploadModes: { chatgpt: 'off', gemini: 'off' } });
       await popup.getByRole('button', { name: 'Sync now' }).click();
-      await chat.getByText(new RegExp(`v${applied.version}.*File content ${fileContentModes.chatgpt}$`)).waitFor();
-      await gemini.getByText(new RegExp(`v${applied.version}.*File content ${fileContentModes.gemini}$`)).waitFor();
+      await expectFileMode(chat, applied.version, fileContentModes.chatgpt);
+      await expectFileMode(gemini, applied.version, fileContentModes.gemini);
       return applied.version;
     }
     const monitor = await apply({ chatgpt: 'monitor', gemini: 'monitor' });
@@ -350,5 +363,95 @@ test('protects Office and text files through native Chrome intake and Control re
       ['chatgpt/block/pem-private-key/picker', 'chatgpt/monitor/fixture-secret/picker', 'gemini/block/file-inspection-unavailable/picker',
         'gemini/block/github-classic-pat/drop']);
     assert.doesNotMatch(JSON.stringify([...posts, ...stored]), /private-odf|ZEKVAR_TEST_SECRET|ghp_|BEGIN PRIVATE KEY|Approved synthetic/);
+  });
+
+  await t.test('scans PDF page text locally and blocks incomplete checks before native attachments reach the site', async () => {
+    const safeBytes = process.env.ZEKVAR_TEST_PDF_DIRECTORY
+      ? await readFile(join(process.env.ZEKVAR_TEST_PDF_DIRECTORY, 'approved.pdf'))
+      : pdfFixture([['Approved synthetic PDF text']]);
+    const samples = new Map([
+      ['public-summary.pdf', safeBytes],
+      ['private-pdf-disguised.png', pdfFixture([['Synthetic cover page'], [[marker.slice(0, 7), marker.slice(7)]]])],
+      ['private-pdf-credential.pdf', pdfFixture([key.split('\n')])],
+      ['private-pdf-unreadable.pdf', pdfFixture([[]])],
+      ['private-pdf-embedded.pdf', pdfFixture([['Ordinary page alongside an attachment']], { embedded: true })],
+      ['private-pdf-too-many-pages.pdf', pdfFixture(Array(25).fill(['Approved synthetic PDF text']))],
+    ]);
+    if (process.env.ZEKVAR_TEST_PDF_DIRECTORY) {
+      samples.set('private-pdf-encrypted.pdf', await readFile(join(process.env.ZEKVAR_TEST_PDF_DIRECTORY, 'encrypted.pdf')));
+      samples.set('private-pdf-exported.pdf', await readFile(join(process.env.ZEKVAR_TEST_PDF_DIRECTORY, 'sensitive.pdf')));
+    }
+    await Promise.all([...samples].map(([name, bytes]) => writeFile(join(root, name), bytes)));
+    const deliveries = [];
+    for (const page of [chat, gemini]) {
+      await page.unroute('**/fixture-upload');
+      await page.route('**/fixture-upload', async (route) => {
+        deliveries.push(route.request().postDataBuffer());
+        await route.fulfill({ status: 204 });
+      });
+      await page.evaluate(() => { window.fileEvents = []; });
+    }
+    const [block] = await admin('policies');
+    const monitored = await admin('policies', { fileContentModes: { chatgpt: 'monitor' } });
+    await popup.getByRole('button', { name: 'Sync now' }).click();
+    await expectFileMode(chat, monitored.version, 'monitor');
+    const refused = (page, reason) => page.getByRole('alert').filter({ hasText: reason }).waitFor();
+    const pickPdf = (page, name) => pick(page, [join(root, name)]);
+    const rows = async (version) => (await admin('events')).filter(({ policyVersion }) => policyVersion === version);
+
+    await pickPdf(chat, 'private-pdf-disguised.png');
+    await until(async () => (await rows(monitored.version)).some(({ ruleId, decision }) => ruleId === 'fixture-secret' && decision === 'monitor'),
+      'The PDF text from the second page did not reach the metadata report.');
+    assert.deepEqual(deliveries, [samples.get('private-pdf-disguised.png')]);
+    const [installation] = await admin('installations');
+    const unauthorized = await popup.evaluate(async (request) => {
+      const contentRequest = chrome.runtime.sendMessage({ ...request, type: 'inspect-pdf' }).then((reply) => reply ?? null, () => null);
+      const port = chrome.runtime.connect({ name: 'inspect-offscreen-pdf' });
+      const parserRequest = new Promise((resolve) => {
+        const timer = setTimeout(() => { port.disconnect(); resolve('timeout'); }, 1500);
+        port.onDisconnect.addListener(() => { clearTimeout(timer); resolve(null); });
+        port.onMessage.addListener((reply) => { clearTimeout(timer); port.disconnect(); resolve(reply); });
+        port.postMessage(request);
+      });
+      return Promise.all([contentRequest, parserRequest]);
+    }, { encoded: samples.get('private-pdf-disguised.png').toString('base64'), installationId: installation.installationId,
+      version: monitored.version, assignmentVersion: 0, detectors: { mode: 'monitor' } });
+    assert.deepEqual(unauthorized, [null, null]);
+
+    const restored = await admin(`policies/${block.version}/restore`, {});
+    await popup.getByRole('button', { name: 'Sync now' }).click();
+    await expectFileMode(chat, restored.version, 'block');
+    await expectFileMode(gemini, restored.version, 'block');
+    await drop(gemini, gemini.locator('#drop-zone'), [join(root, 'private-pdf-credential.pdf')]);
+    await refused(gemini, 'sensitive content');
+    await input(chat).setInputFiles([]);
+    await pickPdf(chat, 'private-pdf-disguised.png');
+    await refused(chat, 'sensitive content');
+    for (const name of [...samples.keys()].filter((name) => /(?:unreadable|embedded|too-many-pages|encrypted)/.test(name))) {
+      await pickPdf(chat, name);
+      await refused(chat, 'could not complete');
+    }
+    if (samples.has('private-pdf-exported.pdf')) {
+      await pickPdf(chat, 'private-pdf-exported.pdf');
+      await refused(chat, 'sensitive content');
+    }
+    assert.equal(deliveries.length, 1);
+    if (process.env.ZEKVAR_DEMO_ARTIFACTS) {
+      await chat.getByRole('alert').screenshot({ path: join(process.env.ZEKVAR_DEMO_ARTIFACTS, 'pdf-upload-blocked.png') });
+    }
+    await pickPdf(chat, 'public-summary.pdf');
+    await until(() => deliveries.length === 2, 'The clean PDF did not reach the upload fixture.');
+    assert.deepEqual(deliveries[1], safeBytes);
+
+    const expected = ['gemini/pem-private-key/drop', 'chatgpt/fixture-secret/picker', ...Array(3).fill('chatgpt/file-inspection-unavailable/picker')];
+    if (samples.has('private-pdf-encrypted.pdf')) expected.push('chatgpt/file-inspection-unavailable/picker', 'chatgpt/fixture-secret/picker');
+    const evidence = await until(async () => {
+      const stored = await rows(restored.version);
+      return stored.length === expected.length && stored;
+    }, 'Control did not retain the expected PDF metadata decisions.');
+    assert.deepEqual(evidence.map(({ appId, ruleId, uploadMethod }) => `${appId}/${ruleId}/${uploadMethod}`).sort(), expected.sort());
+    assert.ok(evidence.every(({ decision }) => decision === 'block'));
+    assert.doesNotMatch(JSON.stringify([...posts, ...evidence]), /private-pdf|public-summary|ZEKVAR_TEST_SECRET|BEGIN PRIVATE KEY|%PDF|JVBERi/);
+    assert.equal(fileDataSentToControl, false);
   });
 });

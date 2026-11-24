@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Zekvar Browser",
-  "version": "0.35.0",
+  "version": "0.36.0",
   "minimum_chrome_version": "120",
   "description": "Enforces Zekvar domain, AI prompt, clipboard paste, and file upload policies on supported workflows.",
-  "permissions": ["storage", "alarms", "declarativeNetRequest"],
+  "permissions": ["storage", "alarms", "declarativeNetRequest", "offscreen"],
   "optional_permissions": ["management", "webNavigation"],
   "storage": { "managed_schema": "managed-schema.json" },
   "host_permissions": ["http://127.0.0.1:5187/*"],

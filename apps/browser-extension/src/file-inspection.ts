@@ -1,18 +1,16 @@
-import { evaluateFileInspection, fileInspectionDetectors } from '../../../contracts/policy/file-inspection';
-import { fixtureRule, githubPatRule, githubTokenRule, identifierRule, paymentCardRule, privateKeyRule, ssnRule,
-  type PromptPolicy, type RuleMetadata } from '../../../contracts/policy/prompt';
+import { evaluateFileInspection, fileInspectionDetectors, preferredFileMatch } from '../../../contracts/policy/file-inspection';
+import { privateKeyRule, type PromptPolicy, type RuleMetadata } from '../../../contracts/policy/prompt';
 import { readOfficeText } from './office-text';
 import { hasZipHeader, type OfficeReadBudget } from './office-zip';
+import { hasPdfHeader, pdfUnavailable, type PdfInspection } from './pdf-inspection';
 
 const maxPlainFileBytes = 256 * 1024;
 const maxBatchBytes = 1024 * 1024;
 const maxExpandedOfficeBytes = 1024 * 1024;
 const maxFiles = 16;
 const binaryControls = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/;
-const priority = [fixtureRule, identifierRule, githubPatRule, githubTokenRule, ssnRule, paymentCardRule, privateKeyRule];
-
 type FileScan = { match?: RuleMetadata; complete: boolean; snapshots: File[] };
-type ScanOptions = { signal?: AbortSignal; snapshot?: boolean };
+type ScanOptions = { signal?: AbortSignal; snapshot?: boolean; pdf?: (bytes: Uint8Array) => Promise<PdfInspection> };
 
 async function* fileText(bytes: Uint8Array<ArrayBuffer>, officeBudget: OfficeReadBudget): AsyncGenerator<string, boolean> {
   if (hasZipHeader(bytes)) return yield* readOfficeText(bytes, officeBudget);
@@ -23,7 +21,7 @@ async function* fileText(bytes: Uint8Array<ArrayBuffer>, officeBudget: OfficeRea
   return true;
 }
 
-export async function scanFileContents(files: readonly File[], policy: PromptPolicy, { signal, snapshot }: ScanOptions = {}): Promise<FileScan> {
+export async function scanFileContents(files: readonly File[], policy: PromptPolicy, { signal, snapshot, pdf }: ScanOptions = {}): Promise<FileScan> {
   const detectors = fileInspectionDetectors(policy);
   const officeBudget: OfficeReadBudget = { remainingBytes: maxExpandedOfficeBytes, remainingParts: 64 };
   let remaining = maxBatchBytes;
@@ -41,27 +39,38 @@ export async function scanFileContents(files: readonly File[], policy: PromptPol
       continue;
     }
     try {
-      if (file.size > maxPlainFileBytes && !hasZipHeader(new Uint8Array(await file.slice(0, 4).arrayBuffer()))) {
-        complete = false;
-        continue;
+      if (file.size > maxPlainFileBytes) {
+        const header = new Uint8Array(await file.slice(0, 5).arrayBuffer());
+        if (!hasZipHeader(header) && !hasPdfHeader(header)) {
+          complete = false;
+          continue;
+        }
       }
       remaining -= file.size;
       const bytes = new Uint8Array(await file.arrayBuffer());
-      const text = fileText(bytes, officeBudget);
-      try {
-        let part = await text.next();
-        while (!part.done) {
-          signal?.throwIfAborted();
-          const match = evaluateFileInspection(part.value, detectors);
-          if (match && (!best || priority.indexOf(match.ruleId) > priority.indexOf(best.ruleId))) best = match;
-          if (best?.ruleId === privateKeyRule) return { match: best, complete: false, snapshots: [] };
-          part = await text.next();
+      signal?.throwIfAborted();
+      if (hasPdfHeader(bytes)) {
+        const result = pdf ? await pdf(bytes) : pdfUnavailable;
+        signal?.throwIfAborted();
+        best = preferredFileMatch(best, result.match);
+        complete &&= result.complete;
+      } else {
+        const text = fileText(bytes, officeBudget);
+        try {
+          let part = await text.next();
+          while (!part.done) {
+            signal?.throwIfAborted();
+            best = preferredFileMatch(best, evaluateFileInspection(part.value, detectors));
+            if (best?.ruleId === privateKeyRule) return { match: best, complete: false, snapshots: [] };
+            part = await text.next();
+          }
+          complete &&= part.value;
+        } finally {
+          await text.return(false);
         }
-        complete &&= part.value;
-        if (snapshot && complete && !best && !file.webkitRelativePath) snapshots.push(snapshotFile(file, bytes));
-      } finally {
-        await text.return(false);
       }
+      if (best?.ruleId === privateKeyRule) return { match: best, complete: false, snapshots: [] };
+      if (snapshot && complete && !best && !file.webkitRelativePath) snapshots.push(snapshotFile(file, bytes));
     } catch {
       signal?.throwIfAborted();
       complete = false;
@@ -74,6 +83,6 @@ function snapshotFile(file: File, bytes: Uint8Array<ArrayBuffer>) {
   return new File([bytes], file.name, { type: file.type, lastModified: file.lastModified });
 }
 
-export async function inspectFiles(files: readonly File[], policy: PromptPolicy) {
-  return (await scanFileContents(files, policy)).match;
+export async function inspectFiles(files: readonly File[], policy: PromptPolicy, options?: ScanOptions) {
+  return (await scanFileContents(files, policy, options)).match;
 }

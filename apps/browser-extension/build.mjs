@@ -1,5 +1,5 @@
 import { build } from 'esbuild';
-import { copyFile, readFile, writeFile } from 'node:fs/promises';
+import { cp, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -30,17 +30,26 @@ await build({
   entryPoints: {
     ...(hostedOrigin === undefined ? { content: 'src/content.ts' } : {}),
     chatgpt: 'src/chatgpt.ts', claude: 'src/claude.ts', gemini: 'src/gemini.ts',
-    discovery: 'src/discovery.ts', popup: 'src/popup.ts', [worker]: 'src/worker.ts',
+    discovery: 'src/discovery.ts', popup: 'src/popup.ts', [worker]: 'src/worker.ts', 'pdf-offscreen': 'src/pdf-offscreen.ts',
   },
   bundle: true,
   format: 'iife',
   outdir,
-  define: { CONTROL_ORIGIN: JSON.stringify(origin) },
+  define: { CONTROL_ORIGIN: JSON.stringify(origin), SERVICE_WORKER_PATH: JSON.stringify(`${worker}.js`) },
 });
 manifest.background.service_worker = `${worker}.js`;
 manifest.host_permissions = [`${origin}/*`];
+const pdf = 'node_modules/pdfjs-dist';
+const pdfAssets = join(outdir, 'pdf-assets');
+await mkdir(pdfAssets, { recursive: true });
 await Promise.all([
   writeFile(join(outdir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n'),
   copyFile('src/popup.html', join(outdir, 'popup.html')),
   copyFile('managed-schema.json', join(outdir, 'managed-schema.json')),
+  copyFile('src/pdf-offscreen.html', join(outdir, 'pdf-offscreen.html')),
+  copyFile(join(pdf, 'legacy/build/pdf.min.mjs'), join(pdfAssets, 'pdf.min.mjs')),
+  copyFile(join(pdf, 'legacy/build/pdf.worker.min.mjs'), join(pdfAssets, 'pdf.worker.min.mjs')),
+  copyFile(join(pdf, 'LICENSE'), join(pdfAssets, 'LICENSE')),
+  cp(join(pdf, 'cmaps'), join(pdfAssets, 'cmaps'), { recursive: true }),
+  cp(join(pdf, 'standard_fonts'), join(pdfAssets, 'standard_fonts'), { recursive: true }),
 ]);
