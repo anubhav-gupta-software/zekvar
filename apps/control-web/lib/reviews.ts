@@ -1,5 +1,6 @@
 import type { AccessIdentity } from './access';
 import type { Policy } from './control';
+import type { PolicyTemplateOrigin } from './templates';
 
 export const reviewOperations = { publish: 'Publish policy', restore: 'Restore policy', promote: 'Promote group policy' };
 export const reviewStatuses = {
@@ -24,7 +25,7 @@ export type PolicyReview = {
   publishedVersion: number | null;
   requester: AccessIdentity;
   reviewer: AccessIdentity | null;
-  snapshots: { before: Policy; candidate: Policy };
+  snapshots: { before: Policy; candidate: Policy; template?: PolicyTemplateOrigin };
 };
 
 export type PolicyReviewQueue = { required: boolean; entries: PolicyReview[] };

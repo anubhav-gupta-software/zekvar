@@ -13,7 +13,8 @@ internal sealed partial class ControlStore
 
     public async Task<PolicyChangeResult> ChangePolicy(RequestIdentity identity, PublishPolicy? request, int? restoredFrom,
         bool expectReview, CancellationToken ct, Guid? groupId = null, Guid? sourceGroupId = null, int? expectedSourceVersion = null,
-        CustomApp[]? customApps = null, PromptException[]? promptExceptions = null)
+        CustomApp[]? customApps = null, PromptException[]? promptExceptions = null,
+        (Guid Id, int Revision, int ExpectedVersion)? template = null)
     {
         var org = identity.OrganizationId;
         await using var connection = await dataSource.OpenConnectionAsync(ct);
@@ -24,14 +25,21 @@ internal sealed partial class ControlStore
             !await ActiveAdministrators(transaction, org, [author.Id], ct))) return new(Error: "named_administrator_required");
 
         var target = await ReadPolicyScope(transaction, org, groupId, ct);
-        if (target is null || (request?.ExpectedVersion is { } expected && target.Version != expected)) return new();
+        if (target is null || ((template?.ExpectedVersion ?? request?.ExpectedVersion) is { } expected && target.Version != expected)) return new();
         var before = await ReadPolicySnapshot(transaction, org, target.Version, ct);
         if (before is null) return new();
         if (groupId.HasValue && !target.Published) before = before with { PromptExceptions = [] };
 
         Policy? candidate = before;
         string? sourceGroupName = null;
-        if (sourceGroupId is not null)
+        PolicyTemplateOrigin? templateOrigin = null;
+        if (template is { } sourceTemplate)
+        {
+            templateOrigin = await ReadTemplateOrigin(transaction, org, sourceTemplate.Id, sourceTemplate.Revision, ct);
+            if (templateOrigin is null) return new(Error: "template_unavailable");
+            candidate = await ReadPolicySnapshot(transaction, org, templateOrigin.SourceVersion, ct);
+        }
+        else if (sourceGroupId is not null)
         {
             var source = await ReadPolicyScope(transaction, org, sourceGroupId, ct);
             if (source is not { Published: true } || source.Version != expectedSourceVersion) return new();
@@ -58,12 +66,15 @@ internal sealed partial class ControlStore
             var auditGroup = sourceGroupId is not null ? new PolicyGroupChange(sourceGroupId, sourceGroupName, null, expectedSourceVersion) :
                 groupId is not null ? new PolicyGroupChange(groupId, target.Name, null, null) : null;
             var published = await WritePolicy(transaction, identity, candidate, groupId, restoredFrom, auditGroup, ct);
+            if (templateOrigin is not null) await AuditTemplate(transaction, identity, new("applied", templateOrigin, groupId, published.Version), ct);
             await transaction.CommitAsync(ct);
             return new(published);
         }
 
         var operation = sourceGroupId is not null ? "promote" : restoredFrom is not null ? "restore" : "publish";
         var sourceVersion = restoredFrom ?? expectedSourceVersion;
+        if (templateOrigin is not null && await FindPendingTemplateReview(transaction, identity, groupId, before.Version, templateOrigin, ct) is { } pending)
+            return new(ReviewId: pending);
         var id = Guid.NewGuid();
         await using var insert = new NpgsqlCommand("""
             INSERT INTO policy_reviews (id, organization_id, requested_by, operation, group_id, source_group_id, source_version, base_version, snapshots)
@@ -71,7 +82,7 @@ internal sealed partial class ControlStore
             """, connection, transaction);
         AddParameters(insert, id, org, identity.Access!.Id, operation, (object?)groupId ?? DBNull.Value,
             (object?)sourceGroupId ?? DBNull.Value, (object?)sourceVersion ?? DBNull.Value, before.Version,
-            JsonSerializer.Serialize(new PolicySnapshots(before, candidate), JsonSerializerOptions.Web));
+            JsonSerializer.Serialize(new PolicySnapshots(before, candidate, templateOrigin), JsonSerializerOptions.Web));
         await insert.ExecuteNonQueryAsync(ct);
         await AuditPolicyReview(transaction, identity, "policy_review_requested",
             new(id, operation, "pending", groupId, before.Version, sourceVersion), ct);
@@ -148,6 +159,7 @@ internal sealed partial class ControlStore
             var source = review.SourceGroupId is { } sourceId ? await ReadPolicyScope(transaction, org, sourceId, ct) : null;
             if (current?.Version != review.Snapshots.Before.Version ||
                 (review.Operation == "promote" && (source is not { Published: true } || source.Version != review.SourceVersion)) ||
+                (review.Snapshots.Template is { } pinned && await ReadTemplateOrigin(transaction, org, pinned.TemplateId, pinned.Revision, ct) is null) ||
                 PromptException.IntroducesExpired(review.Snapshots.Candidate.PromptExceptions, review.Snapshots.Before.PromptExceptions) ||
                 !await ActiveAdministrators(transaction, org, [review.Requester.Id], ct))
             {
@@ -160,6 +172,8 @@ internal sealed partial class ControlStore
                     review.GroupId is not null ? new PolicyGroupChange(review.GroupId, review.GroupName, null, null) : null;
                 var restoredFrom = review.Operation == "restore" ? review.SourceVersion : null;
                 published = await WritePolicy(transaction, identity, review.Snapshots.Candidate, review.GroupId, restoredFrom, group, ct);
+                if (review.Snapshots.Template is { } templateSource)
+                    await AuditTemplate(transaction, identity, new("applied", templateSource, review.GroupId, published.Version), ct);
                 status = "approved";
             }
         }

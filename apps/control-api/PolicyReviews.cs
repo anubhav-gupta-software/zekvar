@@ -1,7 +1,10 @@
+using System.Text.Json.Serialization;
+
 namespace Control;
 
 internal sealed record PolicyScope(int Version, string? Name, bool Published);
-internal sealed record PolicySnapshots(Policy Before, Policy Candidate);
+internal sealed record PolicySnapshots(Policy Before, Policy Candidate,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PolicyTemplateOrigin? Template = null);
 internal sealed record PolicyReview(Guid Id, string Status, string Operation, Guid? GroupId, string? GroupName,
     Guid? SourceGroupId, string? SourceGroupName, int? SourceVersion, DateTime RequestedAt, DateTime ExpiresAt,
     DateTime? DecidedAt, int? PublishedVersion, AccessIdentity Requester, AccessIdentity? Reviewer, PolicySnapshots Snapshots);

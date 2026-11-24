@@ -592,6 +592,86 @@ function refreshPolicyViews() {
   revalidatePath('/extensions');
   revalidatePath('/extensions/deployment');
   revalidatePath('/hardening');
+  revalidatePath('/templates');
+}
+
+function templateNumber(value: FormDataEntryValue | null) {
+  return typeof value === 'string' && /^[1-9]\d{0,9}$/.test(value) && Number(value) <= 2_147_483_647 ? Number(value) : undefined;
+}
+
+function templateError(error: unknown): Feedback {
+  if (error instanceof ApiError) {
+    if (error.code === 'template_name_exists') return { error: 'An active template already has this name.' };
+    if (error.code === 'template_limit') return { error: 'Archive an active template before creating another.' };
+    if (error.code === 'template_revision_changed') return { error: 'The template revision changed. Refresh and review it again.' };
+    if (error.code === 'template_target_changed') return { error: 'The destination policy changed. Run a fresh comparison.' };
+    if (error.status === 404) return { error: 'This template, source policy, or destination is unavailable.' };
+  }
+  throw error;
+}
+
+export async function createPolicyTemplate(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const input = form.get('name');
+  const name = typeof input === 'string' ? input.trim() : '';
+  const sourceVersion = templateNumber(form.get('sourceVersion'));
+  if (name.length < 2 || name.length > 64 || /[\x00-\x1f\x7f-\x9f]/.test(name) || !sourceVersion) {
+    return { error: 'Enter a template name and select a source policy.' };
+  }
+  let createdId: string | undefined;
+  const feedback = await perform(async (token) => {
+    const result = await controlApi.createTemplate(token, name, sourceVersion).catch(templateError);
+    if (!('id' in result)) return result;
+    createdId = result.id;
+    revalidatePath('/templates');
+    revalidatePath('/audit');
+    return {};
+  });
+  if (!feedback.error && createdId) redirect(`/templates?template=${createdId}`);
+  return feedback;
+}
+
+export async function revisePolicyTemplate(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const id = form.get('templateId');
+  const revision = templateNumber(form.get('expectedRevision'));
+  const sourceVersion = templateNumber(form.get('sourceVersion'));
+  if (!isId(id) || !revision || !sourceVersion) return { error: 'Select a source policy for this template.' };
+  return perform(async (token) => {
+    const result = await controlApi.reviseTemplate(token, id, revision, sourceVersion).catch(templateError);
+    if (!('revision' in result)) return result;
+    revalidatePath('/templates');
+    revalidatePath('/audit');
+    return { message: `Current template revision ${result.revision} uses policy v${result.sourceVersion}.` };
+  });
+}
+
+export async function archivePolicyTemplate(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const id = form.get('templateId');
+  const revision = templateNumber(form.get('expectedRevision'));
+  if (!isId(id) || !revision) return { error: 'Reload the current template before archiving.' };
+  const feedback = await perform(async (token) => {
+    try { await controlApi.archiveTemplate(token, id, revision); } catch (error) { return templateError(error); }
+    revalidatePath('/templates');
+    revalidatePath('/audit');
+    return {};
+  });
+  if (!feedback.error) redirect('/templates');
+  return feedback;
+}
+
+export async function applyPolicyTemplate(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const id = form.get('templateId');
+  const revision = templateNumber(form.get('revision'));
+  const version = templateNumber(form.get('expectedVersion'));
+  const group = form.get('targetGroup');
+  if (!isId(id) || !revision || !version || (group !== null && !isId(group))) return { error: 'Compare a template and destination before applying.' };
+  return perform(async (token) => {
+    const result = await controlApi.applyTemplate(token, id, revision, version, group, form.get('expectReview') === 'on').catch(templateError);
+    if ('reviewId' in result && result.reviewId) return queued(result.reviewId);
+    if (!('version' in result)) return result;
+    refreshPolicyViews();
+    revalidatePath('/audit');
+    return { message: `Template revision ${revision} published as policy v${result.version}.` };
+  });
 }
 
 function queued(reviewId: string) {
@@ -622,7 +702,7 @@ export async function decidePolicyReview(_previous: Feedback, form: FormData): P
       if (error instanceof ApiError && (error.code === 'review_stale' || error.code === 'review_closed')) {
         revalidatePath('/reviews');
         return { error: error.code === 'review_stale' ?
-          'The policy or requester changed. Submit a new request from the current policy.' : 'This review is already closed or expired.' };
+          'This review is stale. Refresh the review queue before submitting a new request.' : 'This review is already closed or expired.' };
       }
       throw error;
     }

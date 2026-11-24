@@ -150,6 +150,7 @@ try {
   const identifiersAdmin = randomBytes(32).toString('hex');
   const clipboardAdmin = randomBytes(32).toString('hex');
   const fleetAdmin = randomBytes(32).toString('hex');
+  const templateAdmin = randomBytes(32).toString('hex');
   const apiServer = startService('dotnet', ['bin/Debug/net10.0/Control.Api.dll'], api, {
     DOTNET_ENVIRONMENT: 'Development', ASPNETCORE_ENVIRONMENT: 'Development', Control__Port: String(apiPort), ConnectionStrings__Control: db,
     Control__Organizations__0__Slug: 'demo', Control__Organizations__0__AdminToken: token,
@@ -166,6 +167,7 @@ try {
     Control__Organizations__13__Slug: 'chrome-hardening', Control__Organizations__13__AdminToken: hardeningAdmin,
     Control__Organizations__14__Slug: 'clipboard-paste', Control__Organizations__14__AdminToken: clipboardAdmin,
     Control__Organizations__15__Slug: 'browser-fleet', Control__Organizations__15__AdminToken: fleetAdmin,
+    Control__Organizations__16__Slug: 'policy-templates', Control__Organizations__16__AdminToken: templateAdmin,
     ...(flags.has('--pilot') ? {
       Control__Organizations__3__Slug: 'managed-pilot', Control__Organizations__3__AdminToken: pilotAdmin,
       Control__Organizations__4__Slug: 'review-pilot', Control__Organizations__4__AdminToken: reviewAdmin,
@@ -216,6 +218,10 @@ try {
   });
   await run(process.execPath, ['--test', 'test/fleet.test.mjs'], extension, {
     ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: fleetAdmin,
+    ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_ARTIFACTS: artifacts ?? '',
+  });
+  await run(process.execPath, ['--test', 'test/policy-templates.test.mjs'], extension, {
+    ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: templateAdmin,
     ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_ARTIFACTS: artifacts ?? '',
   });
   await run(process.execPath, ['--test', 'test/ai-app-access.test.mjs'], extension, {

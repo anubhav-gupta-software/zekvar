@@ -40,6 +40,7 @@ const eventFeedAdmin = randomBytes(32).toString('hex');
 const hardeningAdmin = randomBytes(32).toString('hex');
 const clipboardAdmin = randomBytes(32).toString('hex');
 const fleetAdmin = randomBytes(32).toString('hex');
+const templateAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -68,7 +69,14 @@ const undoIdentifierSchema = `
   ALTER TABLE policy_versions DROP COLUMN identifier_protection;
   ALTER TABLE policy_deliveries DROP COLUMN identifiers;
 `;
+const undoTemplateSchema = `
+  DELETE FROM schema_migrations WHERE version = 43;
+  DROP TABLE policy_template_revisions;
+  DROP TABLE policy_templates;
+  ALTER TABLE control_audit DROP COLUMN template_change;
+`;
 const undoFleetSchema = `
+  ${undoTemplateSchema}
   DELETE FROM schema_migrations WHERE version = 42;
   DROP INDEX installations_active_fleet_page;
   ALTER TABLE control_audit DROP COLUMN fleet_change, DROP COLUMN fleet_request_hash;
@@ -210,6 +218,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__22__AdminToken: clipboardAdmin,
       Control__Organizations__23__Slug: `browser-fleet-${suffix}`,
       Control__Organizations__23__AdminToken: fleetAdmin,
+      Control__Organizations__24__Slug: `policy-templates-${suffix}`,
+      Control__Organizations__24__AdminToken: templateAdmin,
       ...overrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -4337,5 +4347,131 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(lastPage.next, null);
     assert.deepEqual([...firstPage.entries, ...lastPage.entries].map(({ installationId }) => installationId).sort(),
       [...newBrowsers, legacy].map(({ installationId }) => installationId).sort());
+  });
+
+  await t.test('reuses immutable template revisions with scoped comparisons, pinned review, and archive safety', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: templateAdmin, ...options });
+    const post = (path, body, options = {}) => admin(path, { method: 'POST', body, ...options });
+    const slug = 'policy-templates';
+    const initial = (await admin('policies'))[0];
+    await post('policies', { mode: 'warn' });
+    await post('policies', { mode: 'monitor' });
+    const expiresAt = new Date(Date.now() + 3600_000).toISOString();
+    const exception = (appId, reason) => ({ appId, ruleId: 'fixture-secret', reason, expiresAt });
+    const source = await post('policies', { mode: 'block', clipboardMode: 'block', domainRules: { allow: [], block: ['templates.test'] },
+      promptExceptions: [exception('chatgpt', 'Source-only synthetic exception')] });
+    if (postgres) {
+      await stop();
+      await retentionFixture(undoTemplateSchema);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 43'), '1');
+    }
+    assert.deepEqual(await admin(slug), []);
+    assert.deepEqual((await admin('policies'))[0], source);
+
+    const create = (name, version, options) => post(slug, { name, sourceVersion: version }, options);
+    await create('x', source.version, { expect: 400 });
+    await create('Missing source', 100_000, { expect: 404 });
+    await create('Foreign source', source.version, { token: fleetAdmin, expect: 404 });
+    const template = await create(' Starter controls ', source.version);
+    assert.deepEqual(await admin(slug), [template]);
+    assert.equal(template.name, 'Starter controls');
+    assert.equal(template.revision, 1);
+    assert.deepEqual(await create('starter CONTROLS', source.version, { expect: 409 }), { code: 'template_name_exists' });
+    const path = `${slug}/${template.id}`;
+    const revise = (expectedRevision, sourceVersion, options) => post(`${path}/revisions`, { expectedRevision, sourceVersion }, options);
+    const archive = (expectedRevision, options) => post(`${path}/archive`, { expectedRevision }, { expect: 204, ...options });
+    const compare = (revision, groupId, options) => admin(`${path}/preview?${new URLSearchParams({ revision, ...(groupId && { groupId }) })}`, options);
+    const apply = (revision, groupId, expectedVersion, options) => post(`${path}/apply`, { revision, groupId, expectedVersion }, options);
+
+    const operator = await post('access', { name: 'Template author', role: 'administrator', hours: 1 });
+    const reviewer = await post('access', { name: 'Template reviewer', role: 'administrator', hours: 1 });
+    const auditor = await post('access', { name: 'Template auditor', role: 'auditor', hours: 1 });
+    assert.equal((await admin(path, { token: auditor.token })).revisions.length, 1);
+    await admin(path, { token: fleetAdmin, expect: 404 });
+    await compare(1, null, { token: fleetAdmin, expect: 404 });
+    await apply(1, null, 1, { token: fleetAdmin, expect: 404 });
+    await revise(1, initial.version, { token: auditor.token, expect: 403 });
+    await archive(1, { token: auditor.token, expect: 403 });
+    await admin(`${path}/preview?revision=1&revision=2`, { expect: 400 });
+
+    const [saved, duplicate] = await Promise.all([revise(1, initial.version), revise(1, initial.version)]);
+    assert.deepEqual(saved, duplicate);
+    assert.equal(saved.revision, 2);
+    assert.deepEqual(await revise(1, source.version, { expect: 409 }), { code: 'template_revision_changed' });
+    assert.deepEqual(await revise(2, initial.version), saved);
+    assert.deepEqual((await admin(path)).revisions.map(({ revision, sourceVersion }) => [revision, sourceVersion]),
+      [[2, initial.version], [1, source.version]]);
+
+    const child = await post('policy-groups', { name: 'Template destination' });
+    const canary = await post('policy-groups', { name: 'Independent template cohort' });
+    const destination = `policy-groups/${child.id}/policies`;
+    const before = await post(destination, { mode: 'warn', promptExceptions: [exception('gemini', 'Destination-only fixture exception')] });
+    const comparison = await compare(1, child.id, { token: auditor.token });
+    assert.equal(comparison.before.version, before.version);
+    assert.equal(comparison.candidate.version, source.version);
+    assert.equal(comparison.candidate.clipboardMode, 'block');
+    assert.deepEqual(comparison.candidate.promptExceptions, before.promptExceptions);
+    assert.doesNotMatch(JSON.stringify(comparison), /Source-only synthetic exception/);
+    assert.equal((await compare(1, canary.id)).candidate.promptExceptions.length, 0);
+    await apply(1, child.id, before.version, { token: auditor.token, expect: 403 });
+    const changed = await post(destination, { mode: 'monitor' });
+    assert.deepEqual(await apply(1, child.id, before.version, { expect: 409 }), { code: 'template_target_changed' });
+    const applied = await apply(1, child.id, changed.version);
+    assert.deepEqual(applied.promptExceptions, before.promptExceptions);
+    assert.equal(applied.mode, 'block');
+    assert.equal(applied.clipboardMode, 'block');
+    assert.deepEqual(applied.domainRules, source.domainRules);
+    await apply(1, child.id, changed.version, { expect: 409 });
+    assert.equal((await admin(`policy-groups/${canary.id}/policies`)).length, 0);
+
+    await post('policy-reviews/setting', { required: true }, { expect: 204 });
+    const options = { token: operator.token, expect: 202, expectReview: true };
+    const [request, retry] = await Promise.all([apply(2, canary.id, source.version, options), apply(2, canary.id, source.version, options)]);
+    assert.deepEqual(request, retry);
+    await apply(1, canary.id, source.version, { expect: 403 });
+    assert.equal((await admin('policy-reviews')).entries.length, 1);
+    const reviewed = (await admin('policy-reviews')).entries[0];
+    assert.deepEqual(reviewed.snapshots.template, { templateId: template.id, name: template.name, revision: 2, sourceVersion: initial.version });
+    assert.equal(reviewed.snapshots.candidate.mode, initial.mode);
+    await post(`policy-reviews/${request.reviewId}/decision`, { approve: true }, { token: operator.token, expect: 403 });
+
+    assert.equal((await revise(2, source.version)).revision, 3);
+    const approved = await post(`policy-reviews/${request.reviewId}/decision`, { approve: true }, { token: reviewer.token });
+    assert.equal(approved.mode, initial.mode);
+    assert.deepEqual(approved.domainRules, initial.domainRules);
+    assert.equal((await admin(destination))[0].version, applied.version);
+    const pending = await apply(3, child.id, applied.version, options);
+    await archive(2, { expect: 409 });
+    await Promise.all([archive(3), archive(3)]);
+    assert.deepEqual(await admin(slug), []);
+    await admin(path, { expect: 404 });
+    await compare(3, child.id, { expect: 404 });
+    await apply(3, child.id, applied.version, { token: operator.token, expectReview: true, expect: 404 });
+    await post(`policy-reviews/${pending.reviewId}/decision`, { approve: true }, { token: reviewer.token, expect: 409 });
+    assert.equal((await admin('policy-reviews')).entries.find(({ id }) => id === pending.reviewId).status, 'stale');
+    assert.equal((await admin(destination))[0].version, applied.version);
+
+    const audit = (await admin('audit?action=policy_template_changed', { token: auditor.token })).entries;
+    assert.deepEqual(audit.map(({ templateChange }) => templateChange.operation).sort(), ['applied', 'applied', 'archived', 'created', 'revised', 'revised']);
+    const evidence = audit.find(({ templateChange }) => templateChange.publishedVersion === approved.version);
+    assert.equal(evidence.templateChange.groupId, canary.id);
+    assert.equal(evidence.templateChange.template.revision, 2);
+    assert.equal(evidence.actorAccess.id, reviewer.access.id);
+    assert.doesNotMatch(JSON.stringify(audit), /synthetic exception|Fixture exception|promptExceptions|templates\.test/);
+    const replacement = await create(template.name, initial.version);
+    assert.notEqual(replacement.id, template.id);
+    assert.equal(replacement.revision, 1);
+
+    await post('policy-reviews/setting', { required: false }, { expect: 204 });
+    const toBaseline = await post(`${slug}/${replacement.id}/apply`,
+      { revision: 1, expectedVersion: source.version });
+    assert.equal(toBaseline.mode, initial.mode);
+    assert.deepEqual(toBaseline.promptExceptions, source.promptExceptions);
+    assert.equal((await admin('policies'))[0].version, toBaseline.version);
+    assert.equal((await admin(destination))[0].version, applied.version);
+    const [baselineAudit] = (await admin('audit?action=policy_template_changed')).entries;
+    assert.equal(baselineAudit.templateChange.groupId, null);
+    assert.equal(baselineAudit.templateChange.publishedVersion, toBaseline.version);
   });
 });

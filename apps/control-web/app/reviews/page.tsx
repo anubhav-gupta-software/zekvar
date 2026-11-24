@@ -69,10 +69,14 @@ function ReviewRequest({ entry, session, required }: { entry: PolicyReview; sess
     <p className="muted">Requested by {entry.requester.name} · {utc.format(new Date(entry.requestedAt))} UTC</p>
     <p>Reference v{before.version}
       {entry.sourceVersion && <> · Source {entry.sourceGroupName && `${entry.sourceGroupName} `}v{entry.sourceVersion}</>}
+      {entry.snapshots.template && <> · Template {entry.snapshots.template.name} · revision {entry.snapshots.template.revision}
+        {' '}from policy v{entry.snapshots.template.sourceVersion}</>}
       {entry.publishedVersion && <> · Published v{entry.publishedVersion}</>}
     </p>
     {entry.status === 'pending' && <p className="muted">Expires {utc.format(new Date(entry.expiresAt))} UTC</p>}
-    {entry.status === 'stale' && <p className="muted">The policy or requesting credential changed. Submit a fresh request from the current policy.</p>}
+    {entry.status === 'stale' && <p className="muted">{entry.snapshots.template
+      ? 'Check the destination policy, template availability, and requesting credential before submitting a new request.'
+      : 'The policy or requesting credential changed. Submit a fresh request from the current policy.'}</p>}
     {entry.reviewer && <p className="muted">{reviewStatuses[entry.status]} by {entry.reviewer.name}</p>}
     <details open={entry.status === 'pending'}>
       <summary>Policy changes</summary>

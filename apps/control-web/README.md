@@ -38,6 +38,15 @@ Open **Browser health** and choose the rollout group and, if needed, a reported 
 
 Select **Export composer readiness (JSON)** to save a fresh snapshot for those Browser health filters. The download includes the capture time, selected group and extension version, current target policy for a specific group or the baseline, and counts for every matching active browser. Keep that file with the pilot's enforcement report and hands-on workflow checks. A composer detected under the current policy is a coverage signal. Exercise the actual submit and attachment paths before enabling enforcement for the cohort.
 
+## Reuse a published policy
+
+1. Open **Policy templates**. If a template is already open, select **New template**. Choose the source rollout group or organization baseline and select **Load source policies**. Name the template, select a published version, and select **Create template**.
+2. Open the template, choose its revision and destination, and select **Compare settings**. Review the configuration changes, including any removed rules. Temporary prompt exceptions stay with their destination and keep their original expiration.
+3. Apply the revision or request approval, depending on the organization's review setting. If another administrator changes the destination before publication, compare again. When independent review is required, a second administrator approves the pinned revision in **Policy reviews**.
+4. Verify the resulting policy in the destination's history and confirm that enrolled browsers have synced. Use the destination's normal rollback workflow to restore a previous version.
+
+Save a new revision to reuse a different published policy. Archiving stops future applications and makes pending applications ineligible for approval. Previously published policies remain in place. Auditors can inspect templates and comparisons. [Policy template API](../control-api/README.md#policy-templates)
+
 ## Manage browser fleet batches
 
 1. Open **Browser fleet**. Filter by a rollout group or the organization baseline, or use **Older browsers** to page through active installations. Select up to 25 browsers on the current page.

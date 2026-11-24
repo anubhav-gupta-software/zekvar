@@ -13,6 +13,7 @@ import type { AiEnforcementReport } from './reports';
 import type { ExtensionDeployment } from './extension-deployment';
 import type { BrowserHardening } from './browser-hardening';
 import type { FleetChange, FleetPage, FleetRequest } from './fleet';
+import type { PolicyTemplate, PolicyTemplateDetails, PolicyTemplatePreview } from './templates';
 import { eventPath, type EventDetails, type EventTriage, type TriageAssignee, type TriageUpdate } from './triage';
 import { casePath, type CaseCategory, type CaseDetails, type CasePage, type EventReference } from './cases';
 import { alertPath, type AlertDetails, type AlertPage, type AlertSettings } from './alerts';
@@ -91,6 +92,21 @@ export const controlApi = {
     request<IssuedEventFeedKey>('/access/event-feed', token, 'POST', { requestId, name, days }),
   revokeEventFeedKey: (token: string, id: string) => request<void>(`/access/event-feed/${id}/revoke`, token, 'POST'),
   policies: (token: string, groupId?: string) => request<Policy[]>(policiesPath(groupId), token),
+  templates: (token: string) => request<PolicyTemplate[]>('/policy-templates', token),
+  template: (token: string, id: string) => request<PolicyTemplateDetails>(`/policy-templates/${id}`, token),
+  templatePreview: (token: string, id: string, revision: number, groupId?: string) => {
+    const filter = new URLSearchParams({ revision: String(revision) });
+    if (groupId) filter.set('groupId', groupId);
+    return request<PolicyTemplatePreview>(`/policy-templates/${id}/preview?${filter}`, token);
+  },
+  createTemplate: (token: string, name: string, sourceVersion: number) =>
+    request<PolicyTemplate>('/policy-templates', token, 'POST', { name, sourceVersion }),
+  reviseTemplate: (token: string, id: string, expectedRevision: number, sourceVersion: number) =>
+    request<PolicyTemplate>(`/policy-templates/${id}/revisions`, token, 'POST', { expectedRevision, sourceVersion }),
+  archiveTemplate: (token: string, id: string, expectedRevision: number) =>
+    request<void>(`/policy-templates/${id}/archive`, token, 'POST', { expectedRevision }),
+  applyTemplate: (token: string, id: string, revision: number, expectedVersion: number, groupId: string | null, review: boolean) =>
+    request<PolicyChange>(`/policy-templates/${id}/apply`, token, 'POST', { revision, expectedVersion, groupId }, review),
   groups: (token: string) => request<PolicyGroup[]>('/policy-groups', token),
   createGroup: (token: string, name: string) => request<PolicyGroup>('/policy-groups', token, 'POST', { name }),
   assignGroup: (token: string, installationId: string, groupId: string | null) =>

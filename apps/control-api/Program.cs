@@ -234,6 +234,37 @@ admin.MapPost("/policies", async (PublishPolicy request, HttpContext http, Cance
     await PublishSettings(request, http, ct));
 admin.MapPost("/policies/{version:int}/restore", async (int version, HttpContext http, CancellationToken ct) =>
     PolicyOutcome(await store.ChangePolicy(Identity(http), null, version, ExpectsReview(http), ct), Results.NotFound()));
+var templates = admin.MapGroup("/policy-templates");
+templates.MapGet("", async (HttpContext http, CancellationToken ct) => Results.Ok(await store.ListTemplates(Identity(http).OrganizationId, ct)));
+templates.MapGet("/{id:guid}", async (Guid id, HttpContext http, CancellationToken ct) =>
+    await store.TemplateDetails(Identity(http).OrganizationId, id, ct) is { } details ? Results.Ok(details) : Results.NotFound());
+templates.MapPost("", async (CreatePolicyTemplate request, HttpContext http, CancellationToken ct) =>
+{
+    var name = request.Name?.Trim();
+    if (name is not { Length: >= 2 and <= 64 } || name.Any(char.IsControl) || request.SourceVersion < 1)
+        return Results.BadRequest(new { error = "Enter a template name and a published policy version." });
+    return TemplateOutcome(await store.CreateTemplate(Identity(http), name, request.SourceVersion, ct));
+});
+templates.MapPost("/{id:guid}/revisions", async (Guid id, RevisePolicyTemplate request, HttpContext http, CancellationToken ct) =>
+    request.ExpectedRevision < 1 || request.SourceVersion < 1 ? Results.BadRequest()
+        : TemplateOutcome(await store.ReviseTemplate(Identity(http), id, request, ct)));
+templates.MapPost("/{id:guid}/archive", async (Guid id, ArchivePolicyTemplate request, HttpContext http, CancellationToken ct) =>
+    request.ExpectedRevision < 1 ? Results.BadRequest()
+        : TemplateOutcome(await store.ArchiveTemplate(Identity(http), id, request.ExpectedRevision, ct), archive: true));
+templates.MapGet("/{id:guid}/preview", async (Guid id, int revision, Guid? groupId, HttpContext http, CancellationToken ct) =>
+{
+    if (revision < 1 || groupId == Guid.Empty || http.Request.Query.Any(entry => entry.Key is not ("revision" or "groupId") || entry.Value.Count != 1))
+        return Results.BadRequest(new { error = "Choose a template revision and one destination." });
+    return await store.CompareTemplate(Identity(http).OrganizationId, id, revision, groupId, ct) is { } preview
+        ? Results.Ok(preview) : Results.NotFound();
+});
+templates.MapPost("/{id:guid}/apply", async (Guid id, ApplyPolicyTemplate request, HttpContext http, CancellationToken ct) =>
+{
+    if (request.Revision < 1 || request.ExpectedVersion < 1 || request.GroupId == Guid.Empty)
+        return Results.BadRequest(new { error = "Review a template revision against a current policy before applying." });
+    return PolicyOutcome(await store.ChangePolicy(Identity(http), null, null, ExpectsReview(http), ct, request.GroupId,
+        template: (id, request.Revision, request.ExpectedVersion)), Results.Conflict(new { code = "template_target_changed" }));
+});
 var reviews = admin.MapGroup("/policy-reviews");
 reviews.MapGet("", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.PolicyReviews(Identity(http).OrganizationId, ct)));
@@ -552,11 +583,18 @@ static IResult PolicyOutcome(PolicyChangeResult result, IResult fallback)
         "navigation_rule_limit" => Results.BadRequest(new { error = "A policy can contain up to 50 domain, path, and AI app access rules combined.", code }),
         "ai_app_access_unknown_host" => Results.BadRequest(new { error = "Clear the access block for each removed AI app host or keep it in the policy catalog.", code }),
         "exception_expired" => Results.BadRequest(new { error = "Choose a future expiry for each new or changed exception.", code }),
-        "review_unavailable" => Results.NotFound(),
+        "review_unavailable" or "template_unavailable" => Results.NotFound(),
         "named_administrator_required" or "self_approval" => Results.Json(new { code }, statusCode: StatusCodes.Status403Forbidden),
         "review_mode_changed" or "review_closed" or "review_stale" => Results.Conflict(new { code }),
         _ => fallback
     };
+}
+
+static IResult TemplateOutcome(PolicyTemplateResult result, bool archive = false)
+{
+    if (result.Template is { } template) return archive ? Results.NoContent() : Results.Ok(template);
+    return result.Error is "template_unavailable" or "template_source_unavailable"
+        ? Results.NotFound(new { code = result.Error }) : Results.Conflict(new { code = result.Error });
 }
 
 Func<EndpointFilterInvocationContext, EndpointFilterDelegate, ValueTask<object?>> Authenticate(bool browser) =>

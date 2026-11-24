@@ -7,6 +7,7 @@ import type { EventTriageChange } from './triage';
 import type { CaseChange } from './cases';
 import type { AlertChange } from './alerts';
 import type { FleetChange } from './fleet';
+import type { PolicyTemplateAudit } from './templates';
 
 export const auditActions = {
   policy_published: 'Policy published',
@@ -34,6 +35,7 @@ export const auditActions = {
   event_feed_key_issued: 'Event feed key issued',
   event_feed_key_revoked: 'Event feed key revoked',
   browser_fleet_changed: 'Browser fleet changed',
+  policy_template_changed: 'Policy template changed',
 } as const;
 
 export type AuditAction = keyof typeof auditActions;
@@ -50,6 +52,7 @@ export type AuditEntry = AuditCursor & {
   securityAlertChange?: AlertChange;
   eventFeedKeyChange?: { keyId: string; name: string; expiresAt?: string };
   fleetChange?: FleetChange;
+  templateChange?: PolicyTemplateAudit;
   policyVersion: number | null;
   restoredFrom: number | null;
   installationId: string | null;
