@@ -7,6 +7,7 @@ import { assignPolicyGroup, createPolicyGroup, promotePolicyGroup } from '../act
 import { DomainRulesForm, MutationForm } from '../forms';
 import { PolicyVersionTable, PublishPolicyForm } from '../policies';
 import { DeploymentBadge, Sidebar } from '../workspace';
+import { PolicyImpactLink } from '../policy-impact-link';
 
 export default async function Groups({ searchParams }: { searchParams: Promise<{ group?: string | string[] }> }) {
   const token = await sessionToken();
@@ -56,18 +57,23 @@ export default async function Groups({ searchParams }: { searchParams: Promise<{
                 <a className="button small" href={`/preview?group=${result.selected.id}`}>Preview group policy</a>
                 <a className="button small" href={`/extensions/deployment?group=${result.selected.id}`}>Chrome extension deployment</a>
                 <a className="button small" href={`/?rolloutGroup=${result.selected.id}#browsers`}>Review browser rollout</a>
+                <PolicyImpactLink groupId={result.selected.id} version={result.selected.effectiveVersion} />
                 {writable && <a className="button small" href={`/enrollment?group=${result.selected.id}`}>Enroll browsers in group</a>}
               </div>
             </section>
             {policyWritable && <section className="panel" aria-labelledby="promotion-heading">
               <h2 id="promotion-heading">Promote to organization baseline</h2>
-              <p className="muted">{result.history[0] ? `Publish reviewed group version v${result.history[0].version} as a new baseline version.` :
+              <p className="muted">{result.history[0] ? <>Publish group v{result.history[0].version} as the new organization baseline
+                {result.selected.baselineVersion ? `, replacing v${result.selected.baselineVersion}` : ''}.</> :
                 'Publish a group policy before promoting it.'}</p>
+              {result.history[0] && <div className="mb-3"><PolicyImpactLink version={result.selected.baselineVersion} label="Review baseline impact" /></div>}
               {result.history[0] && <MutationForm action={promotePolicyGroup} label={review ? 'Request promotion review' : 'Promote group policy'}
                 confirmation={review ? `Request promotion of group version v${result.history[0].version}?` :
                   `Publish group version v${result.history[0].version} as the organization baseline?`}>
                 <input type="hidden" name="groupId" value={result.selected.id} />
                 <input type="hidden" name="expectedVersion" value={result.history[0].version} />
+                {result.selected.baselineVersion !== undefined &&
+                  <input type="hidden" name="expectedBaselineVersion" value={result.selected.baselineVersion} />}
                 {review && <input type="hidden" name="expectReview" value="on" />}
               </MutationForm>}
             </section>}

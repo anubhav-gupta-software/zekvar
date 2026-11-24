@@ -21,14 +21,15 @@ internal sealed partial class ControlStore
         await using var command = Command("""
             SELECT g.id, g.name, COALESCE(g.policy_version, o.policy_version), g.policy_version,
                 (SELECT count(*) FROM installations i WHERE i.organization_id = g.organization_id
-                 AND i.policy_group_id = g.id AND i.revoked_at IS NULL)
+                 AND i.policy_group_id = g.id AND i.revoked_at IS NULL), o.policy_version
             FROM policy_groups g JOIN organizations o ON o.id = g.organization_id
             WHERE g.organization_id = $1 ORDER BY lower(g.name), g.id
             """, organizationId);
         var groups = new List<PolicyGroup>();
         await using var rows = await command.ExecuteReaderAsync(ct);
         while (await rows.ReadAsync(ct))
-            groups.Add(new(rows.GetGuid(0), rows.GetString(1), rows.GetInt32(2), rows.IsDBNull(3) ? null : rows.GetInt32(3), rows.GetInt64(4)));
+            groups.Add(new(rows.GetGuid(0), rows.GetString(1), rows.GetInt32(2), rows.IsDBNull(3) ? null : rows.GetInt32(3), rows.GetInt64(4),
+                rows.GetInt32(5)));
         return groups;
     }
 
@@ -45,7 +46,7 @@ internal sealed partial class ControlStore
             SELECT c.id, c.name, o.policy_version FROM created c JOIN organizations o ON o.id = c.organization_id
             """, identity.OrganizationId, name, (object?)identity.Access?.Id ?? DBNull.Value);
         await using var rows = await command.ExecuteReaderAsync(ct);
-        return await rows.ReadAsync(ct) ? new(rows.GetGuid(0), rows.GetString(1), rows.GetInt32(2), null, 0) : null;
+        return await rows.ReadAsync(ct) ? new(rows.GetGuid(0), rows.GetString(1), rows.GetInt32(2), null, 0, rows.GetInt32(2)) : null;
     }
 
     public async Task<string?> AssignGroup(RequestIdentity identity, Guid installationId, Guid? groupId, CancellationToken ct)

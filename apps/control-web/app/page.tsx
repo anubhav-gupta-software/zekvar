@@ -1,8 +1,8 @@
 import { ApiError, controlApi } from '../lib/api';
 import {
-  aiApps, classifications, classificationLabels, composerStateLabels, decisionLabels, decisions, discoveryAppName, fileCheckUnavailableLabel,
+  aiApps, classifications, classificationLabels, composerStateLabels, composerStates, decisionLabels, decisions, discoveryAppName, fileCheckUnavailableLabel,
   isPromptApp, promptAppLabels, ruleLabels, utc,
-  type BrowserComposerReadiness, type BrowserReleaseCount, type ComposerCheck, type ComposerState, type Decision, type DiscoveredApp,
+  type BrowserComposerReadiness, type BrowserReleaseCount, type ComposerCheck, type Decision, type DiscoveredApp,
   type Installation, type SecurityEvent,
 } from '../lib/control';
 import { eventFilters, setEventCursor } from '../lib/events';
@@ -333,8 +333,6 @@ function BrowserReleases({ releases, links }: { releases: BrowserReleaseCount[];
     </div>
   </details>;
 }
-
-const composerStates = Object.keys(composerStateLabels) as ComposerState[];
 
 function ComposerReadiness({ readiness, exportQuery }: { readiness: BrowserComposerReadiness; exportQuery?: URLSearchParams }) {
   return <details className="browser-releases" open>

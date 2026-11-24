@@ -43,7 +43,7 @@ export const classificationLabels: Record<AppClassification, string> = {
 export type DiscoveredApp = {
   appId: DiscoveredAppId; status: AppClassification; browsersSeen: number; lastObservedAt: string | null; name?: string; host?: string;
 };
-export type PolicyGroup = { id: string; name: string; effectiveVersion: number; publishedVersion: number | null; browsers: number };
+export type PolicyGroup = { id: string; name: string; effectiveVersion: number; publishedVersion: number | null; browsers: number; baselineVersion?: number };
 export type PolicyGroupChange = { groupId: string | null; groupName: string | null; installationId: string | null; sourceVersion: number | null };
 
 export type Policy = {
@@ -117,6 +117,7 @@ export const composerStateLabels = {
   policy_pending: 'Policy pending', off: 'Off',
 } as const;
 export type ComposerState = keyof typeof composerStateLabels;
+export const composerStates = Object.keys(composerStateLabels) as ComposerState[];
 export type ComposerCheck = { state: ComposerState; checkedAt: string | null };
 export type BrowserComposerReadiness = {
   activeInstallations: number;

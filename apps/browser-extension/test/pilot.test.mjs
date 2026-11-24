@@ -349,6 +349,16 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     }, api);
     assert.equal(stalePolicy.version, 7);
     assert.equal(stalePolicy.assignmentVersion, 1);
+    const [impact] = await Promise.all([dashboard.waitForEvent('popup'),
+      dashboard.getByRole('link', { name: 'Review baseline impact', exact: true }).click()]);
+    try {
+      await impact.getByRole('heading', { name: 'Organization baseline · v4', exact: true }).waitFor();
+      const affected = impact.getByRole('table', { name: 'Affected rollout cohorts', exact: true });
+      assert.equal(await affected.getByRole('row', { name: /^Unassigned browsers/ }).getByRole('cell').first().textContent(), '1');
+      await impact.getByRole('article').filter({ hasText: 'Browsers outside scope' }).getByText('1', { exact: true }).waitFor();
+    } finally {
+      await impact.close();
+    }
     await assignmentA.selectOption('');
     await save.click();
     await assignments.getByRole('row').filter({ hasText: idA.slice(0, 13) }).getByText('v4', { exact: true }).waitFor();
@@ -377,7 +387,7 @@ test('two managed Chrome profiles enroll, receive policy, and recover after one 
     const promote = dashboard.getByRole('button', { name: 'Promote group policy', exact: true });
     dashboard.once('dialog', (dialog) => dialog.accept());
     await promote.click();
-    await dashboard.getByRole('alert').filter({ hasText: 'The reviewed group version changed.' }).waitFor();
+    await dashboard.getByRole('alert').filter({ hasText: 'The group or organization baseline version changed.' }).waitFor();
     await sync(popupB, 'Connected to Control · MONITOR v4');
     await dashboard.reload();
     dashboard.once('dialog', (dialog) => dialog.accept());

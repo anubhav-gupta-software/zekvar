@@ -46,7 +46,8 @@ internal sealed partial class ControlStore
     }
 
     private async Task<(BrowserComposerReadiness Summary, Dictionary<Guid, Dictionary<string, ComposerCheck>> Checks)> BrowserComposerReadiness(
-        Guid organizationId, BrowserHealthFilter filter, IReadOnlyList<Installation> detail, NpgsqlTransaction snapshot, CancellationToken ct)
+        Guid organizationId, BrowserHealthFilter filter, IReadOnlyList<Installation> detail, NpgsqlTransaction snapshot, CancellationToken ct,
+        bool baselineImpact = false)
     {
         var visible = detail.Where(row => row.RevokedAt is null).Select(row => row.InstallationId).ToArray();
         await using var command = BrowserRead(snapshot, """
@@ -67,11 +68,12 @@ internal sealed partial class ControlStore
                     AND o.assignment_version = i.assignment_version AND o.policy_version = p.version
                 WHERE i.organization_id = $1 AND i.revoked_at IS NULL AND (NOT $2 OR i.policy_group_id IS NOT DISTINCT FROM $3::uuid)
                     AND ($4::text IS NULL OR i.extension_version = $4 OR ($4 = 'unreported' AND i.extension_version IS NULL))
+                    AND (NOT $8 OR g.policy_version IS NULL)
             )
             SELECT app_id, state, count(*), jsonb_object_agg(id, checked_at) FILTER (WHERE id = ANY($5))
             FROM states GROUP BY app_id, state
             """, organizationId, filter.Scoped, (object?)filter.GroupId ?? DBNull.Value, (object?)filter.Version ?? DBNull.Value, visible,
-            ReadinessHeartbeatSeconds, ReadinessObservationSeconds);
+            ReadinessHeartbeatSeconds, ReadinessObservationSeconds, baselineImpact);
         var counts = DiscoveryCatalog.ComposerAppIds.ToDictionary(app => app, _ => new Dictionary<string, long>(StringComparer.Ordinal)
         {
             ["detected"] = 0, ["unsupported"] = 0, ["stale"] = 0, ["unobserved"] = 0, ["policy_pending"] = 0, ["off"] = 0,

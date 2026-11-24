@@ -8,6 +8,7 @@ import { sessionToken } from '../../lib/session';
 import { decidePolicyReview, setPolicyReview } from '../actions';
 import { MutationForm, RefreshSection } from '../forms';
 import { PolicyChanges } from '../policy-changes';
+import { PolicyImpactLink } from '../policy-impact-link';
 import { DeploymentBadge, Sidebar } from '../workspace';
 
 export default async function PolicyReviewPage() {
@@ -73,7 +74,10 @@ function ReviewRequest({ entry, session, required }: { entry: PolicyReview; sess
         {' '}from policy v{entry.snapshots.template.sourceVersion}</>}
       {entry.publishedVersion && <> · Published v{entry.publishedVersion}</>}
     </p>
-    {entry.status === 'pending' && <p className="muted">Expires {utc.format(new Date(entry.expiresAt))} UTC</p>}
+    {entry.status === 'pending' && <div className="form-row mb-3">
+      <p className="muted">Expires {utc.format(new Date(entry.expiresAt))} UTC</p>
+      <PolicyImpactLink groupId={entry.groupId} version={before.version} />
+    </div>}
     {entry.status === 'stale' && <p className="muted">{entry.snapshots.template
       ? 'Check the destination policy, template availability, and requesting credential before submitting a new request.'
       : 'The policy or requesting credential changed. Submit a fresh request from the current policy.'}</p>}

@@ -20,6 +20,7 @@ import { domainRuleLimit, ruleCount } from '../../../../contracts/policy/domains
 import { clipboardModes, type ClipboardMode } from '../../../../contracts/policy/clipboard';
 import { compareTestPack, type TestPack, type TestPackReport } from '../../lib/test-pack';
 import { TestPackInput, TestPackResults } from './verification-pack';
+import { PolicyImpactLink } from '../policy-impact-link';
 
 const navigationFields = [
   ['allow', 'Draft allowed domains'], ['block', 'Draft blocked domains'],
@@ -166,7 +167,10 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
 
   return <fieldset disabled={!ready} className="m-0 min-w-0 border-0 p-0">
     <section className="panel" aria-labelledby="draft-heading">
-      <div className="panel-heading"><h2 id="draft-heading">Draft policy</h2><span className="badge">Current {reference.label}</span></div>
+      <div className="panel-heading"><h2 id="draft-heading">Draft policy</h2>
+        <div className="form-row"><span className="badge">Current {reference.label}</span>
+          <PolicyImpactLink groupId={groupId} version={reference.version} /></div>
+      </div>
       <p className="muted">Compare an editable draft with the current policy for {scopeName}.</p>
       <div className="form-row preview-inputs">
         <div className="grid gap-1">

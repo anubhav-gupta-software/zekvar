@@ -8,6 +8,7 @@ import type { PolicyTemplate, PolicyTemplateDetails, PolicyTemplatePreview } fro
 import { applyPolicyTemplate, archivePolicyTemplate, createPolicyTemplate, revisePolicyTemplate } from '../actions';
 import { MutationForm, RefreshSection } from '../forms';
 import { PolicyChanges } from '../policy-changes';
+import { PolicyImpactLink } from '../policy-impact-link';
 import { DeploymentBadge, Sidebar } from '../workspace';
 
 type Search = Record<string, string | string[] | undefined>;
@@ -77,6 +78,7 @@ function CompareTemplate({ data, details }: { data: TemplateView; details: Polic
       <p className="muted">Template revision {result.template.revision} from policy v{result.template.sourceVersion} · {scope} v{before.version}.</p>
       {samePolicy(before, candidate) ? <p className="muted">The template settings match the destination policy.</p>
         : <PolicyChanges reference={before} candidate={candidate} />}
+      <div className="mb-3"><PolicyImpactLink groupId={data.targetGroup} version={before.version} /></div>
       {canChangePolicy(data.session) && <MutationForm action={applyPolicyTemplate}
         label={review ? 'Request template review' : 'Apply template'} appearance="primary"
         confirmation={`Use revision ${result.template.revision} of ${template.name} for ${scope}?`}>

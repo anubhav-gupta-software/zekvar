@@ -14,7 +14,7 @@ internal sealed partial class ControlStore
     public async Task<PolicyChangeResult> ChangePolicy(RequestIdentity identity, PublishPolicy? request, int? restoredFrom,
         bool expectReview, CancellationToken ct, Guid? groupId = null, Guid? sourceGroupId = null, int? expectedSourceVersion = null,
         CustomApp[]? customApps = null, PromptException[]? promptExceptions = null,
-        (Guid Id, int Revision, int ExpectedVersion)? template = null)
+        (Guid Id, int Revision, int ExpectedVersion)? template = null, int? expectedBaselineVersion = null)
     {
         var org = identity.OrganizationId;
         await using var connection = await dataSource.OpenConnectionAsync(ct);
@@ -25,7 +25,8 @@ internal sealed partial class ControlStore
             !await ActiveAdministrators(transaction, org, [author.Id], ct))) return new(Error: "named_administrator_required");
 
         var target = await ReadPolicyScope(transaction, org, groupId, ct);
-        if (target is null || ((template?.ExpectedVersion ?? request?.ExpectedVersion) is { } expected && target.Version != expected)) return new();
+        if (target is null || ((template?.ExpectedVersion ?? request?.ExpectedVersion ?? expectedBaselineVersion) is { } expected && target.Version != expected))
+            return new();
         var before = await ReadPolicySnapshot(transaction, org, target.Version, ct);
         if (before is null) return new();
         if (groupId.HasValue && !target.Published) before = before with { PromptExceptions = [] };

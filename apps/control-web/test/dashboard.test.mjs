@@ -1033,6 +1033,110 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await page.goto(dashboard);
   });
 
+  await t.test('reviews rollout impact in a separate tab, exports aggregate counts, and refreshes a stale promotion', async () => {
+    const [inherits, independent] = await Promise.all([`Impact inheriting group ${'X'.repeat(40)}`, 'Impact promotion source']
+      .map((name) => post('/admin/policy-groups', { name }, token)));
+    const target = `/admin/policy-groups/${independent.id}/policies`;
+    const groupPolicy = await post(target, { mode: 'warn', extensionInventoryEnabled: false }, token);
+    const readPolicy = async () => {
+      const response = await context.request.get(`${api}/admin/policies`, { headers: { Authorization: `Bearer ${token}` } });
+      assert.equal(response.status(), 200);
+      return (await response.json())[0];
+    };
+    const baseline = await readPolicy();
+    const browser = async (groupId, observed) => {
+      const enrolled = await post('/enroll', { grant: (await post('/admin/enrollment-grants', {}, token)).grant });
+      const headers = { Authorization: `Bearer ${enrolled.token}`, 'X-Zekvar-Assignment-Aware': '1',
+        'X-Zekvar-Private-Key': '1', 'X-Zekvar-File-Inspection': '1', 'X-Zekvar-File-Content-Block': '1' };
+      assert.equal((await context.request.get(`${api}/browser/policy`, { headers })).status(), 200);
+      await post(`/admin/installations/${enrolled.installationId}/policy-group`, { groupId }, token);
+      const response = await context.request.get(`${api}/browser/policy`, { headers });
+      assert.equal(response.status(), 200);
+      const policy = await response.json();
+      if (observed) await post('/browser/heartbeat', {
+        policyVersion: policy.version, assignmentVersion: policy.assignmentVersion, chatGptCoverage: 'ready',
+        domainRulesApplied: true, pathRulesApplied: true, paymentCardModeApplied: true, privateKeyModeApplied: true,
+        uploadControlsApplied: true, uploadTypesApplied: true, promptExceptionsApplied: true, customDiscoveryApplied: true,
+        fileInspectionApplied: true, fileContentBlockApplied: true,
+      }, enrolled.token, { 'X-Zekvar-Composer-Coverage': '1' });
+      return enrolled;
+    };
+    const [sample, waiting] = await Promise.all([browser(inherits.id, true), browser(inherits.id), browser(independent.id)]);
+    const cohorts = (tab) => tab.getByRole('table', { name: 'Affected rollout cohorts', exact: true });
+    const followImpactLink = async (name) => {
+      const [reportTab] = await Promise.all([page.waitForEvent('popup'), page.getByRole('link', { name, exact: true }).click()]);
+      reportTab.setDefaultTimeout(5000);
+      await reportTab.getByRole('heading', { name: 'Policy rollout impact', exact: true }).waitFor();
+      return reportTab;
+    };
+    await page.goto(`${dashboard}/preview?group=${inherits.id}`);
+    await page.getByLabel('Custom prompt', { exact: true }).fill('Synthetic private impact sample');
+    const impact = await followImpactLink('Review rollout impact');
+    try {
+      assert.equal(new URL(impact.url()).searchParams.get('expectedVersion'), String(baseline.version));
+      await impact.getByRole('heading', { name: `${inherits.name} · v${baseline.version}`, exact: true }).waitFor();
+      const row = cohorts(impact).getByRole('row', { name: new RegExp(inherits.name) });
+      assert.deepEqual(await row.getByRole('cell').allTextContents(), ['2', '2', '1', '1']);
+      assert.equal(await cohorts(impact).getByRole('row', { name: /Impact promotion source/ }).count(), 0);
+      const composer = impact.getByRole('table', { name: `Composer coverage on v${baseline.version}`, exact: true });
+      assert.deepEqual(await composer.getByRole('row', { name: /^ChatGPT / }).getByRole('cell').allTextContents(), ['1', '0', '0', '0', '1', '0']);
+      await impact.setViewportSize({ width: 360, height: 790 });
+      await assertFitsViewport(impact);
+      await impact.setViewportSize({ width: 1440, height: 1000 });
+      const [file] = await Promise.all([impact.waitForEvent('download'),
+        impact.getByRole('link', { name: 'Export fresh snapshot (JSON)', exact: true }).click()]);
+      assert.equal(file.suggestedFilename(), 'zekvar-policy-rollout-impact.json');
+      const body = await readFile(await file.path(), 'utf8');
+      const snapshot = JSON.parse(body);
+      assert.deepEqual(snapshot.scope, { groupId: inherits.id, groupName: inherits.name, policyVersion: baseline.version, followsBaseline: true });
+      assert.deepEqual(snapshot.totals, { active: 2, reporting: 2, acknowledged: 1, reportingAndAcknowledged: 1 });
+      for (const privateValue of [sample.installationId, sample.token, waiting.installationId, waiting.token, 'Synthetic private impact sample']) {
+        assert.ok(!body.includes(privateValue));
+      }
+      assert.equal(await page.getByLabel('Custom prompt', { exact: true }).inputValue(), 'Synthetic private impact sample');
+      await impact.getByLabel('Scope', { exact: true }).selectOption('baseline');
+      await impact.getByRole('button', { name: 'View impact', exact: true }).click();
+      await cohorts(impact).getByRole('row', { name: /Unassigned browsers/ }).waitFor();
+      await cohorts(impact).getByRole('row', { name: new RegExp(inherits.name) }).waitFor();
+      assert.equal(await cohorts(impact).getByRole('row', { name: /Impact promotion source/ }).count(), 0);
+    } finally {
+      await impact.close();
+    }
+
+    await page.goto(`${dashboard}/groups?group=${independent.id}`);
+    const promotionImpact = await followImpactLink('Review baseline impact');
+    try {
+      await promotionImpact.getByRole('heading', { name: `Organization baseline · v${baseline.version}`, exact: true }).waitFor();
+      const oldExport = await promotionImpact.getByRole('link', { name: 'Export fresh snapshot (JSON)' }).getAttribute('href');
+      const screenshot = process.env.ZEKVAR_TEST_IMPACT_SCREENSHOT;
+      if (screenshot) await promotionImpact.screenshot({ path: screenshot });
+      const revised = await post('/admin/policies', { mode: 'monitor' }, token);
+      const promote = page.getByRole('button', { name: 'Promote group policy', exact: true });
+      page.once('dialog', (dialog) => dialog.accept());
+      await promote.click();
+      await page.getByRole('alert').filter({ hasText: 'The group or organization baseline version changed.' }).waitFor();
+      assert.equal((await readPolicy()).version, revised.version);
+      const staleExport = await context.request.get(new URL(oldExport, dashboard).href);
+      assert.equal(staleExport.status(), 409);
+      assert.equal(staleExport.headers()['cache-control'], 'no-store');
+      await promotionImpact.getByRole('button', { name: 'Refresh rollout impact', exact: true }).click();
+      await promotionImpact.getByText('The reviewed policy version changed.').waitFor();
+      assert.equal(await promotionImpact.getByRole('link', { name: 'Export fresh snapshot (JSON)' }).count(), 0);
+      await promotionImpact.getByRole('link', { name: 'Open the current rollout impact', exact: true }).click();
+      await promotionImpact.getByRole('heading', { name: `Organization baseline · v${revised.version}`, exact: true }).waitFor();
+      assert.deepEqual(await cohorts(promotionImpact).getByRole('row', { name: new RegExp(inherits.name) }).getByRole('cell').allTextContents(),
+        ['2', '2', '0', '0']);
+      await page.reload();
+      page.once('dialog', (dialog) => dialog.accept());
+      await promote.click();
+      await page.getByText(/Group policy promoted as organization version/).waitFor();
+      assert.equal((await readPolicy()).mode, groupPolicy.mode);
+    } finally {
+      await promotionImpact.close();
+    }
+    await page.goto(dashboard);
+  });
+
   await t.test('fits a mobile viewport and clears the session on sign-out', async () => {
     const screenshot = process.env.ZEKVAR_TEST_SCREENSHOT;
     if (screenshot) await page.screenshot({ path: screenshot, fullPage: true });
@@ -1043,6 +1147,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
     assert.ok(!(await context.cookies()).some(({ name }) => name === 'zekvar_control_session'));
     assert.equal((await context.request.get(`${dashboard}/audit/export`)).status(), 401);
     assert.equal((await context.request.get(`${dashboard}/events/export`)).status(), 401);
+    assert.equal((await context.request.get(`${dashboard}/reports/policy-impact/export`)).status(), 401);
     assert.deepEqual(clientErrors, []);
   });
 });

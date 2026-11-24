@@ -221,6 +221,29 @@ admin.MapGet("/reports/composer-readiness", async (HttpContext http, Cancellatio
     return await store.ReadComposerReadinessReport(Identity(http).OrganizationId, filter, ct) is { } report
         ? Results.Ok(report) : Results.NotFound();
 });
+admin.MapGet("/reports/policy-impact", async (HttpContext http, CancellationToken ct) =>
+{
+    var query = http.Request.Query;
+    Guid? groupId = null;
+    int? expectedVersion = null;
+    if (query.Any(entry => entry.Key is not ("scope" or "expectedVersion") || entry.Value.Count != 1))
+        return Results.BadRequest(new { error = "Choose a policy scope and an optional reviewed version." });
+    if (query.TryGetValue("scope", out var scope) && scope != "baseline")
+    {
+        if (!Guid.TryParseExact(scope, "D", out var group) || group == Guid.Empty)
+            return Results.BadRequest(new { error = "Choose the baseline or a rollout group." });
+        groupId = group;
+    }
+    if (query.TryGetValue("expectedVersion", out var version))
+    {
+        if (!int.TryParse(version, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var parsed) || parsed < 1)
+            return Results.BadRequest(new { error = "Choose a valid reviewed policy version." });
+        expectedVersion = parsed;
+    }
+    var (report, stale) = await store.PolicyImpact(Identity(http).OrganizationId, groupId, expectedVersion, ct);
+    return report is not null ? Results.Ok(report)
+        : stale ? Results.Conflict(new { code = "policy_impact_stale" }) : Results.NotFound();
+});
 admin.MapGet("/extension-inventory", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.ExtensionInventory(Identity(http).OrganizationId, null, ct)));
 admin.MapGet("/extension-inventory/{id:guid}", async (Guid id, HttpContext http, CancellationToken ct) =>
@@ -299,9 +322,11 @@ groups.MapPost("/{groupId:guid}/policies/{version:int}/restore", async (Guid gro
     PolicyOutcome(await store.ChangePolicy(Identity(http), null, version, ExpectsReview(http), ct, groupId), Results.NotFound()));
 groups.MapPost("/{groupId:guid}/promote", async (Guid groupId, PromotePolicyGroup request, HttpContext http, CancellationToken ct) =>
 {
-    if (request.ExpectedVersion <= 0) return Results.BadRequest(new { error = "Choose the group version you reviewed." });
+    if (request.ExpectedVersion <= 0 || request.ExpectedBaselineVersion is <= 0)
+        return Results.BadRequest(new { error = "Choose the group and baseline versions you reviewed." });
     return PolicyOutcome(await store.ChangePolicy(Identity(http), null, null, ExpectsReview(http), ct, sourceGroupId: groupId,
-        expectedSourceVersion: request.ExpectedVersion), Results.Conflict(new { error = "The reviewed group version is no longer current or available." }));
+        expectedSourceVersion: request.ExpectedVersion, expectedBaselineVersion: request.ExpectedBaselineVersion),
+        Results.Conflict(new { error = "The reviewed group or baseline version is no longer current or available." }));
 });
 admin.MapPost("/installations/{id:guid}/policy-group", async (Guid id, AssignPolicyGroup request, HttpContext http, CancellationToken ct) =>
     await store.AssignGroup(Identity(http), id, request.GroupId, ct) switch

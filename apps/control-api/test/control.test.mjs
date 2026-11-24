@@ -42,6 +42,7 @@ const clipboardAdmin = randomBytes(32).toString('hex');
 const fleetAdmin = randomBytes(32).toString('hex');
 const templateAdmin = randomBytes(32).toString('hex');
 const githubTokenAdmin = randomBytes(32).toString('hex');
+const impactAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -232,6 +233,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__24__AdminToken: templateAdmin,
       Control__Organizations__25__Slug: `github-tokens-${suffix}`,
       Control__Organizations__25__AdminToken: githubTokenAdmin,
+      Control__Organizations__26__Slug: `policy-impact-${suffix}`,
+      Control__Organizations__26__AdminToken: impactAdmin,
       ...overrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -4566,5 +4569,107 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(restored.githubTokenMode, 'off');
     assert.equal((await deliver()).githubTokenMode, 'off');
     await write('events', event(restored), 400);
+  });
+
+  await t.test('captures the effective rollout audience and rejects a promotion of a stale destination', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: impactAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const report = (query = '', options) => admin(`reports/policy-impact?${query}`, options);
+    const [initial] = await admin('policies');
+    const counts = (active, reporting, acknowledged, reportingAndAcknowledged) => ({ active, reporting, acknowledged, reportingAndAcknowledged });
+    const scope = (group, policyVersion = initial.version, followsBaseline = false) =>
+      ({ groupId: group?.id ?? null, groupName: group?.name ?? null, policyVersion, followsBaseline });
+    assert.deepEqual((await report()).totals, counts(0, 0, 0, 0));
+    const [follows, own, empty] = await Promise.all(['Inheriting cohort', 'Independent cohort', 'Empty cohort']
+      .map((name) => post('policy-groups', { name })));
+    const ownPath = `policy-groups/${own.id}`;
+    const published = await post(`${ownPath}/policies`, { mode: 'warn' });
+    const promote = (target, expectedVersion = published.version, options) => post(`${ownPath}/promote`,
+      { expectedVersion, expectedBaselineVersion: target }, options);
+    assert.equal((await admin('policy-groups')).find(({ id }) => id === own.id).baselineVersion, initial.version);
+    async function enroll(group, observed) {
+      const { grant } = await post('enrollment-grants');
+      const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+      const browserCall = (path, options) => call(`/v1/browser/${path}`, { token: browser.token, ...options });
+      const policy = () => browserCall('policy', { assignmentAware: true });
+      let effective = await policy();
+      if (group) {
+        await post(`installations/${browser.installationId}/policy-group`, { groupId: group.id }, { expect: 204 });
+        effective = await policy();
+      }
+      if (observed) await browserCall('heartbeat', { method: 'POST', expect: 204, composerAware: true,
+        body: { policyVersion: effective.version, assignmentVersion: effective.assignmentVersion ?? 0, ...observed } });
+      return browser;
+    }
+    const [base, inherited, stale, pending, independent, revoked] = await Promise.all([
+      enroll(null, { chatGptCoverage: 'ready' }),
+      enroll(follows, { chatGptCoverage: 'unsupported', geminiCoverage: 'ready' }),
+      enroll(null, { chatGptCoverage: 'ready' }),
+      enroll(follows),
+      enroll(own, { chatGptCoverage: 'ready' }),
+      enroll(follows, { chatGptCoverage: 'ready' }),
+    ]);
+    await post(`installations/${revoked.installationId}/revoke`, {}, { expect: 204 });
+    if (postgres) {
+      await retentionFixture(`
+        UPDATE installations SET last_seen_at = now() - interval '3 minutes' WHERE id = '${stale.installationId}';
+        INSERT INTO installations (id, organization_id, token_hash, policy_group_id, assignment_aware)
+        SELECT gen_random_uuid(), organization_id, gen_random_uuid()::text, policy_group_id, true
+        FROM installations CROSS JOIN generate_series(1, 101) WHERE id = '${pending.installationId}';
+      `);
+      assert.equal((await admin('installations')).length, 100);
+    }
+    const large = postgres ? 101 : 0;
+    const cohort = (group, aggregate) => ({ groupId: group?.id ?? null, groupName: group?.name ?? null, counts: aggregate });
+    const auditor = await post('access', { name: 'Impact auditor', role: 'auditor', hours: 1 });
+    const pinned = `scope=baseline&expectedVersion=${initial.version}`;
+    const baseline = await report(pinned, { token: auditor.token });
+    assert.equal(baseline.schemaVersion, 1);
+    assert.ok(Number.isFinite(Date.parse(baseline.asOf)));
+    assert.deepEqual(baseline.scope, scope(null));
+    assert.deepEqual(baseline.freshness, { heartbeatSeconds: 90, observationSeconds: 86_400 });
+    assert.deepEqual(baseline.cohorts, [
+      cohort(null, counts(2, postgres ? 1 : 2, 2, postgres ? 1 : 2)),
+      cohort(empty, counts(0, 0, 0, 0)),
+      cohort(follows, counts(2 + large, 2 + large, 1, 1)),
+    ]);
+    assert.deepEqual(baseline.totals, counts(4 + large, (postgres ? 3 : 4) + large, 3, postgres ? 2 : 3));
+    assert.equal(baseline.outsideScope, 1);
+    const onApp = (view, app) => view.composers.find(({ appId }) => appId === app).counts;
+    assert.deepEqual(onApp(baseline, 'chatgpt'), { detected: postgres ? 1 : 2, unsupported: 1, stale: postgres ? 1 : 0,
+      unobserved: 0, policy_pending: 1 + large, off: 0 });
+    assert.equal(onApp(baseline, 'gemini').detected, 1);
+    assert.equal(onApp(baseline, 'claude').off, 4 + large);
+    const inheritedView = await report(`scope=${follows.id}`);
+    assert.deepEqual(inheritedView.scope, scope(follows, initial.version, true));
+    assert.deepEqual(inheritedView.cohorts, [baseline.cohorts[2]]);
+    assert.equal(inheritedView.outsideScope, 3);
+    assert.deepEqual((await report(`scope=${own.id}`)).scope, scope(own, published.version));
+    assert.deepEqual((await report(`scope=${empty.id}`)).totals, counts(0, 0, 0, 0));
+    const aggregate = JSON.stringify(baseline);
+    for (const browser of [base, inherited, stale, pending, independent, revoked]) {
+      assert.ok(!aggregate.includes(browser.installationId) && !aggregate.includes(browser.token));
+    }
+    await report(`scope=${own.id}`, { token: second, expect: 404 });
+    await report(pinned, { token: base.token, expect: 401 });
+    for (const query of ['scope=all', 'scope=', 'scope=00000000-0000-0000-0000-000000000000', 'scope=baseline&scope=baseline',
+      'expectedVersion=0', 'expectedVersion=-1', 'expectedVersion=1&expectedVersion=2', 'expectedVersion=2147483648', 'organization=other']) {
+      await report(query, { expect: 400 });
+    }
+    const revised = await post('policies', { mode: 'block' });
+    assert.deepEqual(await report(pinned, { expect: 409 }), { code: 'policy_impact_stale' });
+    await promote(initial.version, published.version, { expect: 409 });
+    await promote(revised.version, published.version, { token: auditor.token, expect: 403 });
+    assert.equal((await admin('policies'))[0].version, revised.version);
+    const fresh = await report();
+    assert.deepEqual(fresh.scope, scope(null, revised.version));
+    assert.equal(fresh.totals.acknowledged, 0);
+    assert.equal(onApp(fresh, 'chatgpt').policy_pending, 4 + large);
+    const promoted = await promote(revised.version);
+    assert.equal(promoted.mode, 'warn');
+    await promote(revised.version, published.version, { expect: 409 });
+    assert.equal((await admin(`${ownPath}/policies`))[0].version, published.version);
+    assert.deepEqual((await report()).scope, scope(null, promoted.version));
+    assert.equal((await admin('audit?action=policy_published')).entries.filter(({ policyVersion }) => policyVersion === promoted.version).length, 1);
   });
 });

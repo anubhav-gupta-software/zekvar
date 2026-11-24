@@ -5,6 +5,7 @@ import { eventTotal, reportFilters, type AiEnforcementReport, type DecisionCount
 import { sessionToken } from '../../lib/session';
 import { fileInspectionUnavailableRule, uploadRule } from '../../../../contracts/policy/uploads';
 import { DeploymentBadge, RecordedRolloutOptions, Sidebar } from '../workspace';
+import { PolicyImpactLink } from '../policy-impact-link';
 
 const number = new Intl.NumberFormat('en-US');
 const date = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'UTC' });
@@ -33,7 +34,7 @@ export default async function Reports({ searchParams }: { searchParams: Promise<
     <main className="dashboard">
       <header className="page-heading">
         <div>{session && <p className="eyebrow">{session.organization}</p>}<h1>AI enforcement report</h1></div>
-        <DeploymentBadge />
+        <div className="form-row"><PolicyImpactLink label="Policy rollout impact" /><DeploymentBadge /></div>
       </header>
       <section className="panel table-panel" aria-labelledby="report-heading">
         <div className="panel-heading">

@@ -791,17 +791,24 @@ export async function applyFleetChange(_previous: Feedback, form: FormData): Pro
 export async function promotePolicyGroup(_previous: Feedback, form: FormData): Promise<Feedback> {
   const groupId = form.get('groupId');
   const expectedVersion = Number(form.get('expectedVersion'));
+  const baseline = form.get('expectedBaselineVersion');
+  const expectedBaselineVersion = baseline === null ? undefined : Number(baseline);
   if (!isId(groupId) || !Number.isInteger(expectedVersion) || expectedVersion < 1 || expectedVersion > 2147483647) {
     return { error: 'Choose a valid rollout group version.' };
   }
+  if (expectedBaselineVersion !== undefined && (!Number.isInteger(expectedBaselineVersion) || expectedBaselineVersion < 1 || expectedBaselineVersion > 2147483647)) {
+    return { error: 'Choose a valid organization baseline version.' };
+  }
   return perform(async (token) => {
     try {
-      const policy = await controlApi.promoteGroup(token, groupId, expectedVersion, form.get('expectReview') === 'on');
+      const policy = await controlApi.promoteGroup(token, groupId, expectedVersion, form.get('expectReview') === 'on', expectedBaselineVersion);
       if ('reviewId' in policy) return queued(policy.reviewId);
       refreshPolicyViews();
       return { message: `Group policy promoted as organization version ${policy.version}.` };
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409 && !error.code) return { error: 'The reviewed group version changed. Reload and review the current policy.' };
+      if (error instanceof ApiError && error.status === 409 && !error.code) {
+        return { error: 'The group or organization baseline version changed. Reload and review the current policies.' };
+      }
       throw error;
     }
   });

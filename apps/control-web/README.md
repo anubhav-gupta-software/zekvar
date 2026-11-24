@@ -104,9 +104,17 @@ Requests expire after 24 hours. A change to the reference policy, promotion sour
 1. Update enrolled browsers to Zekvar Browser v0.8.0 or later and let them sync. Open **Rollout groups** and create a group.
 2. In **Browser assignments**, select the group for a recent active installation and save. Each browser belongs to at most one rollout group. A new group follows the organization baseline.
 3. Publish the group's prompt, discovery, or navigation settings. Its first publish copies the current baseline and applies the changes to that copy. Subsequent publishes update the group's own policy. Use **Browser health** to check the policy status against the browser's assigned version.
-4. Restore a version from **Group policy history** to roll back that group. Assign the browser to **Organization baseline** to return it to the current baseline. After validating the group, **Promote group policy** copies the reviewed version into a new baseline version. If the group policy changes before confirmation, reload and review the new version. Other groups with their own policies continue to use their group settings.
+4. Restore a version from **Group policy history** to roll back that group. Assign the browser to **Organization baseline** to return it to the current baseline. After validating the group, open **Review baseline impact** and use **Promote group policy** to copy the reviewed version into a new baseline version. If either reviewed version changes before confirmation, reload and review the current policies. Other groups with their own policies continue to use their group settings.
 
 Control records group creation, assignment, publication, rollback, and promotion in the audit log. [Policy groups API](../control-api/README.md#policy-groups)
+
+## Review policy rollout impact
+
+Open **Review rollout impact** from a draft, template comparison, rollout group, or pending policy review. The report opens in a separate tab so you can return to the draft. You can also find **Policy rollout impact** under **Reports** and choose a destination.
+
+- A baseline report includes unassigned browsers and every group that inherits the baseline. A group report includes only browsers assigned to that group. **Browsers outside scope** counts active installations that would keep their current policy scope.
+- Compare **Reporting and current** with **Stale or pending**. The cohort table separates recent check-ins from acknowledgments of the current destination version. Composer counts describe observations on that version and assignment. Run a managed canary with the proposed policy to check actual enforcement.
+- Choose **Export fresh snapshot (JSON)** for an aggregate snapshot of the same destination version. The export excludes browser IDs and inspected content. A changed policy version invalidates a pinned report and its export. Open the current report and reload the draft or promotion page to review the new version.
 
 ## Preview a policy
 
