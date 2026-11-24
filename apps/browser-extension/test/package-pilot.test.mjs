@@ -78,6 +78,7 @@ async function inspect(work, path, signingKey) {
   assert.equal(manifest.web_accessible_resources, undefined);
   assert.equal(manifest.version, release.version);
   assert.equal(manifest.update_url, release.updateUrl);
+  assert.match(manifest.background.service_worker, new RegExp(`^worker-${release.version.replaceAll('.', '\\.')}-[a-f0-9]{12}\\.js$`));
   assert.ok(entries.includes(manifest.background.service_worker));
   return release;
 }
@@ -87,7 +88,7 @@ test('the Chrome packer produces immutable signed pilot releases with a pinned i
   t.after(() => rm(work, { recursive: true, force: true }));
   const scratchExtension = join(work, 'source/apps/browser-extension');
   await mkdir(scratchExtension, { recursive: true });
-  for (const file of ['package-pilot.mjs', 'build.mjs', 'manifest.json', 'managed-schema.json', 'src']) {
+  for (const file of ['package-pilot.mjs', 'build.mjs', 'chrome-version.mjs', 'manifest.json', 'managed-schema.json', 'src']) {
     await cp(join(root, file), join(scratchExtension, file), { recursive: true });
   }
   await symlink(resolve(root, '../../contracts'), join(work, 'source/contracts'));
@@ -108,6 +109,7 @@ test('the Chrome packer produces immutable signed pilot releases with a pinned i
     ['--key', identity.file, '--id', id, '--chrome', chrome, '--control-origin', hello, '--update-origin', updateOrigin, '--channel', 'pilot'];
   const first = join(work, 'first');
   const next = join(work, 'next');
+  const rollback = join(work, 'rollback');
   const wrongSigner = join(work, 'wrong-signer');
   const previous = join(first, 'release.json');
   await chmod(firstKey.file, 0o644);
@@ -118,6 +120,7 @@ test('the Chrome packer produces immutable signed pilot releases with a pinned i
   await assert.rejects(script(['--print-id', '--key', misplacedKey]), /outside the checkout/);
   await assert.rejects(script([...base({ id: otherKey.id }), '--first', '--output', first]), /pinned extension ID/);
   await assert.rejects(script([...base({ updateOrigin: 'https://updates.zekvar.test/path' }), '--first', '--output', first]), /HTTPS origin/);
+  await assert.rejects(script([...base(), '--first', '--version', '9.1', '--output', first]), /Use --version with --previous/);
   await assert.rejects(script([...base({ chrome: join(work, 'missing-chrome') }), '--first', '--output', first]), /ENOENT/);
   await assert.rejects(stat(first), { code: 'ENOENT' });
   const packFirst = () => script([...base(), '--first', '--output', first]);
@@ -132,10 +135,14 @@ test('the Chrome packer produces immutable signed pilot releases with a pinned i
   assert.deepEqual((await readdir(first)).sort(), ['chrome-policy.json', 'public', 'release.json']);
   assert.deepEqual((await readdir(join(first, 'public/pilot'))).sort(), ['updates.xml', `zekvar-browser-${original.version}.crx`].sort());
   const manifestFile = join(scratchExtension, 'manifest.json');
+  const originalManifest = await readFile(manifestFile, 'utf8');
   const manifest = await load(manifestFile);
   await assert.rejects(script([...base(), '--previous', previous, '--output', next]), /Increase the manifest version/);
   const version = manifest.version.split('.').map(Number);
   version[2] += 1;
+  const composerFile = join(scratchExtension, 'src/chatgpt.ts');
+  const knownGoodComposer = await readFile(composerFile, 'utf8');
+  await writeFile(composerFile, knownGoodComposer + '\ndocument.addEventListener("DOMContentLoaded", () => { document.documentElement.dataset.zekvarTestRelease = "candidate"; }, { once: true });\n');
   await writeFile(manifestFile, JSON.stringify({ ...manifest, version: version.join('.') }));
   await assert.rejects(script([...base({ identity: otherKey }), '--previous', previous, '--output', next]), /different extension ID/);
   await script([...base(), '--previous', previous, '--output', next]);
@@ -147,14 +154,33 @@ test('the Chrome packer produces immutable signed pilot releases with a pinned i
   const xml = await readFile(join(next, 'public/pilot/updates.xml'), 'utf8');
   assert.ok(xml.includes(`appid="${original.extensionId}"`));
   assert.ok(xml.includes(`codebase="${upgraded.packageUrl}" version="${upgraded.version}" prodversionmin="${manifest.minimum_chrome_version}"`));
-  await writeFile(manifestFile, JSON.stringify(manifest));
+  await writeFile(manifestFile, originalManifest);
+  await writeFile(composerFile, knownGoodComposer);
   await assert.rejects(script([...base(), '--previous', join(next, 'release.json'), '--output', join(work, 'older')]), /Increase the manifest version/);
+  const rollbackArgs = [...base(), '--previous', join(next, 'release.json'), '--output', rollback];
+  const rollbackVersion = [...version, 1].join('.');
+  await assert.rejects(script([...rollbackArgs, '--version', upgraded.version]), /Increase the manifest version/);
+  await assert.rejects(script([...rollbackArgs, '--version', `${upgraded.version}.0`]), /Increase the manifest version/);
+  await assert.rejects(script([...base({ updateOrigin: 'https://another-update.zekvar.test' }), '--previous',
+    join(next, 'release.json'), '--version', rollbackVersion, '--output', rollback]), /different extension ID, Control origin, or update URL/);
+  await assert.rejects(script([...rollbackArgs, '--version', original.version]), /higher than the source manifest/);
+  await assert.rejects(script([...rollbackArgs, '--version', '1.3.65536']), /valid Chrome version/);
+  await assert.rejects(script([...rollbackArgs, '--version', '../update']), /valid Chrome version/);
+  await assert.rejects(stat(rollback), { code: 'ENOENT' });
+  await script([...rollbackArgs, '--version', rollbackVersion]);
+  const restored = await inspect(work, rollback, firstKey.privateKey);
+  assert.equal(restored.version, rollbackVersion);
+  assert.equal(restored.sourceVersion, original.version);
+  assert.equal(restored.extensionId, original.extensionId);
+  assert.equal(restored.updateUrl, original.updateUrl);
+  assert.equal(await readFile(manifestFile, 'utf8'), originalManifest);
+  assert.equal(await readFile(composerFile, 'utf8'), knownGoodComposer);
 
   const artifacts = process.env.ZEKVAR_SIGNED_PILOT_ARTIFACTS;
   if (artifacts) {
     const output = resolve(artifacts);
     await mkdir(output, { mode: 0o700 });
-    await Promise.all([['first', first], ['next', next], ['wrong-signer', wrongSigner]]
+    await Promise.all([['first', first], ['next', next], ['wrong-signer', wrongSigner], ['rollback', rollback]]
       .map(([name, dir]) => cp(dir, join(output, name), { recursive: true })));
   }
 });

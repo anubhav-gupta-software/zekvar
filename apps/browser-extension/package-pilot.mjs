@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
+import { newerVersion, versionParts } from './chrome-version.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const exec = promisify(execFile);
@@ -24,27 +25,6 @@ function httpsOrigin(input, name) {
   const url = new URL(input);
   if (url.hostname.endsWith('.')) throw new Error(`Use the canonical --${name} hostname without a trailing dot.`);
   return url.origin;
-}
-
-function versionParts(version) {
-  if (typeof version !== 'string' || !/^(?:0|[1-9]\d{0,4})(?:\.(?:0|[1-9]\d{0,4})){0,3}$/.test(version)) {
-    throw new Error('The manifest and previous release must use valid Chrome versions.');
-  }
-  const parts = version.split('.').map(Number);
-  if (parts.some((part) => part > 65535) || parts.every((part) => part === 0)) {
-    throw new Error('The manifest and previous release must use valid Chrome versions.');
-  }
-  return parts;
-}
-
-function newer(next, previous) {
-  const current = versionParts(next);
-  const old = versionParts(previous);
-  for (let index = 0; index < 4; index++) {
-    const difference = (current[index] ?? 0) - (old[index] ?? 0);
-    if (difference) return difference > 0;
-  }
-  return false;
 }
 
 async function signingIdentity(path) {
@@ -72,7 +52,7 @@ async function packageRelease() {
     key: { type: 'string' }, 'print-id': { type: 'boolean' }, id: { type: 'string' },
     chrome: { type: 'string' }, output: { type: 'string' }, 'control-origin': { type: 'string' },
     'update-origin': { type: 'string' }, channel: { type: 'string' },
-    first: { type: 'boolean' }, previous: { type: 'string' },
+    first: { type: 'boolean' }, previous: { type: 'string' }, version: { type: 'string' },
   } });
   const { file: key, id: extensionId } = await signingIdentity(required(options, 'key'));
   if (options['print-id']) {
@@ -87,16 +67,20 @@ async function packageRelease() {
   const channel = required(options, 'channel');
   if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(channel)) throw new Error('Use a lowercase output channel name with letters, numbers, or hyphens.');
   const updateUrl = `${updateOrigin}/${channel}/updates.xml`;
-  const { version, minimum_chrome_version: minimumChrome } = await load(join(root, 'manifest.json'));
-  versionParts(version);
+  const { version: sourceVersion, minimum_chrome_version: minimumChrome } = await load(join(root, 'manifest.json'));
+  const version = options.version ?? sourceVersion;
+  versionParts(sourceVersion);
   versionParts(minimumChrome);
   if (Boolean(options.first) === Boolean(options.previous)) throw new Error('Specify --first for a new channel or --previous with the last release.json.');
+  if (options.version !== undefined && (!options.previous || !newerVersion(version, sourceVersion))) {
+    throw new Error('Use --version with --previous and choose a version higher than the source manifest.');
+  }
   if (options.previous) {
     const prior = await load(resolve(options.previous));
     if (prior.extensionId !== extensionId || prior.controlOrigin !== controlOrigin || prior.updateUrl !== updateUrl) {
       throw new Error('The previous release has a different extension ID, Control origin, or update URL.');
     }
-    if (!newer(version, prior.version)) throw new Error('Increase the manifest version before publishing another release to this channel.');
+    if (!newerVersion(version, prior.version)) throw new Error('Increase the manifest version or set a higher --version before publishing another release to this channel.');
   }
 
   const scratch = await mkdtemp(join(tmpdir(), 'zekvar-package-'));
@@ -107,7 +91,8 @@ async function packageRelease() {
     const extension = join(scratch, 'extension');
     const env = { ...process.env, ZEKVAR_CONTROL_ORIGIN: controlOrigin, ZEKVAR_EXTENSION_OUTDIR: extension };
     delete env.ZEKVAR_CONTROL_PORT;
-    await exec(process.execPath, [join(root, 'build.mjs')], { cwd: root, env, timeout: 60_000 });
+    const buildArgs = options.version === undefined ? [] : ['--version', version];
+    await exec(process.execPath, [join(root, 'build.mjs'), ...buildArgs], { cwd: root, env, timeout: 60_000 });
     const manifestFile = join(extension, 'manifest.json');
     const manifest = await load(manifestFile);
     if (manifest.version !== version || manifest.key || manifest.update_url) throw new Error('The source manifest changed or contains a distribution identity.');
@@ -134,6 +119,7 @@ async function packageRelease() {
       writeFile(join(output, 'chrome-policy.json'), json(policy)),
       writeFile(join(output, 'release.json'), json({
         extensionId, version, channel, controlOrigin, updateUrl, packageUrl, sha256: sha256(crx).toString('hex'),
+        ...(options.version !== undefined && { sourceVersion }),
       })),
     ]);
     await rename(staging, join(output, 'public'));

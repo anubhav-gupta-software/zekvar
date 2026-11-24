@@ -28,7 +28,7 @@ async function until(check, message, timeout = 30_000) {
   assert.fail(typeof message === 'function' ? message() : message);
 }
 
-test('a Linux-managed Chromium profile installs, updates, and removes signed Zekvar Browser', { timeout: 180_000 }, async (t) => {
+test('a Linux-managed Chromium profile installs, updates, rolls back, and removes signed Zekvar Browser', { timeout: 240_000 }, async (t) => {
   assert.equal(process.platform, 'linux', 'Run in a disposable Linux VM.');
   assert.ok(releases, 'Set ZEKVAR_SIGNED_PILOT_ARTIFACTS to the package test output.');
   assert.match(api ?? '', /^http:\/\/127\.0\.0\.1:\d+$/);
@@ -60,6 +60,7 @@ test('a Linux-managed Chromium profile installs, updates, and removes signed Zek
   }
   const first = await release('first');
   const next = await release('next');
+  const rollback = await release('rollback');
   const wrongSigner = await release('wrong-signer');
   const { extensionId } = first;
   const control = new URL(first.controlOrigin);
@@ -72,6 +73,9 @@ test('a Linux-managed Chromium profile installs, updates, and removes signed Zek
   const pin = createHash('sha256').update(new X509Certificate(cert).publicKey.export({ type: 'spki', format: 'der' })).digest('base64');
   let manifest = first;
   let replacement = next.crx;
+  let controlAvailable = true;
+  let pauseEventDelivery = false;
+  let withheldEvents = 0;
   const downloads = [];
   const updateEndpoints = [];
   const enrollmentRequests = [];
@@ -83,15 +87,22 @@ test('a Linux-managed Chromium profile installs, updates, and removes signed Zek
         res.writeHead(200, { 'Content-Type': 'application/xml', 'Cache-Control': 'no-store' }).end(manifest.xml);
         return;
       }
-      if (path === first.packageUrl.pathname || path === next.packageUrl.pathname) {
+      const packages = { [first.packageUrl.pathname]: first.crx, [next.packageUrl.pathname]: replacement,
+        [rollback.packageUrl.pathname]: rollback.crx };
+      if (Object.hasOwn(packages, path)) {
         downloads.push(path);
-        res.writeHead(200, { 'Content-Type': 'application/x-chrome-extension', 'Cache-Control': 'no-store' })
-          .end(path === first.packageUrl.pathname ? first.crx : replacement);
+        res.writeHead(200, { 'Content-Type': 'application/x-chrome-extension', 'Cache-Control': 'no-store' }).end(packages[path]);
         return;
       }
     }
     if (req.headers.host === control.host && (path === '/v1/enroll' || path.startsWith('/v1/browser/'))) {
       if (path === '/v1/enroll') enrollmentRequests.push(1);
+      const sendingEvent = path === '/v1/browser/events';
+      if (!controlAvailable || (pauseEventDelivery && sendingEvent)) {
+        if (sendingEvent) withheldEvents++;
+        res.writeHead(503).end();
+        return;
+      }
       const upstream = request(new URL(req.url, api), { method: req.method, headers: req.headers }, (response) => {
         res.writeHead(response.statusCode, response.headers);
         response.pipe(res);
@@ -155,7 +166,7 @@ test('a Linux-managed Chromium profile installs, updates, and removes signed Zek
     row.appliedPolicyVersion === blockPolicy.version && row.extensionVersion === first.version),
   'The force-installed browser did not report its extension release and apply its Control policy.');
 
-  async function enforce(useKeyboard) {
+  async function enforce({ keyboard = false, capture = false, candidate = false } = {}) {
     const chat = await browser.newPage();
     const fixture = await readFile(new URL('./guest-chatgpt-composer.html', import.meta.url), 'utf8');
     await chat.route('https://chatgpt.com/**', (route) => route.fulfill({ contentType: 'text/html', body: fixture }));
@@ -165,72 +176,70 @@ test('a Linux-managed Chromium profile installs, updates, and removes signed Zek
       if (await coverage.waitFor({ timeout: 1500 }).then(() => true, () => false)) return true;
       await chat.reload();
     }, 'The loaded composer did not show the active Zekvar policy.', 15_000);
+    assert.equal(await chat.locator('html').getAttribute('data-zekvar-test-release'), candidate ? 'candidate' : null);
     await chat.getByPlaceholder('Ask ChatGPT').fill('Synthetic update draft ZEKVAR_TEST_SECRET');
-    if (useKeyboard) await chat.getByPlaceholder('Ask ChatGPT').press('Enter');
+    if (keyboard) await chat.getByPlaceholder('Ask ChatGPT').press('Enter');
     else await chat.getByRole('button', { name: 'Send message', exact: true }).click();
     await chat.getByRole('alert').filter({ hasText: 'Submission blocked' }).waitFor();
     assert.equal(await chat.locator('#fixture-sends').textContent(), '0');
-    if (screenshot && useKeyboard) await chat.screenshot({ path: screenshot, fullPage: true });
+    if (screenshot && capture) await chat.screenshot({ path: screenshot, fullPage: true });
     await chat.getByPlaceholder('Ask ChatGPT').fill('Clean synthetic pilot draft');
     await chat.getByRole('button', { name: 'Send message', exact: true }).click();
     await chat.locator('#fixture-sends').filter({ hasText: /^1$/ }).waitFor();
     await chat.close();
   }
-  await enforce(false);
+  await enforce();
   assert.equal(enrollmentRequests.length, 1);
   delete extensionSettings.EnrollmentGrant;
   await deployPolicy();
 
-  await extensions.locator('extensions-item').getByText('Zekvar Browser', { exact: true }).waitFor();
   async function requestUpdate() {
     const devMode = extensions.locator('extensions-toolbar #devMode');
     const updateNow = extensions.locator('extensions-toolbar #updateNow');
     if (!await updateNow.isVisible()) await devMode.click();
     await updateNow.click();
   }
-  async function checkUpdate() {
+  async function checkUpdate(release) {
     const attempted = downloads.length;
     await requestUpdate();
-    await until(() => downloads.slice(attempted).includes(next.packageUrl.pathname), 'Chromium did not fetch the advertised update.');
+    await until(() => downloads.slice(attempted).includes(release.packageUrl.pathname), 'Chromium did not fetch the advertised update.');
   }
   manifest = next;
   replacement = wrongSigner.crx;
-  await checkUpdate();
+  await checkUpdate(next);
   await delay(1_200);
   assert.equal((await extensionInfo())?.version, first.version, 'Chromium accepted an update signed with the wrong key');
   replacement = next.crx;
-  await checkUpdate();
-  const upgraded = await until(async () => {
-    const info = await extensionInfo();
-    return info?.version === next.version && info;
-  }, 'Chromium did not activate the signed update.');
+  await checkUpdate(next);
+  async function activeRelease(version) {
+    return until(async () => {
+      const info = await extensionInfo();
+      return info?.version === version && info;
+    }, 'Chromium did not activate the signed update.');
+  }
+  const upgraded = await activeRelease(next.version);
   assert.equal(upgraded.id, extensionId);
   assert.equal(upgraded.userMayModify, false);
-  const reportedRelease = async () => (await browserInstallations()).find((row) => row.extensionVersion === next.version);
-  let released;
-  for (let attempt = 0; attempt < 20 && !released; attempt++) {
-    released = await reportedRelease();
-    if (!released) await delay(200);
-  }
-  if (!released) {
-    t.diagnostic('Chromium displayed the upgraded package before its worker reported the release. Relaunching the same managed profile.');
+  const reportedRelease = async (version) => (await browserInstallations()).find((row) => row.extensionVersion === version);
+  async function restart(version) {
     await browser.close();
     await launch();
     extensions = await openExtensions();
-    assert.equal((await extensionInfo())?.version, next.version);
-    released = await until(reportedRelease, 'Control did not observe the new extension release after relaunch.');
+    assert.equal((await extensionInfo())?.version, version);
   }
+  await restart(next.version);
+  await enforce({ keyboard: true, candidate: true });
+  const released = await until(() => reportedRelease(next.version), 'Control did not observe the new extension release after relaunch.');
   assert.equal(released.installationId, before.installationId);
   assert.ok(Date.parse(released.extensionVersionReportedAt) > Date.parse(before.extensionVersionReportedAt));
-  await enforce(true);
   assert.equal(enrollmentRequests.length, 1);
   assert.deepEqual((await browserInstallations()).map(({ installationId }) => installationId), [before.installationId]);
+  const installationEvents = async () => (await admin('events')).filter(({ installationId }) => installationId === before.installationId);
   const events = await until(async () => {
-    const rows = (await admin('events')).filter((row) => row.installationId === before.installationId && row.decision === 'block');
+    const rows = (await installationEvents()).filter((row) => row.decision === 'block');
     return rows.length === 2 && rows;
   }, 'Control did not receive decisions from both signed versions.');
   assert.doesNotMatch(JSON.stringify(events), /Synthetic update draft|ZEKVAR_TEST_SECRET/);
-  assert.ok(updateEndpoints.every(({ hasCookie, hasAuthorization }) => !hasCookie && !hasAuthorization));
 
   const previousRequests = downloads.length;
   const previousChecks = updateEndpoints.length;
@@ -241,14 +250,46 @@ test('a Linux-managed Chromium profile installs, updates, and removes signed Zek
   await delay(1_200);
   assert.equal(downloads.length, previousRequests, 'Chromium downloaded a lower version');
   assert.equal((await extensionInfo())?.version, next.version);
+
+  pauseEventDelivery = true;
+  await enforce({ candidate: true });
+  await until(() => withheldEvents > 0, 'The candidate did not attempt to deliver the blocked decision.');
+  controlAvailable = false;
+  assert.equal((await installationEvents()).length, 2);
+
+  assert.equal(rollback.sourceVersion, first.version);
+  manifest = rollback;
+  const rollbackStarted = Date.now();
+  await checkUpdate(rollback);
+  const restored = await activeRelease(rollback.version);
+  assert.equal(restored.id, extensionId);
+  assert.equal(restored.userMayModify, false);
+  await restart(rollback.version);
+  await enforce({ keyboard: true, capture: true });
+  assert.equal((await installationEvents()).length, 2);
+  const reopened = Date.now();
+  controlAvailable = true;
+  pauseEventDelivery = false;
+  const restoredReport = await until(() => reportedRelease(rollback.version), 'Control did not observe the rollback release.', 50_000);
+  assert.equal(restoredReport.installationId, before.installationId);
+  assert.equal(restoredReport.appliedPolicyVersion, blockPolicy.version);
+  assert.equal(enrollmentRequests.length, 1);
+  assert.deepEqual((await browserInstallations()).map(({ installationId }) => installationId), [before.installationId]);
+  const recovered = await until(async () => {
+    const rows = await installationEvents();
+    return rows.length === 4 && rows;
+  }, 'Control did not receive both decisions queued during the outage.');
+  assert.ok(recovered.every(({ decision }) => decision === 'block'));
+  assert.doesNotMatch(JSON.stringify(recovered), /Synthetic update draft|ZEKVAR_TEST_SECRET/);
+  assert.ok(updateEndpoints.every(({ hasCookie, hasAuthorization }) => !hasCookie && !hasAuthorization));
+  t.diagnostic(`Rollback and restart took ${reopened - rollbackStarted} ms. Control reconnected and received the queued decisions in ${Date.now() - reopened} ms.`);
+
   policy.ExtensionSettings[extensionId] = { installation_mode: 'removed' };
   await deployPolicy();
   await browser.close();
   await launch();
-  const page = await browser.newPage();
-  await page.goto('chrome://extensions');
-  await page.locator('extensions-item').getByText('Zekvar Browser', { exact: true }).waitFor({ state: 'detached' });
-  assert.equal(await extensionInfo(page), undefined);
+  const page = await openExtensions();
+  await until(async () => !await extensionInfo(page), 'Chromium did not remove the policy-installed extension.');
   await admin(`installations/${before.installationId}/revoke`, {}, 204);
   const deployments = await admin('installations');
   assert.ok(deployments.find(({ installationId }) => installationId === before.installationId).revokedAt);

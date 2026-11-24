@@ -2,6 +2,8 @@ import { build } from 'esbuild';
 import { cp, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { parseArgs } from 'node:util';
+import { versionParts } from './chrome-version.mjs';
 
 const hostedOrigin = process.env.ZEKVAR_CONTROL_ORIGIN;
 const outdir = process.env.ZEKVAR_EXTENSION_OUTDIR ?? 'dist';
@@ -23,6 +25,11 @@ function controlOrigin() {
 }
 const origin = controlOrigin();
 const manifest = JSON.parse(await readFile('manifest.json', 'utf8'));
+const { values: { version } } = parseArgs({ options: { version: { type: 'string' } } });
+if (version !== undefined) {
+  versionParts(version);
+  manifest.version = version;
+}
 if (hostedOrigin !== undefined) manifest.content_scripts = manifest.content_scripts.filter((script) => !script.js.includes('content.js'));
 // A new worker path also refreshes unpacked extensions that keep their prior Chrome profile.
 const worker = `worker-${manifest.version}-${createHash('sha256').update(origin).digest('hex').slice(0, 12)}`;
