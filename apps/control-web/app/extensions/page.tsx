@@ -2,7 +2,8 @@ import { redirect } from 'next/navigation';
 import type { InventoryExtension } from '../../../../contracts/policy/extension-inventory';
 import { ApiError, controlApi } from '../../lib/api';
 import { isId, utc } from '../../lib/control';
-import { installTypeLabels, inventoryStatusLabels, needsReview, siteAccessLabels, type InventoryInstallation } from '../../lib/extension-inventory';
+import { hasExpandedAccess, installTypeLabels, inventoryStatusLabels, needsReview, siteAccessLabels,
+  type InventoryExtensionChange, type InventoryInstallation } from '../../lib/extension-inventory';
 import { sessionToken } from '../../lib/session';
 import { RefreshSection } from '../forms';
 import { DeploymentBadge, Sidebar } from '../workspace';
@@ -49,7 +50,7 @@ export default async function ExtensionsPage({ searchParams }: { searchParams: P
           </div>
           {data.installations.length === 0 && <p className="empty">No active browsers are enrolled.</p>}
         </section>
-        {data.selected ? <BrowserInventory inventory={data.selected} /> :
+        {data.selected ? <><BrowserInventory inventory={data.selected} /><ExtensionChangeHistory inventory={data.selected} /></> :
           data.unavailable ? <section className="panel" role="alert">The selected browser is unavailable.</section> : null}
       </> : <section className="panel" role="alert">Control could not load extension inventory. Try reloading this page.</section>}
     </main>
@@ -73,6 +74,10 @@ const emptyMessages = {
   unavailable: 'This browser reported that collection was unavailable. Sync it again to retry.',
   reported: 'Chrome reported no other browser extensions.',
 };
+const historyTime = new Intl.DateTimeFormat('en-US', {
+  month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit',
+  timeZone: 'UTC', timeZoneName: 'short',
+});
 
 function BrowserInventory({ inventory }: { inventory: InventoryInstallation }) {
   const entries = [...inventory.entries ?? []].sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
@@ -100,5 +105,50 @@ function ExtensionRow({ extension }: { extension: InventoryExtension }) {
     <td>{siteAccessLabels[extension.siteAccess]}</td>
     <td>{extension.permissions.length ? extension.permissions.join(', ') : 'None reported'}</td>
     <td>{needsReview(extension) ? <span className="badge warn">Review</span> : '—'}</td>
+  </tr>;
+}
+
+function ExtensionChangeHistory({ inventory }: { inventory: InventoryInstallation }) {
+  const batches = inventory.changeHistory;
+  if (!batches) return null;
+  const names = new Map(inventory.entries?.map(({ id, name }) => [id, name]));
+  return <section className="panel table-panel" aria-labelledby="extension-history-heading">
+    <div className="panel-heading"><h2 id="extension-history-heading">Extension change history</h2></div>
+    {batches.length === 0 ? <p className="empty">No changes recorded for this inventory period.</p> : <>
+      <p className="empty">Up to 20 reports with changes from the last 30 days. Review access flags extensions with new risk signals.</p>
+      {batches.map((batch, index) => <details className="extension-change-batch" key={batch.id} open={index === 0}>
+        <summary>
+          <time dateTime={batch.reportedAt}>{historyTime.format(new Date(batch.reportedAt))}</time>
+          {' · '}{batch.changes.length} {batch.changes.length === 1 ? 'change' : 'changes'} · Policy v{batch.policyVersion}
+        </summary>
+        <div className="table-scroll" tabIndex={0} role="region" aria-label={`Changes from report ${batch.id}`}>
+          <table aria-label={`Extension changes from report ${batch.id}`}>
+            <thead><tr><th>Extension</th><th>Action</th><th>Changes</th><th>Review</th></tr></thead>
+            <tbody>{batch.changes.map((change) =>
+              <ExtensionChangeRow key={change.extensionId} change={change} name={names.get(change.extensionId)} />)}</tbody>
+          </table>
+        </div>
+      </details>)}
+    </>}
+  </section>;
+}
+
+function ExtensionChangeRow({ change, name }: { change: InventoryExtensionChange; name?: string }) {
+  const { before, after, extensionId } = change;
+  const fields: [string, string | undefined, string | undefined][] = [
+    ['Version', before?.version, after?.version],
+    ['State', before ? (before.enabled ? 'Enabled' : 'Disabled') : undefined, after ? (after.enabled ? 'Enabled' : 'Disabled') : undefined],
+    ['Install source', before ? installTypeLabels[before.installType] : undefined, after ? installTypeLabels[after.installType] : undefined],
+    ['Site access', before ? siteAccessLabels[before.siteAccess] : undefined, after ? siteAccessLabels[after.siteAccess] : undefined],
+    ['Selected API permissions', before ? before.permissions.join(', ') || 'None reported' : undefined,
+      after ? after.permissions.join(', ') || 'None reported' : undefined],
+  ];
+  return <tr>
+    <th scope="row">{name && <>{name}<br /></>}<code title={extensionId}>{extensionId}</code></th>
+    <td>{!before ? 'Added' : !after ? 'Removed' : 'Updated'}</td>
+    <td><ul>{fields.filter(([, prior, next]) => prior !== next).map(([field, prior, next]) => <li key={field}>
+      <strong>{field}</strong> {prior && next ? `${prior} → ${next}` : prior ?? next}
+    </li>)}</ul></td>
+    <td>{hasExpandedAccess(change) ? <span className="badge warn">Review access</span> : '—'}</td>
   </tr>;
 }

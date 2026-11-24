@@ -71,6 +71,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 44, "044_github_tokens.sql", ct);
         await ApplyMigration(connection, 45, "045_prompt_exception_requests.sql", ct);
         await ApplyMigration(connection, 46, "046_prompt_app_modes.sql", ct);
+        await ApplyMigration(connection, 47, "047_extension_inventory_changes.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -431,12 +432,20 @@ internal sealed partial class ControlStore
 
     public async Task<bool> Revoke(RequestIdentity identity, Guid installationId, CancellationToken ct)
     {
-        var result = await RevokeInstallations(identity, [installationId], null, ct);
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+        // Acquire the installation lock before deleting inventory so a report committed while waiting is visible.
+        await using var locked = BrowserRead(transaction, """
+            SELECT 1 FROM installations WHERE organization_id = $1 AND id = $2 FOR UPDATE
+            """, identity.OrganizationId, installationId);
+        if (await locked.ExecuteScalarAsync(ct) is null) return false;
+        var result = await RevokeInstallations(identity, [installationId], transaction, ct);
+        await transaction.CommitAsync(ct);
         return result.Found > 0;
     }
 
     private async Task<(int Found, Guid[] Changed)> RevokeInstallations(RequestIdentity identity, Guid[] installationIds,
-        NpgsqlTransaction? transaction, CancellationToken ct)
+        NpgsqlTransaction transaction, CancellationToken ct)
     {
         await using var command = BrowserRead(transaction, """
             WITH revoked AS (
@@ -444,6 +453,8 @@ internal sealed partial class ControlStore
                 RETURNING organization_id, id, revoked_at
             ), cleared AS (
                 DELETE FROM extension_inventory_snapshots s USING revoked r WHERE s.installation_id = r.id
+            ), cleared_inventory_changes AS (
+                DELETE FROM extension_inventory_change_batches b USING revoked r WHERE b.installation_id = r.id
             ), cleared_composers AS (
                 DELETE FROM composer_observations o USING revoked r WHERE o.installation_id = r.id
             ), audit AS (

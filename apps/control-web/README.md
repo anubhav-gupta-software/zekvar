@@ -72,6 +72,10 @@ Open **Browser extensions** to see reporting status and select an installation. 
 
 Control keeps the latest snapshot per browser and labels counts when Chrome reports more than 100 extensions. A new policy or group assignment hides the old snapshot until the browser reports again. Revocation removes the snapshot immediately. The scheduled cleanup clears snapshots older than 30 days and snapshots for browsers whose current policy is Off. [Browser instructions](../browser-extension/README.md#report-browser-extensions)
 
+On the same page, open **Extension change history** to compare reported versions, enabled states, install sources, site access, and selected permissions. **Review access** marks newly enabled or expanded risk signals. Names shown in the history come from the current inventory. Removed extensions can be identified by ID.
+
+Control shows up to 20 reports with changes from the last 30 days while inventory stays enabled in the current rollout assignment. The first usable report establishes a baseline. When a report is truncated, Control compares extensions present in both reports. After a permission or collection gap, the next report establishes a fresh baseline. [Extension inventory API](../control-api/README.md#extension-inventory)
+
 ## Delegate Control access
 
 1. Sign in with the configured owner token and open **Control access**.

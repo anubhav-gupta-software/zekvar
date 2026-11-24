@@ -45,6 +45,7 @@ const githubTokenAdmin = randomBytes(32).toString('hex');
 const impactAdmin = randomBytes(32).toString('hex');
 const promptRequestAdmin = randomBytes(32).toString('hex');
 const promptAppModesAdmin = randomBytes(32).toString('hex');
+const inventoryChangesAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -253,6 +254,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__27__AdminToken: promptRequestAdmin,
       Control__Organizations__28__Slug: `prompt-app-modes-${suffix}`,
       Control__Organizations__28__AdminToken: promptAppModesAdmin,
+      Control__Organizations__29__Slug: `inventory-history-${suffix}`,
+      Control__Organizations__29__AdminToken: inventoryChangesAdmin,
       ...overrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -4782,6 +4785,154 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       await post('retention/cleanup', {});
       assert.equal(await retentionFixture(`SELECT count(*) FROM prompt_exception_requests WHERE installation_id = '${browser.installationId}'`), '0');
     }
+  });
+
+  await t.test('keeps extension changes atomic, bounded, and scoped to continuous inventory reporting', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: inventoryChangesAdmin, ...options });
+    const post = (path, body, expect = 200) => admin(path, { method: 'POST', body, expect });
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant: (await post('enrollment-grants')).grant } });
+    const path = `extension-inventory/${browser.installationId}`;
+    const group = await post('policy-groups', { name: 'Extension changes pilot' });
+    const groupPolicies = `policy-groups/${group.id}/policies`;
+    await call('/v1/browser/policy', { token: browser.token, assignmentAware: true });
+    await post(`installations/${browser.installationId}/policy-group`, { groupId: group.id }, 204);
+    let policy = await post('policies', { extensionInventoryEnabled: true });
+    let assignmentVersion = 1;
+    const history = async (options) => (await admin(path, options)).changeHistory;
+    const entry = { id: 'b'.repeat(32), name: 'Private review fixture name', version: '1.0', enabled: true,
+      installType: 'normal', siteAccess: 'selected', permissions: ['tabs', 'cookies'] };
+    const secondEntry = { ...entry, id: 'c'.repeat(32), name: 'Second private review fixture', permissions: [] };
+    let timestamp = Date.now() - 5000;
+    const snapshot = (entries, options) => ({ entries, policyVersion: policy.version, assignmentVersion,
+      capturedAt: new Date(timestamp++).toISOString(), omitted: 0, status: 'reported', ...options });
+    const report = (body, expect = 204) => call('/v1/browser/extension-inventory', { method: 'POST', token: browser.token, body, expect });
+    const count = () => retentionFixture(`SELECT count(*) FROM extension_inventory_change_batches WHERE installation_id = '${browser.installationId}'`);
+    await report(snapshot([entry]));
+    assert.deepEqual(await history(), []);
+    if (postgres) {
+      await stop();
+      await retentionFixture('DELETE FROM schema_migrations WHERE version = 47; DROP TABLE extension_inventory_change_batches;');
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 47'), '1');
+      assert.deepEqual((await admin(path)).entries, [entry]);
+    }
+    const renamed = { ...entry, name: 'Updated private fixture name', permissions: ['cookies', 'tabs'] };
+    await report(snapshot([renamed]));
+    assert.deepEqual(await history(), []);
+    const upgraded = { ...renamed, version: '2.0', siteAccess: 'all', permissions: ['tabs', 'debugger', 'cookies'] };
+    const update = snapshot([upgraded, secondEntry]);
+    if (postgres) {
+      await retentionFixture(`
+        CREATE FUNCTION test_reject_inventory_changes() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'Synthetic history write failure'; END; $$;
+        CREATE TRIGGER test_reject_inventory_changes BEFORE INSERT ON extension_inventory_change_batches
+        FOR EACH ROW EXECUTE FUNCTION test_reject_inventory_changes();
+      `);
+      try {
+        const failed = await fetch(`${baseUrl}/v1/browser/extension-inventory`, {
+          method: 'POST', headers: { Authorization: `Bearer ${browser.token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(update), signal: AbortSignal.timeout(5000),
+        });
+        assert.equal(failed.status, 500);
+        assert.deepEqual((await admin(path)).entries, [renamed]);
+        assert.deepEqual(await history(), []);
+      } finally {
+        await retentionFixture(`DROP TRIGGER test_reject_inventory_changes ON extension_inventory_change_batches;
+          DROP FUNCTION test_reject_inventory_changes();`);
+      }
+    }
+    await Promise.all([report(update), report(update)]);
+    const [batch] = await history();
+    assert.equal((await history()).length, 1);
+    assert.equal(batch.policyVersion, policy.version);
+    assert.equal(batch.changes.length, 2);
+    const previous = { version: '1.0', enabled: true, installType: 'normal', siteAccess: 'selected', permissions: ['cookies', 'tabs'] };
+    assert.deepEqual(batch.changes[0], { extensionId: entry.id, before: previous, after: { ...previous,
+      version: '2.0', siteAccess: 'all', permissions: ['cookies', 'debugger', 'tabs'] } });
+    assert.equal(batch.changes[1].before, null);
+    assert.doesNotMatch(JSON.stringify(batch), /private fixture|Private review|second private|"name"|hostPermissions/i);
+    await report({ ...update, entries: [entry] });
+    assert.deepEqual(await history(), [batch]);
+    const auditor = await post('access', { name: 'Inventory auditor', role: 'auditor', hours: 1 });
+    assert.deepEqual(await history({ token: auditor.token }), [batch]);
+    await admin(path, { token: first, expect: 404 });
+    await admin(path, { token: browser.token, expect: 401 });
+    assert.equal((await admin('extension-inventory'))[0].changeHistory, undefined);
+
+    await report(snapshot([{ ...upgraded, enabled: false }], { omitted: 3 }));
+    assert.deepEqual((await history())[0].changes.map(({ extensionId }) => extensionId), [entry.id]);
+    await report(snapshot([upgraded, secondEntry]));
+    assert.deepEqual((await history())[0].changes.map(({ extensionId }) => extensionId), [entry.id]);
+    await report(snapshot([upgraded]));
+    assert.deepEqual((await history())[0].changes.map(({ extensionId, after }) => [extensionId, after]), [[secondEntry.id, null]]);
+    const countBeforeGap = (await history()).length;
+    await report(snapshot([], { status: 'permission_required' }));
+    await report(snapshot([entry]));
+    assert.equal((await history()).length, countBeforeGap);
+
+    policy = await post('policies', { mode: 'warn' });
+    await report(snapshot([upgraded]));
+    assert.equal((await history())[0].policyVersion, policy.version);
+    policy = await post(groupPolicies, { extensionInventoryEnabled: true });
+    const baselineOff = await post('policies', { extensionInventoryEnabled: false });
+    await report(snapshot([entry], { policyVersion: baselineOff.version }), 409);
+    await report(snapshot([entry]));
+    assert.equal((await history())[0].policyVersion, policy.version);
+
+    await post(groupPolicies, { extensionInventoryEnabled: false });
+    assert.equal(await history(), undefined);
+    policy = await post(groupPolicies, { extensionInventoryEnabled: true });
+    assert.deepEqual(await history(), []);
+    await report(snapshot([upgraded]));
+    assert.deepEqual(await history(), []);
+    for (let attempt = 0; attempt < 23; attempt++) {
+      await report(snapshot([{ ...entry, version: `3.${attempt}` }]));
+    }
+    assert.equal((await history()).length, 20);
+    assert.equal((await history())[0].changes[0].after.version, '3.22');
+    if (postgres) {
+      assert.equal(await count(), '20');
+      await retentionFixture(`UPDATE extension_inventory_change_batches SET received_at = now() - interval '31 days'
+        WHERE installation_id = '${browser.installationId}'`);
+      assert.deepEqual(await history(), []);
+      await stop();
+      await start();
+      for (let attempt = 0; await count() !== '0' && attempt < 20; attempt++) await delay(50);
+      assert.equal(await count(), '0');
+    }
+    await report(snapshot([entry]));
+    assert.equal((await history()).length, 1);
+    policy = await post('policies', { extensionInventoryEnabled: true });
+    await post(`installations/${browser.installationId}/policy-group`, { groupId: null }, 204);
+    assignmentVersion++;
+    assert.deepEqual(await history(), []);
+    await report(snapshot([upgraded]));
+    assert.deepEqual(await history(), []);
+    await report(snapshot([entry]));
+    assert.equal((await history()).length, 1);
+    const revoke = () => post(`installations/${browser.installationId}/revoke`, {}, 204);
+    if (postgres) {
+      await retentionFixture(`
+        CREATE FUNCTION test_hold_inventory_changes() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN PERFORM pg_sleep(0.6); RETURN NEW; END; $$;
+        CREATE TRIGGER test_hold_inventory_changes BEFORE INSERT ON extension_inventory_change_batches
+        FOR EACH ROW EXECUTE FUNCTION test_hold_inventory_changes();
+      `);
+      try {
+        const accepted = report(snapshot([upgraded])).then(() => null, (error) => error);
+        const waitingForReport = () => retentionFixture(`SELECT count(*) FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event = 'PgSleep' AND query LIKE '%extension_inventory_change_batches%'`);
+        for (let attempt = 0; await waitingForReport() === '0' && attempt < 20; attempt++) await delay(25);
+        assert.equal(await waitingForReport(), '1');
+        await revoke();
+        assert.equal(await accepted, null);
+      } finally {
+        await retentionFixture(`DROP TRIGGER test_hold_inventory_changes ON extension_inventory_change_batches;
+          DROP FUNCTION test_hold_inventory_changes();`);
+      }
+    } else await revoke();
+    await admin(path, { expect: 404 });
+    if (postgres) assert.equal(await count(), '0');
   });
 
   await t.test('versions per-app prompt actions and verifies delivery, event modes and scoped exception behavior', async () => {

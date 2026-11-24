@@ -22,6 +22,7 @@ test('Chrome inventory follows the policy and permission, with metadata-only upd
   const dist = join(dir, 'extension');
   const inspector = join(dir, 'inspector');
   const utility = join(dir, 'utility');
+  const reviewExtension = join(dir, 'review-extension');
   const profiles = new Set();
   const reported = [];
   let dropAcknowledgment = false;
@@ -66,7 +67,7 @@ test('Chrome inventory follows the policy and permission, with metadata-only upd
     cwd: fileURLToPath(new URL('..', import.meta.url)),
     env: { ...process.env, ZEKVAR_CONTROL_PORT: String(proxy.address().port), ZEKVAR_EXTENSION_OUTDIR: dist },
   });
-  await Promise.all([mkdir(inspector), mkdir(utility)]);
+  await Promise.all([mkdir(inspector), mkdir(utility), mkdir(reviewExtension)]);
   const fingerprint = 'private-inventory.example.test';
   const inspectionManifest = { manifest_version: 3, name: 'Inventory Inspector Fixture', version: '1.0',
     permissions: ['cookies', 'tabs', 'storage'], host_permissions: ['https://*/*'] };
@@ -77,10 +78,12 @@ test('Chrome inventory follows the policy and permission, with metadata-only upd
       description: 'Private fixture description', homepage_url: 'https://' + fingerprint })),
     writeFile(join(utility, 'remove.html'), '<meta charset="utf-8"><button>Remove fixture</button><script src="remove.js"></script>'),
     writeFile(join(utility, 'remove.js'), "document.querySelector('button').onclick = () => chrome.management.uninstallSelf();\n"),
+    writeFile(join(reviewExtension, 'manifest.json'), JSON.stringify({ manifest_version: 3, name: 'New Review Fixture', version: '1.0',
+      permissions: ['cookies'], host_permissions: ['https://*/*'] })),
   ]);
 
-  async function launch(name) {
-    const extensions = [dist, inspector, utility].join(',');
+  async function launch(name, additional = []) {
+    const extensions = [dist, inspector, utility, ...additional].join(',');
     const browser = await chromium.launchPersistentContext(join(dir, name), {
       channel: 'chromium', headless: process.env.ZEKVAR_DEMO_HEADED !== '1',
       args: ['--disable-extensions-except=' + extensions, '--load-extension=' + extensions],
@@ -149,6 +152,7 @@ test('Chrome inventory follows the policy and permission, with metadata-only upd
   await sync();
   await popup.getByText('Extension inventory reported to Control.', { exact: true }).waitFor();
   const actual = await inventory(id);
+  assert.deepEqual(actual.changeHistory, []);
   const entry = (name) => actual.entries.find((item) => item.name === name);
   const inspectorId = entry('Inventory Inspector Fixture').id;
   const utilityId = entry('Inventory Utility Fixture').id;
@@ -203,6 +207,10 @@ test('Chrome inventory follows the policy and permission, with metadata-only upd
   await sync();
   await popup.getByText('Extension inventory reported to Control.', { exact: true }).waitFor();
   assert.equal(reported.length, beforeRetry + 1);
+  const disabledHistory = (await inventory(id)).changeHistory;
+  assert.equal(disabledHistory.length, 1);
+  assert.deepEqual(disabledHistory[0].changes.map(({ extensionId, before, after }) => [extensionId, before.enabled, after.enabled]),
+    [[inspectorId, true, false]]);
   await dashboard.reload();
   await monitorTable().getByRole('row').filter({ hasText: 'Inventory Inspector Fixture' }).getByText('Disabled', { exact: true }).waitFor();
   const removal = await browser.newPage();
@@ -211,12 +219,15 @@ test('Chrome inventory follows the policy and permission, with metadata-only upd
   await manager.locator('extensions-item').filter({ hasText: 'Inventory Utility Fixture' }).waitFor({ state: 'detached' });
   await sync();
   assert.equal((await inventory(id)).entries.some(({ id }) => id === utilityId), false);
+  const removed = (await inventory(id)).changeHistory[0].changes.find(({ extensionId }) => extensionId === utilityId);
+  assert.equal(removed.before.version, '2.1');
+  assert.equal(removed.after, null);
   await browser.close();
   profiles.delete(browser);
 
   await writeFile(join(inspector, 'manifest.json'), JSON.stringify({ ...inspectionManifest, version: '1.2',
     permissions: ['tabs'], host_permissions: [] }));
-  const restarted = await launch('consented');
+  const restarted = await launch('consented', [reviewExtension]);
   ({ popup, worker } = await openPopup(restarted));
   await popup.getByText('Extension inventory reported to Control.', { exact: true }).waitFor();
   assert.equal(await installationId(), id);
@@ -224,9 +235,25 @@ test('Chrome inventory follows the policy and permission, with metadata-only upd
   assert.equal(updated.version, '1.2');
   assert.deepEqual(updated.permissions, ['tabs']);
   assert.equal(updated.siteAccess, 'none');
+  const withUpdate = await inventory(id);
+  const latest = withUpdate.changeHistory[0];
+  const changed = latest.changes.find(({ extensionId }) => extensionId === inspectorId);
+  const added = latest.changes.find(({ extensionId }) => extensionId === withUpdate.entries.find(({ name }) => name === 'New Review Fixture').id);
+  assert.deepEqual([changed.before.version, changed.after.version, changed.before.siteAccess, changed.after.siteAccess], ['1.0', '1.2', 'all', 'none']);
+  assert.deepEqual([added.before, added.after.siteAccess, added.after.permissions], [null, 'all', ['cookies']]);
+  assert.doesNotMatch(JSON.stringify(withUpdate.changeHistory), /Inventory Inspector Fixture|Inventory Utility Fixture|New Review Fixture|private-inventory|hostPermissions/);
   dashboard = await restarted.newPage();
   await dashboard.goto(web + path);
   await monitorTable().getByText('1.2', { exact: true }).waitFor();
+  const history = dashboard.getByRole('region', { name: 'Extension change history', exact: true });
+  await history.locator('summary').first().getByText(/\d:\d{2}:\d{2} [AP]M UTC/).waitFor();
+  await history.getByText('1.0 → 1.2', { exact: false }).waitFor();
+  await history.getByRole('row').filter({ hasText: 'New Review Fixture' }).getByText('Review access', { exact: true }).waitFor();
+  await history.locator('details').nth(1).locator('summary').click();
+  await history.getByRole('row').filter({ hasText: utilityId }).getByText('Removed', { exact: true }).waitFor();
+  if (artifacts) await history.screenshot({ path: join(artifacts, 'extension-change-history.png') });
+  await dashboard.setViewportSize({ width: 390, height: 844 });
+  assert.ok(await dashboard.evaluate(() => document.documentElement.scrollWidth === document.documentElement.clientWidth));
   await popup.getByRole('button', { name: 'Remove extension inventory permission', exact: true }).click();
   await popup.getByRole('button', { name: 'Allow extension inventory', exact: true }).waitFor();
   await sync();
@@ -237,6 +264,7 @@ test('Chrome inventory follows the policy and permission, with metadata-only upd
   await dashboard.getByText('Version 1 restored as version 3.', { exact: true }).waitFor();
   await sync();
   assert.equal((await inventory(id)).status, 'off');
+  assert.equal((await inventory(id)).changeHistory, undefined);
   assert.equal(await popup.getByRole('button', { name: 'Allow extension inventory', exact: true }).count(), 0);
   const cache = await worker.evaluate(async () => JSON.stringify(await chrome.storage.local.get('controlState')));
   assert.doesNotMatch(cache, /Inventory Inspector Fixture|Inventory Utility Fixture|private-inventory\.example\.test/);

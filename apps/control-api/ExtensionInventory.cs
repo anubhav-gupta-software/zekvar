@@ -40,5 +40,37 @@ internal sealed record ReportExtensionInventory(int PolicyVersion, int Assignmen
         Entries.Select(entry => entry.Id).Distinct(StringComparer.Ordinal).Count() == Entries.Length;
 }
 
+internal sealed record InventoryExtensionState(string Version, bool Enabled, string InstallType, string SiteAccess, string[] Permissions)
+{
+    public static InventoryExtensionState From(InventoryExtension extension) =>
+        new(extension.Version, extension.Enabled, extension.InstallType, extension.SiteAccess,
+            extension.Permissions.Order(StringComparer.Ordinal).ToArray());
+
+    public bool Matches(InventoryExtensionState other) =>
+        Version == other.Version && Enabled == other.Enabled && InstallType == other.InstallType && SiteAccess == other.SiteAccess &&
+        Permissions.SequenceEqual(other.Permissions);
+}
+
+internal sealed record InventoryExtensionChange(string ExtensionId, InventoryExtensionState? Before, InventoryExtensionState? After)
+{
+    public static InventoryExtensionChange[] Compare(InventoryExtension[] previous, ReportExtensionInventory report, bool fullSnapshot)
+    {
+        var before = previous.ToDictionary(extension => extension.Id, InventoryExtensionState.From, StringComparer.Ordinal);
+        var after = report.Entries.ToDictionary(extension => extension.Id, InventoryExtensionState.From, StringComparer.Ordinal);
+        var changes = new List<InventoryExtensionChange>();
+        foreach (var id in before.Keys.Union(after.Keys).Order(StringComparer.Ordinal))
+        {
+            before.TryGetValue(id, out var oldState);
+            after.TryGetValue(id, out var newState);
+            if (oldState is not null && newState is not null ? !oldState.Matches(newState) : fullSnapshot)
+                changes.Add(new(id, oldState, newState));
+        }
+        return changes.ToArray();
+    }
+}
+
+internal sealed record InventoryChangeBatch(string Id, int PolicyVersion, DateTimeOffset ReportedAt, InventoryExtensionChange[] Changes);
+
 internal sealed record InventoryInstallation(Guid InstallationId, string? GroupName, string Status, DateTime? ReportedAt,
-    int ExtensionCount, int Omitted, InventoryExtension[]? Entries);
+    int ExtensionCount, int Omitted, InventoryExtension[]? Entries,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] InventoryChangeBatch[]? ChangeHistory = null);
