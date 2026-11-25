@@ -93,7 +93,7 @@ Control shows up to 20 reports with changes from the last 30 days while inventor
 
 **Audit log** records issuance, revocation, and changes made with a named administrator credential. Use a distinct token per recipient for attribution.
 
-Hosted pilots can also use **Single sign-on access** on this page. Add an identity by its exact OIDC subject and assign the Administrator or Auditor role. Revoke it from the same list to end active Control sessions. [Configure hosted single sign-on](../../deploy/pilot/README.md#configure-control-single-sign-on)
+Hosted pilots can also use **Single sign-on access** on this page. Add an identity by its exact OIDC subject and assign the Administrator or Auditor role. On a deployment with organization-specific sign-in, enter the organization slug to open its identity provider. Revoke an identity from the access list to end its active Control sessions. [Configure hosted single sign-on](../../deploy/pilot/README.md#configure-control-single-sign-on)
 
 ## Connect a security event collector
 

@@ -116,17 +116,17 @@ access.MapPost("/event-feed", async (CreateEventFeedKey request, HttpContext htt
 });
 access.MapPost("/event-feed/{id:guid}/revoke", async (Guid id, HttpContext http, CancellationToken ct) =>
     await store.RevokeEventFeedKey(Identity(http).OrganizationId, id, ct) ? Results.NoContent() : Results.NotFound());
-access.MapGet("/sso", (HttpContext http) => sso is not null && Identity(http).OrganizationSlug == sso.OrganizationSlug
-    ? Results.Ok(new { sso.Issuer }) : Results.NoContent());
+access.MapGet("/sso", (HttpContext http) => sso.TryGetValue(Identity(http).OrganizationSlug ?? "", out var provider)
+    ? Results.Ok(new { provider.Issuer }) : Results.NoContent());
 access.MapPost("/sso", async (AddSsoIdentity request, HttpContext http, CancellationToken ct) =>
 {
     var identity = Identity(http);
-    if (sso is null || identity.OrganizationSlug != sso.OrganizationSlug) return Results.NotFound();
+    if (!sso.TryGetValue(identity.OrganizationSlug ?? "", out var provider)) return Results.NotFound();
     var name = request.Name?.Trim();
     if (name is not { Length: >= 2 and <= 64 } || name.Any(char.IsControl) ||
         !AccessRoles.IsDelegated(request.Role) || !ControlSso.ValidSubject(request.Subject))
         return Results.BadRequest(new { error = "Enter a name, delegated role, and exact OIDC subject." });
-    var added = await store.AddSsoIdentity(identity.OrganizationId, sso.Issuer, request.Subject!, name, request.Role!, ct);
+    var added = await store.AddSsoIdentity(identity.OrganizationId, provider.Issuer, request.Subject!, name, request.Role!, ct);
     return added is not null ? Results.Ok(added) : Results.Conflict(new { code = "sso_subject_exists" });
 });
 
@@ -152,18 +152,19 @@ app.MapGet("/v1/integrations/events", async (HttpContext http, CancellationToken
 
 app.MapPost("/v1/internal/sso/session", async (ExchangeSsoIdentity request, HttpContext http, CancellationToken ct) =>
 {
-    if (sso is null) return Results.NotFound();
-    if (BearerToken(http) is not { } token || !sso.Authorizes(token)) return Results.Unauthorized();
-    if (request.Issuer != sso.Issuer || !ControlSso.ValidSubject(request.Subject) || request.ExpiresAt <= DateTimeOffset.UtcNow)
+    if (sso.Count == 0) return Results.NotFound();
+    var provider = request.OrganizationSlug is { } slug ? sso.GetValueOrDefault(slug) : sso.Values.SingleOrDefault(entry => entry.Legacy);
+    if (provider is null || BearerToken(http) is not { } token || !provider.Authorizes(token) ||
+        request.Issuer != provider.Issuer || !ControlSso.ValidSubject(request.Subject) || request.ExpiresAt <= DateTimeOffset.UtcNow)
         return Results.Unauthorized();
-    return await store.ExchangeSsoIdentity(sso, request.Subject!, request.ExpiresAt, ct) is { } session
+    return await store.ExchangeSsoIdentity(provider, request.Subject!, request.ExpiresAt, ct) is { } session
         ? Results.Ok(session) : Results.Unauthorized();
 });
 app.MapDelete("/v1/internal/sso/session", async (HttpContext http, CancellationToken ct) =>
 {
-    if (sso is null) return Results.NotFound();
+    if (sso.Count == 0) return Results.NotFound();
     if (BearerToken(http) is not { } token) return Results.Unauthorized();
-    await store.EndSsoSession(token, sso.BridgeHash, ct);
+    await store.EndSsoSession(token, ct);
     return Results.NoContent();
 });
 admin.MapPost("/enrollment-grants", async (HttpContext http, CancellationToken ct) =>

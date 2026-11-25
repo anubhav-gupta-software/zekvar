@@ -138,6 +138,7 @@ td code { color: #d4e5f7; }
 .auth-card .brand { margin-bottom: .45rem; }
 .auth-card h1 { font-size: 1.9rem; }
 .auth-card h1 + p { margin-top: .5rem; }
+.sso-form { display: grid; gap: .55rem; }
 
 @media (max-width: 60rem) {
   .workspace { grid-template-columns: 10rem minmax(0, 1fr); }

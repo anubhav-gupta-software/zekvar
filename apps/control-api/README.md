@@ -48,9 +48,9 @@ Control evaluates expiry and revocation on each request. Invalid, expired, or re
 
 ## Hosted OpenID Connect access
 
-In the configured organization, `GET /v1/admin/access/sso` returns the issuer to the owner. `POST /v1/admin/access/sso` accepts `name`, an `administrator` or `auditor` role, and the provider's exact `subject`. An active duplicate returns HTTP 409. The existing access revocation route ends the identity's sessions and future Control sign-ins. Successful SSO sign-ins are recorded as `control_sso_signed_in` with named Control identity metadata.
+In each configured organization, `GET /v1/admin/access/sso` returns its issuer to the owner. `POST /v1/admin/access/sso` accepts `name`, an `administrator` or `auditor` role, and the provider's exact `subject`. An active duplicate returns HTTP 409. The existing access revocation route ends the identity's sessions and future Control sign-ins. Successful SSO sign-ins are recorded as `control_sso_signed_in` with named Control identity metadata.
 
-The dashboard verifies the provider response and uses a separate configured loopback credential to exchange the verified subject for an opaque Control token. The API caps the resulting session to one hour and evaluates live role, expiry, and revocation on each request. Caddy keeps the exchange route and administrative API private. [Hosted setup and verification](../../deploy/pilot/README.md#configure-control-single-sign-on)
+The dashboard verifies the provider response and uses the organization's loopback exchange credential to obtain an opaque Control token. Indexed OIDC configuration requires the exchange request to identify the target organization. The API checks the organization's configured issuer and exchange credential, caps the session to one hour, and evaluates its binding, live role, expiry, and revocation on each request. Caddy keeps the exchange route and administrative API private. [Hosted setup and verification](../../deploy/pilot/README.md#configure-control-single-sign-on)
 
 | Order | Request | Result |
 | --- | --- | --- |

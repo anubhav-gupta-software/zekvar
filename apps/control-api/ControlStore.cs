@@ -8,10 +8,10 @@ namespace Control;
 internal sealed partial class ControlStore
 {
     private readonly NpgsqlDataSource dataSource;
-    private readonly ControlSso? sso;
+    private readonly IReadOnlyDictionary<string, ControlSso> sso;
     private readonly AlertWebhooks alertWebhooks;
 
-    public ControlStore(NpgsqlDataSource dataSource, ControlSso? sso, AlertWebhooks alertWebhooks) =>
+    public ControlStore(NpgsqlDataSource dataSource, IReadOnlyDictionary<string, ControlSso> sso, AlertWebhooks alertWebhooks) =>
         (this.dataSource, this.sso, this.alertWebhooks) = (dataSource, sso, alertWebhooks);
 
     public async Task Initialize(DemoOrganization[] organizations, CancellationToken ct)

@@ -8,32 +8,35 @@ internal sealed partial class ControlStore
     {
         var sql = browser
             ? """
-                SELECT organization_id, id, NULL::text, NULL::uuid, NULL::text, NULL::text FROM installations
+                SELECT organization_id, id, NULL::text, NULL::uuid, NULL::text, NULL::text, NULL::text, NULL::text FROM installations
                 WHERE token_hash = $1 AND revoked_at IS NULL
                 """
             : """
-                SELECT o.id, NULL::uuid, o.slug, NULL::uuid, NULL::text, NULL::text
+                SELECT o.id, NULL::uuid, o.slug, NULL::uuid, NULL::text, NULL::text, NULL::text, NULL::text
                 FROM admin_memberships m JOIN organizations o ON o.id = m.organization_id WHERE m.token_hash = $1
                 UNION ALL
-                SELECT o.id, NULL::uuid, o.slug, c.id, c.display_name, c.role
+                SELECT o.id, NULL::uuid, o.slug, c.id, c.display_name, c.role, NULL::text, NULL::text
                 FROM control_access c JOIN organizations o ON o.id = c.organization_id
                 WHERE c.token_hash = $1 AND c.revoked_at IS NULL AND c.expires_at > now()
                 UNION ALL
-                SELECT o.id, NULL::uuid, o.slug, c.id, c.display_name, c.role
+                SELECT o.id, NULL::uuid, o.slug, c.id, c.display_name, c.role, c.oidc_issuer, s.bridge_hash
                 FROM control_sso_sessions s JOIN control_access c ON c.id = s.access_id
                 JOIN organizations o ON o.id = c.organization_id
-                WHERE s.token_hash = $1 AND s.expires_at > now() AND s.bridge_hash = $2::text
-                  AND c.revoked_at IS NULL AND c.oidc_issuer = $3::text AND o.slug = $4::text
+                WHERE s.token_hash = $1 AND s.expires_at > now() AND c.revoked_at IS NULL
                 """;
-        var hash = Tokens.Hash(token);
-        await using var command = browser ? Command(sql, hash) : Command(sql, hash,
-            (object?)sso?.BridgeHash ?? DBNull.Value, (object?)sso?.Issuer ?? DBNull.Value, (object?)sso?.OrganizationSlug ?? DBNull.Value);
+        await using var command = Command(sql, Tokens.Hash(token));
         await using var rows = await command.ExecuteReaderAsync(ct);
-        if (!await rows.ReadAsync(ct)) return null;
-        var identity = new RequestIdentity(rows.GetGuid(0), rows.IsDBNull(1) ? null : rows.GetGuid(1),
-            rows.IsDBNull(2) ? null : rows.GetString(2), ReadAccessIdentity(rows, 3));
-        // Reject ambiguous credentials even if a configured owner token collides with a delegated one.
-        return await rows.ReadAsync(ct) ? null : identity;
+        RequestIdentity? identity = null;
+        while (await rows.ReadAsync(ct))
+        {
+            var organization = rows.IsDBNull(2) ? null : rows.GetString(2);
+            if (!rows.IsDBNull(7) && (organization is null || !sso.TryGetValue(organization, out var settings) ||
+                rows.IsDBNull(6) || rows.GetString(6) != settings.Issuer || rows.GetString(7) != settings.BridgeHash)) continue;
+            // Reject ambiguous credentials even if a configured owner token collides with a delegated one.
+            if (identity is not null) return null;
+            identity = new(rows.GetGuid(0), rows.IsDBNull(1) ? null : rows.GetGuid(1), organization, ReadAccessIdentity(rows, 3));
+        }
+        return identity;
     }
 
     public async Task<IReadOnlyList<ControlAccess>> ListAccess(Guid organizationId, CancellationToken ct)

@@ -41,10 +41,9 @@ internal sealed partial class ControlStore
         return await command.ExecuteScalarAsync(ct) is DateTime expiry ? new(token, expiry) : null;
     }
 
-    public async Task EndSsoSession(string token, string bridgeHash, CancellationToken ct)
+    public async Task EndSsoSession(string token, CancellationToken ct)
     {
-        await using var command = Command("DELETE FROM control_sso_sessions WHERE token_hash = $1 AND bridge_hash = $2",
-            Tokens.Hash(token), bridgeHash);
+        await using var command = Command("DELETE FROM control_sso_sessions WHERE token_hash = $1", Tokens.Hash(token));
         await command.ExecuteNonQueryAsync(ct);
     }
 

@@ -22,7 +22,7 @@ internal sealed partial class ControlStore
         var required = await LockPolicySettings(transaction, org, ct);
         if (expectReview && !required) return new(Error: "review_mode_changed");
         if (required && (identity.Access is not { Role: AccessRoles.Administrator } author ||
-            !await ActiveAdministrators(transaction, org, [author.Id], ct))) return new(Error: "named_administrator_required");
+            !await ActiveAdministrator(transaction, identity, author.Id, ct))) return new(Error: "named_administrator_required");
 
         var target = await ReadPolicyScope(transaction, org, groupId, ct);
         if (target is null || ((template?.ExpectedVersion ?? request?.ExpectedVersion ?? expectedBaselineVersion) is { } expected && target.Version != expected))
@@ -157,7 +157,7 @@ internal sealed partial class ControlStore
         var isRequester = reviewer.Id == review.Requester.Id;
         if (approve && (isRequester || StringComparer.OrdinalIgnoreCase.Equals(reviewer.Name, review.Requester.Name)))
             return new(Error: "self_approval");
-        if (!await ActiveAdministrators(transaction, org, [reviewer.Id], ct)) return new(Error: "named_administrator_required");
+        if (!await ActiveAdministrator(transaction, identity, reviewer.Id, ct)) return new(Error: "named_administrator_required");
 
         Policy? published = null;
         var status = isRequester ? "withdrawn" : "rejected";
@@ -169,7 +169,7 @@ internal sealed partial class ControlStore
                 (review.Operation == "promote" && (source is not { Published: true } || source.Version != review.SourceVersion)) ||
                 (review.Snapshots.Template is { } pinned && await ReadTemplateOrigin(transaction, org, pinned.TemplateId, pinned.Revision, ct) is null) ||
                 PromptException.IntroducesExpired(review.Snapshots.Candidate.PromptExceptions, review.Snapshots.Before.PromptExceptions) ||
-                !await ActiveAdministrators(transaction, org, [review.Requester.Id], ct))
+                !await ActiveAdministrator(transaction, identity, review.Requester.Id, ct))
             {
                 status = "stale";
             }
@@ -213,19 +213,16 @@ internal sealed partial class ControlStore
         return (bool)(await command.ExecuteScalarAsync(ct))!;
     }
 
-    private async Task<bool> ActiveAdministrators(NpgsqlTransaction transaction, Guid org, Guid[] ids, CancellationToken ct)
+    private async Task<bool> ActiveAdministrator(NpgsqlTransaction transaction, RequestIdentity identity, Guid id, CancellationToken ct)
     {
         await using var command = new NpgsqlCommand("""
-            SELECT id FROM control_access WHERE organization_id = $1 AND id = ANY($2) AND role = 'administrator'
-                AND revoked_at IS NULL AND (expires_at > clock_timestamp() OR (oidc_issuer = $3::text AND
-                    organization_id = (SELECT id FROM organizations WHERE slug = $4::text)))
-            ORDER BY id FOR SHARE
+            SELECT id FROM control_access WHERE organization_id = $1 AND id = $2 AND role = 'administrator'
+                AND revoked_at IS NULL AND (expires_at > clock_timestamp() OR oidc_issuer = $3::text)
+            FOR SHARE
             """, transaction.Connection, transaction);
-        AddParameters(command, org, ids, (object?)sso?.Issuer ?? DBNull.Value, (object?)sso?.OrganizationSlug ?? DBNull.Value);
-        var count = 0;
-        await using var rows = await command.ExecuteReaderAsync(ct);
-        while (await rows.ReadAsync(ct)) count++;
-        return count == ids.Length;
+        var issuer = sso.GetValueOrDefault(identity.OrganizationSlug ?? "")?.Issuer;
+        AddParameters(command, identity.OrganizationId, id, (object?)issuer ?? DBNull.Value);
+        return await command.ExecuteScalarAsync(ct) is Guid;
     }
 
     private static async Task<PolicyScope?> ReadPolicyScope(NpgsqlTransaction transaction, Guid org, Guid? groupId, CancellationToken ct)

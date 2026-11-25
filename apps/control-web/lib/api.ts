@@ -200,9 +200,9 @@ export const controlApi = {
 };
 
 export const ssoApi = {
-  async exchange(key: string, issuer: string, subject: string, expiresAt: string) {
+  async exchange(key: string, issuer: string, subject: string, expiresAt: string, organizationSlug?: string) {
     const response = await apiResponse('/sso/session', key, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ issuer, subject, expiresAt }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ issuer, subject, expiresAt, organizationSlug }),
     }, 'internal');
     return response.json() as Promise<{ token: string; expiresAt: string }>;
   },

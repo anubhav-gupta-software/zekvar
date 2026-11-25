@@ -11,7 +11,7 @@ export async function startIdentityProvider(tls, clientId, secret, callback) {
   const key = { ...publicKey.export({ format: 'jwk' }), kid: 'fixture-key', alg: 'RS256', use: 'sig' };
   const codes = new Map();
   const attempts = [];
-  const fixture = { scenario: { subject: 'pilot-administrator' }, discoveryUnavailable: false, attempts };
+  const fixture = { scenario: { subject: 'pilot-administrator' }, discoveryUnavailable: false, attempts, tokenAttempts: 0 };
   let issuer;
   const server = createServer(tls, async (request, response) => {
     const json = (status, value) => response.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
@@ -51,6 +51,7 @@ export async function startIdentityProvider(tls, clientId, secret, callback) {
           `<!doctype html><title>Identity provider fixture</title><h1>Identity provider fixture</h1><a href="${redirect.href.replaceAll('&', '&amp;')}">Continue as test account</a>`);
       }
       if (url.pathname !== '/token' || request.method !== 'POST') return json(404, { error: 'not_found' });
+      fixture.tokenAttempts++;
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       const fields = new URLSearchParams(Buffer.concat(chunks).toString());

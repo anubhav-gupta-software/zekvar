@@ -34,7 +34,9 @@ async function until(check, message) {
   assert.fail(message);
 }
 
-test('hosted Control uses OpenID Connect, enforced roles, and revocable named sessions', { timeout: 130_000 }, async (t) => {
+for (const organizationMode of [false, true]) test(
+  `hosted Control verifies ${organizationMode ? 'organization-scoped' : 'single-provider legacy'} OpenID Connect sessions and roles`,
+  { timeout: 130_000 }, async (t) => {
   assert.ok(apiDll && webDir && database, 'Use the SSO demo verifier to prepare the standalone stack');
   const work = await mkdtemp(join(tmpdir(), 'zekvar-sso-test-'));
   const [httpPort, tlsPort, apiPort, webPort] = await Promise.all([port(), port(), port(), port()]);
@@ -44,17 +46,20 @@ test('hosted Control uses OpenID Connect, enforced roles, and revocable named se
   const browserApi = `https://${browserHost}:${tlsPort}`;
   const loopback = `http://127.0.0.1:${apiPort}`;
   const callback = `${dashboard}/auth/sso/callback`;
-  const [owner, otherOwner, clientSecret, bridge] = Array.from({ length: 4 }, secret);
+  const [owner, otherOwner, clientSecret, bridge, secondOwner, secondClientSecret, secondBridge] = Array.from({ length: 7 }, secret);
   const clientId = 'zekvar-test-client';
   const suffix = secret().slice(0, 10);
   const slug = `sso-${suffix}`;
+  const secondSlug = slug + '-second';
   const processes = [];
   let browser;
   let provider;
+  let secondProvider;
   t.after(async () => {
     await browser?.close();
     await Promise.all(processes.map(stop));
     await provider?.close();
+    await secondProvider?.close();
     await rm(work, { recursive: true, force: true });
   });
 
@@ -70,7 +75,9 @@ test('hosted Control uses OpenID Connect, enforced roles, and revocable named se
   const ca = join(work, 'ca.pem');
   const publicKey = new X509Certificate(await readFile(cert)).publicKey.export({ type: 'spki', format: 'der' });
   const pin = createHash('sha256').update(publicKey).digest('base64');
-  provider = await startIdentityProvider({ key: await readFile(key), cert: await readFile(cert) }, clientId, clientSecret, callback);
+  const tls = { key: await readFile(key), cert: await readFile(cert) };
+  provider = await startIdentityProvider(tls, clientId, clientSecret, organizationMode ? `${callback}/${slug}` : callback);
+  if (organizationMode) secondProvider = await startIdentityProvider(tls, clientId + '-second', secondClientSecret, `${callback}/${secondSlug}`);
 
   function launch(program, args, cwd, overrides) {
     const child = spawn(program, args, { cwd, env: { ...process.env, ...overrides }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -103,18 +110,30 @@ test('hosted Control uses OpenID Connect, enforced roles, and revocable named se
     ZEKVAR_DASHBOARD_HOST: dashboardHost, ZEKVAR_BROWSER_HOST: browserHost, ZEKVAR_ACME_EMAIL: 'fixture@example.test',
     ZEKVAR_API_PORT: String(apiPort), ZEKVAR_WEB_PORT: String(webPort),
   });
-  const startApi = (exchangeToken) => launch('dotnet', [apiDll], work, {
+  const startApi = (exchangeToken, explicit = organizationMode) => launch('dotnet', [apiDll], work, {
     DOTNET_ENVIRONMENT: 'Production', ASPNETCORE_ENVIRONMENT: 'Production', Control__HostedPilot: 'true',
     Control__Port: String(apiPort), ConnectionStrings__Control: database,
     Control__Organizations__0__Slug: slug, Control__Organizations__0__AdminToken: owner,
     Control__Organizations__1__Slug: slug + '-other', Control__Organizations__1__AdminToken: otherOwner,
-    Control__Oidc__Issuer: provider.issuer, Control__Oidc__OrganizationSlug: slug, Control__Oidc__ExchangeToken: exchangeToken,
+    ...(explicit ? {
+      Control__OidcOrganizations__0__Issuer: provider.issuer, Control__OidcOrganizations__0__OrganizationSlug: slug,
+      Control__OidcOrganizations__0__ExchangeToken: exchangeToken,
+      ...(secondProvider && {
+        Control__Organizations__2__Slug: secondSlug, Control__Organizations__2__AdminToken: secondOwner,
+        Control__OidcOrganizations__1__Issuer: secondProvider.issuer, Control__OidcOrganizations__1__OrganizationSlug: secondSlug,
+        Control__OidcOrganizations__1__ExchangeToken: secondBridge,
+      }),
+    } : { Control__Oidc__Issuer: provider.issuer, Control__Oidc__OrganizationSlug: slug, Control__Oidc__ExchangeToken: exchangeToken }),
   });
   const startWeb = (authMethod) => launch(process.execPath, ['server.js'], webDir, {
     HOSTNAME: '127.0.0.1', PORT: String(webPort), NODE_ENV: 'production', ZEKVAR_HOSTED_PILOT: '1',
     ZEKVAR_CONTROL_PORT: String(apiPort), NODE_EXTRA_CA_CERTS: ca, ZEKVAR_OIDC_DASHBOARD_ORIGIN: dashboard,
-    ZEKVAR_OIDC_ISSUER: provider.issuer, ZEKVAR_OIDC_CLIENT_ID: clientId, ZEKVAR_OIDC_CLIENT_SECRET: clientSecret,
-    ZEKVAR_OIDC_EXCHANGE_TOKEN: bridge, ZEKVAR_OIDC_CLIENT_AUTH: authMethod,
+    ...(secondProvider ? { ZEKVAR_OIDC_ORGANIZATIONS: JSON.stringify([
+      { organizationSlug: slug, issuer: provider.issuer, clientId, clientSecret, exchangeToken: bridge, authMethod },
+      { organizationSlug: secondSlug, issuer: secondProvider.issuer, clientId: clientId + '-second',
+        clientSecret: secondClientSecret, exchangeToken: secondBridge, authMethod: 'post' },
+    ]) } : { ZEKVAR_OIDC_ISSUER: provider.issuer, ZEKVAR_OIDC_CLIENT_ID: clientId, ZEKVAR_OIDC_CLIENT_SECRET: clientSecret,
+      ZEKVAR_OIDC_EXCHANGE_TOKEN: bridge, ZEKVAR_OIDC_CLIENT_AUTH: authMethod }),
   });
   const api = startApi(bridge);
   const web = startWeb('basic');
@@ -133,7 +152,8 @@ test('hosted Control uses OpenID Connect, enforced roles, and revocable named se
     if (status === 200) return response.json();
   }
   const exchange = (subject, token = bridge, status = 200, options = {}) => call('internal/sso/session', token,
-    { subject, issuer: provider.issuer, expiresAt: new Date(Date.now() + 8_000_000).toISOString(), ...options }, status);
+    { subject, issuer: provider.issuer, organizationSlug: organizationMode ? slug : undefined,
+      expiresAt: new Date(Date.now() + 8_000_000).toISOString(), ...options }, status);
   assert.deepEqual(await call('admin/access/sso', owner), { issuer: provider.issuer });
   await call('admin/access/sso', otherOwner, undefined, 204);
   await call('admin/access/sso', otherOwner, { name: 'Other tenant', role: 'administrator', subject: 'other' }, 404);
@@ -180,17 +200,20 @@ test('hosted Control uses OpenID Connect, enforced roles, and revocable named se
   await exchange('pilot-administrator', bridge, 401, { expiresAt: new Date(0).toISOString() });
 
   const login = await page();
-  const signIn = (target) => target.getByRole('link', { name: 'Sign in with single sign-on', exact: true });
+  async function signIn(target, organization = slug) {
+    if (organizationMode) await target.getByLabel('Organization slug').fill(organization);
+    await target.getByRole(organizationMode ? 'button' : 'link', { name: 'Sign in with single sign-on', exact: true }).click();
+  }
   const failed = (target) => target.getByRole('alert').filter({ hasText: 'Single sign-on could not complete' });
-  async function begin(target, scenario) {
-    provider.scenario = scenario;
+  async function begin(target, scenario, identityProvider = provider, organization = slug) {
+    identityProvider.scenario = scenario;
     await target.goto(dashboard);
-    await signIn(target).click();
+    await signIn(target, organization);
     await target.getByRole('heading', { name: 'Identity provider fixture' }).waitFor();
     const cookies = await target.context().cookies(dashboard);
     assert.ok(cookies.some((value) => value.name === cookieNames.transaction && value.httpOnly && value.secure && value.sameSite === 'Lax'));
-    assert.deepEqual(await target.context().cookies(provider.issuer), []);
-    return provider.attempts.at(-1);
+    assert.deepEqual(await target.context().cookies(identityProvider.issuer), []);
+    return identityProvider.attempts.at(-1);
   }
   const continueAtProvider = (target) => target.getByRole('link', { name: 'Continue as test account' }).click();
   async function finish(target, success) {
@@ -207,7 +230,7 @@ test('hosted Control uses OpenID Connect, enforced roles, and revocable named se
 
   provider.discoveryUnavailable = true;
   await login.goto(dashboard);
-  await signIn(login).click();
+  await signIn(login);
   await failed(login).waitFor();
   provider.discoveryUnavailable = false;
   const missingState = await begin(login, { subject: 'pilot-administrator' });
@@ -223,6 +246,62 @@ test('hosted Control uses OpenID Connect, enforced roles, and revocable named se
   await begin(login, { subject: 'not-on-the-access-list' });
   await finish(login, false);
   assert.deepEqual((await call('admin/audit?action=control_sso_signed_in', owner)).entries, []);
+
+  if (secondProvider) await t.test('keeps organizations isolated through routing, token exchange, and account provisioning', async () => {
+    const external = await page();
+    await external.goto(dashboard);
+    await signIn(external, 'unknown-organization');
+    await failed(external).waitFor();
+    await external.goto(`${dashboard}/auth/sso/start?organization=${slug}&organization=${secondSlug}`);
+    await failed(external).waitFor();
+    assert.equal(await callEdge(callback), 404);
+    assert.equal(await callEdge(`${browserApi}/auth/sso/callback/${secondSlug}`), 404);
+    assert.deepEqual(await call('admin/access/sso', secondOwner), { issuer: secondProvider.issuer });
+    assert.deepEqual(await call('admin/access', secondOwner), []);
+
+    const secondProvision = await page();
+    await secondProvision.goto(dashboard);
+    await secondProvision.getByLabel('Control token', { exact: true }).fill(secondOwner);
+    await secondProvision.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await secondProvision.getByRole('heading', { name: 'Security overview', exact: true }).waitFor();
+    await secondProvision.goto(`${dashboard}/access`);
+    await secondProvision.getByLabel('SSO name').fill('Second tenant auditor');
+    await secondProvision.getByLabel('OIDC subject').fill('pilot-administrator');
+    await secondProvision.getByLabel('SSO role').selectOption('auditor');
+    await secondProvision.getByRole('button', { name: 'Add SSO identity', exact: true }).click();
+    await secondProvision.getByRole('row').filter({ hasText: 'Second tenant auditor' }).getByText('Until revoked', { exact: true }).waitFor();
+    const [secondAccess] = await call('admin/access', secondOwner);
+    assert.equal(secondAccess.issuer, secondProvider.issuer);
+    assert.equal(secondAccess.subject, 'pilot-administrator');
+    await call('admin/access/' + secondAccess.id + '/revoke', owner, {}, 404);
+    await exchange('pilot-administrator', bridge, 401, { organizationSlug: undefined });
+    await exchange('pilot-administrator', bridge, 401, { organizationSlug: secondSlug, issuer: secondProvider.issuer });
+    await exchange('pilot-administrator', secondBridge, 401, { organizationSlug: secondSlug });
+
+    const secondLogin = await page();
+    const attempted = await begin(secondLogin, { subject: 'pilot-administrator' }, secondProvider, secondSlug);
+    const wrongCallback = new URL(attempted.redirect);
+    wrongCallback.pathname = `/auth/sso/callback/${slug}`;
+    const before = [provider.tokenAttempts, secondProvider.tokenAttempts];
+    await secondLogin.goto(wrongCallback.href);
+    await failed(secondLogin).waitFor();
+    assert.deepEqual([provider.tokenAttempts, secondProvider.tokenAttempts], before);
+    assert.equal((await secondLogin.context().cookies(dashboard)).some(({ name }) => name === cookieNames.session), false);
+    await secondLogin.goto(attempted.redirect);
+    await secondLogin.getByText('Second tenant auditor · Auditor', { exact: true }).waitFor();
+    assert.deepEqual([provider.tokenAttempts, secondProvider.tokenAttempts], [before[0], before[1] + 1]);
+    assert.equal(secondProvider.lastAuth, 'post');
+    assert.equal((await call('admin/audit?action=control_sso_signed_in', owner)).entries.length, 0);
+    const secondAudit = (await call('admin/audit?action=control_sso_signed_in', secondOwner)).entries;
+    assert.deepEqual(secondAudit.map(({ actorAccess }) => actorAccess.name), ['Second tenant auditor']);
+    assert.doesNotMatch(JSON.stringify(secondAudit), /synthetic-idp-claim|opaque-fixture-provider-token|pilot-administrator/);
+    if (artifacts) {
+      await mkdir(artifacts, { recursive: true });
+      await external.goto(dashboard);
+      await external.locator('.auth-card').screenshot({ path: join(artifacts, 'organization-sso-sign-in.png') });
+    }
+    await Promise.all([external, secondProvision, secondLogin].map((target) => target.context().close()));
+  });
 
   const first = await begin(login, { subject: 'pilot-administrator', seconds: 75 });
   const cookies = await finish(login, true);
@@ -275,7 +354,7 @@ test('hosted Control uses OpenID Connect, enforced roles, and revocable named se
   assert.deepEqual((await call('admin/audit?action=control_sso_signed_in', otherOwner)).entries, []);
   if (artifacts) {
     await mkdir(artifacts, { recursive: true });
-    await auditor.getByRole('table').screenshot({ path: join(artifacts, '30-control-sso-audit.png') });
+    await auditor.getByRole('table').screenshot({ path: join(artifacts, organizationMode ? 'organization-sso-audit.png' : '30-control-sso-audit.png') });
   }
 
   await reviewer.getByRole('button', { name: 'Sign out', exact: true }).click();
@@ -296,12 +375,32 @@ test('hosted Control uses OpenID Connect, enforced roles, and revocable named se
   await finish(reviewer, true);
   assert.equal(provider.lastAuth, 'post');
   const beforeRotation = await exchange('pilot-administrator');
+  const secondary = secondProvider && await exchange('pilot-administrator', secondBridge, 200,
+    { organizationSlug: secondSlug, issuer: secondProvider.issuer });
   await stop(api);
   const rotated = secret();
-  startApi(rotated);
+  const rotatedApi = startApi(rotated);
   await until(async () => await callEdge(`${browserApi}/health`).catch(() => false) === 200, 'The API did not restart.');
   await call('admin/session', beforeRotation.token, undefined, 401);
   await exchange('pilot-administrator', bridge, 401);
-  assert.equal((await exchange('pilot-administrator', rotated)).token.length, 64);
+  const rotatedSession = await exchange('pilot-administrator', rotated);
+  assert.equal(rotatedSession.token.length, 64);
+  if (secondary) {
+    assert.equal((await call('admin/session', secondary.token)).organization, secondSlug);
+    await call('admin/enrollment-grants', secondary.token, {}, 403);
+    await call('internal/sso/session', secondary.token, undefined, 204, 'DELETE');
+    await call('admin/session', secondary.token, undefined, 401);
+    assert.equal(secondProvider.error, undefined);
+  }
+  if (!organizationMode) await t.test('retains named sessions when the same provider moves to indexed configuration', async () => {
+    await stop(rotatedApi);
+    startApi(rotated, true);
+    await until(async () => await callEdge(`${browserApi}/health`).catch(() => false) === 200, 'The indexed API did not start.');
+    const identity = await call('admin/session', rotatedSession.token);
+    assert.deepEqual([identity.organization, identity.access.name], [slug, 'Pilot administrator']);
+    await exchange('pilot-administrator', rotated, 401);
+    const migrated = await exchange('pilot-administrator', rotated, 200, { organizationSlug: slug });
+    assert.equal((await call('admin/session', migrated.token)).organization, slug);
+  });
   assert.equal(provider.error, undefined);
 });

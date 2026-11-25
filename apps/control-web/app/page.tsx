@@ -9,7 +9,7 @@ import { eventFilters, setEventCursor } from '../lib/events';
 import { browserHealthFilters, loadBrowserHealth } from '../lib/browser-health';
 import { canChangePolicy, canWrite } from '../lib/access';
 import { sessionToken } from '../lib/session';
-import { ssoOptions } from '../lib/sso';
+import { ssoMode } from '../lib/sso';
 import { classifyAiApp, revokeInstallation, signOut } from './actions';
 import { DomainRulesForm, EnrollmentForm, MutationForm, RefreshSection, SignInForm } from './forms';
 import { PolicyVersionTable, PublishPolicyForm } from './policies';
@@ -268,7 +268,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
 }
 
 function SignIn({ invalid, ssoError }: { invalid?: boolean; ssoError?: boolean }) {
-  const sso = Boolean(ssoOptions());
+  const sso = ssoMode();
   return <main className="auth-shell">
     <section className="auth-card" aria-labelledby="sign-in-heading">
       <Brand />
@@ -276,7 +276,12 @@ function SignIn({ invalid, ssoError }: { invalid?: boolean; ssoError?: boolean }
         <p className="muted">{sso ? 'Use your organization’s identity provider or a Control token.' :
           'Use your delegated token or the owner token configured for this deployment.'}</p></div>
       {ssoError && <p className="feedback error" role="alert">Single sign-on could not complete. Try again or contact your Control administrator.</p>}
-      {sso && <a className="button primary" href="/auth/sso/start">Sign in with single sign-on</a>}
+      {sso === 'legacy' && <a className="button primary" href="/auth/sso/start">Sign in with single sign-on</a>}
+      {sso === 'organization' && <form className="sso-form" action="/auth/sso/start" method="get">
+        <label htmlFor="sso-organization">Organization slug</label>
+        <input id="sso-organization" name="organization" required maxLength={63} autoComplete="off" autoCapitalize="none" spellCheck={false} />
+        <button className="button primary" type="submit">Sign in with single sign-on</button>
+      </form>}
       <SignInForm invalid={invalid} />
     </section>
   </main>;
