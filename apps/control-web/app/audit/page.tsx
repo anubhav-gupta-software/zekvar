@@ -10,6 +10,7 @@ import { DeploymentBadge, Sidebar } from '../workspace';
 import { eventPath, triageDispositions, triageStatuses } from '../../lib/triage';
 import { CaseActivityDetails } from '../cases/case-activity';
 import { alertNumber, alertPath, extensionAlertPath } from '../../lib/alerts';
+import { rolloutEvents, rolloutPauseReasons } from '../../lib/rollouts';
 
 export default async function Audit({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const token = await sessionToken();
@@ -83,9 +84,17 @@ export default async function Audit({ searchParams }: { searchParams: Promise<Re
 }
 
 const actorLabels = { organization_admin: 'Organization admin', named_administrator: 'Named administrator',
-  sso_identity: 'Single sign-on identity', browser_enrollment: 'Browser enrollment', system: 'Scheduled cleanup' };
+  sso_identity: 'Single sign-on identity', browser_enrollment: 'Browser enrollment', system: 'Scheduled cleanup', automated_rollout: 'Automated rollout' };
 
 function auditDetails(entry: AuditEntry) {
+  const rollout = entry.rolloutChange;
+  if (rollout) return <><a className="underline" href={`/rollouts?plan=${rollout.planId}`}>{rollout.planName}</a>
+    {' · '}{rolloutEvents[rollout.event] ?? rollout.event}
+    {rollout.stage !== undefined && <> · Stage {rollout.stage + 1}{rollout.event.startsWith('stage_') && ` · ${rollout.groupName ?? 'Organization baseline'}`}</>}
+    {entry.policyVersion && <> · v{entry.policyVersion}{entry.restoredFrom ? ` from v${entry.restoredFrom}` : ''}</>}
+    {rollout.automatic && <> · Automatic</>}
+    {rollout.approver && <> · Approved by {rollout.approver.name}</>}
+    {rollout.reason && <> · {rolloutPauseReasons[rollout.reason]}</>}</>;
   const template = entry.templateChange;
   if (template) return <>{template.template.name} · Revision {template.template.revision} · {template.operation}
     {template.publishedVersion !== null && <> · Published v{template.publishedVersion}</>}</>;

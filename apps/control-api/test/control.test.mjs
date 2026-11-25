@@ -49,6 +49,7 @@ const inventoryChangesAdmin = randomBytes(32).toString('hex');
 const extensionAlertsAdmin = randomBytes(32).toString('hex');
 const composerGateAdmin = randomBytes(32).toString('hex');
 const detectionRulesAdmin = randomBytes(32).toString('hex');
+const rolloutAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -59,7 +60,15 @@ const undoSsoSchema = `
       DROP COLUMN oidc_issuer, DROP COLUMN oidc_subject, ALTER COLUMN expires_at SET NOT NULL,
       ADD CONSTRAINT control_access_check1 CHECK ((revoked_at IS NULL) = (token_hash IS NOT NULL));
 `;
+const undoRolloutSchema = `
+  DELETE FROM schema_migrations WHERE version = 52;
+  DELETE FROM control_audit WHERE action = 'rollout_plan_changed';
+  DROP TABLE rollout_stages;
+  DROP TABLE rollout_plans;
+  ALTER TABLE control_audit DROP COLUMN rollout_change;
+`;
 const undoDetectionRulesSchema = `
+  ${undoRolloutSchema}
   DELETE FROM schema_migrations WHERE version = 51;
   ALTER TABLE policy_versions DROP COLUMN cloud_credential_mode, DROP COLUMN classification_protection;
   ALTER TABLE policy_deliveries DROP COLUMN detection_rules;
@@ -278,6 +287,9 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__31__AdminToken: composerGateAdmin,
       Control__Organizations__32__Slug: `detection-rules-${suffix}`,
       Control__Organizations__32__AdminToken: detectionRulesAdmin,
+      Control__Organizations__33__Slug: `rollout-plans-${suffix}`,
+      Control__Organizations__33__AdminToken: rolloutAdmin,
+      Control__RolloutEvaluationSeconds: '3600',
       ...overrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -5350,5 +5362,252 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual(restored.classificationProtection, { mode: 'off', terms: [] });
     assert.equal((await deliver()).cloudCredentialMode, 'off');
     await write('events', event('aws-access-key-id', 'credential', 'block', { policyVersion: restored.version }), 400);
+  });
+
+  await t.test('advances staged rollouts through health gates exactly once with review, rollback, and tenant isolation', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: rolloutAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const plan = (id, options) => admin(`rollout-plans/${id}`, options);
+    const act = (id, operation, options) => post(`rollout-plans/${id}/${operation}`, undefined, options);
+    const decide = (id, approve, options) => post(`rollout-plans/${id}/decision`, { approve }, options);
+    if (postgres) {
+      await stop();
+      await retentionFixture(undoRolloutSchema);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 52'), '1');
+    }
+    assert.deepEqual(await admin('rollout-plans'), []);
+    const [initial] = await admin('policies');
+    const [canary, pilot, staging] = await Promise.all(['Canary ring', 'Pilot ring', 'Staging ring'].map((name) => post('policy-groups', { name })));
+    const source = await post(`policy-groups/${staging.id}/policies`, { mode: 'block', githubPatMode: 'warn' });
+    async function enroll(group) {
+      const { grant } = await post('enrollment-grants');
+      const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+      browser.policy = () => call('/v1/browser/policy', { token: browser.token, assignmentAware: true });
+      await browser.policy();
+      if (group) await post(`installations/${browser.installationId}/policy-group`, { groupId: group.id }, { expect: 204 });
+      browser.ack = async () => {
+        const effective = await browser.policy();
+        await call('/v1/browser/heartbeat', { token: browser.token, method: 'POST', expect: 204,
+          body: { policyVersion: effective.version, assignmentVersion: effective.assignmentVersion ?? 0 } });
+        return effective;
+      };
+      browser.block = async () => {
+        const effective = await browser.policy();
+        await call('/v1/browser/events', { token: browser.token, method: 'POST', expect: 204, body: { ...contract.event, eventId: randomUUID(),
+          timestamp: new Date().toISOString(), policyVersion: effective.version, assignmentVersion: effective.assignmentVersion ?? 0,
+          decision: 'block' } });
+      };
+      return browser;
+    }
+    const [canaryBrowser, pilotBrowser, baselineBrowser] = await Promise.all([enroll(canary), enroll(pilot), enroll(null)]);
+    const stage = (group, fields = {}) => ({ groupId: group?.id ?? null, minSoakSeconds: 0, minAcknowledgedPercent: 100, ...fields });
+    const request = (stages, fields = {}) => ({ requestId: randomUUID(), name: 'Block rollout', sourceVersion: source.version, stages, ...fields });
+    const current = async (group) => (await admin(group ? `policy-groups/${group.id}/policies` : 'policies'))[0];
+    const rolloutAudit = async (planId) => (await admin('audit?limit=1000')).entries.filter(({ rolloutChange }) => rolloutChange?.planId === planId);
+
+    for (const invalid of [request([]), request([stage(canary), stage(canary)]), request([stage(null), stage(canary)]),
+      request([stage(canary, { minAcknowledgedPercent: 101 })]), request([stage(canary, { requireComposerReady: ['other'] })]),
+      request([stage(canary, { requireComposerReady: ['chatgpt', 'chatgpt'] })]), request([stage(canary, { minSoakSeconds: -1 })]),
+      request([stage(canary, { maxWarnOverridePercent: 101 })]), request([stage(canary)], { name: ' ' }),
+      request([stage(canary)], { requestId: '00000000-0000-0000-0000-000000000000' }),
+      request(Array.from({ length: 6 }, () => stage(canary))), request([{ minSoakSeconds: 0, minAcknowledgedPercent: 0 }])]) {
+      await post('rollout-plans', invalid, { expect: 400 });
+    }
+    assert.deepEqual(await post('rollout-plans', request([stage(canary)], { sourceVersion: 999_999 }), { expect: 404 }),
+      { code: 'rollout_source_unavailable' });
+    const foreignGroup = await call('/v1/admin/policy-groups', { method: 'POST', token: second, body: { name: `Foreign ring ${suffix}` } });
+    assert.deepEqual(await post('rollout-plans', request([stage(foreignGroup)]), { expect: 404 }), { code: 'rollout_group_unavailable' });
+    const auditor = await post('access', { name: 'Rollout auditor', role: 'auditor', hours: 1 });
+    await post('rollout-plans', request([stage(canary)]), { token: auditor.token, expect: 403 });
+
+    // Happy path through all stages: canary -> pilot -> baseline.
+    const pilotSoak = postgres ? 3600 : 0;
+    const happy = request([stage(canary, { maxBlockEvents: 5, maxWarnOverridePercent: 50 }), stage(pilot, { minSoakSeconds: pilotSoak }),
+      stage(null, { minAcknowledgedPercent: 50 })]);
+    const started = await post('rollout-plans', happy);
+    assert.equal(started.status, 'running');
+    assert.equal(started.requiresReview, false);
+    assert.deepEqual(started.stages.map(({ state }) => state), ['active', 'waiting', 'waiting']);
+    const canaryVersion = started.stages[0].publishedVersion;
+    assert.equal(started.stages[0].priorVersion, initial.version);
+    assert.equal((await current(canary)).version, canaryVersion);
+    assert.equal((await current(canary)).mode, 'block');
+    assert.deepEqual(await post('rollout-plans', happy, { expect: 409 }), { code: 'rollout_plan_exists' });
+    assert.deepEqual(await post('rollout-plans', request([stage(canary)]), { expect: 409 }), { code: 'rollout_scope_busy' });
+
+    // The canary browser has not acknowledged yet, so the soaked stage pauses with the measured numbers.
+    const waiting = await plan(started.id, { token: auditor.token });
+    assert.equal(waiting.status, 'paused');
+    assert.equal(waiting.pauseReason, 'acknowledgment_below_threshold');
+    assert.deepEqual(waiting.gate.acknowledgment, { active: 1, acknowledged: 0, threshold: 100, passed: false });
+    assert.deepEqual(waiting.gate.blocks, { blocks: 0, threshold: 5, passed: true });
+    assert.equal(waiting.nextEvaluationAt, null);
+    await act(started.id, 'resume', { token: auditor.token, expect: 403 });
+    assert.equal((await canaryBrowser.ack()).version, canaryVersion);
+    const resumed = await act(started.id, 'resume');
+    assert.equal(resumed.status, 'running');
+    assert.equal(resumed.currentStage, 1);
+    assert.deepEqual(resumed.stages.map(({ state }) => state), ['passed', 'active', 'waiting']);
+    const pilotVersion = resumed.stages[1].publishedVersion;
+    assert.equal((await current(pilot)).version, pilotVersion);
+    assert.equal((await current(pilot)).githubPatMode, 'warn');
+    await act(started.id, 'resume', { expect: 409 });
+    await pilotBrowser.ack();
+    if (postgres) {
+      const soaking = await plan(started.id);
+      assert.equal(soaking.status, 'running');
+      assert.equal(soaking.gate.soaked, false);
+      assert.equal(soaking.gate.passed, true);
+      assert.equal(Date.parse(soaking.nextEvaluationAt), Date.parse(soaking.stages[1].publishedAt) + 3600_000);
+      await retentionFixture(`UPDATE rollout_stages SET published_at = published_at - interval '2 hours'
+        WHERE plan_id = '${started.id}' AND position = 1;`);
+    }
+
+    // Many concurrent evaluators, including a second API instance, publish the baseline stage exactly once.
+    const secondPort = String(Number(port) + 1);
+    const secondInstance = spawn('dotnet', [app], { stdio: 'ignore', env: { ...process.env, DOTNET_ENVIRONMENT: 'Development',
+      ASPNETCORE_ENVIRONMENT: 'Development', ConnectionStrings__Control: db, Control__Port: secondPort, Control__RolloutEvaluationSeconds: '1',
+      Control__Organizations__0__Slug: `rollout-plans-${suffix}`, Control__Organizations__0__AdminToken: rolloutAdmin } });
+    const secondExit = once(secondInstance, 'exit');
+    try {
+      const fromSecond = () => fetch(`http://127.0.0.1:${secondPort}/v1/admin/rollout-plans/${started.id}`, {
+        headers: { Authorization: `Bearer ${rolloutAdmin}` }, signal: AbortSignal.timeout(5000) }).then((response) => response.ok, () => false);
+      for (let attempt = 0; attempt < 200 && !await fromSecond(); attempt++) await delay(50);
+      await Promise.all([...Array.from({ length: 8 }, () => plan(started.id)), ...Array.from({ length: 4 }, fromSecond), delay(1500)]);
+    } finally {
+      secondInstance.kill('SIGTERM');
+      await secondExit;
+    }
+    const advanced = await plan(started.id);
+    assert.equal(advanced.currentStage, 2);
+    const baselineVersion = advanced.stages[2].publishedVersion;
+    assert.equal((await current()).version, baselineVersion);
+    assert.equal((await admin('policies')).filter(({ version }) => version > pilotVersion).length, 1);
+    const published = (await rolloutAudit(started.id)).filter(({ action }) => action === 'policy_published');
+    assert.deepEqual(published.map(({ policyVersion }) => policyVersion).sort(), [canaryVersion, pilotVersion, baselineVersion].sort());
+    const automatic = published.find(({ policyVersion }) => policyVersion === baselineVersion);
+    assert.equal(automatic.actor, 'automated_rollout');
+    assert.deepEqual(automatic.rolloutChange, { planId: started.id, planName: 'Block rollout', event: 'stage_published', stage: 2, automatic: true });
+
+    // The baseline cohort is only the unassigned browser; it has not acknowledged, so the next evaluation pauses.
+    assert.equal(advanced.status, 'paused');
+    assert.equal(advanced.pauseReason, 'acknowledgment_below_threshold');
+    await baselineBrowser.ack();
+    const completed = await act(started.id, 'resume');
+    assert.equal(completed.status, 'completed');
+    assert.deepEqual(completed.gate.acknowledgment, { active: 1, acknowledged: 1, threshold: 50, passed: true });
+    assert.deepEqual(completed.stages.map(({ state }) => state), ['passed', 'passed', 'passed']);
+    await act(started.id, 'pause', { expect: 409 });
+
+    // Rollback restores each touched scope's prior version, newest stage first, and only once.
+    const rolledBack = await act(started.id, 'rollback');
+    assert.equal(rolledBack.status, 'rolled_back');
+    assert.deepEqual(rolledBack.stages.map(({ state }) => state), ['restored', 'restored', 'restored']);
+    for (const [group, prior] of [[canary, initial], [pilot, initial], [null, initial]]) {
+      const restored = await current(group);
+      assert.equal(restored.restoredFrom, prior.version);
+      assert.equal(restored.mode, prior.mode);
+    }
+    assert.equal((await canaryBrowser.ack()).mode, initial.mode);
+    await act(started.id, 'rollback', { expect: 409 });
+    assert.equal((await rolloutAudit(started.id)).filter(({ action }) => action === 'policy_restored').length, 3);
+
+    // A block event halts the stage during its soak; resume re-checks and halts again; cancel keeps the policy.
+    const halted = await post('rollout-plans', request([stage(canary, { minSoakSeconds: 3600, minAcknowledgedPercent: 0, maxBlockEvents: 0 }),
+      stage(pilot)], { name: 'Halting rollout' }));
+    assert.equal((await plan(halted.id)).status, 'running');
+    await canaryBrowser.ack();
+    await canaryBrowser.block();
+    const blocked = await plan(halted.id);
+    assert.equal(blocked.status, 'paused');
+    assert.equal(blocked.pauseReason, 'block_events_exceeded');
+    assert.deepEqual(blocked.gate.blocks, { blocks: 1, threshold: 0, passed: false });
+    assert.equal((await act(halted.id, 'resume')).pauseReason, 'block_events_exceeded');
+    const cancelled = await act(halted.id, 'cancel');
+    assert.equal(cancelled.status, 'cancelled');
+    assert.equal((await current(canary)).version, halted.stages[0].publishedVersion);
+    assert.equal((await current(pilot)).restoredFrom, initial.version);
+
+    // An administrator pause and a manual change to the active scope are both respected by rollback.
+    const manual = await post('rollout-plans', request([stage(canary, { minSoakSeconds: 3600, minAcknowledgedPercent: 0 })],
+      { name: 'Manual pause rollout' }));
+    const paused = await act(manual.id, 'pause');
+    assert.equal(paused.pauseReason, 'paused_by_administrator');
+    await act(manual.id, 'pause', { expect: 409 });
+    assert.equal((await act(manual.id, 'resume')).status, 'running');
+    const override = await post(`policy-groups/${canary.id}/policies`, { mode: 'warn' });
+    const changed = await plan(manual.id);
+    assert.equal(changed.pauseReason, 'target_changed');
+    assert.equal(changed.gate.currentVersion, override.version);
+    assert.deepEqual((await act(manual.id, 'rollback')).stages.map(({ state }) => state), ['changed']);
+    assert.equal((await current(canary)).version, override.version);
+
+    // Tenant isolation and auditor read-only access.
+    assert.deepEqual(await call('/v1/admin/rollout-plans', { token: second }), []);
+    await call(`/v1/admin/rollout-plans/${started.id}`, { token: second, expect: 404 });
+    for (const operation of ['pause', 'resume', 'rollback', 'cancel']) {
+      await call(`/v1/admin/rollout-plans/${manual.id}/${operation}`, { method: 'POST', token: second, expect: 404 });
+      await act(manual.id, operation, { token: auditor.token, expect: 403 });
+    }
+    assert.equal((await admin('rollout-plans', { token: auditor.token })).length, 3);
+    await call('/v1/admin/rollout-plans', { token: canaryBrowser.token, expect: 401 });
+
+    // Two-person review: the plan is approved before it starts and automatic publishes name the approver.
+    const [author, reviewer, standby] = await Promise.all(['author', 'reviewer', 'standby reviewer'].map((name) =>
+      post('access', { name: `Rollout ${name}`, role: 'administrator', hours: 1 })));
+    await post('policy-reviews/setting', { required: true }, { expect: 204 });
+    const reviewed = request([stage(canary), stage(pilot, { minAcknowledgedPercent: 0 })], { name: 'Reviewed rollout' });
+    assert.deepEqual(await post('rollout-plans', reviewed, { expect: 403 }), { code: 'named_administrator_required' });
+    const pending = await post('rollout-plans', reviewed, { token: author.token });
+    assert.equal(pending.status, 'pending_review');
+    assert.equal(pending.stages[0].publishedVersion, null);
+    assert.equal((await current(canary)).version, override.version);
+    assert.equal((await plan(pending.id)).status, 'pending_review');
+    assert.deepEqual(await decide(pending.id, true, { token: author.token, expect: 403 }), { code: 'self_approval' });
+    await decide(pending.id, true, { token: auditor.token, expect: 403 });
+    await decide(pending.id, true, { expect: 403 });
+    await act(pending.id, 'resume', { token: reviewer.token, expect: 409 });
+    const approved = await decide(pending.id, true, { token: reviewer.token });
+    assert.equal(approved.status, 'running');
+    assert.equal(approved.approver.id, reviewer.access.id);
+    await decide(pending.id, true, { token: reviewer.token, expect: 409 });
+    await canaryBrowser.ack();
+    assert.equal((await plan(pending.id)).currentStage, 1);
+    const reviewedDone = await plan(pending.id);
+    assert.equal(reviewedDone.status, 'completed');
+    const reviewedPublishes = (await rolloutAudit(pending.id)).filter(({ action }) => action === 'policy_published');
+    assert.equal(reviewedPublishes.length, 2);
+    for (const entry of reviewedPublishes) {
+      assert.equal(entry.actorAccess.id, reviewer.access.id);
+      assert.equal(entry.rolloutChange.approver.id, reviewer.access.id);
+    }
+    assert.deepEqual(reviewedPublishes.map(({ rolloutChange }) => rolloutChange.automatic).sort(), [false, true]);
+
+    // A revoked approver stops automation until an administrator rolls the plan back.
+    const orphan = await post('rollout-plans', request([stage(canary, { minAcknowledgedPercent: 0 }), stage(pilot)], { name: 'Orphaned rollout' }),
+      { token: author.token });
+    await decide(orphan.id, true, { token: standby.token });
+    await post(`access/${standby.access.id}/revoke`, undefined, { expect: 204 });
+    const orphaned = await plan(orphan.id);
+    assert.equal(orphaned.pauseReason, 'approver_inactive');
+    assert.equal(orphaned.currentStage, 0);
+    assert.deepEqual(await act(orphan.id, 'resume', { token: author.token, expect: 409 }), { code: 'rollout_approver_inactive' });
+    await act(orphan.id, 'rollback', { expect: 403 });
+    assert.equal((await act(orphan.id, 'rollback', { token: author.token })).status, 'rolled_back');
+
+    // Disabling reviews cancels a plan that is still waiting for approval.
+    const unreviewed = await post('rollout-plans', request([stage(pilot)], { name: 'Unreviewed rollout' }), { token: author.token });
+    await post('policy-reviews/setting', { required: false }, { expect: 204 });
+    assert.equal((await plan(unreviewed.id)).status, 'cancelled');
+    await decide(unreviewed.id, true, { token: reviewer.token, expect: 409 });
+    const lifecycle = (await admin('audit?action=rollout_plan_changed&limit=1000')).entries;
+    assert.ok(lifecycle.some(({ rolloutChange }) => rolloutChange.planId === unreviewed.id && rolloutChange.reason === 'review_mode_changed'));
+    assert.ok(lifecycle.some(({ rolloutChange, actorAccess }) => rolloutChange.planId === pending.id && rolloutChange.event === 'approved' &&
+      actorAccess.id === reviewer.access.id));
+    const evidence = JSON.stringify(await admin('rollout-plans'));
+    for (const browser of [canaryBrowser, pilotBrowser, baselineBrowser]) {
+      assert.ok(!evidence.includes(browser.installationId) && !evidence.includes(browser.token));
+    }
   });
 });

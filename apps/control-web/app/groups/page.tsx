@@ -58,6 +58,7 @@ export default async function Groups({ searchParams }: { searchParams: Promise<{
                 <a className="button small" href={`/extensions/deployment?group=${result.selected.id}`}>Chrome extension deployment</a>
                 <a className="button small" href={`/?rolloutGroup=${result.selected.id}#browsers`}>Review browser rollout</a>
                 <PolicyImpactLink groupId={result.selected.id} version={result.selected.effectiveVersion} />
+                {policyWritable && result.history[0] && <a className="button small" href={`/rollouts?source=${result.history[0].version}`}>Plan automated rollout</a>}
                 {writable && <a className="button small" href={`/enrollment?group=${result.selected.id}`}>Enroll browsers in group</a>}
               </div>
             </section>

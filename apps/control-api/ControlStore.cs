@@ -76,6 +76,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 49, "049_policy_composer_gate.sql", ct);
         await ApplyMigration(connection, 50, "050_claude_attachments.sql", ct);
         await ApplyMigration(connection, 51, "051_detection_rules.sql", ct);
+        await ApplyMigration(connection, 52, "052_rollout_plans.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -735,7 +736,7 @@ internal sealed partial class ControlStore
             SELECT a.id, occurred_at, action, policy_version, restored_from, installation_id, app_id, classification, retention, cleanup, group_change,
                 actor.id, actor.display_name, actor.role, subject.id, subject.display_name, subject.role, a.review_change, a.enrollment_batch_change,
                 a.event_triage_change, a.incident_case_change, a.security_alert_change, a.event_feed_key_change, a.fleet_change, a.template_change,
-                a.composer_gate
+                a.composer_gate, a.rollout_change
             FROM control_audit a LEFT JOIN retention_cutoffs r ON a.organization_id = r.organization_id
             LEFT JOIN control_access actor ON actor.organization_id = a.organization_id AND actor.id = a.actor_access_id
             LEFT JOIN control_access subject ON subject.organization_id = a.organization_id AND subject.id = a.subject_access_id
@@ -767,7 +768,8 @@ internal sealed partial class ControlStore
                 rows.IsDBNull(22) ? null : JsonSerializer.Deserialize<EventFeedKeyChange>(rows.GetString(22), JsonSerializerOptions.Web),
                 rows.IsDBNull(23) ? null : JsonSerializer.Deserialize<FleetChange>(rows.GetString(23), JsonSerializerOptions.Web),
                 rows.IsDBNull(24) ? null : JsonSerializer.Deserialize<PolicyTemplateAudit>(rows.GetString(24), JsonSerializerOptions.Web),
-                rows.IsDBNull(25) ? null : JsonSerializer.Deserialize<PolicyComposerGate>(rows.GetString(25), JsonSerializerOptions.Web)));
+                rows.IsDBNull(25) ? null : JsonSerializer.Deserialize<PolicyComposerGate>(rows.GetString(25), JsonSerializerOptions.Web),
+                rows.IsDBNull(26) ? null : JsonSerializer.Deserialize<RolloutAudit>(rows.GetString(26), JsonSerializerOptions.Web)));
         if (entries.Count <= filters.Limit) return new(entries, null);
         entries.RemoveAt(filters.Limit);
         var last = entries[^1];

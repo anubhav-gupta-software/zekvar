@@ -19,6 +19,9 @@ if (port is < 1024 or > 65535)
 var sweepSeconds = builder.Configuration.GetValue("Control:RetentionSweepSeconds", 3600);
 if (sweepSeconds is < 1 or > 86400)
     throw new InvalidOperationException("Configure a retention sweep interval between 1 and 86400 seconds.");
+var rolloutSeconds = builder.Configuration.GetValue("Control:RolloutEvaluationSeconds", 30);
+if (rolloutSeconds is < 1 or > 3600)
+    throw new InvalidOperationException("Configure a rollout evaluation interval between 1 and 3600 seconds.");
 var organizations = builder.Configuration.GetSection("Control:Organizations").Get<DemoOrganization[]>();
 if (organizations is not { Length: > 0 } || organizations.Any(org => !ValidOrganization(org)) ||
     organizations.Select(org => org.Slug).Distinct().Count() != organizations.Length ||
@@ -37,7 +40,10 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow);
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
 builder.Services.AddSingleton(alertWebhooks);
-builder.Services.AddSingleton(services => new ControlStore(services.GetRequiredService<NpgsqlDataSource>(), sso, alertWebhooks));
+builder.Services.AddSingleton(services => new ControlStore(services.GetRequiredService<NpgsqlDataSource>(), sso, alertWebhooks)
+    { RolloutInterval = TimeSpan.FromSeconds(rolloutSeconds) });
+builder.Services.AddHostedService<RolloutAdvancer>(services => new(services.GetRequiredService<ControlStore>(),
+    services.GetRequiredService<ILogger<RolloutAdvancer>>(), TimeSpan.FromSeconds(rolloutSeconds)));
 builder.Services.AddHostedService<RetentionSweep>(services => new(services.GetRequiredService<ControlStore>(),
     services.GetRequiredService<ILogger<RetentionSweep>>(), TimeSpan.FromSeconds(sweepSeconds)));
 if (alertWebhooks.Enabled) builder.Services.AddHostedService<AlertWebhookDispatcher>();
@@ -345,7 +351,24 @@ groups.MapPost("/{groupId:guid}/promote", async (Guid groupId, PromotePolicyGrou
         expectedSourceVersion: request.ExpectedVersion, expectedBaselineVersion: request.ExpectedBaselineVersion),
         Results.Conflict(new { error = "The reviewed group or baseline version is no longer current or available." }));
 });
-admin.MapPost("/installations/{id:guid}/policy-group", async (Guid id, AssignPolicyGroup request, HttpContext http, CancellationToken ct) =>
+var rollouts = admin.MapGroup("/rollout-plans");
+rollouts.MapGet("", async (HttpContext http, CancellationToken ct) => Results.Ok(await store.RolloutPlans(Identity(http).OrganizationId, ct)));
+rollouts.MapGet("/{id:guid}", async (Guid id, HttpContext http, CancellationToken ct) =>
+    await store.RolloutPlanDetails(Identity(http).OrganizationId, id, ct) is { } plan ? Results.Ok(plan) : Results.NotFound());
+rollouts.MapPost("", async (CreateRolloutPlan request, HttpContext http, CancellationToken ct) =>
+{
+    if (!request.IsValid(out var name))
+        return Results.BadRequest(new { error = "Name the plan, choose a published version, and list 1 to 5 distinct stages with valid gates. The baseline can only be the last stage.", code = "invalid_rollout_plan" });
+    return RolloutOutcome(await store.CreateRolloutPlan(Identity(http), request, name!, ct));
+});
+rollouts.MapPost("/{id:guid}/decision", async (Guid id, ChoosePolicyReview request, HttpContext http, CancellationToken ct) =>
+    request.Approve is not { } approve ? Results.BadRequest() : RolloutOutcome(await store.DecideRolloutPlan(Identity(http), id, approve, ct)));
+foreach (var operation in new[] { "pause", "resume", "rollback", "cancel" })
+{
+    rollouts.MapPost($"/{{id:guid}}/{operation}", async (Guid id, HttpContext http, CancellationToken ct) =>
+        RolloutOutcome(await store.ChangeRolloutPlan(Identity(http), id, operation, ct)));
+}
+admin.MapPost("/installations/{id:guid}/policy-group",async (Guid id, AssignPolicyGroup request, HttpContext http, CancellationToken ct) =>
     await store.AssignGroup(Identity(http), id, request.GroupId, ct) switch
     {
         "assigned" => Results.NoContent(),
@@ -677,6 +700,16 @@ static IResult PolicyOutcome(PolicyChangeResult result, IResult fallback)
         _ => fallback
     };
 }
+
+static IResult RolloutOutcome(RolloutResult result) => result switch
+{
+    { Plan: { } plan } => Results.Ok(plan),
+    { Error: "rollout_plan_unavailable" or "rollout_source_unavailable" or "rollout_group_unavailable" } =>
+        Results.NotFound(new { code = result.Error }),
+    { Error: "named_administrator_required" or "self_approval" } => Results.Json(new { code = result.Error }, statusCode: StatusCodes.Status403Forbidden),
+    { Error: { } code } => Results.Conflict(new { code }),
+    _ => Results.NotFound()
+};
 
 static IResult TemplateOutcome(PolicyTemplateResult result, bool archive = false)
 {

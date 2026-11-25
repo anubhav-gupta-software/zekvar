@@ -26,6 +26,8 @@ import { domainRuleLimit, ruleCount } from '../../../contracts/policy/domains';
 import { eventPath, isTriageDisposition, isTriageId, isTriageStatus } from '../lib/triage';
 import { casePath, isCaseCategory, type EventReference } from '../lib/cases';
 import { alertPath, extensionAlertPath, extensionAlertsPath } from '../lib/alerts';
+import { maxRolloutStages, rolloutStatuses, type RolloutStageRequest } from '../lib/rollouts';
+import type { AiPromptApp } from '../../../contracts/policy/apps';
 
 export async function signIn(_previous: Feedback, form: FormData): Promise<Feedback> {
   const token = form.get('token');
@@ -951,5 +953,89 @@ export async function cleanupRetention(): Promise<Feedback> {
     revalidatePath('/retention');
     return { message: result.securityEvents || result.aiObservations || result.auditEntries || result.incidentCases || result.alertWindows
       ? `Deleted ${cleanupCounts(result)}.` : 'No expired records found.' };
+  });
+}
+
+function rolloutNumber(value: FormDataEntryValue | null, max: number, optional = false) {
+  if (optional && (value === null || value === '')) return null;
+  return typeof value === 'string' && /^\d{1,7}$/.test(value) && Number(value) <= max ? Number(value) : undefined;
+}
+
+function rolloutError(error: unknown): Feedback | undefined {
+  if (!(error instanceof ApiError)) return;
+  switch (error.code) {
+    case 'invalid_rollout_plan': return { error: 'Use 1 to 5 distinct stages with valid gates. The organization baseline can only be the last stage.' };
+    case 'rollout_plan_exists': return { error: 'This request already created a plan. Reload before creating another.' };
+    case 'rollout_scope_busy': return { error: 'Another open plan already covers one of these rollout groups or the baseline.' };
+    case 'rollout_source_unavailable': return { error: 'That policy version is unavailable. Choose a published version.' };
+    case 'rollout_group_unavailable': return { error: 'A selected rollout group is unavailable. Reload and choose again.' };
+    case 'rollout_plan_state': return { error: 'The plan changed state. Refresh to see its current status.' };
+    case 'rollout_approver_inactive': return { error: 'The approving administrator no longer has access. Roll back or cancel this plan.' };
+    case 'rollout_plan_stale': return { error: 'The requesting administrator no longer has access, so the plan was cancelled.' };
+  }
+}
+
+export async function createRolloutPlan(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const requestId = form.get('requestId');
+  const rawName = form.get('name');
+  const name = typeof rawName === 'string' ? rawName.trim() : '';
+  const sourceVersion = rolloutNumber(form.get('sourceVersion'), 2_147_483_647);
+  if (!isId(requestId) || name.length < 2 || name.length > 64 || !sourceVersion) {
+    return { error: 'Name the plan and choose the policy version to roll out.' };
+  }
+  const stages: RolloutStageRequest[] = [];
+  for (let index = 0; index < maxRolloutStages; index++) {
+    const target = form.get(`stage${index}Target`);
+    if (target === '' || target === null) continue;
+    if (target !== 'baseline' && !isId(target)) return { error: `Choose a valid target for stage ${index + 1}.` };
+    const soakMinutes = rolloutNumber(form.get(`stage${index}Soak`), 10_080);
+    const acknowledged = rolloutNumber(form.get(`stage${index}Ack`), 100);
+    const maxBlockEvents = rolloutNumber(form.get(`stage${index}Blocks`), 100_000, true);
+    const maxWarnOverridePercent = rolloutNumber(form.get(`stage${index}Overrides`), 100, true);
+    const apps = form.getAll(`stage${index}App`);
+    if (soakMinutes == null || acknowledged == null || maxBlockEvents === undefined || maxWarnOverridePercent === undefined ||
+        !apps.every((app): app is AiPromptApp => typeof app === 'string' && (aiPromptApps as readonly string[]).includes(app))) {
+      return { error: `Enter soak minutes up to 10080, percentages up to 100, and an optional block limit for stage ${index + 1}.` };
+    }
+    stages.push({ groupId: target === 'baseline' ? null : target, minSoakSeconds: soakMinutes * 60, minAcknowledgedPercent: acknowledged,
+      requireComposerReady: apps, maxBlockEvents, maxWarnOverridePercent });
+  }
+  if (stages.length === 0) return { error: 'Add at least one stage.' };
+  if (stages.slice(0, -1).some(({ groupId }) => groupId === null)) return { error: 'Place the organization baseline in the last stage.' };
+  if (new Set(stages.map(({ groupId }) => groupId ?? 'baseline')).size !== stages.length) return { error: 'Use each target once.' };
+  return perform(async (token) => {
+    try {
+      const plan = await controlApi.createRolloutPlan(token, requestId, name, sourceVersion, stages);
+      refreshPolicyViews();
+      revalidatePath('/rollouts');
+      return { message: plan.status === 'pending_review' ? `${plan.name} is waiting for approval by another administrator.` :
+        `${plan.name} started. Stage 1 published as v${plan.stages[0].publishedVersion}.` };
+    } catch (error) {
+      const known = rolloutError(error);
+      if (known) return known;
+      throw error;
+    }
+  });
+}
+
+export async function changeRolloutPlan(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const id = form.get('id');
+  const operation = form.get('operation');
+  if (!isId(id) || (operation !== 'pause' && operation !== 'resume' && operation !== 'rollback' && operation !== 'cancel' &&
+      operation !== 'approve' && operation !== 'reject')) return { error: 'Choose a rollout plan action.' };
+  return perform(async (token) => {
+    try {
+      const plan = operation === 'approve' || operation === 'reject'
+        ? await controlApi.decideRolloutPlan(token, id, operation === 'approve')
+        : await controlApi.changeRolloutPlan(token, id, operation);
+      refreshPolicyViews();
+      revalidatePath('/rollouts');
+      revalidatePath('/audit');
+      return { message: `${plan.name} · ${rolloutStatuses[plan.status]}.` };
+    } catch (error) {
+      const known = rolloutError(error);
+      if (known) return known;
+      throw error;
+    }
   });
 }

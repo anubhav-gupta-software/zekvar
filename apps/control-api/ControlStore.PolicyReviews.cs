@@ -132,6 +132,18 @@ internal sealed partial class ControlStore
                 """, connection, transaction);
             AddParameters(cancel, org);
             cancelled = await cancel.ExecuteNonQueryAsync(ct);
+            // A rollout plan requested for review cannot start without that review.
+            await using var cancelPlans = new NpgsqlCommand("""
+                WITH closed AS (
+                    UPDATE rollout_plans SET status = 'cancelled', decided_at = now(), finished_at = now(), revision = revision + 1
+                    WHERE organization_id = $1 AND status = 'pending_review' AND expires_at > clock_timestamp() RETURNING id, name
+                )
+                INSERT INTO control_audit (organization_id, action, actor_access_id, rollout_change)
+                SELECT $1, 'rollout_plan_changed', $2, jsonb_build_object('planId', id, 'planName', name, 'event', 'cancelled',
+                    'reason', 'review_mode_changed') FROM closed
+                """, connection, transaction);
+            AddParameters(cancelPlans, org, (object?)identity.Access?.Id ?? DBNull.Value);
+            await cancelPlans.ExecuteNonQueryAsync(ct);
         }
         await AuditPolicyReview(transaction, identity, "policy_review_setting_changed", new(Required: required, Cancelled: cancelled), ct);
         await transaction.CommitAsync(ct);
@@ -300,7 +312,8 @@ internal sealed partial class ControlStore
     });
 
     private static async Task<Policy> WritePolicy(NpgsqlTransaction transaction, RequestIdentity identity, Policy policy,
-        Guid? targetGroupId, int? restoredFrom, PolicyGroupChange? groupAudit, CancellationToken ct, PolicyComposerGate? composerGate)
+        Guid? targetGroupId, int? restoredFrom, PolicyGroupChange? groupAudit, CancellationToken ct, PolicyComposerGate? composerGate,
+        RolloutAudit? rollout = null)
     {
         var content = policy.EffectiveFileContentModes();
         var inspectChatgpt = content.Chatgpt != "off";
@@ -329,9 +342,10 @@ internal sealed partial class ControlStore
                 INSERT INTO policy_audit (organization_id, version, restored_from)
                 SELECT organization_id, version, $13 FROM published
             ), audit AS (
-                INSERT INTO control_audit (organization_id, occurred_at, action, policy_version, restored_from, group_change, actor_access_id, composer_gate)
+                INSERT INTO control_audit (organization_id, occurred_at, action, policy_version, restored_from, group_change, actor_access_id, composer_gate,
+                    rollout_change)
                 SELECT organization_id, published_at, CASE WHEN $13::integer IS NULL THEN 'policy_published' ELSE 'policy_restored' END,
-                    version, $13, $14::jsonb, $15, $36::jsonb FROM published
+                    version, $13, $14::jsonb, $15, $36::jsonb, $42::jsonb FROM published
             )
             SELECT version, published_at FROM published
             """, transaction.Connection, transaction);
@@ -353,7 +367,8 @@ internal sealed partial class ControlStore
             composerGate is null ? DBNull.Value : JsonSerializer.Serialize(composerGate, JsonSerializerOptions.Web),
             policy.UploadModes.Claude ?? "off", policy.UploadTypes?.Claude ?? [], content.Claude ?? "off",
             policy.CloudCredentialMode ?? "off",
-            JsonSerializer.Serialize(policy.ClassificationProtection ?? ClassificationProtection.Disabled, JsonSerializerOptions.Web));
+            JsonSerializer.Serialize(policy.ClassificationProtection ?? ClassificationProtection.Disabled, JsonSerializerOptions.Web),
+            rollout is null ? DBNull.Value : JsonSerializer.Serialize(rollout, JsonSerializerOptions.Web));
         await using var rows = await command.ExecuteReaderAsync(ct);
         await rows.ReadAsync(ct);
         return policy with { Version = rows.GetInt32(0), PublishedAt = rows.GetDateTime(1), RestoredFrom = restoredFrom,

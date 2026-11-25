@@ -306,6 +306,16 @@ Browser v0.8.0 advertises assignment support with `X-Zekvar-Assignment-Aware: 1`
 
 For isolated API or browser tests, `Control__Port` selects a different loopback port. The default dashboard and extension use `5187`.
 
+## Automated rollout plans
+
+`POST /v1/admin/rollout-plans` takes a client `requestId`, `name`, an existing `sourceVersion`, and 1 to 5 `stages`. Each stage has a required `groupId`, where `null` means the organization baseline and is allowed only last. Each stage also has `minSoakSeconds` (0 to 604800), `minAcknowledgedPercent` (0 to 100), and optional `requireComposerReady`, `maxBlockEvents`, and `maxWarnOverridePercent` values. A reused `requestId` returns HTTP 409 `rollout_plan_exists`. A scope that belongs to another open plan returns `rollout_scope_busy`. A missing version or group returns HTTP 404.
+
+Without required reviews, the plan starts and publishes stage 1 in the same transaction. With required reviews, only a named administrator can create a plan. It stays `pending_review` for 24 hours until another named administrator calls `POST /{id}/decision` with `approve`. The requester cannot approve their own plan. Disabling reviews cancels pending plans. `POST /{id}/pause` and `POST /{id}/cancel` are available to owners and administrators. `POST /{id}/resume` and `POST /{id}/rollback` follow the policy-change rule and require a named administrator while reviews are required. Rollback restores each stage's recorded `priorVersion` only where the stage version is still current, and runs immediately without a separate review. Auditors can use `GET` only, and other organizations receive HTTP 404.
+
+Stage publications reuse the policy write path. Like a template application, the reviewed snapshot keeps the destination's temporary prompt exceptions. Acknowledgment uses active, unrevoked browsers in the stage scope whose applied version is the stage version. Composer gates use the same fresh detected state as the publication gate. Block and override limits count events recorded under the stage version. Block events and override limits pause a stage immediately. Other failed gates pause it after the soak. The gate snapshot includes the actual values and thresholds.
+
+`RolloutAdvancer` evaluates running plans every `Control__RolloutEvaluationSeconds` (default 30, from 1 to 3600). `GET /v1/admin/rollout-plans` and `GET /{id}` also evaluate first. Each transition locks the organization's policy settings and then the plan row, rechecks the state, and records a stage publication only when it is unpublished. Concurrent requests and API instances therefore publish each stage once. Lifecycle changes are audited as `rollout_plan_changed`. Stage publications and restores carry `rolloutChange` with the plan, stage, and whether automation published it. The actor is the approving administrator.
+
 ## Verify the workflow
 
 The tests start and stop their own API process. Leave port `5187` free and use a disposable PostgreSQL database. They seed two temporary organizations and verify enrollment, policy and rollback, installation health, privacy, retry deduplication, tenant isolation, and persistence after restart.

@@ -15,6 +15,7 @@ import type { BrowserHardening } from './browser-hardening';
 import type { FleetChange, FleetPage, FleetRequest } from './fleet';
 import type { PolicyTemplate, PolicyTemplateDetails, PolicyTemplatePreview } from './templates';
 import type { PolicyImpactReport } from './policy-impact';
+import type { RolloutPlan, RolloutStageRequest } from './rollouts';
 import type { PromptExceptionRequest, PromptRequestDecision } from './prompt-requests';
 import type { AiPromptApp } from '../../../contracts/policy/apps';
 import { eventPath, type EventDetails, type EventTriage, type TriageAssignee, type TriageUpdate } from './triage';
@@ -118,6 +119,13 @@ export const controlApi = {
   promoteGroup: (token: string, groupId: string, expectedVersion: number, review: boolean, expectedBaselineVersion?: number) =>
     request<PolicyChange>(`/policy-groups/${groupId}/promote`, token, 'POST', { expectedVersion, expectedBaselineVersion }, review),
   policyReviews: (token: string) => request<PolicyReviewQueue>('/policy-reviews', token),
+  rolloutPlans: (token: string) => request<RolloutPlan[]>('/rollout-plans', token),
+  createRolloutPlan: (token: string, requestId: string, name: string, sourceVersion: number, stages: RolloutStageRequest[]) =>
+    request<RolloutPlan>('/rollout-plans', token, 'POST', { requestId, name, sourceVersion, stages }),
+  decideRolloutPlan: (token: string, id: string, approve: boolean) =>
+    request<RolloutPlan>(`/rollout-plans/${id}/decision`, token, 'POST', { approve }),
+  changeRolloutPlan: (token: string, id: string, operation: 'pause' | 'resume' | 'rollback' | 'cancel') =>
+    request<RolloutPlan>(`/rollout-plans/${id}/${operation}`, token, 'POST'),
   promptExceptionRequests: (token: string, status: 'pending' | 'decided') =>
     request<PromptExceptionRequest[]>(`/prompt-exception-requests?status=${status}`, token),
   decidePromptExceptionRequest: (token: string, id: string, status: PromptRequestDecision) =>

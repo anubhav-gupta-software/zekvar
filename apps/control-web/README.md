@@ -48,6 +48,21 @@ Each selected app needs a detected composer on the browser's current policy and 
 
 For a two-person review, the request shows the selected apps and Control checks them again at approval. When coverage changes, the request stays pending until coverage recovers or the review expires. A successful publication records the app names, reference version, and browser count in **Audit log**. Continue testing the intended text submission and file workflows on the pilot profiles. [Control API contract](../control-api/README.md#require-composer-readiness-for-publication)
 
+## Automate a staged rollout
+
+1. Publish and review the policy version you want to ship, for example in a staging rollout group. Open **Automated rollouts**, or select **Plan automated rollout** from a group to preselect its latest version.
+2. Name the plan, choose the version, and fill up to five stages in order, such as a canary group, a pilot group, and then **Organization baseline**. The baseline can only be the last stage, and it also reaches groups that follow the baseline. Each target can appear once and can belong to only one open plan.
+3. For each stage, set the soak minutes and the minimum share of active browsers that must acknowledge the stage policy. Optionally require fresh composer checks for ChatGPT, Claude, or Gemini, a block-event limit, and a warning-override limit.
+4. Select **Create rollout plan**. Without required reviews, stage 1 publishes immediately. With required reviews, a named administrator requests the plan and a different named administrator selects **Approve and start**.
+
+Control evaluates the current stage every 30 seconds and whenever someone opens the plan. A block or override limit pauses the stage as soon as it is exceeded, even during the soak. After the soak, Control publishes the next stage when every gate passes. If acknowledgment or composer readiness falls short, Control pauses the plan. The plan view shows each gate's measured value, threshold, and result. It also shows the next evaluation time and the reason for any pause. Control counts only events recorded under the stage's own policy version.
+
+- **Pause rollout** stops automation. **Resume rollout** evaluates the current stage again immediately.
+- **Roll back plan** restores the version each touched scope had before its stage, newest stage first. A scope changed outside the plan keeps its newer policy and shows **Changed outside plan · kept**. A group that followed the baseline keeps an explicit copy of its previous effective policy.
+- **Stop without rollback** ends automation and leaves published stages in place.
+
+Each stage publication appears in **Audit log** with the plan and stage. Automatic publications show **Automated rollout** or the approving administrator. If the approver loses access, or reviews become required for an unapproved plan, the plan pauses before its next publication. Auditors can view plans but cannot change them. [Rollout plan API](../control-api/README.md#automated-rollout-plans)
+
 ## Reuse a published policy
 
 1. Open **Policy templates**. If a template is already open, select **New template**. Choose the source rollout group or organization baseline and select **Load source policies**. Name the template, select a published version, and select **Create template**.
