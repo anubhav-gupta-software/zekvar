@@ -572,7 +572,7 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
     assert.equal((await call(browserOrigin + '/v1/admin' + reviewPath, { headers: { Authorization: `Bearer ${owner}` } })).status, 404);
   });
   await t.test('enforces file content blocking in managed Chrome over the hosted policy and event endpoints', async () => {
-    const fileBlock = await admin('policies', { fileContentModes: { chatgpt: 'block' } });
+    const fileBlock = await admin('policies', { claudePromptEnabled: true, fileContentModes: { chatgpt: 'block', claude: 'block' } });
     await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
     await attachment.getByText(/File content block$/).waitFor();
     const field = attachment.getByLabel('Attach fixture files');
@@ -625,6 +625,21 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
     'The hosted browser did not report the blocked scanned PDF.');
     assert.equal(scanEvent.ruleId, 'fixture-secret');
     assert.doesNotMatch(JSON.stringify(scanEvent), /synthetic-hosted-scan|Synthetic hosted scanned page|ZEKVAR_TEST_SECRET|JVBERi/);
+
+    const claude = await browser.newPage();
+    await claude.route('https://claude.ai/**', (route) => route.fulfill({ contentType: 'text/html', body: attachmentFixture }));
+    await claude.goto('https://claude.ai/new');
+    await claude.getByText(/File content block$/).waitFor();
+    const claudePicker = claude.waitForEvent('filechooser');
+    await claude.getByLabel('Attach fixture files').click();
+    await (await claudePicker).setFiles(scan);
+    await claude.getByRole('alert').filter({ hasText: 'sensitive content' }).waitFor();
+    assert.deepEqual(await claude.evaluate(() => window.fileEvents), []);
+    const claudeEvent = await until(async () => (await admin('events?appId=claude&decision=block')).find(({ policyVersion, uploadMethod }) =>
+      policyVersion === fileBlock.version && uploadMethod === 'picker'), 'The hosted browser did not report the blocked Claude PDF.');
+    assert.equal(claudeEvent.ruleId, 'fixture-secret');
+    assert.doesNotMatch(JSON.stringify(claudeEvent), /synthetic-hosted-scan|Synthetic hosted scanned page|ZEKVAR_TEST_SECRET|JVBERi/);
+    await claude.close();
   });
   await t.test('groups real prompt and attachment detections into an auditable case over TLS', async () => {
     const investigator = await admin('access', { name: 'Case investigator', role: 'administrator', hours: 1 });

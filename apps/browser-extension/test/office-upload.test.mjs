@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -632,5 +633,112 @@ test('protects attachments through native Chrome intake and Control reporting', 
         ...Array(2).fill('chatgpt/block/file-inspection-unavailable/picker')].sort());
     assert.doesNotMatch(JSON.stringify([...posts, ...evidence]), /ocr-scanned|ocr-mixed|ZEKVAR_TEST_SECRET|234-56-7890|Public heading|%PDF|JVBERi/);
     assert.equal(fileDataSentToControl, false);
+  });
+
+  await t.test('protects opted-in Claude chats across picker, drop, and clipboard intake', async () => {
+    const origin = 'https://claude.ai';
+    const claude = await browser.newPage();
+    const delivered = [];
+    await claude.route(`${origin}/**`, (route) => {
+      if (new URL(route.request().url()).pathname === '/fixture-upload') {
+        delivered.push(route.request().postDataBuffer());
+        return route.fulfill({ status: 204 });
+      }
+      return route.fulfill({ contentType: 'text/html', body: fixture });
+    });
+    await claude.addInitScript(() => { window.captureUploads = true; });
+    const records = async (version) => (await admin('events?appId=claude')).filter(({ policyVersion }) => policyVersion === version);
+    const sync = () => popup.getByRole('button', { name: 'Sync now' }).click();
+    const filter = { uploadModes: { claude: 'block' }, uploadTypes: { claude: ['.BIN'] } };
+    const disabled = await admin('policies', { ...filter, claudePromptEnabled: false, fileContentModes: { claude: 'monitor' } });
+    await sync();
+    await claude.goto(`${origin}/new`);
+    await pick(claude, [blocked]);
+    await until(() => delivered.length === 1, 'The disabled Claude adapter interfered with native file intake.');
+    assert.deepEqual(await records(disabled.version), []);
+
+    const monitored = await admin('policies', { claudePromptEnabled: true });
+    assert.deepEqual(monitored.uploadTypes.claude, ['.bin']);
+    assert.equal(monitored.fileContentModes.claude, 'monitor');
+    await sync();
+    await expectFileMode(claude, monitored.version, 'monitor');
+    await input(claude).setInputFiles([]);
+    loseNextAcknowledgment = true;
+    await pick(claude, [word]);
+    await until(() => delivered.length === 2 && !loseNextAcknowledgment, 'Claude Monitor did not release and report the synthetic Word file.');
+    assert.deepEqual(delivered[1], docs.docx);
+    const retried = posts.at(-1).eventId;
+    await sync();
+    await until(() => posts.filter(({ eventId }) => eventId === retried).length === 2, 'Claude Monitor did not retry the result.');
+    await pick(claude, [blocked]);
+    await claude.getByRole('alert').filter({ hasText: 'Claude policy' }).waitFor();
+    const monitorRows = await until(async () => {
+      const rows = await records(monitored.version);
+      return rows.length === 2 && rows;
+    }, 'Control did not store the deduplicated file inspection and file-type block.');
+    assert.deepEqual(monitorRows.map(({ ruleId, decision, uploadMethod }) => `${ruleId}/${decision}/${uploadMethod}`).sort(),
+      ['ai-file-upload/block/picker', 'fixture-secret/monitor/picker']);
+
+    const blocking = await admin('policies', { fileContentModes: { claude: 'block' } });
+    await sync();
+    const conversation = `${origin}/chat/${randomUUID()}`;
+    await claude.goto(conversation);
+    await expectFileMode(claude, blocking.version, 'block');
+    await until(async () => (await admin('installations')).some(({ appliedPolicyVersion }) => appliedPolicyVersion === blocking.version),
+      'The Claude file policy was not acknowledged by the enrolled browser.');
+    const cleanPdf = pdfFixture([['Approved public text']]);
+    const scanBytes = await textImage(claude, 'image/jpeg', ['Synthetic Claude attachment', marker]);
+    const sensitivePdf = pdfFixture([{ lines: ['Public heading'], image: { bytes: scanBytes, width: 960, height: 260 } }]);
+    const [clean, scanned, malformed] = ['claude-approved.pdf', 'claude-private-scan.pdf', 'claude-private-unreadable.pdf'].map((name) => join(root, name));
+    await Promise.all([writeFile(clean, cleanPdf), writeFile(scanned, sensitivePdf), writeFile(malformed, '%PDF-1.7\nMalformed synthetic scan')]);
+    await pick(claude, [clean]);
+    await until(() => delivered.length === 3, 'Claude did not receive the original approved PDF.');
+    assert.deepEqual(delivered[2], cleanPdf);
+    await pick(claude, [clean, word]);
+    const refused = (reason) => claude.getByRole('alert').filter({ hasText: reason }).waitFor();
+    await refused('sensitive content');
+    assert.equal(await input(claude).evaluate((field) => field.files.length), 0);
+    await drop(claude, claude.locator('#drop-zone'), [scanned]);
+    await refused('sensitive content');
+    await pick(claude, [malformed]);
+    await refused('could not complete');
+    await browser.grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
+    await claude.bringToFront();
+    const image = await textImage(claude, 'image/png', ['Synthetic Claude clipboard', marker]);
+    await claude.evaluate(async (bytes) => {
+      const png = new Blob([new Uint8Array(bytes)], { type: 'image/png' });
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+    }, [...image]);
+    await claude.getByRole('textbox', { name: 'Claude fixture prompt' }).press('ControlOrMeta+v');
+    await refused('sensitive content');
+    assert.equal(delivered.length, 3);
+    if (process.env.ZEKVAR_DEMO_ARTIFACTS) {
+      await claude.getByRole('alert').screenshot({ path: join(process.env.ZEKVAR_DEMO_ARTIFACTS, 'claude-attachment-block.png') });
+    }
+    const blockRows = await until(async () => {
+      const rows = await records(blocking.version);
+      return rows.length === 4 && rows;
+    }, 'Control did not retain the expected Claude file block decisions.');
+    assert.deepEqual(blockRows.map(({ ruleId, decision, uploadMethod }) => `${ruleId}/${decision}/${uploadMethod}`).sort(),
+      ['file-inspection-unavailable/block/picker', 'fixture-secret/block/drop', 'fixture-secret/block/paste', 'fixture-secret/block/picker']);
+    assert.doesNotMatch(JSON.stringify([...posts, ...monitorRows, ...blockRows]), /claude-private|claude-approved|ZEKVAR_TEST_SECRET|PK\x03\x04|%PDF|JVBERi/);
+    assert.equal(fileDataSentToControl, false);
+
+    await claude.goto(`${origin}/project/${randomUUID()}`);
+    await drop(claude, claude.locator('#drop-zone'), [scanned]);
+    await until(() => delivered.length === 4, 'The unsupported project route changed its file intake.');
+    assert.deepEqual(delivered[3], sensitivePdf);
+    assert.deepEqual(await records(blocking.version), blockRows);
+    const restored = await admin(`policies/${monitored.version}/restore`, {});
+    await sync();
+    await claude.goto(conversation);
+    await expectFileMode(claude, restored.version, 'monitor');
+    await drop(claude, claude.locator('#drop-zone'), [scanned]);
+    const [retriedInMonitor] = await until(async () => {
+      const rows = await records(restored.version);
+      return rows.length === 1 && rows;
+    }, 'A restored Claude Monitor policy did not report the synthetic PDF.');
+    assert.deepEqual([retriedInMonitor.decision, retriedInMonitor.uploadMethod], ['monitor', 'drop']);
+    assert.deepEqual(delivered[4], sensitivePdf);
   });
 });

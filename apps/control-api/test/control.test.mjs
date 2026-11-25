@@ -1065,7 +1065,8 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await heartbeat(before.version);
     await publish({ uploadModes: {} }, 400);
     await publish({ uploadModes: { chatgpt: 'warn' } }, 400);
-    await publish({ uploadModes: { claude: 'block' } }, 400);
+    await publish({ uploadModes: { copilot: 'block' } }, 400);
+    await publish({ uploadModes: { claude: 'warn' } }, 400);
     const monitor = await publish({ uploadModes: { chatgpt: 'monitor' }, expectedVersion: before.version });
     const block = await publish({ uploadModes: { gemini: 'block' }, expectedVersion: monitor.version });
     await publish({ uploadModes: { gemini: 'off' }, expectedVersion: monitor.version }, 409);
@@ -1118,7 +1119,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       assert.deepEqual(await admin('events'), previousEvents);
     }
     for (const uploadTypes of [
-      {}, { claude: ['.pdf'] }, { chatgpt: [null] }, { chatgpt: '.pdf' }, { chatgpt: ['   '] },
+      {}, { copilot: ['.pdf'] }, { claude: ['*.pdf'] }, { chatgpt: [null] }, { chatgpt: '.pdf' }, { chatgpt: ['   '] },
       { chatgpt: ['*.pdf'] }, { chatgpt: ['foo/bar*'] }, { chatgpt: ['.foo/bar'] },
       { chatgpt: ['.' + 'x'.repeat(64)] }, { gemini: Array.from({ length: 26 }, (_, index) => `.ext${index}`) },
     ]) await publish({ uploadTypes }, 400);
@@ -2608,7 +2609,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await send(initial, {}, 400);
     await post('policies', { fileInspection: {} }, { expect: 400 });
     await post('policies', { fileInspection: { chatgpt: 'block' } }, { expect: 400 });
-    await post('policies', { fileInspection: { claude: true } }, { expect: 400 });
+    await post('policies', { fileInspection: { copilot: true } }, { expect: 400 });
     const draft = await post('policies', { mode: 'block', githubPatMode: 'warn', privateKeyMode: 'block', fileInspection: { chatgpt: true } });
     const legacy = await fetchPolicy({ fileInspectionAware: false });
     assert.deepEqual(legacy.fileInspection, off);
@@ -2661,7 +2662,8 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
     const [initial] = await admin('policies');
     await post('policies', { fileContentModes: { chatgpt: 'warn' } }, { expect: 400 });
-    await post('policies', { fileContentModes: { claude: 'block' } }, { expect: 400 });
+    await post('policies', { fileContentModes: { copilot: 'block' } }, { expect: 400 });
+    await post('policies', { fileContentModes: { claude: 'warn' } }, { expect: 400 });
     await post('policies', { fileContentModes: {} }, { expect: 400 });
     const oldSetting = await post('policies', { fileInspection: { gemini: true } });
     assert.deepEqual(oldSetting.fileContentModes, { chatgpt: 'off', gemini: 'monitor' });
@@ -2723,7 +2725,21 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual(approved.fileContentModes, { chatgpt: 'monitor', gemini: 'block' });
     assert.deepEqual((await admin(groupPath))[0].fileContentModes, approved.fileContentModes);
     assert.deepEqual((await admin('policies'))[0].fileContentModes, compatible.fileContentModes);
+    const claudeDraft = await post(groupPath, { claudePromptEnabled: true, expectedVersion: approved.version,
+      uploadModes: { claude: 'monitor' }, uploadTypes: { claude: ['.PDF'] }, fileContentModes: { claude: 'block' } },
+    { token: applicants[0].token, expectReview: true, expect: 202 });
+    const claudeReview = (await admin('policy-reviews')).entries.find(({ id }) => id === claudeDraft.reviewId);
+    const draftPolicy = claudeReview.snapshots.candidate;
+    assert.deepEqual([draftPolicy.uploadModes.claude, draftPolicy.uploadTypes.claude, draftPolicy.fileContentModes.claude],
+      ['monitor', ['.pdf'], 'block']);
+    assert.equal((await admin(groupPath))[0].version, approved.version);
+    const claudeApproved = await post(`policy-reviews/${claudeDraft.reviewId}/decision`, { approve: true }, { token: applicants[1].token });
+    assert.deepEqual(claudeApproved.fileContentModes, { ...approved.fileContentModes, claude: 'block' });
     await post('policy-reviews/setting', { required: false }, { expect: 204 });
+    const cleared = await post(groupPath, { uploadModes: { claude: 'off' }, uploadTypes: { claude: [] },
+      fileContentModes: { claude: 'off' }, expectedVersion: claudeApproved.version });
+    assert.deepEqual(cleared.fileContentModes, approved.fileContentModes);
+    assert.deepEqual((await admin(groupPath))[0], cleared);
     assert.deepEqual((await post(`policies/${block.version}/restore`)).fileContentModes, block.fileContentModes);
     assert.deepEqual((await post(`policies/${initial.version}/restore`)).fileContentModes, initial.fileContentModes);
   });

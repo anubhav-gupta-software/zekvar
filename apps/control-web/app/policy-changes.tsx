@@ -39,12 +39,12 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     ...aiPromptApps.map((app) => [`${promptAppLabels[app]} prompt mode`, promptModeLabel(reference.promptAppModes?.[app]),
       promptModeLabel(candidate.promptAppModes?.[app])]),
     ['Clipboard paste protection', detectorModeLabels[reference.clipboardMode ?? 'off'], detectorModeLabels[candidate.clipboardMode ?? 'off']],
-    ...uploadApps.map((app) => [`${promptAppLabels[app]} file uploads`, detectorModeLabels[reference.uploadModes[app]],
-      detectorModeLabels[candidate.uploadModes[app]]]),
+    ...uploadApps.map((app) => [`${promptAppLabels[app]} file uploads`, detectorModeLabels[reference.uploadModes[app] ?? 'off'],
+      detectorModeLabels[candidate.uploadModes[app] ?? 'off']]),
     ...uploadApps.map((app) => [`${promptAppLabels[app]} file content protection`, detectorModeLabels[fileContentMode(reference, app)],
       detectorModeLabels[fileContentMode(candidate, app)]]),
-    ...uploadApps.map((app) => [`${promptAppLabels[app]} file types`, reference.uploadTypes[app].join(', ') || 'All files',
-      candidate.uploadTypes[app].join(', ') || 'All files']),
+    ...uploadApps.map((app) => [`${promptAppLabels[app]} file types`, reference.uploadTypes[app]?.join(', ') || 'All files',
+      candidate.uploadTypes[app]?.join(', ') || 'All files']),
   ];
   return <ul className="preview-changes" aria-label="Policy setting changes">
     {fields.filter(([, before, after]) => before !== after).map(([field, before, after]) =>

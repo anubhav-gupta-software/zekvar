@@ -3,7 +3,7 @@ import { clipboardTextLimit } from '../../../contracts/policy/clipboard';
 import { parseWebAddress } from '../../../contracts/policy/domains';
 import { modes, testMarker } from '../../../contracts/policy/prompt';
 import { exceptionDecision } from '../../../contracts/policy/prompt-exceptions';
-import type { UploadApp, UploadFile } from '../../../contracts/policy/uploads';
+import { isUploadApp, type UploadApp, type UploadFile } from '../../../contracts/policy/uploads';
 import { clipboardOutcome, fileInspectionOutcome, navigationOutcome, promptOutcome,
   type PreviewDecision, type PreviewPolicy, type PreviewSnapshot } from './preview';
 
@@ -68,7 +68,7 @@ function readTestCase(value: unknown): TestCase | undefined {
   }
   if (expect !== exceptionDecision && expect !== 'warn' && hasOnly(value, [...fields, 'app', 'text', ...(kind === 'upload' ? ['file'] : [])])) {
     if (kind === 'clipboard') return { id, expect, kind, app, text };
-    if (kind === 'upload' && (app === chatGptApp || app === geminiApp) && record(file) && hasOnly(file, ['name', 'type']) &&
+    if (kind === 'upload' && isUploadApp(app) && record(file) && hasOnly(file, ['name', 'type']) &&
         isText(file.name, 255) && file.name.trim() && isText(file.type, 128)) {
       return { id, expect, kind, app, file: { name: file.name, type: file.type }, text };
     }

@@ -1,6 +1,6 @@
 # Zekvar Browser and Control demo
 
-Zekvar Browser enforces domain rules, evaluates prompts locally, and controls native file intake on supported ChatGPT and Gemini routes. It also supports the loopback prompt fixture and opt-in experimental Claude text protection. Managed browsers send decision metadata to Control and can report visits to cataloged apps when discovery is enabled.
+Zekvar Browser enforces domain rules, evaluates prompts locally, and controls native file intake on supported ChatGPT and Gemini routes. It also supports the loopback prompt fixture and opt-in experimental Claude prompt and attachment protection. Managed browsers send decision metadata to Control and can report visits to cataloged apps when discovery is enabled.
 
 For the [TLS pilot](../../deploy/pilot/README.md#build-and-enroll-browser), build v0.18.0 or later with a fixed HTTPS browser API origin. Managed enrollment includes that origin and its short-lived grant. A change of origin clears the previous enrollment, queued data, and cached enforcement before enrollment at the new destination.
 
@@ -56,7 +56,9 @@ The adapter matches a single visible text editor and Send control in the same Ge
 2. On an authorized Claude account, try `ZEKVAR_TEST_SECRET` in a fresh chat and an existing chat. Check **Claude composer** in Browser health and filter Security events to Claude. Use **Copy composer diagnostics** if the banner reports an unsupported layout. The diagnostics include structure and route type.
 3. After confirming the layout and Monitor events, use the same synthetic marker to check **Warn** and **Block**, including click, Enter, and the separate Send after reviewing a redaction.
 
-The pilot recognizes a visible ProseMirror editor paired with one visible Send control in a marked composer on `/new` or `/chat/<conversation-id>`. The automated suite covers two controlled composer layouts, typed and pasted text on Send, warnings, redaction, and temporary exceptions. Signed-in Claude is pending live verification. Claude file attachments, voice, and other app surfaces have separate coverage requirements. [Claude web chat and sign-in](https://support.claude.com/en/articles/8114491-get-started-with-claude)
+The pilot recognizes a visible ProseMirror editor paired with one visible Send control in a marked composer on `/new` or `/chat/<conversation-id>`. The automated suite covers two controlled composer layouts, typed and pasted text on Send, warnings, redaction, and temporary exceptions. Signed-in Claude and voice remain open. [Claude web chat and sign-in](https://support.claude.com/en/articles/8114491-get-started-with-claude)
+
+Browser v0.40.0 adds Claude file protection on those chat routes. In Control's test rollout group, enable **Claude prompt protection**, then set **Claude file uploads** or **Claude file content protection**. Start in **Monitor** and attach a file with a synthetic marker. Confirm the file reaches the chat and the **Claude** event lists the detector and intake method. When switching to **Block**, repeat the test with both synthetic sensitive and clean files using the picker, drag and drop, or a pasted image. The controlled Chrome lab exercised those intake methods. Verify the signed-in handoff with an authorized test account before using Block in a partner fleet. Project files, connector transfers, and programmatic uploads need separate tests. [Claude attachment methods](https://support.claude.com/en/articles/8241126-upload-files-to-claude)
 
 ## Test prompt modes by AI app
 

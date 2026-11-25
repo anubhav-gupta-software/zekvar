@@ -58,12 +58,12 @@ internal static class FixtureContract
             return IsAiPromptApp(request.AppId) && request.UploadMethod is null && request.Decision is "monitor" or "block" &&
                 (promptRule || (request.RuleId == ClipboardUnavailableRule && request.DetectorCategory == ClipboardCategory && request.Decision == "block"));
         if (request.RuleId is UploadRule or FileInspectionUnavailableRule)
-            return request.AppId is ChatGpt or Gemini && request.DetectorCategory == UploadCategory &&
+            return IsAiPromptApp(request.AppId) && request.DetectorCategory == UploadCategory &&
                 (request.Decision == "block" || request.RuleId == UploadRule && request.Decision == "monitor") &&
                 request.UploadMethod is "picker" or "drop" or "paste";
         return promptRule && (request.Decision != ExceptionApplied || request.AppId != AppId) &&
             (request.UploadMethod is null && IsDecision(request.Decision) ||
-                request.AppId is ChatGpt or Gemini && request.UploadMethod is "picker" or "drop" or "paste" && request.Decision is "monitor" or "block");
+                IsAiPromptApp(request.AppId) && request.UploadMethod is "picker" or "drop" or "paste" && request.Decision is "monitor" or "block");
     }
 }
 
@@ -111,14 +111,17 @@ internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode 
     string[]? BlockedAiAppHosts = null, UploadModes? FileContentModes = null, IdentifierProtection? IdentifierProtection = null,
     bool? PresetDiscoveryEnabled = null, string? SsnMode = null, BrowserHardening? BrowserHardening = null, string? ClipboardMode = null,
     string? GithubTokenMode = null, PromptAppModes? PromptAppModes = null, string[]? RequireComposerReady = null);
-internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null)
+internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Claude = null)
 {
-    public bool HasSettings() => Chatgpt is not null || Gemini is not null;
-    public bool IsValid() => (Chatgpt is null or "off" or "monitor" or "block") && (Gemini is null or "off" or "monitor" or "block");
+    public bool HasSettings() => Chatgpt is not null || Gemini is not null || Claude is not null;
+    public bool IsValid() => Valid(Chatgpt) && Valid(Gemini) && Valid(Claude);
+    private static bool Valid(string? value) => value is null or "off" or "monitor" or "block";
 }
-internal sealed record FileInspection(bool? Chatgpt = null, bool? Gemini = null)
+internal sealed record FileInspection(bool? Chatgpt = null, bool? Gemini = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? Claude = null)
 {
-    public bool HasSettings() => Chatgpt.HasValue || Gemini.HasValue;
+    public bool HasSettings() => Chatgpt.HasValue || Gemini.HasValue || Claude.HasValue;
 }
 internal sealed record RedeemGrant(string Grant);
 internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = null, bool DomainRulesApplied = false,
@@ -126,11 +129,13 @@ internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = nu
     bool PathRulesApplied = false, bool UploadTypesApplied = false, bool CustomDiscoveryApplied = false,
     bool PromptExceptionsApplied = false, string? ClaudeCoverage = null, bool ClaudePromptApplied = false, bool PrivateKeyModeApplied = false,
     bool FileInspectionApplied = false, bool AiAppAccessApplied = false, bool FileContentBlockApplied = false, bool IdentifiersApplied = false,
-    bool SsnModeApplied = false, bool ClipboardModeApplied = false, bool GithubTokenModeApplied = false, bool PromptAppModesApplied = false)
+    bool SsnModeApplied = false, bool ClipboardModeApplied = false, bool GithubTokenModeApplied = false, bool PromptAppModesApplied = false,
+    bool ClaudeFilesApplied = false)
 {
     public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported") &&
         (GeminiCoverage is null or "ready" or "unsupported") &&
-        (ClaudeCoverage is null or "ready" or "unsupported") && (!FileContentBlockApplied || FileInspectionApplied);
+        (ClaudeCoverage is null or "ready" or "unsupported") && (!FileContentBlockApplied || FileInspectionApplied) &&
+        (!ClaudeFilesApplied || ClaudePromptApplied);
 }
 internal sealed record PolicyEvent(Guid EventId, string AppId, DateTimeOffset Timestamp, string RuleId,
     string DetectorCategory, int PolicyVersion, string Decision, int AssignmentVersion = 0, string? UploadMethod = null, bool ClipboardPaste = false);
@@ -167,7 +172,8 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     public string DetectorCategory => FixtureContract.DetectorCategory;
 
     public UploadModes EffectiveFileContentModes() => FileContentModes ??
-        new(FileInspection?.Chatgpt == true ? "monitor" : "off", FileInspection?.Gemini == true ? "monitor" : "off");
+        new(FileInspection?.Chatgpt == true ? "monitor" : "off", FileInspection?.Gemini == true ? "monitor" : "off",
+            FileInspection?.Claude == true ? "monitor" : null);
 
     public string? PromptModeForApp(string appId, string ruleId, bool appModesAware = true)
     {
@@ -187,12 +193,13 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
 
     public Policy ForBrowser(bool claudeAware, bool privateKeyAware, bool fileInspectionAware, bool aiAppAccessAware,
         bool fileBlockAware, bool identifiersAware, bool presetDiscoveryAware, bool ssnAware, bool clipboardAware, bool githubTokenAware,
-        bool promptAppModesAware)
+        bool promptAppModesAware, bool claudeFilesAware)
     {
         var now = DateTimeOffset.UtcNow;
         var nowMs = now.ToUnixTimeMilliseconds();
         var claudeEnabled = claudeAware && ClaudePromptEnabled;
         var content = EffectiveFileContentModes();
+        var claudeFiles = claudeEnabled && claudeFilesAware;
         var exceptions = PromptExceptions?.Where(entry => (entry.AppId != FixtureContract.Claude || claudeEnabled) &&
             (entry.RuleId != FixtureContract.PrivateKeyRule || privateKeyAware) &&
             (entry.RuleId != FixtureContract.OrganizationIdentifierRule || identifiersAware) &&
@@ -207,8 +214,11 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
             ClaudePromptEnabled = claudeEnabled,
             PrivateKeyMode = privateKeyAware ? PrivateKeyMode : "off",
             FileInspection = new(fileInspectionAware && (content.Chatgpt == "monitor" || fileBlockAware && content.Chatgpt == "block"),
-                fileInspectionAware && (content.Gemini == "monitor" || fileBlockAware && content.Gemini == "block")),
-            FileContentModes = fileBlockAware ? content : null,
+                fileInspectionAware && (content.Gemini == "monitor" || fileBlockAware && content.Gemini == "block"),
+                claudeFiles ? content.Claude is "monitor" or "block" : null),
+            FileContentModes = fileBlockAware ? content with { Claude = claudeFiles ? content.Claude ?? "off" : null } : null,
+            UploadModes = UploadModes with { Claude = claudeFiles ? UploadModes.Claude ?? "off" : null },
+            UploadTypes = UploadTypes is null ? null : UploadTypes with { Claude = claudeFiles ? UploadTypes.Claude : null },
             IdentifierProtection = identifiersAware ? IdentifierProtection : null,
             PresetDiscoveryEnabled = presetDiscoveryAware && DiscoveryEnabled ? PresetDiscoveryEnabled : null,
             SsnMode = ssnAware ? SsnMode : null,
@@ -223,13 +233,15 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
         };
         var chatgpt = UploadFilter.From(UploadModes.Chatgpt, UploadTypes?.Chatgpt);
         var gemini = UploadFilter.From(UploadModes.Gemini, UploadTypes?.Gemini);
-        if (chatgpt is null && gemini is null) return browser;
+        var claude = claudeFiles ? UploadFilter.From(UploadModes.Claude, UploadTypes?.Claude) : null;
+        if (chatgpt is null && gemini is null && claude is null) return browser;
         // Older clients receive Off for the scoped destinations and keep their other controls.
         return browser with
         {
             UploadTypes = null,
-            UploadModes = new(chatgpt is null ? UploadModes.Chatgpt : "off", gemini is null ? UploadModes.Gemini : "off"),
-            TargetedUploads = new(chatgpt, gemini)
+            UploadModes = new(chatgpt is null ? UploadModes.Chatgpt : "off", gemini is null ? UploadModes.Gemini : "off",
+                claude is null ? browser.UploadModes.Claude : "off"),
+            TargetedUploads = new(chatgpt, gemini, claude)
         };
     }
 }

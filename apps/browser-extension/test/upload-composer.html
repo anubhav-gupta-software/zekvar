@@ -15,6 +15,11 @@
   </input-area-v2>
   <div id="drop-zone" style="width:300px;height:90px;border:1px solid">Drop fixture files</div>
   <script>
+    if (location.hostname === 'claude.ai') {
+      document.querySelector('#drop-zone').insertAdjacentHTML('afterend',
+        '<div data-testid="chat-input"><div class="ProseMirror" contenteditable="true" role="textbox" aria-label="Claude fixture prompt">Draft</div>' +
+        '<button type="button" aria-label="Send message">Fixture Claude send</button></div>');
+    }
     window.fileEvents = [];
     const field = document.querySelector('input[type=file]');
     function take(files) {

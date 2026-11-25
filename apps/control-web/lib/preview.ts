@@ -4,7 +4,7 @@ import { fixtureRule, ruleLabels, sameIdentifierProtection, testMarker,
   type DetectorMode, type IdentifierProtection, type PolicyMode } from '../../../contracts/policy/prompt';
 import { chatGptApp, claudeApp, promptAppLabels, type AiPromptApp } from '../../../contracts/policy/apps';
 import { evaluateFileInspection, fileInspectionDetectors } from '../../../contracts/policy/file-inspection';
-import { allUploadTypes, fileContentMode, matchesUploadType, sameUploadTypes, uploadApps, uploadsOff, type UploadFile, type UploadMode,
+import { allUploadTypes, fileContentMode, matchesUploadType, sameUploadTypes, uploadApps, uploadsOff, type UploadApp, type UploadFile,
   type FileInspection, type UploadModes, type UploadTypes } from '../../../contracts/policy/uploads';
 import type { Policy } from './control';
 import { sameCustomApps, type CustomAppSetting } from '../../../contracts/policy/discovery';
@@ -81,7 +81,8 @@ export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
     hardeningDifferences(a.browserHardening, b.browserHardening).length === 0 &&
     (a.blockedAiAppHosts ?? []).join(',') === (b.blockedAiAppHosts ?? []).join(',') &&
     a.claudePromptEnabled === b.claudePromptEnabled &&
-    uploadApps.every((app) => a.uploadModes[app] === b.uploadModes[app] && sameUploadTypes(a.uploadTypes[app], b.uploadTypes[app]) &&
+    uploadApps.every((app) => (a.uploadModes[app] ?? 'off') === (b.uploadModes[app] ?? 'off') &&
+      sameUploadTypes(a.uploadTypes[app] ?? [], b.uploadTypes[app] ?? []) &&
       fileContentMode(a, app) === fileContentMode(b, app)) &&
     sameCustomApps(a.customApps, b.customApps) && samePromptExceptions(a.promptExceptions, b.promptExceptions) &&
     sameDomainRules(a.domainRules, b.domainRules) && sameDomainRules(a.pathRules, b.pathRules);
@@ -135,13 +136,17 @@ export function clipboardOutcome(text: string | undefined, policy: PreviewPolicy
   return result ? { action: result.decision, rule: result.ruleId === fixtureRule ? 'Test marker' : decisionRuleLabels[result.ruleId] } : { action: 'allow' };
 }
 
-function uploadOutcome(mode: UploadMode, types: string[], file: UploadFile): PreviewDecision {
+function uploadOutcome(policy: PreviewPolicy, app: UploadApp, file: UploadFile): PreviewDecision {
+  if (app === claudeApp && !policy.claudePromptEnabled) return { action: 'allow' };
+  const mode = policy.uploadModes[app] ?? 'off';
+  const types = policy.uploadTypes[app] ?? [];
   if (mode === 'off' || (types.length && !matchesUploadType(file, types))) return { action: 'allow' };
   return { action: mode, rule: 'File upload policy' };
 }
 
-export function fileInspectionOutcome(policy: PreviewPolicy, app: typeof uploadApps[number], file: UploadFile, text?: string): PreviewDecision {
-  const beforeInspection = uploadOutcome(policy.uploadModes[app], policy.uploadTypes[app], file);
+export function fileInspectionOutcome(policy: PreviewPolicy, app: UploadApp, file: UploadFile, text?: string): PreviewDecision {
+  if (app === claudeApp && !policy.claudePromptEnabled) return { action: 'allow' };
+  const beforeInspection = uploadOutcome(policy, app, file);
   if (beforeInspection.action === 'block') return beforeInspection;
   const mode = fileContentMode(policy, app);
   if (mode === 'off') return beforeInspection;
@@ -184,6 +189,7 @@ export function runComparison(reference: PreviewSnapshot, candidate: PreviewPoli
   }
   if (address) rows.push({ name: 'Custom navigation', current: navigationOutcome(address, reference), draft: navigationOutcome(address, candidate) });
   for (const app of uploadApps) {
+    if (app === claudeApp && !reference.claudePromptEnabled && !candidate.claudePromptEnabled) continue;
     if (reference.fileInspection !== undefined || candidate.fileInspection !== undefined || candidate.fileContentModes) {
       const textFile = { name: 'synthetic.txt', type: 'text/plain' };
       const samples = [{ name: 'synthetic text file', file: textFile, text: testMarker },
@@ -205,8 +211,7 @@ export function runComparison(reference: PreviewSnapshot, candidate: PreviewPoli
     ] as const) {
       if (!sample) continue;
       rows.push({ name: `${promptAppLabels[app]} ${name}`,
-        current: uploadOutcome(reference.uploadModes[app], reference.uploadTypes[app], sample),
-        draft: uploadOutcome(candidate.uploadModes[app], candidate.uploadTypes[app], sample) });
+        current: uploadOutcome(reference, app, sample), draft: uploadOutcome(candidate, app, sample) });
     }
   }
   return { reference, candidate, rows };

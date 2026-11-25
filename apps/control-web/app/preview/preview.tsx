@@ -47,7 +47,8 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
     uploadModes: snapshot.uploadModes,
     fileInspection: snapshot.fileInspection,
     fileContentModes: snapshot.fileContentModes,
-    uploadTypeText: { chatgpt: snapshot.uploadTypes.chatgpt.join(', '), gemini: snapshot.uploadTypes.gemini.join(', ') },
+    uploadTypeText: { chatgpt: snapshot.uploadTypes.chatgpt.join(', '), gemini: snapshot.uploadTypes.gemini.join(', '),
+      claude: snapshot.uploadTypes.claude?.join(', ') ?? '' },
     catalog: snapshot.customApps.map(({ host, name }) => `${host}, ${name}`).join('\n'),
     promptExceptions: snapshot.promptExceptions.map((entry) => ({ ...entry, expiresAt: new Date(entry.expiresAt).toISOString().slice(0, -1) })),
     allow: snapshot.domainRules.allow.join('\n'), block: snapshot.domainRules.block.join('\n'),
@@ -109,7 +110,8 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
     }
     const chatgpt = parseUploadTypes(editor.uploadTypeText.chatgpt);
     const gemini = parseUploadTypes(editor.uploadTypeText.gemini);
-    if (!chatgpt || !gemini) {
+    const claude = parseUploadTypes(editor.uploadTypeText.claude);
+    if (!chatgpt || !gemini || !claude) {
       setError(uploadTypesError);
       return;
     }
@@ -158,7 +160,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
       browserHardening: reference.browserHardening,
       blockedAiAppHosts: editor.blockedAiAppHosts,
       claudePromptEnabled: editor.claudePromptEnabled, domainRules, pathRules,
-      uploadModes: editor.uploadModes, uploadTypes: { chatgpt, gemini }, fileInspection: editor.fileInspection,
+      uploadModes: editor.uploadModes, uploadTypes: { chatgpt, gemini, claude }, fileInspection: editor.fileInspection,
       fileContentModes: editor.fileContentModes, customApps, promptExceptions,
     };
     setResult({
@@ -255,7 +257,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
         </div>
         {uploadApps.map((app) => <div className="grid gap-1" key={app}>
           <label htmlFor={`draft-upload-${app}`}>Draft {promptAppLabels[app]} file uploads</label>
-          <select id={`draft-upload-${app}`} value={editor.uploadModes[app]}
+          <select id={`draft-upload-${app}`} value={editor.uploadModes[app] ?? 'off'}
             onChange={(event) => edit('uploadModes', { ...editor.uploadModes, [app]: event.target.value as UploadMode })}>
             {uploadModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
           </select>
@@ -265,7 +267,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
             maxLength={1700} spellCheck={false} autoCapitalize="none" autoComplete="off" aria-describedby="draft-upload-types-hint" />
           {editor.fileContentModes ? <>
             <label htmlFor={`draft-file-content-${app}`}>Draft {promptAppLabels[app]} file content protection</label>
-            <select id={`draft-file-content-${app}`} value={editor.fileContentModes[app]} aria-describedby="draft-file-content-hint"
+            <select id={`draft-file-content-${app}`} value={editor.fileContentModes[app] ?? 'off'} aria-describedby="draft-file-content-hint"
               onChange={(event) => {
                 if (editor.fileContentModes) edit('fileContentModes', { ...editor.fileContentModes, [app]: event.target.value as UploadMode });
               }}>
@@ -283,6 +285,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
         </div>)}
       </div>
       <p className="muted" id="draft-upload-types-hint">{uploadTypesHint}</p>
+      <p className="muted">Claude attachment rules apply when experimental Claude prompt protection is enabled.</p>
       {editor.fileContentModes && <p className="muted" id="draft-file-content-hint">
         Block holds the batch and stops uploads with a sensitive match or an incomplete check.
       </p>}
@@ -475,10 +478,10 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         <input type="hidden" name="promptExceptions" value={JSON.stringify(candidate.promptExceptions)} />
         <input type="hidden" name="extensionInventoryEnabled" value={candidate.extensionInventoryEnabled ? 'on' : 'off'} />
         <input type="hidden" name="claudePromptEnabled" value={candidate.claudePromptEnabled ? 'on' : 'off'} />
-        {uploadApps.map((app) => <input key={app} type="hidden" name={`upload-${app}`} value={candidate.uploadModes[app]} />)}
-        {uploadApps.map((app) => <input key={app} type="hidden" name={`upload-types-${app}`} value={candidate.uploadTypes[app].join(', ')} />)}
+        {uploadApps.map((app) => <input key={app} type="hidden" name={`upload-${app}`} value={candidate.uploadModes[app] ?? 'off'} />)}
+        {uploadApps.map((app) => <input key={app} type="hidden" name={`upload-types-${app}`} value={candidate.uploadTypes[app]?.join(', ') ?? ''} />)}
         {candidate.fileContentModes ? uploadApps.map((app) => <input key={app} type="hidden" name={`file-content-${app}`}
-          value={candidate.fileContentModes?.[app]} />) : candidate.fileInspection &&
+          value={candidate.fileContentModes?.[app] ?? 'off'} />) : candidate.fileInspection &&
           uploadApps.map((app) => <input key={app} type="hidden" name={`file-inspection-${app}`}
           value={candidate.fileInspection?.[app] ? 'on' : 'off'} />)}
         <input type="hidden" name="allow" value={candidate.domainRules.allow.join('\n')} />

@@ -246,7 +246,8 @@ internal sealed partial class ControlStore
                 p.allowed_paths, p.blocked_paths, p.extension_inventory_enabled, p.chatgpt_upload_types, p.gemini_upload_types,
                 p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, p.private_key_mode, p.chatgpt_file_inspection, p.gemini_file_inspection,
                 p.blocked_ai_app_hosts, p.chatgpt_file_content_block, p.gemini_file_content_block, p.identifier_protection, p.extension_deployment,
-                p.preset_discovery_enabled, p.ssn_mode, p.browser_hardening, p.clipboard_mode, p.github_token_mode, p.prompt_app_modes
+                p.preset_discovery_enabled, p.ssn_mode, p.browser_hardening, p.clipboard_mode, p.github_token_mode, p.prompt_app_modes,
+                p.claude_upload_mode, p.claude_upload_types, p.claude_file_content_mode
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.version = $2 AND (NOT $3 OR p.policy_group_id IS NOT DISTINCT FROM $4::uuid)
             """, transaction.Connection, transaction);
@@ -266,8 +267,10 @@ internal sealed partial class ControlStore
         PromptExceptions = promptExceptions ?? current.PromptExceptions,
         DomainRules = request.DomainRules ?? current.DomainRules,
         PaymentCardMode = request.PaymentCardMode ?? current.PaymentCardMode,
-        UploadModes = new(request.UploadModes?.Chatgpt ?? current.UploadModes.Chatgpt, request.UploadModes?.Gemini ?? current.UploadModes.Gemini),
-        UploadTypes = new(request.UploadTypes?.Chatgpt ?? current.UploadTypes?.Chatgpt, request.UploadTypes?.Gemini ?? current.UploadTypes?.Gemini),
+        UploadModes = new(request.UploadModes?.Chatgpt ?? current.UploadModes.Chatgpt, request.UploadModes?.Gemini ?? current.UploadModes.Gemini,
+            ConfiguredUploadMode(request.UploadModes?.Claude ?? current.UploadModes.Claude ?? "off")),
+        UploadTypes = new(request.UploadTypes?.Chatgpt ?? current.UploadTypes?.Chatgpt, request.UploadTypes?.Gemini ?? current.UploadTypes?.Gemini,
+            ConfiguredUploadTypes(request.UploadTypes?.Claude ?? current.UploadTypes?.Claude ?? [])),
         PathRules = request.PathRules ?? current.PathRules,
         ExtensionInventoryEnabled = request.ExtensionInventoryEnabled ?? current.ExtensionInventoryEnabled,
         ClaudePromptEnabled = request.ClaudePromptEnabled ?? current.ClaudePromptEnabled,
@@ -282,7 +285,9 @@ internal sealed partial class ControlStore
         BlockedAiAppHosts = request.BlockedAiAppHosts ?? current.BlockedAiAppHosts,
         FileContentModes = new(
             ResolveFileContentMode(request.FileContentModes?.Chatgpt, request.FileInspection?.Chatgpt, current.EffectiveFileContentModes().Chatgpt!),
-            ResolveFileContentMode(request.FileContentModes?.Gemini, request.FileInspection?.Gemini, current.EffectiveFileContentModes().Gemini!))
+            ResolveFileContentMode(request.FileContentModes?.Gemini, request.FileInspection?.Gemini, current.EffectiveFileContentModes().Gemini!),
+            ConfiguredUploadMode(ResolveFileContentMode(request.FileContentModes?.Claude, request.FileInspection?.Claude,
+                current.EffectiveFileContentModes().Claude ?? "off")))
     };
 
     private static string ResolveFileContentMode(string? requested, bool? legacy, string current) => requested ?? (legacy switch
@@ -309,9 +314,9 @@ internal sealed partial class ControlStore
                     extension_inventory_enabled, chatgpt_upload_types, gemini_upload_types, custom_apps, prompt_exceptions, claude_prompt_enabled,
                     private_key_mode, chatgpt_file_inspection, gemini_file_inspection, extension_deployment, blocked_ai_app_hosts,
                     chatgpt_file_content_block, gemini_file_content_block, identifier_protection, preset_discovery_enabled, ssn_mode,
-                    browser_hardening, clipboard_mode, github_token_mode, prompt_app_modes)
+                    browser_hardening, clipboard_mode, github_token_mode, prompt_app_modes, claude_upload_mode, claude_upload_types, claude_file_content_mode)
                 SELECT id, policy_sequence, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $16, $17, $18, $19::jsonb, $20::jsonb,
-                    $21, $22, $23, $24, $25::jsonb, $26, $27, $28, $29::jsonb, $30, $31, $32::jsonb, $33, $34, $35::jsonb
+                    $21, $22, $23, $24, $25::jsonb, $26, $27, $28, $29::jsonb, $30, $31, $32::jsonb, $33, $34, $35::jsonb, $37, $38, $39
                 FROM next_version
                 RETURNING organization_id, version, published_at
             ), group_pointer AS (
@@ -341,12 +346,16 @@ internal sealed partial class ControlStore
             policy.PresetDiscoveryEnabled ?? false, policy.SsnMode ?? "off",
             JsonSerializer.Serialize(policy.BrowserHardening ?? BrowserHardening.Empty, JsonSerializerOptions.Web), policy.ClipboardMode ?? "off",
             policy.GithubTokenMode ?? "off", JsonSerializer.Serialize(policy.PromptAppModes ?? new(), JsonSerializerOptions.Web),
-            composerGate is null ? DBNull.Value : JsonSerializer.Serialize(composerGate, JsonSerializerOptions.Web));
+            composerGate is null ? DBNull.Value : JsonSerializer.Serialize(composerGate, JsonSerializerOptions.Web),
+            policy.UploadModes.Claude ?? "off", policy.UploadTypes?.Claude ?? [], content.Claude ?? "off");
         await using var rows = await command.ExecuteReaderAsync(ct);
         await rows.ReadAsync(ct);
         return policy with { Version = rows.GetInt32(0), PublishedAt = rows.GetDateTime(1), RestoredFrom = restoredFrom,
-            UploadTypes = new(policy.UploadTypes?.Chatgpt ?? [], policy.UploadTypes?.Gemini ?? []), CustomApps = policy.CustomApps ?? [],
-            PromptExceptions = policy.PromptExceptions ?? [], FileInspection = new(inspectChatgpt, inspectGemini), FileContentModes = content,
+            UploadModes = policy.UploadModes with { Claude = ConfiguredUploadMode(policy.UploadModes.Claude ?? "off") },
+            UploadTypes = new(policy.UploadTypes?.Chatgpt ?? [], policy.UploadTypes?.Gemini ?? [], ConfiguredUploadTypes(policy.UploadTypes?.Claude ?? [])),
+            CustomApps = policy.CustomApps ?? [], PromptExceptions = policy.PromptExceptions ?? [],
+            FileInspection = new(inspectChatgpt, inspectGemini, content.Claude is "monitor" or "block" ? true : null),
+            FileContentModes = content with { Claude = ConfiguredUploadMode(content.Claude ?? "off") },
             IdentifierProtection = policy.IdentifierProtection ?? IdentifierProtection.Disabled, PresetDiscoveryEnabled = policy.PresetDiscoveryEnabled ?? false,
             SsnMode = policy.SsnMode ?? "off",
             BrowserHardening = policy.BrowserHardening ?? BrowserHardening.Empty,

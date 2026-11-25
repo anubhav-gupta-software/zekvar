@@ -1,15 +1,17 @@
-import { chatGptApp, geminiApp } from './apps';
+import { chatGptApp, claudeApp, geminiApp } from './apps';
 
 export const uploadModes = ['off', 'monitor', 'block'] as const;
 export type UploadMode = typeof uploadModes[number];
 export type UploadDecision = Exclude<UploadMode, 'off'>;
-export const uploadApps = [chatGptApp, geminiApp] as const;
+export const legacyUploadApps = [chatGptApp, geminiApp] as const;
+export const uploadApps = [...legacyUploadApps, claudeApp] as const;
 export type UploadApp = typeof uploadApps[number];
-export const isUploadApp = (app: unknown): app is UploadApp => app === chatGptApp || app === geminiApp;
-export type UploadModes = Record<UploadApp, UploadMode>;
-export type FileInspection = Record<UploadApp, boolean>;
+export const isUploadApp = (app: unknown): app is UploadApp => app === chatGptApp || app === geminiApp || app === claudeApp;
+type UploadSettings<T> = Record<typeof legacyUploadApps[number], T> & { claude?: T };
+export type UploadModes = UploadSettings<UploadMode>;
+export type FileInspection = UploadSettings<boolean>;
 export const uploadsOff: UploadModes = { chatgpt: 'off', gemini: 'off' };
-export type UploadTypes = Record<UploadApp, string[]>;
+export type UploadTypes = UploadSettings<string[]>;
 export const allUploadTypes: UploadTypes = { chatgpt: [], gemini: [] };
 export type UploadFile = { name: string; type: string };
 export type UploadFilter = { mode: UploadDecision; types: string[] };
@@ -59,7 +61,8 @@ export type UploadMetadata = { ruleId: typeof uploadRule | typeof fileInspection
   detectorCategory: typeof uploadCategory; uploadMethod: UploadMethod };
 
 export function fileContentMode(policy: { fileContentModes?: UploadModes; fileInspection?: FileInspection } | undefined, app: UploadApp): UploadMode {
-  return policy?.fileContentModes?.[app] ?? (policy?.fileInspection?.[app] ? 'monitor' : 'off');
+  if (policy?.fileContentModes) return policy.fileContentModes[app] ?? 'off';
+  return policy?.fileInspection?.[app] ? 'monitor' : 'off';
 }
 
 export function isUploadMode(value: unknown): value is UploadMode {
@@ -68,12 +71,14 @@ export function isUploadMode(value: unknown): value is UploadMode {
 
 export function isUploadModes(value: unknown): value is UploadModes {
   return typeof value === 'object' && value !== null && 'chatgpt' in value && 'gemini' in value &&
-    isUploadMode(value.chatgpt) && isUploadMode(value.gemini);
+    isUploadMode(value.chatgpt) && isUploadMode(value.gemini) &&
+    (!('claude' in value) || isUploadMode(value.claude));
 }
 
 export function isFileInspection(value: unknown): value is FileInspection {
   return typeof value === 'object' && value !== null && 'chatgpt' in value && 'gemini' in value &&
-    typeof value.chatgpt === 'boolean' && typeof value.gemini === 'boolean';
+    typeof value.chatgpt === 'boolean' && typeof value.gemini === 'boolean' &&
+    (!('claude' in value) || typeof value.claude === 'boolean');
 }
 
 export function isUploadMethod(value: unknown): value is UploadMethod {

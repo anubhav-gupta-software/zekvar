@@ -541,13 +541,14 @@ browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
     var clipboardAware = aware && http.Request.Headers["X-Zekvar-Clipboard-Paste"] == "1";
     var githubTokenAware = aware && http.Request.Headers["X-Zekvar-GitHub-Token"] == "1";
     var promptAppModesAware = aware && http.Request.Headers["X-Zekvar-Prompt-App-Modes"] == "1";
+    var claudeFilesAware = aware && claudeAware && fileBlockAware && http.Request.Headers["X-Zekvar-Claude-Files"] == "1";
     var versionHeader = http.Request.Headers["X-Zekvar-Extension-Version"];
     var extensionVersion = versionHeader.Count == 1 ? BrowserRelease.ReadVersion(versionHeader[0]) : null;
     if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, claudeAware, extensionVersion, privateKeyAware,
         fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware, presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware,
-        promptAppModesAware, ct) is { } policy)
+        promptAppModesAware, claudeFilesAware, ct) is { } policy)
         return Results.Ok(policy.ForBrowser(claudeAware, privateKeyAware, fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware,
-            presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware, promptAppModesAware) with
+            presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware, promptAppModesAware, claudeFilesAware) with
         {
             PromptExceptionRequestsAvailable = aware && http.Request.Headers["X-Zekvar-Prompt-Exception-Requests"] == "1" ? true : null
         });

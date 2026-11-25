@@ -53,8 +53,8 @@ test('Claude opt-in, coverage, and recovery with Control and real Chrome', { tim
       if (request.url === '/v1/browser/events') attempts.push(body.toString());
       const response = await fetch(api + request.url, {
         method: request.method, signal: AbortSignal.timeout(5000),
-        headers: Object.fromEntries(['authorization', 'content-type', 'x-zekvar-assignment-aware', 'x-zekvar-claude-prompt', 'x-zekvar-composer-coverage']
-          .filter((key) => request.headers[key]).map((key) => [key, request.headers[key]])),
+        headers: Object.fromEntries(Object.entries(request.headers).filter(([key]) =>
+          key === 'authorization' || key === 'content-type' || key.startsWith('x-zekvar-'))),
         body: body.length ? body : undefined,
       });
       if (request.url === '/v1/browser/events' && response.ok && loseAcknowledgment) {
@@ -138,17 +138,24 @@ test('Claude opt-in, coverage, and recovery with Control and real Chrome', { tim
     loadPreview();
   }
   await dashboard.getByLabel('Draft Claude prompt protection', { exact: true }).selectOption('on');
+  await dashboard.getByLabel('Draft Claude file uploads', { exact: true }).selectOption('block');
+  await dashboard.getByLabel('Draft Claude file types', { exact: true }).fill('.BIN');
+  await dashboard.getByLabel('Draft Claude file content protection', { exact: true }).selectOption('monitor');
   await dashboard.getByLabel('Prompt sample destination', { exact: true }).selectOption('claude');
   await dashboard.getByRole('button', { name: 'Run preview', exact: true }).click();
   const sample = dashboard.getByRole('row', { name: /^Synthetic test marker/ });
   await sample.getByText('Allow', { exact: true }).waitFor();
   await sample.getByText('Block', { exact: true }).waitFor();
   await dashboard.getByText('Claude prompt protection · Off → On', { exact: true }).waitFor();
+  await dashboard.getByText('Claude file content protection · Off → Monitor', { exact: true }).waitFor();
+  await dashboard.getByRole('row', { name: /^Claude synthetic text file/ }).getByText('Monitor', { exact: false }).waitFor();
   dashboard.once('dialog', (dialog) => dialog.accept());
   await dashboard.getByRole('button', { name: 'Publish previewed policy', exact: true }).click();
   await dashboard.getByText('Previewed policy published as version 3.', { exact: true }).waitFor();
   assert.equal((await admin('policies'))[0].claudePromptEnabled, false);
-  assert.equal((await admin(groupPath))[0].claudePromptEnabled, true);
+  const [canary] = await admin(groupPath);
+  assert.equal(canary.claudePromptEnabled, true);
+  assert.deepEqual([canary.uploadModes.claude, canary.uploadTypes.claude, canary.fileContentModes.claude], ['block', ['.bin'], 'monitor']);
 
   await sync('block', 3);
   await panelVersion('block', 3).waitFor();
@@ -237,6 +244,24 @@ test('Claude opt-in, coverage, and recovery with Control and real Chrome', { tim
     ruleId: 'fixture-secret', detectorCategory: 'synthetic-secret', decision: 'block' }, 400);
   assert.notEqual((await installation(older.installationId)).appliedPolicyVersion, enabled.version);
 
+  await t.test('withholds Claude files from a text-only browser and rejects its file acknowledgments and events', async () => {
+    const headers = { 'X-Zekvar-Assignment-Aware': '1', 'X-Zekvar-Claude-Prompt': '1',
+      'X-Zekvar-File-Inspection': '1', 'X-Zekvar-File-Content-Block': '1' };
+    const textOnly = (path, body, expected) => call(`browser/${path}`, { token: older.token, body, expected, headers });
+    const textPolicy = await textOnly('policy');
+    assert.equal(textPolicy.claudePromptEnabled, true);
+    assert.deepEqual(textPolicy.uploadModes, { chatgpt: 'off', gemini: 'off' });
+    assert.equal(textPolicy.fileContentModes.claude, undefined);
+    assert.equal(textPolicy.targetedUploads?.claude, undefined);
+    const heartbeat = { ...legacyHeartbeat, claudePromptApplied: true, promptExceptionsApplied: true };
+    await textOnly('heartbeat', heartbeat, 204);
+    assert.notEqual((await installation(older.installationId)).appliedPolicyVersion, enabled.version);
+    await textOnly('heartbeat', { ...heartbeat, claudeFilesApplied: true }, 400);
+    const event = { ...legacyHeartbeat, eventId: randomUUID(), appId: 'claude', timestamp: new Date().toISOString(), uploadMethod: 'picker' };
+    await textOnly('events', { ...event, ruleId: 'fixture-secret', detectorCategory: 'synthetic-secret', decision: 'monitor' }, 400);
+    await textOnly('events', { ...event, ruleId: 'ai-file-upload', detectorCategory: 'file-upload', decision: 'block' }, 400);
+  });
+
   await sync('block', enabled.version);
   await panelVersion('block', enabled.version).waitFor();
   await editor.fill(draft);
@@ -288,6 +313,7 @@ test('Claude opt-in, coverage, and recovery with Control and real Chrome', { tim
   assert.equal((await events()).length, 7);
   const restored = await admin(`${groupPath}/3/restore`, {});
   assert.equal(restored.claudePromptEnabled, true);
+  assert.deepEqual([restored.uploadModes.claude, restored.uploadTypes.claude, restored.fileContentModes.claude], ['block', ['.bin'], 'monitor']);
   await sync('block', restored.version);
   await panelVersion('block', restored.version).waitFor();
   for (const path of ['/login', '/projects/fixture', '/chat/not-a-conversation']) {

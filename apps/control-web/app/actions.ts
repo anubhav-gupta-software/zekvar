@@ -203,30 +203,37 @@ export async function cancelEnrollmentBatch(_previous: Feedback, form: FormData)
   });
 }
 
-function readUploadSettings(form: FormData) {
-  const chatgpt = form.get('upload-chatgpt');
-  const gemini = form.get('upload-gemini');
-  if (isUploadMode(chatgpt) && isUploadMode(gemini)) return { chatgpt, gemini };
+function readUploadSettings(form: FormData, prefix = 'upload') {
+  const chatgpt = form.get(`${prefix}-chatgpt`);
+  const gemini = form.get(`${prefix}-gemini`);
+  const claude = form.get(`${prefix}-claude`);
+  if (isUploadMode(chatgpt) && isUploadMode(gemini) && (claude === null || isUploadMode(claude))) {
+    return { chatgpt, gemini, claude: claude ?? undefined };
+  }
 }
 
 function readUploadTypes(form: FormData) {
   const chatgpt = parseUploadTypes(String(form.get('upload-types-chatgpt') ?? ''));
   const gemini = parseUploadTypes(String(form.get('upload-types-gemini') ?? ''));
-  if (chatgpt && gemini) return { chatgpt, gemini };
+  const rawClaude = form.get('upload-types-claude');
+  const claude = rawClaude === null ? undefined : parseUploadTypes(String(rawClaude));
+  if (chatgpt && gemini && (rawClaude === null || claude)) return { chatgpt, gemini, claude };
 }
 
 function readFileContentSettings(form: FormData) {
   const contentChatgpt = form.get('file-content-chatgpt');
   const contentGemini = form.get('file-content-gemini');
-  if (contentChatgpt !== null || contentGemini !== null) {
-    if (!isUploadMode(contentChatgpt) || !isUploadMode(contentGemini)) return null;
-    return { fileContentModes: { chatgpt: contentChatgpt, gemini: contentGemini } };
+  if (contentChatgpt !== null || contentGemini !== null || form.has('file-content-claude')) {
+    const fileContentModes = readUploadSettings(form, 'file-content');
+    return fileContentModes ? { fileContentModes } : null;
   }
   const chatgpt = form.get('file-inspection-chatgpt');
   const gemini = form.get('file-inspection-gemini');
-  if (chatgpt === null && gemini === null) return {};
+  const claude = form.get('file-inspection-claude');
+  if (chatgpt === null && gemini === null && claude === null) return {};
   if ((chatgpt !== 'on' && chatgpt !== 'off') || (gemini !== 'on' && gemini !== 'off')) return null;
-  return { fileInspection: { chatgpt: chatgpt === 'on', gemini: gemini === 'on' } };
+  if (claude !== null && claude !== 'on' && claude !== 'off') return null;
+  return { fileInspection: { chatgpt: chatgpt === 'on', gemini: gemini === 'on', claude: claude === null ? undefined : claude === 'on' } };
 }
 
 export async function issueControlAccess(_previous: Feedback, form: FormData): Promise<Feedback> {

@@ -106,6 +106,7 @@ export function PublishPolicyForm({ policy, groupId, review }: { policy?: Policy
       </>}
     </div>)}
     <p className="muted" id="upload-types-hint">{uploadTypesHint}</p>
+    <p className="muted">Claude attachment rules apply when experimental Claude prompt protection is enabled.</p>
     {policy?.fileContentModes && <p className="muted" id="file-content-hint">
       Block holds the batch and stops uploads with a sensitive match or an incomplete check. Start in Monitor to check coverage.
     </p>}

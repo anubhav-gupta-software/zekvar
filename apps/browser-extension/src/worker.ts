@@ -6,7 +6,8 @@ import {
 } from './protocol';
 import { domainRuleLimit, emptyDomainRules, emptyPathRules, installDomainRules, readDomainRules, readPathRules,
   ruleCount, sameDomainRules, type DomainRules, type PathRules } from './domain-rules';
-import { fileContentMode, isFileInspection, isUploadApp, isUploadModes, readTargetedUpload, sameUploadTypes, uploadApps, uploadsOff, type TargetedUploads } from '../../../contracts/policy/uploads';
+import { fileContentMode, isFileInspection, isUploadApp, isUploadModes, legacyUploadApps, readTargetedUpload, sameUploadTypes,
+  uploadApps, uploadsOff, type TargetedUploads, type UploadApp } from '../../../contracts/policy/uploads';
 import { collectExtensionInventory } from './extension-inventory';
 import type { InventoryStatus } from '../../../contracts/policy/extension-inventory';
 import { discoveryPresetAt, isCustomAppId, isDiscoveryPreset, readCustomApps, type CustomApp } from '../../../contracts/policy/discovery';
@@ -146,7 +147,7 @@ async function request(path: string, token?: string, body?: object): Promise<unk
         'X-Zekvar-Private-Key': '1', 'X-Zekvar-File-Inspection': '1', 'X-Zekvar-File-Content-Block': '1', 'X-Zekvar-AI-App-Access': '1',
         'X-Zekvar-Identifiers': '1', 'X-Zekvar-Preset-Discovery': '1', 'X-Zekvar-SSN': '1', 'X-Zekvar-Clipboard-Paste': '1',
         'X-Zekvar-GitHub-Token': '1', 'X-Zekvar-Prompt-Exception-Requests': '1',
-        'X-Zekvar-Prompt-App-Modes': '1',
+        'X-Zekvar-Prompt-App-Modes': '1', 'X-Zekvar-Claude-Files': '1',
         'X-Zekvar-Extension-Version': extensionVersion } : {}),
       ...(path === 'browser/heartbeat' ? { 'X-Zekvar-Composer-Coverage': '1' } : {}),
       ...(path === 'enroll' ? { 'X-Zekvar-Scoped-Enrollment': '1' } : {}),
@@ -248,8 +249,8 @@ function readTargetedUploads(value: unknown): TargetedUploads {
   return filters;
 }
 
-function sameTargetedUploads(before: TargetedUploads, after: TargetedUploads) {
-  return uploadApps.every((app) => before[app]?.mode === after[app]?.mode &&
+function sameTargetedUploads(before: TargetedUploads, after: TargetedUploads, apps: readonly UploadApp[]) {
+  return apps.every((app) => before[app]?.mode === after[app]?.mode &&
     sameUploadTypes(before[app]?.types ?? [], after[app]?.types ?? []));
 }
 
@@ -289,11 +290,12 @@ async function sync(state: State) {
     if (policy.identifierProtection !== undefined && !identifierProtection) throw new Error('Invalid organization identifier policy');
     const fileInspection = policy.fileInspection;
     const fileContentModes = policy.fileContentModes;
-    if (fileContentModes && uploadApps.some((app) => (fileContentModes[app] !== 'off') !== (fileInspection?.[app] === true))) {
+    if (fileContentModes && uploadApps.some((app) => ((fileContentModes[app] ?? 'off') !== 'off') !== (fileInspection?.[app] === true))) {
       throw new Error('Inconsistent file content policy modes');
     }
     const uploads = policy.uploadModes ?? uploadsOff;
     const previousUploads = state.policy?.uploadModes;
+    const retainedUploadApps = previousUploads?.claude === undefined ? legacyUploadApps : uploadApps;
     const targetedUploads = readTargetedUploads(policy.targetedUploads);
     const previousTargets = state.policy?.targetedUploads;
     if (uploadApps.some((app) => targetedUploads[app] && uploads[app] !== 'off')) {
@@ -329,11 +331,11 @@ async function sync(state: State) {
         (state.policy.promptAppModes === undefined || samePromptAppModes(promptAppModes, state.policy.promptAppModes)) &&
         (!state.policy.identifierProtection || sameIdentifierProtection(state.policy.identifierProtection, identifierProtection)) &&
         (state.policy.fileInspection === undefined || fileInspection !== undefined &&
-          uploadApps.every((app) => state.policy?.fileInspection?.[app] === fileInspection[app])) &&
+          retainedUploadApps.every((app) => state.policy?.fileInspection?.[app] === fileInspection[app])) &&
         (!state.policy.fileContentModes || !!fileContentModes &&
-          uploadApps.every((app) => state.policy?.fileContentModes?.[app] === fileContentModes[app])) &&
-        (!previousUploads || uploads.chatgpt === previousUploads.chatgpt && uploads.gemini === previousUploads.gemini) &&
-        (!previousTargets || sameTargetedUploads(previousTargets, targetedUploads)) &&
+          retainedUploadApps.every((app) => state.policy?.fileContentModes?.[app] === fileContentModes[app])) &&
+        (!previousUploads || retainedUploadApps.every((app) => uploads[app] === previousUploads[app])) &&
+        (!previousTargets || sameTargetedUploads(previousTargets, targetedUploads, retainedUploadApps)) &&
         discoveryEnabled === (state.policy.discoveryEnabled ?? false) &&
         (!previousCatalog || (previousCatalog.length === customApps.length && previousCatalog.every(({ id, host, name }, index) =>
           id === customApps[index].id && host === customApps[index].host && name === customApps[index].name))) &&
@@ -348,7 +350,7 @@ async function sync(state: State) {
         discoveryEnabled, presetDiscovery, customApps, extensionInventoryEnabled, claudePromptEnabled, clipboardMode, githubTokenMode,
         promptExceptionRequestsAvailable: policy.promptExceptionRequestsAvailable === true,
         promptAppModes,
-        assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini }, targetedUploads };
+        assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini, claude: uploads.claude }, targetedUploads };
       promptLease = lease ? { installationId: state.enrollment.installationId, version: policy.version,
         assignment: policy.assignmentVersion, lease } : undefined;
       if (!discoveryEnabled || assignment !== previousAssignment) state.observations = undefined;
@@ -410,7 +412,9 @@ function recentCoverage(pending: PendingCoverage | Coverage | undefined, now: nu
 
 async function heartbeat(state: State) {
   if (!state.enrollment || !state.policy) return;
-  const scopedUploads = uploadApps.some((app) => state.policy?.targetedUploads?.[app]);
+  const scopedUploads = legacyUploadApps.some((app) => state.policy?.targetedUploads?.[app]);
+  const claudeFiles = state.policy.claudePromptEnabled && (state.policy.targetedUploads?.claude ||
+    (state.policy.uploadModes?.claude ?? 'off') !== 'off' || fileContentMode(state.policy, claudeApp) !== 'off');
   const now = Date.now();
   await request('browser/heartbeat', state.enrollment.token, {
     policyVersion: state.policy.version,
@@ -419,6 +423,7 @@ async function heartbeat(state: State) {
     geminiCoverage: state.geminiEnabled ? recentCoverage(state.geminiCoveragePending, now) : undefined,
     claudeCoverage: state.policy.claudePromptEnabled ? recentCoverage(state.claudeCoveragePending, now) : undefined,
     claudePromptApplied: state.policy.claudePromptEnabled || undefined,
+    claudeFilesApplied: claudeFiles ? true : undefined,
     paymentCardModeApplied: isMode(state.policy.paymentCardMode) ? true : undefined,
     privateKeyModeApplied: isMode(state.policy.privateKeyMode) ? true : undefined,
     ssnModeApplied: isMode(state.policy.ssnMode) ? true : undefined,
@@ -426,10 +431,10 @@ async function heartbeat(state: State) {
     promptAppModesApplied: Object.values(state.policy.promptAppModes ?? {}).some(isMode) ? true : undefined,
     clipboardModeApplied: state.policy.clipboardMode === 'monitor' || state.policy.clipboardMode === 'block' ? true : undefined,
     identifiersApplied: isMode(state.policy.identifierProtection?.mode) ? true : undefined,
-    fileInspectionApplied: uploadApps.some((app) => state.policy?.fileInspection?.[app]) ? true : undefined,
-    fileContentBlockApplied: uploadApps.some((app) => fileContentMode(state.policy, app) === 'block') ? true : undefined,
+    fileInspectionApplied: legacyUploadApps.some((app) => state.policy?.fileInspection?.[app]) ? true : undefined,
+    fileContentBlockApplied: legacyUploadApps.some((app) => fileContentMode(state.policy, app) === 'block') ? true : undefined,
     uploadControlsApplied: scopedUploads || (state.policy.uploadModes &&
-      uploadApps.some((app) => state.policy?.uploadModes?.[app] !== 'off')) ? true : undefined,
+      legacyUploadApps.some((app) => state.policy?.uploadModes?.[app] !== 'off')) ? true : undefined,
     uploadTypesApplied: scopedUploads ? true : undefined,
     customDiscoveryApplied: state.policy.discoveryEnabled && state.policy.customApps?.length && await canDiscoverCatalogApps() ? true : undefined,
     promptExceptionsApplied: currentPromptLease(state) ? true : undefined,

@@ -27,6 +27,8 @@ Select a version or **Unreported** in the summary to find matching installations
 
 The organization baseline applies to unassigned browsers and groups that follow it. The dashboard keeps Control tokens in server memory and gives the browser a short-lived HTTP-only session cookie. Restarting the dashboard clears those sessions. Keep both services on loopback and use synthetic demo data.
 
+To pilot Claude attachments, choose a test rollout group under **Policy preview**. Enable **Draft Claude prompt protection**, then choose a file-type rule or file content mode. The preview rows show how the draft handles synthetic Claude attachments. After publication, confirm that enrolled Browser v0.40.0 profiles acknowledge the version. Filter **Security events** to **Claude** and review the file decision and intake method. [Test Claude attachment protection](../browser-extension/README.md#try-experimental-claude-prompt-protection)
+
 ### Review composer readiness before switching a group to Block
 
 Open **Browser health** and choose the rollout group and, if needed, a reported extension version. **Composer readiness** counts all matching active browsers for ChatGPT, Gemini, and Claude. Each matching installation shows the same status in its app column. Compare the readiness table with the **AI enforcement report** before promoting a group.
