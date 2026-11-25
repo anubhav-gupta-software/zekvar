@@ -864,7 +864,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
         [toFile({ version: 1, cases: [cases[0], { ...cases[0], id: 'BLOCKED-PROMPT' }] }), /unique case ID in case 2/],
         [toFile({ version: 1, cases: [{ ...cases[7], url: 'javascript:alert(1)' }] }), /fields and expected outcome in case 1/],
         [toFile({ version: 1, cases: [{ ...cases[0], text: { value: sample } }] }), /fields and expected outcome in case 1/],
-        [toFile({ version: 1, cases: [{ ...cases[10], app: 'claude' }] }), /fields and expected outcome in case 1/],
+        [toFile({ version: 1, cases: [{ ...cases[10], app: 'copilot' }] }), /fields and expected outcome in case 1/],
         [toFile({ version: 1, cases: [{ ...cases[1], payload: sample }] }), /fields and expected outcome in case 1/],
         [{ ...toFile({}), buffer: Buffer.from('{') }, /valid JSON/],
         [{ ...toFile({}), buffer: Buffer.alloc(256 * 1024 + 1, 32) }, /256 KiB/],
