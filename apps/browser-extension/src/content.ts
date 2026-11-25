@@ -64,7 +64,10 @@ function attachFixture() {
       const detectors = (isMode(github) ? ` · GitHub PAT ${github}` : '') +
         (isMode(githubToken) ? ` · GitHub tokens ${githubToken}` : '') + (isMode(card) ? ` · Payment card ${card}` : '') +
         (isMode(privateKey) ? ` · Private key ${privateKey}` : '') +
-        (isMode(control.policy?.ssnMode) ? ` · U.S. SSN ${control.policy.ssnMode}` : '');
+        (isMode(control.policy?.ssnMode) ? ` · U.S. SSN ${control.policy.ssnMode}` : '') +
+        (isMode(control.policy?.cloudCredentialMode) ? ` · Cloud and API credentials ${control.policy.cloudCredentialMode}` : '') +
+        (isMode(control.policy?.classificationProtection?.mode) ?
+          ` · Classification rules ${control.policy.classificationProtection.mode}` : '');
       const label = control.policy ? `${control.policy.mode.toUpperCase()} · v${control.policy.version}${detectors}` : 'waiting for a policy';
       const status = control.status === 'standalone' ? 'Standalone fixture. Open Zekvar Browser to enroll.' :
         control.status === 'connected' ? `Control policy: ${label}` :

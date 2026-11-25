@@ -178,6 +178,14 @@ The pack scores policy decisions locally. Exercise native prompt submission, pas
 
 The detector uses exact ASCII digit counts and compares the prefix without case sensitivity. A letter, number, combining mark, dash, or connector next to the candidate makes it part of a larger token. A temporary prompt exception applies to every configured identifier format for the chosen app. Other matching detectors and the app's file content policy still apply. [Try organization identifier protection](../browser-extension/README.md#test-organization-identifier-protection)
 
+## Protect cloud credentials and classified labels
+
+1. Open **Policy preview** and choose a test rollout group. Set **Draft cloud and API credentials** to **Monitor**. Under **Classification rules**, choose a mode and enter up to 16 labels or phrases, one per line. Each entry uses 3 to 64 letters, digits, spaces, or `- – — _ . & / : '` and needs at least three letters or digits.
+2. Select **Run preview**. Rows show synthetic keys for each provider beside AWS documentation and Stripe test-mode near misses, plus a prompt and file sample for each label. Publish the draft or request a review. In **Browser health**, confirm that the group runs Browser v0.41.0 and has applied the policy.
+3. Review **Security events** by provider rule or **Organization classification rule**. Control stores the rule and category, but never the matched key or text. Enable enforcement for a wider group after you review false blocks in Monitor. Use **Restore** in **Policy history** to roll back both settings.
+
+Older browsers keep their other detectors and remain pending while a version enables either setting. Temporary prompt exceptions and employee review requests do not cover these rules. [Try the rules in Browser](../browser-extension/README.md#protect-cloud-and-api-credentials)
+
 ## Pilot Claude prompt protection
 
 Enable **Claude prompt protection** in a rollout group and sync Browser v0.19.0 or later. **Browser health** shows **Off** when the assigned policy disables the adapter, **Unobserved** before a composer check for the assigned version, and the last observed **Detected** or **Unsupported** status. Filter **Security events** to Claude to review metadata-only decisions. [Experimental Claude test guide](../browser-extension/README.md#try-experimental-claude-prompt-protection)

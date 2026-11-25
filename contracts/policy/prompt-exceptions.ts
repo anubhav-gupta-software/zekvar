@@ -1,11 +1,11 @@
 import { aiPromptApps, type AiPromptApp } from './apps';
-import { evaluatePrompt, ruleLabels, type PromptPolicy, type PromptRuleId } from './prompt';
+import { evaluatePrompt, ruleLabels, type ExceptionRuleId, type PromptPolicy, type PromptRuleId } from './prompt';
 
 export const exceptionDecision = 'exception_applied';
 export const exceptionWindowMs = 24 * 60 * 60_000;
 export const promptExceptionLimit = aiPromptApps.length * Object.keys(ruleLabels).length;
-export type PromptException = { appId: AiPromptApp; ruleId: PromptRuleId; expiresAt: string; reason: string };
-export type PromptExceptionGrant = { appId: AiPromptApp; ruleId: PromptRuleId; expiresAtMs: number };
+export type PromptException = { appId: AiPromptApp; ruleId: ExceptionRuleId; expiresAt: string; reason: string };
+export type PromptExceptionGrant = { appId: AiPromptApp; ruleId: ExceptionRuleId; expiresAtMs: number };
 export type PromptExceptionLease = { serverTimeMs: number; grants: PromptExceptionGrant[] };
 export const promptExceptionError = 'Choose one exception per app and detector, with an expiry and a reason of 3 to 120 characters.';
 

@@ -28,6 +28,10 @@ internal static class FixtureContract
     public const string ExceptionApplied = "exception_applied";
     public const string ClipboardUnavailableRule = "clipboard-inspection-unavailable";
     public const string ClipboardCategory = "clipboard";
+    public const string ClassificationRule = "organization-classification-rule";
+    public const string ClassificationCategory = "classification";
+    public static readonly string[] CloudCredentialRules =
+        ["aws-access-key-id", "slack-token", "stripe-live-secret-key", "google-api-key", "openai-api-key", "anthropic-api-key"];
 
     public static bool IsMode(string? mode) => mode is "monitor" or "warn" or "block";
     public static bool IsOptionalDetectorMode(string? mode) => mode is null or "off" || IsMode(mode);
@@ -36,10 +40,15 @@ internal static class FixtureContract
     public static bool IsDecision(string? decision) => IsMode(decision) || decision is "warn_override" or ExceptionApplied;
     public static bool IsPromptRule(string? rule) => rule is RuleId or GitHubPatRule or PaymentCardRule or PrivateKeyRule
         or OrganizationIdentifierRule or SsnRule or GithubTokenRule;
+    public static bool IsCloudCredentialRule(string? rule) => rule is not null && CloudCredentialRules.Contains(rule);
+    // Cloud credential and classification rules support enforcement modes but not temporary prompt exceptions.
+    public static bool IsDetectionRule(string? rule) => IsPromptRule(rule) || IsCloudCredentialRule(rule) || rule == ClassificationRule;
 
     public static string CategoryForRule(string ruleId) => ruleId switch
     {
         GitHubPatRule or GithubTokenRule or PrivateKeyRule => CredentialCategory,
+        _ when IsCloudCredentialRule(ruleId) => CredentialCategory,
+        ClassificationRule => ClassificationCategory,
         PaymentCardRule => PaymentCategory,
         OrganizationIdentifierRule => OrganizationIdentifierCategory,
         SsnRule => SsnCategory,
@@ -53,7 +62,8 @@ internal static class FixtureContract
     public static bool IsEvent(PolicyEvent request)
     {
         if (request.EventId == Guid.Empty || request.Timestamp == default || request.PolicyVersion <= 0 || !IsApp(request.AppId)) return false;
-        var promptRule = IsPromptRule(request.RuleId) && request.DetectorCategory == CategoryForRule(request.RuleId);
+        var promptRule = IsDetectionRule(request.RuleId) && request.DetectorCategory == CategoryForRule(request.RuleId) &&
+            (request.Decision != ExceptionApplied || IsPromptRule(request.RuleId));
         if (request.ClipboardPaste)
             return IsAiPromptApp(request.AppId) && request.UploadMethod is null && request.Decision is "monitor" or "block" &&
                 (promptRule || (request.RuleId == ClipboardUnavailableRule && request.DetectorCategory == ClipboardCategory && request.Decision == "block"));
@@ -110,7 +120,8 @@ internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode 
     string? PrivateKeyMode = null, FileInspection? FileInspection = null, ExtensionDeployment? ExtensionDeployment = null,
     string[]? BlockedAiAppHosts = null, UploadModes? FileContentModes = null, IdentifierProtection? IdentifierProtection = null,
     bool? PresetDiscoveryEnabled = null, string? SsnMode = null, BrowserHardening? BrowserHardening = null, string? ClipboardMode = null,
-    string? GithubTokenMode = null, PromptAppModes? PromptAppModes = null, string[]? RequireComposerReady = null);
+    string? GithubTokenMode = null, PromptAppModes? PromptAppModes = null, string[]? RequireComposerReady = null,
+    string? CloudCredentialMode = null, ClassificationProtection? ClassificationProtection = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Claude = null)
 {
@@ -130,7 +141,7 @@ internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = nu
     bool PromptExceptionsApplied = false, string? ClaudeCoverage = null, bool ClaudePromptApplied = false, bool PrivateKeyModeApplied = false,
     bool FileInspectionApplied = false, bool AiAppAccessApplied = false, bool FileContentBlockApplied = false, bool IdentifiersApplied = false,
     bool SsnModeApplied = false, bool ClipboardModeApplied = false, bool GithubTokenModeApplied = false, bool PromptAppModesApplied = false,
-    bool ClaudeFilesApplied = false)
+    bool ClaudeFilesApplied = false, bool CloudCredentialModeApplied = false, bool ClassificationApplied = false)
 {
     public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported") &&
         (GeminiCoverage is null or "ready" or "unsupported") &&
@@ -162,7 +173,9 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ClipboardMode = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? GithubTokenMode = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? PromptExceptionRequestsAvailable = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PromptAppModes? PromptAppModes = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PromptAppModes? PromptAppModes = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CloudCredentialMode = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ClassificationProtection? ClassificationProtection = null)
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => ClaudePromptEnabled
@@ -186,6 +199,8 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
             FixtureContract.PrivateKeyRule => PrivateKeyMode,
             FixtureContract.OrganizationIdentifierRule => IdentifierProtection?.Mode,
             FixtureContract.SsnRule => SsnMode,
+            FixtureContract.ClassificationRule => ClassificationProtection?.Mode,
+            _ when FixtureContract.IsCloudCredentialRule(ruleId) => CloudCredentialMode,
             _ => null
         };
         return appModesAware && FixtureContract.IsMode(mode) ? PromptAppModes?.ForApp(appId) ?? mode : mode;
@@ -193,7 +208,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
 
     public Policy ForBrowser(bool claudeAware, bool privateKeyAware, bool fileInspectionAware, bool aiAppAccessAware,
         bool fileBlockAware, bool identifiersAware, bool presetDiscoveryAware, bool ssnAware, bool clipboardAware, bool githubTokenAware,
-        bool promptAppModesAware, bool claudeFilesAware)
+        bool promptAppModesAware, bool claudeFilesAware, bool detectionRulesAware)
     {
         var now = DateTimeOffset.UtcNow;
         var nowMs = now.ToUnixTimeMilliseconds();
@@ -224,6 +239,8 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
             SsnMode = ssnAware ? SsnMode : null,
             ClipboardMode = clipboardAware ? ClipboardMode : null,
             GithubTokenMode = githubTokenAware ? GithubTokenMode : null,
+            CloudCredentialMode = detectionRulesAware ? CloudCredentialMode : null,
+            ClassificationProtection = detectionRulesAware ? ClassificationProtection : null,
             PromptAppModes = promptAppModesAware ? PromptAppModes : null,
             ExtensionDeployment = null,
             BrowserHardening = null,

@@ -98,6 +98,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
             {policyWritable ? <><p className="muted">Set prompt protection, app discovery, and extension inventory for enrolled browsers.</p>
               <PublishPolicyForm policy={current} review={session.reviewRequired} />
               {current?.identifierProtection && <a className="button small mt-3" href="/preview#draft-identifiers">Configure organization identifiers</a>}
+              {current?.classificationProtection && <a className="button small mt-3" href="/preview#draft-classification">Configure classification rules</a>}
             </> :
               <p className="muted">Sign in as a named administrator to request policy changes.</p>}
           </section>

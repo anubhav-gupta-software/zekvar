@@ -542,13 +542,14 @@ browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
     var githubTokenAware = aware && http.Request.Headers["X-Zekvar-GitHub-Token"] == "1";
     var promptAppModesAware = aware && http.Request.Headers["X-Zekvar-Prompt-App-Modes"] == "1";
     var claudeFilesAware = aware && claudeAware && fileBlockAware && http.Request.Headers["X-Zekvar-Claude-Files"] == "1";
+    var detectionRulesAware = aware && http.Request.Headers["X-Zekvar-Detection-Rules"] == "1";
     var versionHeader = http.Request.Headers["X-Zekvar-Extension-Version"];
     var extensionVersion = versionHeader.Count == 1 ? BrowserRelease.ReadVersion(versionHeader[0]) : null;
     if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, claudeAware, extensionVersion, privateKeyAware,
         fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware, presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware,
-        promptAppModesAware, claudeFilesAware, ct) is { } policy)
+        promptAppModesAware, claudeFilesAware, detectionRulesAware, ct) is { } policy)
         return Results.Ok(policy.ForBrowser(claudeAware, privateKeyAware, fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware,
-            presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware, promptAppModesAware, claudeFilesAware) with
+            presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware, promptAppModesAware, claudeFilesAware, detectionRulesAware) with
         {
             PromptExceptionRequestsAvailable = aware && http.Request.Headers["X-Zekvar-Prompt-Exception-Requests"] == "1" ? true : null
         });
@@ -595,10 +596,10 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
               request.BlockedAiAppHosts is not null || request.FileContentModes?.HasSettings() == true ||
               request.IdentifierProtection is not null || request.PresetDiscoveryEnabled.HasValue || request.SsnMode is not null ||
               request.BrowserHardening is not null || request.ClipboardMode is not null || request.GithubTokenMode is not null ||
-              request.PromptAppModes is not null)) ||
+              request.PromptAppModes is not null || request.CloudCredentialMode is not null || request.ClassificationProtection is not null)) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode) ||
         !FixtureContract.IsOptionalDetectorMode(request.PrivateKeyMode) || !FixtureContract.IsOptionalDetectorMode(request.SsnMode) ||
-        !FixtureContract.IsOptionalDetectorMode(request.GithubTokenMode))
+        !FixtureContract.IsOptionalDetectorMode(request.GithubTokenMode) || !FixtureContract.IsOptionalDetectorMode(request.CloudCredentialMode))
         return Results.BadRequest(new { error = "Choose a valid rule mode." });
     if (request.UploadModes?.IsValid() == false)
         return Results.BadRequest(new { error = "Choose Off, Monitor, or Block for each upload destination." });
@@ -627,8 +628,11 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
         return Results.BadRequest(new { error = "Select distinct AI app hostnames from the policy catalog." });
     if (!IdentifierProtection.TryNormalize(request.IdentifierProtection, out var identifiers))
         return Results.BadRequest(new { error = "Use a valid identifier mode and up to 16 distinct prefixes with 4 to 12 suffix digits." });
+    if (!ClassificationProtection.TryNormalize(request.ClassificationProtection, out var classification))
+        return Results.BadRequest(new { error = "Use a valid classification mode and up to 16 distinct labels or phrases of 3 to 64 supported characters." });
     var normalized = request with { DomainRules = domainRules, PathRules = pathRules, UploadTypes = uploadTypes,
-        ExtensionDeployment = extensionDeployment, BlockedAiAppHosts = blockedAiAppHosts, IdentifierProtection = identifiers };
+        ExtensionDeployment = extensionDeployment, BlockedAiAppHosts = blockedAiAppHosts, IdentifierProtection = identifiers,
+        ClassificationProtection = classification };
     var result = await store.ChangePolicy(Identity(http), normalized, null, ExpectsReview(http), ct, groupId,
         customApps: customApps, promptExceptions: exceptions);
     return PolicyOutcome(result, request.ExpectedVersion.HasValue

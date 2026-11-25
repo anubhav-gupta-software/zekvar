@@ -1,6 +1,6 @@
 import { modes, type DetectorMode, type PolicyMode } from '../../../contracts/policy/prompt';
 export { modes, detectorModes } from '../../../contracts/policy/prompt';
-import { ruleLabels as promptRuleLabels } from '../../../contracts/policy/prompt';
+import { detectionRuleLabels as promptRuleLabels } from '../../../contracts/policy/prompt';
 import { clipboardUnavailableRule, type ClipboardMode } from '../../../contracts/policy/clipboard';
 export const ruleLabels = { ...promptRuleLabels, [clipboardUnavailableRule]: 'Clipboard check unavailable' };
 export type { DetectorMode } from '../../../contracts/policy/prompt';
@@ -54,6 +54,8 @@ export type Policy = {
   privateKeyMode?: DetectorMode;
   ssnMode?: DetectorMode;
   githubTokenMode?: DetectorMode;
+  cloudCredentialMode?: DetectorMode;
+  classificationProtection?: import('../../../contracts/policy/prompt').ClassificationProtection;
   promptAppModes?: import('../../../contracts/policy/prompt-app-modes').PromptAppModes;
   identifierProtection?: import('../../../contracts/policy/prompt').IdentifierProtection;
   uploadModes?: UploadModes;

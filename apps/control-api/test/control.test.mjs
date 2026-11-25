@@ -48,6 +48,7 @@ const promptAppModesAdmin = randomBytes(32).toString('hex');
 const inventoryChangesAdmin = randomBytes(32).toString('hex');
 const extensionAlertsAdmin = randomBytes(32).toString('hex');
 const composerGateAdmin = randomBytes(32).toString('hex');
+const detectionRulesAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -58,7 +59,13 @@ const undoSsoSchema = `
       DROP COLUMN oidc_issuer, DROP COLUMN oidc_subject, ALTER COLUMN expires_at SET NOT NULL,
       ADD CONSTRAINT control_access_check1 CHECK ((revoked_at IS NULL) = (token_hash IS NOT NULL));
 `;
+const undoDetectionRulesSchema = `
+  DELETE FROM schema_migrations WHERE version = 51;
+  ALTER TABLE policy_versions DROP COLUMN cloud_credential_mode, DROP COLUMN classification_protection;
+  ALTER TABLE policy_deliveries DROP COLUMN detection_rules;
+`;
 const undoPromptAppModesSchema = `
+  ${undoDetectionRulesSchema}
   DELETE FROM schema_migrations WHERE version = 46;
   ALTER TABLE policy_versions DROP COLUMN prompt_app_modes;
   ALTER TABLE policy_deliveries DROP COLUMN prompt_app_modes;
@@ -152,14 +159,15 @@ async function retentionFixture(query) {
 
 function browserPolicyOnly({ extensionDeployment: _extensionDeployment, browserHardening: _browserHardening, blockedAiAppHosts: _blockedAiAppHosts,
   fileContentModes: _fileContentModes, identifierProtection: _identifierProtection, presetDiscoveryEnabled: _presetDiscovery,
-  ssnMode: _ssnMode, clipboardMode: _clipboardMode, githubTokenMode: _githubTokenMode, promptAppModes: _promptAppModes, ...browserPolicy }) {
+  ssnMode: _ssnMode, clipboardMode: _clipboardMode, githubTokenMode: _githubTokenMode, promptAppModes: _promptAppModes,
+  cloudCredentialMode: _cloudCredentialMode, classificationProtection: _classificationProtection, ...browserPolicy }) {
   return browserPolicy;
 }
 
 async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false,
   extensionVersion, scopedEnrollment = false, composerAware = false, privateKeyAware = false, fileInspectionAware = false,
   aiAppAccessAware = false, fileBlockAware = false, identifiersAware = false, presetAware = false, ssnAware = false, clipboardAware = false,
-  githubTokenAware = false, promptAppModesAware = false } = {}) {
+  githubTokenAware = false, promptAppModesAware = false, detectionRulesAware = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -179,6 +187,7 @@ async function call(path, { token, method = 'GET', body, expect = 200, assignmen
   if (clipboardAware) headers['X-Zekvar-Clipboard-Paste'] = '1';
   if (githubTokenAware) headers['X-Zekvar-GitHub-Token'] = '1';
   if (promptAppModesAware) headers['X-Zekvar-Prompt-App-Modes'] = '1';
+  if (detectionRulesAware) headers['X-Zekvar-Detection-Rules'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
@@ -267,6 +276,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__30__AdminToken: extensionAlertsAdmin,
       Control__Organizations__31__Slug: `composer-gate-${suffix}`,
       Control__Organizations__31__AdminToken: composerGateAdmin,
+      Control__Organizations__32__Slug: `detection-rules-${suffix}`,
+      Control__Organizations__32__AdminToken: detectionRulesAdmin,
       ...overrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -5254,5 +5265,90 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const decisionPath = `prompt-exception-requests/${receipt.id}/decision`;
     await post(decisionPath, { status: 'exception_available' }, { expect: 409 });
     await post(decisionPath, { status: 'declined' });
+  });
+
+  await t.test('versions cloud credential and classification rules with negotiated delivery and metadata-only evidence', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: detectionRulesAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const [initial] = await admin('policies');
+    assert.equal(initial.cloudCredentialMode, 'off');
+    assert.deepEqual(initial.classificationProtection, { mode: 'off', terms: [] });
+    if (postgres) {
+      await stop();
+      await retentionFixture(undoDetectionRulesSchema);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 51'), '1');
+      assert.deepEqual((await admin('policies'))[0], initial);
+    }
+    await post('policies', { cloudCredentialMode: 'always' }, { expect: 400 });
+    for (const terms of [['ab'], ['Bluebird', 'BLUEBIRD'], ['(secret|.*)'], ['x'.repeat(65)], ['Ünïcode label'], [null], 'Bluebird',
+      Array.from({ length: 17 }, (_, index) => `Label ${index}`)]) {
+      await post('policies', { classificationProtection: { mode: 'block', terms } }, { expect: 400 });
+    }
+    await post('policies', { classificationProtection: { mode: 'warn', terms: [] } }, { expect: 400 });
+    await post('policies', { classificationProtection: { mode: 'on', terms: ['Project Bluebird'] } }, { expect: 400 });
+    await post('policies', { promptExceptions: [{ appId: 'chatgpt', ruleId: 'aws-access-key-id',
+      expiresAt: new Date(Date.now() + 3600_000).toISOString(), reason: 'Synthetic exception' }] }, { expect: 400 });
+
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant: (await post('enrollment-grants')).grant } });
+    const browserCall = (route, options) => call(`/v1/browser/${route}`, { token: browser.token, ...options });
+    const write = (route, body, expect = 204) => browserCall(route, { method: 'POST', body, expect });
+    const caps = { assignmentAware: true, clipboardAware: true, fileInspectionAware: true, fileBlockAware: true };
+    const deliver = () => browserCall('policy', { ...caps, detectionRulesAware: true });
+    const policy = await post('policies', { cloudCredentialMode: 'block', clipboardMode: 'block', fileContentModes: { chatgpt: 'block' },
+      classificationProtection: { mode: 'warn', terms: ['  project   bluebird ', 'CONFIDENTIAL – INTERNAL'] } });
+    assert.equal(policy.cloudCredentialMode, 'block');
+    assert.deepEqual(policy.classificationProtection, { mode: 'warn', terms: ['CONFIDENTIAL – INTERNAL', 'project bluebird'] });
+    const event = (ruleId, detectorCategory, decision, fields = {}) => ({ ...contract.event, eventId: randomUUID(), appId: 'chatgpt',
+      timestamp: new Date().toISOString(), policyVersion: policy.version, ruleId, detectorCategory, decision, ...fields });
+    const heartbeat = { policyVersion: policy.version, clipboardModeApplied: true, fileInspectionApplied: true, fileContentBlockApplied: true };
+    const legacy = await browserCall('policy', caps);
+    assert.equal(legacy.cloudCredentialMode, undefined);
+    assert.equal(legacy.classificationProtection, undefined);
+    assert.equal((await browserCall('policy', { detectionRulesAware: true })).cloudCredentialMode, undefined, 'requires assignment awareness');
+    await write('heartbeat', heartbeat);
+    assert.notEqual((await admin('installations'))[0].appliedPolicyVersion, policy.version);
+    await write('heartbeat', { ...heartbeat, cloudCredentialModeApplied: true, classificationApplied: true }, 400);
+    await write('events', event('aws-access-key-id', 'credential', 'block'), 400);
+    const delivered = await deliver();
+    assert.equal(delivered.cloudCredentialMode, 'block');
+    assert.deepEqual(delivered.classificationProtection, policy.classificationProtection);
+    await write('heartbeat', { ...heartbeat, cloudCredentialModeApplied: true });
+    assert.notEqual((await admin('installations'))[0].appliedPolicyVersion, policy.version);
+    await write('heartbeat', { ...heartbeat, cloudCredentialModeApplied: true, classificationApplied: true });
+    assert.equal((await admin('installations'))[0].appliedPolicyVersion, policy.version);
+
+    const detected = event('aws-access-key-id', 'credential', 'block');
+    await Promise.all([write('events', detected), write('events', detected)]);
+    for (const ruleId of ['slack-token', 'stripe-live-secret-key', 'google-api-key', 'openai-api-key', 'anthropic-api-key']) {
+      await write('events', event(ruleId, 'credential', 'block'));
+    }
+    await write('events', event('organization-classification-rule', 'classification', 'warn'));
+    await write('events', event('organization-classification-rule', 'classification', 'warn_override'));
+    await write('events', event('slack-token', 'credential', 'block', { clipboardPaste: true }));
+    await write('events', event('organization-classification-rule', 'classification', 'block', { uploadMethod: 'picker' }));
+    for (const incorrect of [event('aws-access-key-id', 'credential', 'warn'), event('aws-access-key-id', 'classification', 'block'),
+      event('organization-classification-rule', 'credential', 'warn'), event('organization-classification-rule', 'classification', 'block'),
+      event('aws-access-key-id', 'credential', 'exception_applied'), event('organization-classification-rule', 'classification', 'exception_applied'),
+      event('azure-storage-key', 'credential', 'block'), event('aws-access-key-id', 'credential', 'block', { content: 'synthetic private value' })]) {
+      await write('events', incorrect, 400);
+    }
+    await browserCall('prompt-exception-requests', { method: 'POST', body: { eventId: detected.eventId, appId: 'chatgpt' }, expect: 404 });
+    const exported = await admin('events/export');
+    const rules = exported.entries.map(({ ruleId, detectorCategory }) => `${ruleId}/${detectorCategory}`).sort();
+    assert.deepEqual(rules, ['anthropic-api-key/credential', 'aws-access-key-id/credential', 'google-api-key/credential',
+      'openai-api-key/credential', 'organization-classification-rule/classification', 'organization-classification-rule/classification',
+      'organization-classification-rule/classification', 'slack-token/credential', 'slack-token/credential', 'stripe-live-secret-key/credential']);
+    assert.doesNotMatch(JSON.stringify(exported), /synthetic private value/);
+
+    const group = await post('policy-groups', { name: 'Detection pilot' });
+    const scoped = await post(`policy-groups/${group.id}/policies`, { classificationProtection: { mode: 'block', terms: ['Restricted Distribution'] } });
+    assert.deepEqual(scoped.classificationProtection, { mode: 'block', terms: ['Restricted Distribution'] });
+    assert.deepEqual((await admin('policies'))[0].classificationProtection, policy.classificationProtection);
+    const restored = await post(`policies/${initial.version}/restore`);
+    assert.equal(restored.cloudCredentialMode, 'off');
+    assert.deepEqual(restored.classificationProtection, { mode: 'off', terms: [] });
+    assert.equal((await deliver()).cloudCredentialMode, 'off');
+    await write('events', event('aws-access-key-id', 'credential', 'block', { policyVersion: restored.version }), 400);
   });
 });

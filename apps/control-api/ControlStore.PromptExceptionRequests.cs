@@ -39,6 +39,8 @@ internal sealed partial class ControlStore
                 LEFT JOIN policy_groups current_group ON current_group.organization_id = i.organization_id AND current_group.id = i.policy_group_id
                 WHERE e.organization_id = $1 AND e.installation_id = $2 AND e.event_id = $3 AND e.app_id = $4
                     AND e.decision IN ('warn', 'block') AND e.upload_method IS NULL AND NOT e.clipboard_paste
+                    AND e.rule_id IN ('fixture-secret', 'github-classic-pat', 'github-app-or-fine-grained-token', 'payment-card-number',
+                        'pem-private-key', 'organization-identifier', 'us-social-security-number')
                     AND e.rollout_attributed AND e.rollout_group_id IS NOT DISTINCT FROM i.policy_group_id
                     AND e.policy_version = COALESCE(current_group.policy_version, o.policy_version)
                     AND e.occurred_at BETWEEN now() - interval '1 hour' AND now() + interval '2 minutes' AND {EventRetained}

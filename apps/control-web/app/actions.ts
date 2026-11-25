@@ -9,7 +9,9 @@ import { aiPromptApps, classifications, decisionLabels, detectorModes, discovery
 import { endSession, sessionToken, startSession } from '../lib/session';
 import { cleanupCounts, retentionFields, type RetentionField, type RetentionPolicy } from '../lib/retention';
 import { navigationRuleLimitError, readNavigationRules } from '../lib/navigation';
-import { isDetectorMode, isMode, readIdentifierProtection, type IdentifierProtection } from '../../../contracts/policy/prompt';
+import { isDetectorMode, isMode, readClassificationProtection, readIdentifierProtection, type ClassificationProtection,
+  type IdentifierProtection } from '../../../contracts/policy/prompt';
+import { classificationTermError } from '../../../contracts/policy/classification';
 import { identifierFormatError } from '../../../contracts/policy/organization-identifiers';
 import { isUploadMode, parseUploadTypes, uploadTypesError } from '../../../contracts/policy/uploads';
 import { customAppError, isCustomAppId, parseCustomApps } from '../../../contracts/policy/discovery';
@@ -324,6 +326,7 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
   const privateKeyMode = form.get('privateKeyMode');
   const ssnMode = form.get('ssnMode');
   const githubTokenMode = form.get('githubTokenMode');
+  const cloudCredentialMode = form.get('cloudCredentialMode');
   const clipboardMode = form.get('clipboardMode');
   const uploadModes = readUploadSettings(form);
   const uploadTypes = readUploadTypes(form);
@@ -340,6 +343,7 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
   if (!modes.includes(mode) || !detectorModes.includes(githubPatMode) || !isDetectorMode(paymentCardMode) ||
       (privateKeyMode !== null && !isDetectorMode(privateKeyMode)) || (ssnMode !== null && !isDetectorMode(ssnMode)) ||
       (githubTokenMode !== null && !isDetectorMode(githubTokenMode)) ||
+      (cloudCredentialMode !== null && !isDetectorMode(cloudCredentialMode)) ||
       (clipboardMode !== null && !isClipboardMode(clipboardMode)) || !uploadModes || !fileContent ||
       (discovery !== 'on' && discovery !== 'off') || (presetDiscovery !== null && presetDiscovery !== 'on' && presetDiscovery !== 'off') ||
       (inventory !== 'on' && inventory !== 'off') || (claude !== 'on' && claude !== 'off')) {
@@ -349,7 +353,8 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
   return perform(async (token) => {
     try {
       const policy = await controlApi.publish(token, { mode, githubPatMode, paymentCardMode, privateKeyMode: privateKeyMode ?? undefined,
-        ssnMode: ssnMode ?? undefined, githubTokenMode: githubTokenMode ?? undefined, clipboardMode: clipboardMode ?? undefined,
+        ssnMode: ssnMode ?? undefined, githubTokenMode: githubTokenMode ?? undefined,
+        cloudCredentialMode: cloudCredentialMode ?? undefined, clipboardMode: clipboardMode ?? undefined,
         uploadModes, uploadTypes, ...fileContent,
         discoveryEnabled: discovery === 'on', presetDiscoveryEnabled: presetDiscovery === null ? undefined : presetDiscovery === 'on',
         extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on', expectedVersion },
@@ -420,6 +425,7 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   const privateKeyMode = form.get('privateKeyMode');
   const ssnMode = form.get('ssnMode');
   const githubTokenMode = form.get('githubTokenMode');
+  const cloudCredentialMode = form.get('cloudCredentialMode');
   const clipboardMode = form.get('clipboardMode');
   const uploadModes = readUploadSettings(form);
   const uploadTypes = readUploadTypes(form);
@@ -433,6 +439,7 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   if (!isMode(mode) || !isDetectorMode(githubPatMode) || !isDetectorMode(paymentCardMode) ||
       (privateKeyMode !== null && !isDetectorMode(privateKeyMode)) || (ssnMode !== null && !isDetectorMode(ssnMode)) ||
       (githubTokenMode !== null && !isDetectorMode(githubTokenMode)) ||
+      (cloudCredentialMode !== null && !isDetectorMode(cloudCredentialMode)) ||
       (clipboardMode !== null && !isClipboardMode(clipboardMode)) || !uploadModes || !fileContent ||
       (discovery !== 'on' && discovery !== 'off') || (presetDiscovery !== null && presetDiscovery !== 'on' && presetDiscovery !== 'off') ||
       (inventory !== 'on' && inventory !== 'off') ||
@@ -472,6 +479,16 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
     }
     if (!identifierProtection) return { error: identifierFormatError };
   }
+  let classificationProtection: ClassificationProtection | undefined;
+  const classificationInput = form.get('classificationProtection');
+  if (classificationInput !== null) {
+    try {
+      if (typeof classificationInput === 'string') classificationProtection = readClassificationProtection(JSON.parse(classificationInput));
+    } catch {
+      return { error: classificationTermError };
+    }
+    if (!classificationProtection) return { error: classificationTermError };
+  }
   let promptAppModes: PromptAppModes | undefined;
   const appModesInput = form.get('promptAppModes');
   if (appModesInput !== null) {
@@ -490,11 +507,12 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   return perform(async (token) => {
     try {
       const published = await controlApi.publishPreview(token, { mode, githubPatMode, paymentCardMode, privateKeyMode: privateKeyMode ?? undefined,
-        ssnMode: ssnMode ?? undefined, githubTokenMode: githubTokenMode ?? undefined, clipboardMode: clipboardMode ?? undefined,
+        ssnMode: ssnMode ?? undefined, githubTokenMode: githubTokenMode ?? undefined,
+        cloudCredentialMode: cloudCredentialMode ?? undefined, clipboardMode: clipboardMode ?? undefined,
         uploadModes, uploadTypes, ...fileContent,
         discoveryEnabled: discovery === 'on', presetDiscoveryEnabled: presetDiscovery === null ? undefined : presetDiscovery === 'on',
         extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on',
-        domainRules, pathRules, customApps, promptExceptions, blockedAiAppHosts, identifierProtection, promptAppModes,
+        domainRules, pathRules, customApps, promptExceptions, blockedAiAppHosts, identifierProtection, classificationProtection, promptAppModes,
         requireComposerReady: requireComposerReady.length ? requireComposerReady : undefined },
         expectedVersion, form.get('expectReview') === 'on', groupId ?? undefined);
       if ('reviewId' in published) return queued(published.reviewId);

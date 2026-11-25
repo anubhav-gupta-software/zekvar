@@ -1,5 +1,5 @@
-import { credentialDetector, fixtureDetector, fixtureRule, githubPatRule, githubTokenRule, identifierDetector, identifierRule, isMode,
-  paymentCardRule, paymentDetector, privateKeyRule, ssnDetector, ssnRule, type PolicyMode,
+import { classificationDetector, classificationRule, credentialDetector, fixtureDetector, fixtureRule, githubPatRule, githubTokenRule,
+  identifierDetector, identifierRule, isMode, paymentCardRule, paymentDetector, privateKeyRule, ssnDetector, ssnRule, type PolicyMode,
   type PromptPolicy, type RuleMetadata } from '../../../contracts/policy/prompt';
 import { chatGptApp, claudeApp, fixtureApp, geminiApp, isPromptApp, type AiPromptApp, type AppId } from '../../../contracts/policy/apps';
 import { fileInspectionUnavailableRule, isUploadApp, isUploadMethod, uploadCategory, uploadRule, type FileInspection, type TargetedUploads,
@@ -10,6 +10,7 @@ import { exceptionDecision } from '../../../contracts/policy/prompt-exceptions';
 import type { BrowserLease } from './prompt-exceptions';
 import { clipboardCategory, clipboardUnavailableRule, type ClipboardMode } from '../../../contracts/policy/clipboard';
 import type { PromptAppModes } from '../../../contracts/policy/prompt-app-modes';
+import { cloudCredentialRules } from '../../../contracts/policy/cloud-credentials';
 
 export { fixtureRule, fixtureDetector, githubPatRule, credentialDetector, isMode, isDetectorMode } from '../../../contracts/policy/prompt';
 export type { PolicyMode, DetectorMode, RuleMetadata } from '../../../contracts/policy/prompt';
@@ -170,5 +171,12 @@ export function readMetadata(value: unknown): PolicyEvent | undefined {
   }
   if (value.ruleId === ssnRule && value.detectorCategory === ssnDetector) {
     return { ...event, ...source, ruleId: ssnRule, detectorCategory: ssnDetector };
+  }
+  const cloudRule = cloudCredentialRules.find((rule) => rule === value.ruleId);
+  if (cloudRule && value.detectorCategory === credentialDetector && value.decision !== exceptionDecision) {
+    return { ...event, ...source, ruleId: cloudRule, detectorCategory: credentialDetector };
+  }
+  if (value.ruleId === classificationRule && value.detectorCategory === classificationDetector && value.decision !== exceptionDecision) {
+    return { ...event, ...source, ruleId: classificationRule, detectorCategory: classificationDetector };
   }
 }

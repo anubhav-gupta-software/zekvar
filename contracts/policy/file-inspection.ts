@@ -1,7 +1,9 @@
-import { evaluatePrompt, fixtureRule, githubPatRule, githubTokenRule, identifierRule, isMode, paymentCardRule,
-  privateKeyRule, ssnRule, type PromptPolicy, type RuleMetadata } from './prompt';
+import { classificationRule, evaluatePrompt, fixtureRule, githubPatRule, githubTokenRule, identifierRule, isMode, paymentCardRule,
+  privateKeyRule, ssnRule, type PromptPolicy, type PromptRuleId, type RuleMetadata } from './prompt';
+import { cloudCredentialRules } from './cloud-credentials';
 
-const priority = [fixtureRule, identifierRule, githubPatRule, githubTokenRule, ssnRule, paymentCardRule, privateKeyRule];
+const priority: readonly PromptRuleId[] = [fixtureRule, classificationRule, identifierRule, githubPatRule, githubTokenRule, ...cloudCredentialRules,
+  ssnRule, paymentCardRule, privateKeyRule];
 
 export function preferredFileMatch(current: RuleMetadata | undefined, candidate: RuleMetadata | undefined) {
   if (candidate && (!current || priority.indexOf(candidate.ruleId) > priority.indexOf(current.ruleId))) return candidate;
@@ -14,6 +16,9 @@ export function fileInspectionDetectors(policy: PromptPolicy): PromptPolicy {
     paymentCardMode: isMode(policy.paymentCardMode) ? 'monitor' : 'off',
     privateKeyMode: isMode(policy.privateKeyMode) ? 'monitor' : 'off',
     ssnMode: isMode(policy.ssnMode) ? 'monitor' : 'off',
+    cloudCredentialMode: isMode(policy.cloudCredentialMode) ? 'monitor' : 'off',
+    classificationProtection: isMode(policy.classificationProtection?.mode) ?
+      { mode: 'monitor', terms: policy.classificationProtection.terms } : undefined,
     identifierProtection: isMode(policy.identifierProtection?.mode) ?
       { mode: 'monitor', formats: policy.identifierProtection.formats } : undefined };
 }

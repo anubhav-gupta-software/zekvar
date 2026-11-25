@@ -30,6 +30,12 @@ export function PublishPolicyForm({ policy, groupId, review }: { policy?: Policy
         {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
       </select>
     </div>}
+    {policy?.cloudCredentialMode !== undefined && <div className="grid gap-1">
+      <label htmlFor="cloud-credential-mode">Cloud and API credentials</label>
+      <select key={policy.version} id="cloud-credential-mode" name="cloudCredentialMode" defaultValue={policy.cloudCredentialMode}>
+        {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+      </select>
+    </div>}
     <div className="grid gap-1">
       <label htmlFor="payment-card-mode">Payment card number</label>
       <select key={policy?.version} id="payment-card-mode" name="paymentCardMode" defaultValue={policy?.paymentCardMode ?? 'off'}>
@@ -119,6 +125,7 @@ export function PolicyVersionTable({ policies, groupId, writable, review }: {
   const identifiersAvailable = policies.some((policy) => policy.identifierProtection !== undefined);
   const ssnAvailable = policies.some((policy) => policy.ssnMode !== undefined);
   const githubTokensAvailable = policies.some((policy) => policy.githubTokenMode !== undefined);
+  const detectionRulesAvailable = policies.some((policy) => policy.cloudCredentialMode !== undefined);
   return <section className="panel table-panel" id="policy-history" aria-labelledby="history-heading">
     <div className="panel-heading"><h2 id="history-heading">{groupId ? 'Group policy history' : 'Policy history'}</h2>
       <span className="table-note">Latest 100 versions</span></div>
@@ -126,22 +133,25 @@ export function PolicyVersionTable({ policies, groupId, writable, review }: {
       <table aria-labelledby="history-heading">
         <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th>{githubTokensAvailable && <th>GitHub tokens</th>}
           <th>Payment card number</th><th>Private key</th>
-          {ssnAvailable && <th>U.S. SSN</th>}{identifiersAvailable && <th>Organization identifiers</th>}<th>App discovery</th>
+          {ssnAvailable && <th>U.S. SSN</th>}{identifiersAvailable && <th>Organization identifiers</th>}
+          {detectionRulesAvailable && <><th>Cloud and API credentials</th><th>Classification rules</th></>}<th>App discovery</th>
           <th>Extension inventory</th><th>Claude prompt protection</th><th>Clipboard paste</th><th>File uploads</th><th>Navigation rules</th><th>Published (UTC)</th><th>Restore source</th>
           <th>Prompt exceptions</th><th>Action</th></tr></thead>
         <tbody>{policies.map((policy, index) => <PolicyRow key={policy.version} policy={policy} current={index === 0}
           groupId={groupId} writable={writable} review={review} identifiersAvailable={identifiersAvailable}
-          ssnAvailable={ssnAvailable} githubTokensAvailable={githubTokensAvailable} />)}</tbody>
+          ssnAvailable={ssnAvailable} githubTokensAvailable={githubTokensAvailable} detectionRulesAvailable={detectionRulesAvailable} />)}</tbody>
       </table>
       {policies.length === 0 && <p className="empty">No policy versions have been published in this scope.</p>}
     </div>
   </section>;
 }
 
-function PolicyRow({ policy, current, groupId, writable, review, identifiersAvailable, ssnAvailable, githubTokensAvailable }: {
+function PolicyRow({ policy, current, groupId, writable, review, identifiersAvailable, ssnAvailable, githubTokensAvailable,
+  detectionRulesAvailable }: {
   policy: Policy; current: boolean; groupId?: string; writable: boolean; review: boolean; identifiersAvailable: boolean; ssnAvailable: boolean;
-  githubTokensAvailable: boolean;
+  githubTokensAvailable: boolean; detectionRulesAvailable: boolean;
 }) {
+  const terms = policy.classificationProtection?.terms ?? [];
   const { allow = [], block = [] } = policy.domainRules ?? {};
   const { allow: allowPaths = [], block: blockPaths = [] } = policy.pathRules ?? {};
   const formats = policy.identifierProtection?.formats ?? [];
@@ -158,6 +168,15 @@ function PolicyRow({ policy, current, groupId, writable, review, identifiersAvai
         {formats.map(({ prefix, digits }) => <div key={prefix}><code>{prefix}</code> · {digits} digits</div>)}
       </details>}
     </td>}
+    {detectionRulesAvailable && <>
+      <td>{detectorModeLabels[policy.cloudCredentialMode ?? 'off']}</td>
+      <td>{detectorModeLabels[policy.classificationProtection?.mode ?? 'off']}
+        {terms.length > 0 && <details className="domain-rule-history">
+          <summary>{terms.length} {terms.length === 1 ? 'label' : 'labels'}</summary>
+          {terms.map((term) => <div key={term}><code>{term}</code></div>)}
+        </details>}
+      </td>
+    </>}
     <td>{policy.discoveryEnabled ? 'On' : 'Off'}
       {policy.presetDiscoveryEnabled && <div className="muted">AI app presets enabled</div>}
       {!!policy.customApps?.length && <details className="domain-rule-history">

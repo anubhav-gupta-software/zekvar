@@ -8,7 +8,7 @@ import { bindUploadGuard, type UploadCheck } from './upload-guard';
 import { inspectFiles, scanFileContents } from './file-inspection';
 import { promptText, replacePromptText, supportsRedaction, type Composer, type ComposerInspection } from './prompt-composer';
 import { leaseTime } from './prompt-exceptions';
-import { evaluatePromptWithExceptions, exceptionDecision } from '../../../contracts/policy/prompt-exceptions';
+import { evaluatePromptWithExceptions, exceptionDecision, isExceptionTarget } from '../../../contracts/policy/prompt-exceptions';
 import type { Policy } from './protocol';
 import { clipboardUnavailableRule, inspectClipboard } from '../../../contracts/policy/clipboard';
 import { promptPolicyForApp } from '../../../contracts/policy/prompt-app-modes';
@@ -150,6 +150,8 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     const ssn = managedPolicy?.ssnMode;
     const clipboard = managedPolicy?.clipboardMode;
     const identifiers = managedPolicy?.identifierProtection?.mode;
+    const cloud = managedPolicy?.cloudCredentialMode;
+    const classification = managedPolicy?.classificationProtection?.mode;
     const targetedUpload = uploadApp && managedPolicy?.targetedUploads?.[uploadApp];
     const upload = targetedUpload?.mode ?? (uploadApp && managedPolicy?.uploadModes?.[uploadApp]);
     const content = uploadApp ? fileContentMode(managedPolicy, uploadApp) : 'off';
@@ -159,6 +161,8 @@ export function bindPromptGuard(adapter: PromptAdapter) {
       (isMode(privateKey) ? ` · Private key ${privateKey}` : '') +
       (isMode(ssn) ? ` · U.S. SSN ${ssn}` : '') +
       (isMode(identifiers) ? ` · Organization identifiers ${identifiers}` : '') +
+      (isMode(cloud) ? ` · Cloud and API credentials ${cloud}` : '') +
+      (isMode(classification) ? ` · Classification rules ${classification}` : '') +
       (upload && upload !== 'off' ? ` · File uploads ${upload}${targetedUpload ? ' (selected types)' : ''}` : '') +
       (content !== 'off' ? ` · File content ${content}` : '') +
       (clipboard && clipboard !== 'off' ? ` · Clipboard ${clipboard}` : '');
@@ -230,7 +234,7 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     pending = { input: current.input, page: location.href, value, installationId, match, eventId };
     ui.redact.hidden = !supportsRedaction(current.input);
     ui.proceed.hidden = match.action !== 'warn';
-    ui.request.hidden = control?.policy?.promptExceptionRequestsAvailable !== true;
+    ui.request.hidden = control?.policy?.promptExceptionRequestsAvailable !== true || !isExceptionTarget(adapter.appId, match.ruleId);
     ui.request.disabled = false;
     ui.actions.hidden = false;
     if (match.action === 'block') {

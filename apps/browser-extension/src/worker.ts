@@ -13,7 +13,8 @@ import type { InventoryStatus } from '../../../contracts/policy/extension-invent
 import { discoveryPresetAt, isCustomAppId, isDiscoveryPreset, readCustomApps, type CustomApp } from '../../../contracts/policy/discovery';
 import { leaseTime, readExceptionLease, sampleClock, type BrowserLease } from './prompt-exceptions';
 import { readBlockedAiAppHosts } from '../../../contracts/policy/ai-app-access';
-import { readIdentifierProtection, sameIdentifierProtection } from '../../../contracts/policy/prompt';
+import { readClassificationProtection, readIdentifierProtection, sameClassificationProtection,
+  sameIdentifierProtection } from '../../../contracts/policy/prompt';
 import { isClipboardMode } from '../../../contracts/policy/clipboard';
 import { readPromptAppModes, samePromptAppModes } from '../../../contracts/policy/prompt-app-modes';
 import { fileInspectionDetectors } from '../../../contracts/policy/file-inspection';
@@ -147,7 +148,7 @@ async function request(path: string, token?: string, body?: object): Promise<unk
         'X-Zekvar-Private-Key': '1', 'X-Zekvar-File-Inspection': '1', 'X-Zekvar-File-Content-Block': '1', 'X-Zekvar-AI-App-Access': '1',
         'X-Zekvar-Identifiers': '1', 'X-Zekvar-Preset-Discovery': '1', 'X-Zekvar-SSN': '1', 'X-Zekvar-Clipboard-Paste': '1',
         'X-Zekvar-GitHub-Token': '1', 'X-Zekvar-Prompt-Exception-Requests': '1',
-        'X-Zekvar-Prompt-App-Modes': '1', 'X-Zekvar-Claude-Files': '1',
+        'X-Zekvar-Prompt-App-Modes': '1', 'X-Zekvar-Claude-Files': '1', 'X-Zekvar-Detection-Rules': '1',
         'X-Zekvar-Extension-Version': extensionVersion } : {}),
       ...(path === 'browser/heartbeat' ? { 'X-Zekvar-Composer-Coverage': '1' } : {}),
       ...(path === 'enroll' ? { 'X-Zekvar-Scoped-Enrollment': '1' } : {}),
@@ -267,6 +268,7 @@ async function sync(state: State) {
         (policy.privateKeyMode !== undefined && !isDetectorMode(policy.privateKeyMode)) ||
         (policy.ssnMode !== undefined && !isDetectorMode(policy.ssnMode)) ||
         (policy.githubTokenMode !== undefined && !isDetectorMode(policy.githubTokenMode)) ||
+        (policy.cloudCredentialMode !== undefined && !isDetectorMode(policy.cloudCredentialMode)) ||
         (policy.clipboardMode !== undefined && !isClipboardMode(policy.clipboardMode)) ||
         (policy.fileInspection !== undefined && !isFileInspection(policy.fileInspection)) ||
         (policy.fileContentModes !== undefined && !isUploadModes(policy.fileContentModes)) ||
@@ -283,11 +285,14 @@ async function sync(state: State) {
     const privateKeyMode = policy.privateKeyMode;
     const ssnMode = policy.ssnMode ?? 'off';
     const githubTokenMode = policy.githubTokenMode;
+    const cloudCredentialMode = policy.cloudCredentialMode;
     const clipboardMode = policy.clipboardMode;
     const promptAppModes = readPromptAppModes(policy.promptAppModes);
     if (policy.promptAppModes !== undefined && !promptAppModes) throw new Error('Invalid AI app prompt modes');
     const identifierProtection = readIdentifierProtection(policy.identifierProtection);
     if (policy.identifierProtection !== undefined && !identifierProtection) throw new Error('Invalid organization identifier policy');
+    const classificationProtection = readClassificationProtection(policy.classificationProtection);
+    if (policy.classificationProtection !== undefined && !classificationProtection) throw new Error('Invalid classification rule policy');
     const fileInspection = policy.fileInspection;
     const fileContentModes = policy.fileContentModes;
     if (fileContentModes && uploadApps.some((app) => ((fileContentModes[app] ?? 'off') !== 'off') !== (fileInspection?.[app] === true))) {
@@ -327,6 +332,9 @@ async function sync(state: State) {
         (state.policy.privateKeyMode === undefined || privateKeyMode === state.policy.privateKeyMode) &&
         (state.policy.ssnMode === undefined || ssnMode === state.policy.ssnMode) &&
         (state.policy.githubTokenMode === undefined || githubTokenMode === state.policy.githubTokenMode) &&
+        (state.policy.cloudCredentialMode === undefined || cloudCredentialMode === state.policy.cloudCredentialMode) &&
+        (!state.policy.classificationProtection ||
+          sameClassificationProtection(state.policy.classificationProtection, classificationProtection)) &&
         (state.policy.clipboardMode === undefined || clipboardMode === state.policy.clipboardMode) &&
         (state.policy.promptAppModes === undefined || samePromptAppModes(promptAppModes, state.policy.promptAppModes)) &&
         (!state.policy.identifierProtection || sameIdentifierProtection(state.policy.identifierProtection, identifierProtection)) &&
@@ -348,6 +356,7 @@ async function sync(state: State) {
       if (policy.version !== state.policy?.version || assignment !== previousAssignment) clearCoverage(state);
       state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, privateKeyMode, ssnMode, identifierProtection, fileInspection, fileContentModes,
         discoveryEnabled, presetDiscovery, customApps, extensionInventoryEnabled, claudePromptEnabled, clipboardMode, githubTokenMode,
+        cloudCredentialMode, classificationProtection,
         promptExceptionRequestsAvailable: policy.promptExceptionRequestsAvailable === true,
         promptAppModes,
         assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini, claude: uploads.claude }, targetedUploads };
@@ -428,6 +437,8 @@ async function heartbeat(state: State) {
     privateKeyModeApplied: isMode(state.policy.privateKeyMode) ? true : undefined,
     ssnModeApplied: isMode(state.policy.ssnMode) ? true : undefined,
     githubTokenModeApplied: isMode(state.policy.githubTokenMode) ? true : undefined,
+    cloudCredentialModeApplied: isMode(state.policy.cloudCredentialMode) ? true : undefined,
+    classificationApplied: isMode(state.policy.classificationProtection?.mode) ? true : undefined,
     promptAppModesApplied: Object.values(state.policy.promptAppModes ?? {}).some(isMode) ? true : undefined,
     clipboardModeApplied: state.policy.clipboardMode === 'monitor' || state.policy.clipboardMode === 'block' ? true : undefined,
     identifiersApplied: isMode(state.policy.identifierProtection?.mode) ? true : undefined,

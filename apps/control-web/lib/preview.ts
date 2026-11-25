@@ -1,7 +1,7 @@
 import { evaluateNavigation, parseWebAddress, sameDomainRules, emptyDomainRules, emptyPathRules,
   type DomainRules, type PathRules } from '../../../contracts/policy/domains';
-import { fixtureRule, ruleLabels, sameIdentifierProtection, testMarker,
-  type DetectorMode, type IdentifierProtection, type PolicyMode } from '../../../contracts/policy/prompt';
+import { detectionRuleLabels as ruleLabels, fixtureRule, isMode, sameClassificationProtection, sameIdentifierProtection, testMarker,
+  type ClassificationProtection, type DetectorMode, type IdentifierProtection, type PolicyMode } from '../../../contracts/policy/prompt';
 import { chatGptApp, claudeApp, promptAppLabels, type AiPromptApp } from '../../../contracts/policy/apps';
 import { evaluateFileInspection, fileInspectionDetectors } from '../../../contracts/policy/file-inspection';
 import { allUploadTypes, fileContentMode, matchesUploadType, sameUploadTypes, uploadApps, uploadsOff, type UploadApp, type UploadFile,
@@ -22,6 +22,8 @@ export type PreviewPolicy = {
   identifierProtection?: IdentifierProtection;
   ssnMode?: DetectorMode;
   githubTokenMode?: DetectorMode;
+  cloudCredentialMode?: DetectorMode;
+  classificationProtection?: ClassificationProtection;
   promptAppModes?: PromptAppModes;
   extensionInventoryEnabled: boolean;
   extensionDeployment?: ExtensionDeployment;
@@ -47,6 +49,8 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     privateKeyMode: policy.privateKeyMode,
     ssnMode: policy.ssnMode,
     githubTokenMode: policy.githubTokenMode,
+    cloudCredentialMode: policy.cloudCredentialMode,
+    classificationProtection: policy.classificationProtection,
     promptAppModes: policy.promptAppModes,
     identifierProtection: policy.identifierProtection,
     discoveryEnabled: policy.discoveryEnabled ?? false,
@@ -73,6 +77,8 @@ export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
     (a.clipboardMode ?? 'off') === (b.clipboardMode ?? 'off') &&
     a.privateKeyMode === b.privateKeyMode && a.ssnMode === b.ssnMode &&
     (a.githubTokenMode ?? 'off') === (b.githubTokenMode ?? 'off') &&
+    (a.cloudCredentialMode ?? 'off') === (b.cloudCredentialMode ?? 'off') &&
+    sameClassificationProtection(a.classificationProtection, b.classificationProtection) &&
     samePromptAppModes(a.promptAppModes, b.promptAppModes) &&
     sameIdentifierProtection(a.identifierProtection, b.identifierProtection) &&
     a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
@@ -105,6 +111,21 @@ const prompts = [
   { name: 'Payment card with invalid checksum', content: 'Test card 4242 4242 4242 4243' },
   { name: 'Synthetic private key block', content: ['-----BEGIN PRIVATE KEY-----', 'A'.repeat(64), '-----END PRIVATE KEY-----'].join('\n') },
   { name: 'Synthetic U.S. SSN', content: 'Social Security number: 899 97 4321' },
+];
+// Synthetic credentials are assembled at runtime from a fixed, nonsecret pattern so the source holds no key-shaped literals.
+function syntheticKey(alphabet: string, length: number, offset = 0) {
+  return Array.from({ length }, (_, index) => alphabet[(index * 7 + offset) % alphabet.length]).join('');
+}
+const alphanumeric = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+const cloudCredentialSamples = [
+  { name: 'Synthetic AWS access key ID', content: `aws_access_key_id=${'AK' + 'IA'}${syntheticKey('ABCDEFGHIJKLMNOPQRSTUVWXYZ234567', 16)}` },
+  { name: 'AWS documentation example key', content: `aws_access_key_id=${'AK' + 'IA'}IOSFODNN7${'EXAM' + 'PLE'}` },
+  { name: 'Synthetic Slack token', content: `${'xo' + 'xb-'}${syntheticKey('0123456789', 11)}-${syntheticKey('0123456789', 12, 3)}-${syntheticKey(alphanumeric, 24)}` },
+  { name: 'Synthetic Stripe live secret key', content: `${'sk' + '_live_'}${syntheticKey(alphanumeric, 32)}` },
+  { name: 'Stripe test-mode key', content: `${'sk' + '_test_'}${syntheticKey(alphanumeric, 32)}` },
+  { name: 'Synthetic Google API key', content: `${'AI' + 'za'}${syntheticKey(alphanumeric + '_-', 35)}` },
+  { name: 'Synthetic OpenAI API key', content: `${'s' + 'k-proj-'}${syntheticKey(alphanumeric, 40)}${'T3Blbk' + 'FJ'}${syntheticKey(alphanumeric, 40, 5)}` },
+  { name: 'Synthetic Anthropic API key', content: `${'s' + 'k-ant-api03-'}${syntheticKey(alphanumeric + '_-', 93)}AA` },
 ];
 const navigations = [
   { name: 'Sample domain', content: 'https://pilot.example.test/start' },
@@ -168,6 +189,17 @@ export function runComparison(reference: PreviewSnapshot, candidate: PreviewPoli
     rows.push({ name: `Organization identifier ${label}`, current: promptOutcome(sample, reference, app, now),
       draft: promptOutcome(sample, candidate, app, now) });
   }
+  if (isMode(reference.cloudCredentialMode) || isMode(candidate.cloudCredentialMode)) {
+    for (const { name, content } of cloudCredentialSamples) {
+      rows.push({ name, current: promptOutcome(content, reference, app, now), draft: promptOutcome(content, candidate, app, now) });
+    }
+  }
+  const classificationExamples = new Set([...(reference.classificationProtection?.terms ?? []), ...(candidate.classificationProtection?.terms ?? [])]);
+  for (const term of classificationExamples) {
+    const sample = `Draft notes: ${term.toLowerCase()} summary`;
+    rows.push({ name: `Classification rule · ${term}`, current: promptOutcome(sample, reference, app, now),
+      draft: promptOutcome(sample, candidate, app, now) });
+  }
   if (prompt.trim()) rows.push({ name: 'Custom prompt', current: promptOutcome(prompt, reference, app, now),
     draft: promptOutcome(prompt, candidate, app, now) });
   if ((reference.clipboardMode ?? 'off') !== 'off' || (candidate.clipboardMode ?? 'off') !== 'off') {
@@ -202,6 +234,16 @@ export function runComparison(reference: PreviewSnapshot, candidate: PreviewPoli
       for (const [label, sample] of identifierExamples) {
         rows.push({ name: `${promptAppLabels[app]} identifier file ${label}`,
           current: fileInspectionOutcome(reference, app, textFile, sample), draft: fileInspectionOutcome(candidate, app, textFile, sample) });
+      }
+      if (isMode(reference.cloudCredentialMode) || isMode(candidate.cloudCredentialMode)) {
+        const sample = cloudCredentialSamples[0].content;
+        rows.push({ name: `${promptAppLabels[app]} synthetic cloud credential file`,
+          current: fileInspectionOutcome(reference, app, textFile, sample), draft: fileInspectionOutcome(candidate, app, textFile, sample) });
+      }
+      for (const term of classificationExamples) {
+        rows.push({ name: `${promptAppLabels[app]} classification file · ${term}`,
+          current: fileInspectionOutcome(reference, app, textFile, `Header: ${term}`),
+          draft: fileInspectionOutcome(candidate, app, textFile, `Header: ${term}`) });
       }
     }
     for (const [name, sample] of [

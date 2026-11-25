@@ -78,6 +78,22 @@ Use `ghp_000000000000000000000000000000000000` in the local prompt fixture to te
 
 The rule starts Off and covers structurally recognizable fine-grained PATs, OAuth tokens, App user and refresh tokens, and older opaque and newer stateless App installation tokens. It uses the token shape and never contacts GitHub to validate a credential. [GitHub credential types](https://docs.github.com/en/organizations/managing-programmatic-access-to-your-organization/github-credential-types) · [GitHub installation token format](https://github.blog/changelog/2026-10-02-stateless-github-app-installation-tokens-rolled-out/)
 
+## Protect cloud and API credentials
+
+1. Load Browser v0.41.0. In Control, open **Policy preview** for a test rollout group and set **Draft cloud and API credentials** to **Monitor**. Run the preview to compare the synthetic AWS, Slack, Stripe, Google, OpenAI, and Anthropic samples with the documentation and test-mode near misses. Publish the draft, then select **Sync now**.
+2. Paste a synthetic key into a controlled composer. Switch to **Warn** or **Block** to exercise **Redact detected values**. The notice names the provider. **Security events** lists the provider rule, such as **AWS access key ID**, under the **credential** category.
+3. Turn on **Clipboard paste protection** or per-app **File content protection** to apply the same checks at those entry points.
+
+One setting controls six provider rules: AWS access key IDs (`AKIA` or `ASIA` plus 16 base-32 characters), Slack `xoxb`, `xoxp`, `xoxa`, and `xoxr` tokens, Stripe live secret and restricted keys, Google API keys, OpenAI keys that carry the provider's fixed key marker, and Anthropic API and admin keys. Each check uses a fixed prefix, length, and character set. It ignores the AWS documentation example and bodies with repeated placeholder characters. Stripe test and publishable keys are out of scope. Matching runs locally, and Zekvar never contacts a provider. These rules do not accept temporary prompt exceptions. Run `npm test` to rerun the labeled precision benchmark in `test/detection-benchmark.test.mjs`. [Configure the setting in Control](../control-web/README.md#protect-cloud-credentials-and-classified-labels)
+
+## Test classification rules
+
+1. In **Policy preview**, set **Classification rules** to **Warn** or **Block** and enter synthetic labels such as `CONFIDENTIAL – INTERNAL` and `Project Bluebird`. Run the preview and publish the draft to a test group.
+2. In a controlled composer, enter `confidential-internal` or `project  bluebird` to test a match. Try `Project Bluebirds` to check that a longer word stays available. Use **Redact detected values** to remove the matched phrase.
+3. Attach a UTF-8 text file that contains a label while file content protection is on. **Security events** records **Organization classification rule** and never the matched label.
+
+Matching ignores case and treats runs of spaces and any hyphen or dash as equivalent. A letter, digit, or connector next to the phrase makes it part of a longer word. The rule applies to prompts, clipboard paste, and supported attachments.
+
 ## Request review of a blocked prompt
 
 In enrolled Browser v0.33.0 or later, choose **Request policy review** after a Warn or Block on a supported ChatGPT, Gemini, or enabled Claude composer. Browser sends the existing detection reference and application. The prompt and matched values stay in the tab, and the current policy continues to apply.

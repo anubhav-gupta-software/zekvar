@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { navigationRuleLimitError, readNavigationRules } from '../../lib/navigation';
-import { detectorModes, fixtureRule, githubTokenRule, identifierRule, isMode, modes, privateKeyRule, readIdentifierProtection, ruleLabels, ssnRule,
-  type DetectorMode, type PolicyMode, type PromptRuleId } from '../../../../contracts/policy/prompt';
+import { detectorModes, fixtureRule, githubTokenRule, identifierRule, isMode, modes, privateKeyRule, readClassificationProtection,
+  readIdentifierProtection, ruleLabels, ssnRule, type DetectorMode, type ExceptionRuleId, type PolicyMode } from '../../../../contracts/policy/prompt';
+import { classificationTermError, classificationTermHint, parseClassificationTerms } from '../../../../contracts/policy/classification';
 import { identifierFormatError, identifierFormatHint, parseIdentifierFormats } from '../../../../contracts/policy/organization-identifiers';
 import { parseUploadTypes, uploadApps, uploadModes, uploadTypesError, uploadTypesHint, type UploadApp, type UploadMode } from '../../../../contracts/policy/uploads';
 import { aiPromptApps, decisionLabels, detectorModeLabels, promptAppLabels } from '../../lib/control';
@@ -26,15 +27,18 @@ const navigationFields = [
   ['allow', 'Draft allowed domains'], ['block', 'Draft blocked domains'],
   ['allowPaths', 'Draft allowed paths'], ['blockPaths', 'Draft blocked paths'],
 ] as const;
-type Editor = Omit<PreviewPolicy, 'domainRules' | 'pathRules' | 'uploadTypes' | 'customApps' | 'identifierProtection'> &
+type Editor = Omit<PreviewPolicy, 'domainRules' | 'pathRules' | 'uploadTypes' | 'customApps' | 'identifierProtection' | 'classificationProtection'> &
   Record<typeof navigationFields[number][0], string> & { uploadTypeText: Record<UploadApp, string>; catalog: string;
-    identifierMode?: DetectorMode; identifierFormats: string };
+    identifierMode?: DetectorMode; identifierFormats: string; classificationMode?: DetectorMode; classificationTerms: string };
 
 function editorFor(snapshot: PreviewSnapshot): Editor {
   return {
     mode: snapshot.mode, githubPatMode: snapshot.githubPatMode, paymentCardMode: snapshot.paymentCardMode, privateKeyMode: snapshot.privateKeyMode,
     ssnMode: snapshot.ssnMode,
     githubTokenMode: snapshot.githubTokenMode,
+    cloudCredentialMode: snapshot.cloudCredentialMode,
+    classificationMode: snapshot.classificationProtection?.mode,
+    classificationTerms: snapshot.classificationProtection?.terms.join('\n') ?? '',
     promptAppModes: snapshot.promptAppModes,
     clipboardMode: snapshot.clipboardMode,
     identifierMode: snapshot.identifierProtection?.mode,
@@ -146,12 +150,21 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
         'Enter at least one identifier format or set the detector to Off.' : identifierFormatError);
       return;
     }
+    const classification = editor.classificationMode === undefined ? undefined :
+      readClassificationProtection({ mode: editor.classificationMode, terms: parseClassificationTerms(editor.classificationTerms) });
+    if (editor.classificationMode !== undefined && !classification) {
+      setError(editor.classificationMode !== 'off' && !editor.classificationTerms.trim() ?
+        'Enter at least one classification label or phrase or set the rule to Off.' : classificationTermError);
+      return;
+    }
     const file = customFile.name || customFile.type.trim() ? customFile : undefined;
     setError('');
     const candidate: PreviewPolicy = {
       mode: editor.mode, githubPatMode: editor.githubPatMode, paymentCardMode: editor.paymentCardMode, privateKeyMode: editor.privateKeyMode,
       ssnMode: editor.ssnMode,
       githubTokenMode: editor.githubTokenMode,
+      cloudCredentialMode: editor.cloudCredentialMode,
+      classificationProtection: classification,
       promptAppModes: editor.promptAppModes,
       clipboardMode: editor.clipboardMode,
       identifierProtection: identifiers,
@@ -201,6 +214,14 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
             onChange={(event) => edit('githubTokenMode', event.target.value as DetectorMode)}>
             {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
           </select>
+        </div>}
+        {editor.cloudCredentialMode !== undefined && <div className="grid gap-1">
+          <label htmlFor="draft-cloud-credentials">Draft cloud and API credentials</label>
+          <select id="draft-cloud-credentials" value={editor.cloudCredentialMode} aria-describedby="draft-cloud-credentials-hint"
+            onChange={(event) => edit('cloudCredentialMode', event.target.value as DetectorMode)}>
+            {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+          </select>
+          <span className="muted" id="draft-cloud-credentials-hint">AWS, Slack, Stripe live, Google, OpenAI, and Anthropic keys</span>
         </div>}
         <div className="grid gap-1">
           <label htmlFor="draft-payment-card">Draft payment card number</label>
@@ -302,6 +323,19 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
           onChange={(event) => edit('identifierFormats', event.target.value)} />
         <p className="muted" id="draft-identifier-hint">{identifierFormatHint}</p>
       </div>}
+      {editor.classificationMode !== undefined && <div id="draft-classification" className="grid gap-2 mb-4">
+        <div className="form-row"><label htmlFor="draft-classification-mode">Classification rules</label>
+          <select id="draft-classification-mode" value={editor.classificationMode}
+            onChange={(event) => edit('classificationMode', event.target.value as DetectorMode)}>
+            {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+          </select>
+        </div>
+        <label htmlFor="draft-classification-terms">Labels and phrases</label>
+        <textarea id="draft-classification-terms" rows={3} maxLength={1100} spellCheck={false} autoComplete="off"
+          placeholder={'CONFIDENTIAL – INTERNAL\nProject Bluebird'} aria-describedby="draft-classification-hint" value={editor.classificationTerms}
+          onChange={(event) => edit('classificationTerms', event.target.value)} />
+        <p className="muted" id="draft-classification-hint">{classificationTermHint}</p>
+      </div>}
       <div className="grid gap-1" id="draft-app-catalog">
         <label htmlFor="draft-custom-apps">Custom app catalog</label>
         <p className="muted" id="custom-apps-hint">Enter the exact hostname and display name for each HTTPS site, one per line.
@@ -365,7 +399,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
         <div className="grid gap-1">
           <label htmlFor={`exception-rule-${index}`}>Detector</label>
           <select id={`exception-rule-${index}`} value={entry.ruleId}
-            onChange={(event) => editException(index, { ruleId: event.target.value as PromptRuleId })}>
+            onChange={(event) => editException(index, { ruleId: event.target.value as ExceptionRuleId })}>
             {Object.entries(ruleLabels).map(([rule, label]) => (rule === privateKeyRule && editor.privateKeyMode === undefined ||
               rule === githubTokenRule && editor.githubTokenMode === undefined ||
               rule === identifierRule && editor.identifierMode === undefined || rule === ssnRule && editor.ssnMode === undefined) ? null :
@@ -461,6 +495,9 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         <input type="hidden" name="mode" value={candidate.mode} />
         <input type="hidden" name="githubPatMode" value={candidate.githubPatMode} />
         {candidate.githubTokenMode !== undefined && <input type="hidden" name="githubTokenMode" value={candidate.githubTokenMode} />}
+        {candidate.cloudCredentialMode !== undefined && <input type="hidden" name="cloudCredentialMode" value={candidate.cloudCredentialMode} />}
+        {candidate.classificationProtection &&
+          <input type="hidden" name="classificationProtection" value={JSON.stringify(candidate.classificationProtection)} />}
         {candidate.promptAppModes !== undefined && <input type="hidden" name="promptAppModes" value={JSON.stringify(candidate.promptAppModes)} />}
         <input type="hidden" name="paymentCardMode" value={candidate.paymentCardMode} />
         {candidate.privateKeyMode !== undefined && <input type="hidden" name="privateKeyMode" value={candidate.privateKeyMode} />}

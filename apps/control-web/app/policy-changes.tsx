@@ -32,6 +32,10 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     ['Organization identifier detection', detectorModeLabels[reference.identifierProtection?.mode ?? 'off'],
       detectorModeLabels[candidate.identifierProtection?.mode ?? 'off']],
     ['Identifier formats', identifierFormats(reference), identifierFormats(candidate)],
+    ['Cloud and API credentials', detectorModeLabels[reference.cloudCredentialMode ?? 'off'], detectorModeLabels[candidate.cloudCredentialMode ?? 'off']],
+    ['Classification rules', detectorModeLabels[reference.classificationProtection?.mode ?? 'off'],
+      detectorModeLabels[candidate.classificationProtection?.mode ?? 'off']],
+    ['Classification labels', classificationTerms(reference), classificationTerms(candidate)],
     ['App discovery', toggle(reference.discoveryEnabled), toggle(candidate.discoveryEnabled)],
     ['AI app preset discovery', toggle(reference.presetDiscoveryEnabled ?? false), toggle(candidate.presetDiscoveryEnabled ?? false)],
     ['Extension inventory', toggle(reference.extensionInventoryEnabled), toggle(candidate.extensionInventoryEnabled)],
@@ -84,6 +88,10 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
         removed.length > 0 && <li key={`${field}-${action}-remove`}>Remove from {label} <code>{removed.join(', ')}</code></li>];
     }))}
   </ul>;
+}
+
+function classificationTerms(policy: PreviewPolicy) {
+  return policy.classificationProtection?.terms.join(', ') || 'None';
 }
 
 function identifierFormats(policy: PreviewPolicy) {
