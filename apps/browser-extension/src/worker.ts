@@ -16,8 +16,8 @@ import { readIdentifierProtection, sameIdentifierProtection } from '../../../con
 import { isClipboardMode } from '../../../contracts/policy/clipboard';
 import { readPromptAppModes, samePromptAppModes } from '../../../contracts/policy/prompt-app-modes';
 import { fileInspectionDetectors } from '../../../contracts/policy/file-inspection';
-import { isPdfPayload, pdfUnavailable, type PdfInspection } from './pdf-inspection';
-import { inspectPdfOffscreen } from './pdf-offscreen-client';
+import { inspectionUnavailable, isInspectionPayload, type AttachmentInspection } from './attachment-inspection';
+import { inspectOffscreen } from './pdf-offscreen-client';
 import { migrateWorkerState, readWorkerState, restrictChromeStorage, saveWorkerState } from './state-storage';
 
 declare const CONTROL_ORIGIN: string;
@@ -625,7 +625,7 @@ async function canDiscoverCatalogApps() {
     await chrome.permissions.contains(discoveryPermission);
 }
 
-chrome.runtime.onMessage.addListener((message: unknown, sender, reply: (response: Reply | PdfInspection) => void) => {
+chrome.runtime.onMessage.addListener((message: unknown, sender, reply: (response: Reply | AttachmentInspection) => void) => {
   if (sender.id !== chrome.runtime.id || !isRecord(message)) return;
   if (message.type === 'observe-app') {
     const app = sender.tab && sender.frameId === 0 && sender.documentLifecycle === 'active' && discoveredApp(sender.url);
@@ -636,9 +636,10 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, reply: (response
   }
   const popup = sender.url === chrome.runtime.getURL('popup.html');
   const app = sender.tab && sender.frameId === 0 && sender.documentLifecycle === 'active' ? promptApp(sender.url) : undefined;
-  if (message.type === 'inspect-pdf') {
+  if (message.type === 'inspect-pdf' || message.type === 'inspect-image') {
+    const kind = message.type === 'inspect-image' ? 'image' : 'pdf';
     const encoded = message.encoded;
-    if (!isUploadApp(app) || !isPdfPayload(encoded)) return;
+    if (!isUploadApp(app) || !isInspectionPayload(kind, encoded)) return;
     serial(async () => {
       const state = await readState();
       const { enrollment, policy } = state;
@@ -646,8 +647,8 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, reply: (response
           message.installationId !== enrollment.installationId || message.version !== policy.version ||
           message.assignmentVersion !== policy.assignmentVersion || fileContentMode(policy, app) === 'off') return;
       return fileInspectionDetectors(policy);
-    }).then((detectors) => detectors ? inspectPdfOffscreen(encoded, detectors) : pdfUnavailable)
-      .then(reply, () => reply(pdfUnavailable));
+    }).then((detectors) => detectors ? inspectOffscreen(kind, encoded, detectors) : inspectionUnavailable)
+      .then(reply, () => reply(inspectionUnavailable));
     return true;
   }
   const allowed = message.type === 'status' || message.type === 'sync' ||

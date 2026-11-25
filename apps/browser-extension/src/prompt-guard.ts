@@ -12,7 +12,7 @@ import { evaluatePromptWithExceptions, exceptionDecision } from '../../../contra
 import type { Policy } from './protocol';
 import { clipboardUnavailableRule, inspectClipboard } from '../../../contracts/policy/clipboard';
 import { promptPolicyForApp } from '../../../contracts/policy/prompt-app-modes';
-import { inspectPdf } from './pdf-inspection';
+import { inspectAttachment } from './attachment-inspection';
 
 type PromptAdapter = {
   appId: AiPromptApp;
@@ -413,7 +413,7 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     });
     scansInProgress++;
     const scan = scanFileContents(files, policy, {
-      signal: abort.signal, snapshot: true, pdf: (bytes) => inspectPdf(bytes, policy, installationId),
+      signal: abort.signal, snapshot: true, inspectAttachment: (kind, bytes) => inspectAttachment(kind, bytes, policy, installationId),
     }).then((result): UploadCheck => {
       if (result.match) return { kind: 'blocked', rule: result.match };
       if (!result.complete || result.snapshots.length !== files.length) return { kind: 'unavailable' };
@@ -437,7 +437,7 @@ export function bindPromptGuard(adapter: PromptAdapter) {
       const timestamp = new Date().toISOString();
       scansInProgress++;
       void inspectFiles(files, policy, {
-        signal: AbortSignal.timeout(3000), pdf: (bytes) => inspectPdf(bytes, policy, installationId),
+        signal: AbortSignal.timeout(3000), inspectAttachment: (kind, bytes) => inspectAttachment(kind, bytes, policy, installationId),
       }).then((rule) => {
         if (rule && control?.installationId === installationId) recordFileInspection(uploadApp, policy, installationId, rule, method, timestamp);
       }).catch(() => undefined).finally(() => { scansInProgress--; });

@@ -2,15 +2,14 @@ import { evaluateFileInspection, fileInspectionDetectors, preferredFileMatch } f
 import { privateKeyRule, type PromptPolicy, type RuleMetadata } from '../../../contracts/policy/prompt';
 import { readOfficeText } from './office-text';
 import { hasZipHeader, type OfficeReadBudget } from './office-zip';
-import { hasPdfHeader, pdfUnavailable, type PdfInspection } from './pdf-inspection';
+import { attachmentKind, inspectionUnavailable, maxAttachmentBytes, type AttachmentInspection, type AttachmentKind } from './attachment-inspection';
 
 const maxPlainFileBytes = 256 * 1024;
-const maxBatchBytes = 1024 * 1024;
 const maxExpandedOfficeBytes = 1024 * 1024;
 const maxFiles = 16;
 const binaryControls = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/;
 type FileScan = { match?: RuleMetadata; complete: boolean; snapshots: File[] };
-type ScanOptions = { signal?: AbortSignal; snapshot?: boolean; pdf?: (bytes: Uint8Array) => Promise<PdfInspection> };
+type ScanOptions = { signal?: AbortSignal; snapshot?: boolean; inspectAttachment?: (kind: AttachmentKind, bytes: Uint8Array) => Promise<AttachmentInspection> };
 
 async function* fileText(bytes: Uint8Array<ArrayBuffer>, officeBudget: OfficeReadBudget): AsyncGenerator<string, boolean> {
   if (hasZipHeader(bytes)) return yield* readOfficeText(bytes, officeBudget);
@@ -21,10 +20,10 @@ async function* fileText(bytes: Uint8Array<ArrayBuffer>, officeBudget: OfficeRea
   return true;
 }
 
-export async function scanFileContents(files: readonly File[], policy: PromptPolicy, { signal, snapshot, pdf }: ScanOptions = {}): Promise<FileScan> {
+export async function scanFileContents(files: readonly File[], policy: PromptPolicy, { signal, snapshot, inspectAttachment }: ScanOptions = {}): Promise<FileScan> {
   const detectors = fileInspectionDetectors(policy);
   const officeBudget: OfficeReadBudget = { remainingBytes: maxExpandedOfficeBytes, remainingParts: 64 };
-  let remaining = maxBatchBytes;
+  let remaining = maxAttachmentBytes;
   let best: RuleMetadata | undefined;
   let complete = files.length <= maxFiles;
   const snapshots: File[] = [];
@@ -40,8 +39,8 @@ export async function scanFileContents(files: readonly File[], policy: PromptPol
     }
     try {
       if (file.size > maxPlainFileBytes) {
-        const header = new Uint8Array(await file.slice(0, 5).arrayBuffer());
-        if (!hasZipHeader(header) && !hasPdfHeader(header)) {
+        const header = new Uint8Array(await file.slice(0, 8).arrayBuffer());
+        if (!hasZipHeader(header) && !attachmentKind(header)) {
           complete = false;
           continue;
         }
@@ -49,8 +48,9 @@ export async function scanFileContents(files: readonly File[], policy: PromptPol
       remaining -= file.size;
       const bytes = new Uint8Array(await file.arrayBuffer());
       signal?.throwIfAborted();
-      if (hasPdfHeader(bytes)) {
-        const result = pdf ? await pdf(bytes) : pdfUnavailable;
+      const kind = attachmentKind(bytes);
+      if (kind) {
+        const result = inspectAttachment ? await inspectAttachment(kind, bytes) : inspectionUnavailable;
         signal?.throwIfAborted();
         best = preferredFileMatch(best, result.match);
         complete &&= result.complete;

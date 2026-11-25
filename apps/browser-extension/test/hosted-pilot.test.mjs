@@ -5,6 +5,7 @@ import { createHash, X509Certificate } from 'node:crypto';
 import { once } from 'node:events';
 import { officeFile, textXml } from './office-fixture.mjs';
 import { pdfFixture } from './pdf-fixture.mjs';
+import { textImage } from './image-fixture.mjs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -596,6 +597,20 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
     await dashboard.getByRole('region', { name: 'Detection details' }).getByText(/Synthetic secret · File picker/).waitFor();
     const details = await admin(`events/${row.installationId}/${row.eventId}`);
     assert.doesNotMatch(JSON.stringify(details), /synthetic-hosted-attachment|ZEKVAR_TEST_SECRET|image\/png|%PDF|JVBERi/);
+    const picture = join(scratch, 'synthetic-hosted-image.png');
+    await writeFile(picture, await textImage(attachment, 'image/png', ['Hosted synthetic screenshot', 'ZEKVAR_TEST_SECRET']));
+    await field.setInputFiles([]);
+    await attachment.evaluate(() => { window.fileEvents = []; });
+    const imagePicker = attachment.waitForEvent('filechooser');
+    await field.click();
+    await (await imagePicker).setFiles(picture);
+    await attachment.getByRole('alert').filter({ hasText: 'sensitive content' }).waitFor();
+    assert.deepEqual(await attachment.evaluate(() => window.fileEvents), []);
+    const imageEvent = await until(async () => (await admin('events?appId=chatgpt&decision=block')).find(({ policyVersion, uploadMethod, eventId }) =>
+      policyVersion === fileBlock.version && uploadMethod === 'picker' && eventId !== row.eventId),
+    'The hosted browser did not report the blocked image.');
+    assert.equal(imageEvent.ruleId, 'fixture-secret');
+    assert.doesNotMatch(JSON.stringify(imageEvent), /synthetic-hosted-image|Hosted synthetic screenshot|ZEKVAR_TEST_SECRET|iVBORw0KGgo/);
   });
   await t.test('groups real prompt and attachment detections into an auditable case over TLS', async () => {
     const investigator = await admin('access', { name: 'Case investigator', role: 'administrator', hours: 1 });

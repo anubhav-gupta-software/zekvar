@@ -7,10 +7,12 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { crc32 } from 'node:zlib';
 import { chromium } from 'playwright';
 import { officeSamples } from './office-fixture.mjs';
 import { odfXml, openDocumentFile, openDocumentSamples } from './opendocument-fixture.mjs';
 import { pdfFixture } from './pdf-fixture.mjs';
+import { textImage } from './image-fixture.mjs';
 
 const api = process.env.ZEKVAR_EXTENSION_TEST_API;
 const owner = process.env.ZEKVAR_EXTENSION_TEST_ADMIN_TOKEN;
@@ -38,7 +40,7 @@ async function until(check, message) {
   assert.fail(message);
 }
 
-test('protects Office and text files through native Chrome intake and Control reporting', { timeout: 60_000 }, async (t) => {
+test('protects attachments through native Chrome intake and Control reporting', { timeout: 90_000 }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'zekvar-office-upload-'));
   let browser;
   let loseNextAcknowledgment = false;
@@ -50,7 +52,8 @@ test('protects Office and text files through native Chrome intake and Control re
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       const body = Buffer.concat(chunks);
-      fileDataSentToControl ||= body.includes('%PDF-') || body.includes('JVBERi') || body.includes(marker);
+      fileDataSentToControl ||= body.includes('%PDF-') || body.includes('JVBERi') || body.includes('iVBORw0KGgo') ||
+        body.includes('/9j/') || body.includes(marker);
       const isEvent = request.url === '/v1/browser/events';
       if (isEvent) posts.push(JSON.parse(body));
       const headers = Object.fromEntries(Object.entries(request.headers).filter(([name]) =>
@@ -98,12 +101,13 @@ test('protects Office and text files through native Chrome intake and Control re
   const { grant } = await admin('enrollment-grants', {});
   browser = await chromium.launchPersistentContext(join(root, 'profile'), {
     channel: 'chromium', executablePath: process.env.ZEKVAR_TEST_CHROME, headless: process.env.ZEKVAR_DEMO_HEADED !== '1',
-    args: [`--disable-extensions-except=${dist}`, `--load-extension=${dist}`],
+    args: [`--disable-extensions-except=${dist}`, `--load-extension=${dist}`, '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1'],
   });
   browser.setDefaultTimeout(7_000);
   const worker = browser.serviceWorkers()[0] ?? await browser.waitForEvent('serviceworker');
   const popup = await browser.newPage();
   await popup.goto(new URL('popup.html', worker.url()).href);
+  await popup.getByText('Ready to enroll', { exact: true }).waitFor();
   await popup.getByLabel('Enrollment grant').fill(grant);
   await popup.getByRole('button', { name: 'Enroll this browser', exact: true }).click();
   await popup.getByText(`Connected to Control · MONITOR v${policy.version}`, { exact: true }).waitFor();
@@ -452,6 +456,105 @@ test('protects Office and text files through native Chrome intake and Control re
     assert.deepEqual(evidence.map(({ appId, ruleId, uploadMethod }) => `${appId}/${ruleId}/${uploadMethod}`).sort(), expected.sort());
     assert.ok(evidence.every(({ decision }) => decision === 'block'));
     assert.doesNotMatch(JSON.stringify([...posts, ...evidence]), /private-pdf|public-summary|ZEKVAR_TEST_SECRET|BEGIN PRIVATE KEY|%PDF|JVBERi/);
+    assert.equal(fileDataSentToControl, false);
+  });
+
+  await t.test('recognizes English image text from bundled OCR and holds unclear or malformed images', async () => {
+    const render = (...options) => textImage(chat, ...options);
+    const sensitive = await render('image/png', ['Synthetic screenshot', marker]);
+    const credential = await render('image/jpeg', ['Synthetic personnel form', 'SSN: 234-56-7890']);
+    const clean = await render('image/jpeg', ['Approved synthetic image', 'Public reference manual']);
+    function chunk(name, data) {
+      const output = Buffer.alloc(data.length + 12);
+      output.writeUInt32BE(data.length);
+      output.write(name, 4);
+      data.copy(output, 8);
+      output.writeUInt32BE(crc32(output.subarray(4, -4)), output.length - 4);
+      return output;
+    }
+    // Declare an animated PNG with two frames and reuse the original compressed data for frame two.
+    const images = [];
+    for (let index = 8; index + 12 <= sensitive.length;) {
+      const length = sensitive.readUInt32BE(index);
+      if (sensitive.toString('ascii', index + 4, index + 8) === 'IDAT') images.push(sensitive.subarray(index + 8, index + 8 + length));
+      index += length + 12;
+    }
+    const frame = Buffer.alloc(26);
+    sensitive.copy(frame, 4, 16, 24);
+    const secondFrame = Buffer.from(frame);
+    secondFrame.writeUInt32BE(1);
+    const sequence = Buffer.from([0, 0, 0, 2]);
+    const animated = Buffer.concat([sensitive.subarray(0, 33), chunk('acTL', Buffer.from([0, 0, 0, 2, 0, 0, 0, 0])),
+      chunk('fcTL', frame), sensitive.subarray(33, -12), chunk('fcTL', secondFrame),
+      chunk('fdAT', Buffer.concat([sequence, ...images])), sensitive.subarray(-12)]);
+    const samples = new Map([
+      ['ocr-secret.txt', sensitive],
+      ['ocr-record.jpg', credential],
+      ['ocr-public.jpg', clean],
+      ['ocr-blank.png', await render('image/png', [])],
+      ['ocr-too-wide.png', await render('image/png', ['Outside image limits'], 4100, 200)],
+      ['ocr-truncated.png', sensitive.subarray(0, -12)],
+      ['ocr-extra.jpg', Buffer.concat([clean, credential])],
+      ['ocr-animated.png', animated],
+    ]);
+    await Promise.all([...samples].map(([name, bytes]) => writeFile(join(root, name), bytes)));
+    const deliveries = [];
+    for (const page of [chat, gemini]) {
+      await page.unroute('**/fixture-upload');
+      await page.route('**/fixture-upload', async (route) => {
+        deliveries.push(route.request().postDataBuffer());
+        await route.fulfill({ status: 204 });
+      });
+      await input(page).setInputFiles([]);
+    }
+    async function apply(mode) {
+      const policy = await admin('policies', { ssnMode: 'block', fileContentModes: { chatgpt: mode, gemini: mode } });
+      await popup.getByRole('button', { name: 'Sync now' }).click();
+      await expectFileMode(chat, policy.version, mode);
+      await expectFileMode(gemini, policy.version, mode);
+      return policy.version;
+    }
+    const rows = async (version) => (await admin('events')).filter(({ policyVersion }) => policyVersion === version);
+    const pickImage = (page, name) => pick(page, [join(root, name)]);
+    const refused = (page, reason) => page.getByRole('alert').filter({ hasText: reason }).waitFor();
+    const monitor = await apply('monitor');
+    await pickImage(chat, 'ocr-secret.txt');
+    await until(async () => (await rows(monitor)).some(({ ruleId, decision }) => ruleId === 'fixture-secret' && decision === 'monitor'),
+      'The PNG text did not reach the Monitor metadata report.');
+    assert.deepEqual(deliveries, [sensitive]);
+    const [installation] = await admin('installations');
+    const unauthorized = await popup.evaluate(async (request) => {
+      const answer = await chrome.runtime.sendMessage(request).catch(() => undefined);
+      return answer ?? null;
+    }, { type: 'inspect-image', encoded: sensitive.toString('base64'), installationId: installation.installationId,
+      version: monitor, assignmentVersion: 0 });
+    assert.equal(unauthorized, null);
+
+    const block = await apply('block');
+    await drop(gemini, gemini.locator('#drop-zone'), [join(root, 'ocr-record.jpg')]);
+    await refused(gemini, 'sensitive content');
+    await input(chat).setInputFiles([]);
+    await pickImage(chat, 'ocr-secret.txt');
+    await refused(chat, 'sensitive content');
+    if (process.env.ZEKVAR_DEMO_ARTIFACTS) {
+      await chat.getByRole('alert').screenshot({ path: join(process.env.ZEKVAR_DEMO_ARTIFACTS, 'image-upload-blocked.png') });
+    }
+    for (const name of ['ocr-blank.png', 'ocr-too-wide.png', 'ocr-truncated.png', 'ocr-extra.jpg', 'ocr-animated.png']) {
+      await pickImage(chat, name);
+      await refused(chat, 'could not complete');
+    }
+    assert.equal(deliveries.length, 1);
+    await pickImage(chat, 'ocr-public.jpg');
+    await until(() => deliveries.length === 2, 'The original clean JPEG did not reach the native upload fixture.');
+    assert.deepEqual(deliveries[1], clean);
+    const evidence = await until(async () => {
+      const stored = await rows(block);
+      return stored.length === 7 && stored;
+    }, 'Control did not receive the expected image decisions.');
+    assert.deepEqual(evidence.map(({ appId, decision, ruleId, uploadMethod }) => `${appId}/${decision}/${ruleId}/${uploadMethod}`).sort(),
+      ['chatgpt/block/fixture-secret/picker', 'gemini/block/us-social-security-number/drop',
+        ...Array(5).fill('chatgpt/block/file-inspection-unavailable/picker')].sort());
+    assert.doesNotMatch(JSON.stringify([...posts, ...evidence]), /ocr-secret|ocr-record|ZEKVAR_TEST_SECRET|234-56-7890|iVBORw0KGgo|\/9j\//);
     assert.equal(fileDataSentToControl, false);
   });
 });

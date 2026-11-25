@@ -38,6 +38,7 @@ await build({
     ...(hostedOrigin === undefined ? { content: 'src/content.ts' } : {}),
     chatgpt: 'src/chatgpt.ts', claude: 'src/claude.ts', gemini: 'src/gemini.ts',
     discovery: 'src/discovery.ts', popup: 'src/popup.ts', [worker]: 'src/worker.ts', 'pdf-offscreen': 'src/pdf-offscreen.ts',
+    'ocr-job': 'src/ocr-job.ts',
   },
   bundle: true,
   format: 'iife',
@@ -46,9 +47,13 @@ await build({
 });
 manifest.background.service_worker = `${worker}.js`;
 manifest.host_permissions = [`${origin}/*`];
+manifest.content_security_policy.extension_pages += `; connect-src 'self' ${origin}`;
 const pdf = 'node_modules/pdfjs-dist';
 const pdfAssets = join(outdir, 'pdf-assets');
-await mkdir(pdfAssets, { recursive: true });
+const ocrAssets = join(outdir, 'ocr-assets');
+const tesseract = 'node_modules/tesseract.js';
+const ocrCore = 'node_modules/tesseract.js-core';
+await Promise.all([mkdir(pdfAssets, { recursive: true }), mkdir(ocrAssets, { recursive: true })]);
 await Promise.all([
   writeFile(join(outdir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n'),
   copyFile('src/popup.html', join(outdir, 'popup.html')),
@@ -59,4 +64,11 @@ await Promise.all([
   copyFile(join(pdf, 'LICENSE'), join(pdfAssets, 'LICENSE')),
   cp(join(pdf, 'cmaps'), join(pdfAssets, 'cmaps'), { recursive: true }),
   cp(join(pdf, 'standard_fonts'), join(pdfAssets, 'standard_fonts'), { recursive: true }),
+  copyFile(join(tesseract, 'dist/worker.min.js'), join(ocrAssets, 'worker.min.js')),
+  copyFile(join(tesseract, 'LICENSE.md'), join(ocrAssets, 'TESSERACT-LICENSE')),
+  copyFile(join(ocrCore, 'LICENSE'), join(ocrAssets, 'CORE-LICENSE')),
+  copyFile(join(ocrCore, 'tesseract-core-simd-lstm.js'), join(ocrAssets, 'tesseract-core-simd-lstm.js')),
+  copyFile(join(ocrCore, 'tesseract-core-simd-lstm.wasm'), join(ocrAssets, 'tesseract-core-simd-lstm.wasm')),
+  copyFile('node_modules/@tesseract.js-data/eng/4.0.0_best_int/eng.traineddata.gz', join(ocrAssets, 'eng.traineddata.gz')),
+  copyFile('src/ocr-notice.txt', join(ocrAssets, 'NOTICE')),
 ]);

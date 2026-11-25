@@ -1,6 +1,6 @@
 {
   "name": "@zekvar/browser-extension",
-  "version": "0.37.0",
+  "version": "0.38.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,11 +13,14 @@
   },
   "devDependencies": {
     "@types/chrome": "0.3.7",
+    "@types/node": "26.6.4",
     "esbuild": "0.28.2",
     "playwright": "1.65.1",
     "typescript": "7.0.2"
   },
   "dependencies": {
-    "pdfjs-dist": "6.5.438"
+    "@tesseract.js-data/eng": "1.0.0",
+    "pdfjs-dist": "6.5.438",
+    "tesseract.js": "7.0.0"
   }
 }

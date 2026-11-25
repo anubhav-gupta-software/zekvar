@@ -1,5 +1,5 @@
 import type { PromptPolicy } from '../../../contracts/policy/prompt';
-import { pdfUnavailable, type PdfInspection } from './pdf-inspection';
+import { inspectionUnavailable, type AttachmentInspection, type AttachmentKind } from './attachment-inspection';
 
 const documentPath = 'pdf-offscreen.html';
 let creating: Promise<void> | undefined;
@@ -16,25 +16,25 @@ async function openDocument() {
       await chrome.offscreen.createDocument({
         url: documentPath,
         reasons: ['WORKERS'],
-        justification: 'Run local PDF text inspection in a disposable worker before protected file uploads.',
+        justification: 'Inspect protected attachments locally in disposable workers.',
       });
     })().finally(() => { creating = undefined; });
   }
   return creating;
 }
 
-export async function inspectPdfOffscreen(encoded: string, detectors: PromptPolicy): Promise<PdfInspection> {
-  if (active >= 2) return pdfUnavailable;
+export async function inspectOffscreen(kind: AttachmentKind, encoded: string, detectors: PromptPolicy): Promise<AttachmentInspection> {
+  if (active >= 2) return inspectionUnavailable;
   active++;
   try {
     await openDocument();
-    const port = chrome.runtime.connect({ name: 'inspect-offscreen-pdf' });
+    const port = chrome.runtime.connect({ name: `inspect-offscreen-${kind}` });
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await new Promise<PdfInspection>((resolve) => {
-        timer = setTimeout(() => resolve(pdfUnavailable), 2400);
-        port.onDisconnect.addListener(() => resolve(pdfUnavailable));
-        port.onMessage.addListener((result) => resolve(typeof result?.complete === 'boolean' ? result : pdfUnavailable));
+      return await new Promise<AttachmentInspection>((resolve) => {
+        timer = setTimeout(() => resolve(inspectionUnavailable), 2400);
+        port.onDisconnect.addListener(() => resolve(inspectionUnavailable));
+        port.onMessage.addListener((result) => resolve(typeof result?.complete === 'boolean' ? result : inspectionUnavailable));
         port.postMessage({ encoded, detectors });
       });
     } finally {
@@ -42,7 +42,7 @@ export async function inspectPdfOffscreen(encoded: string, detectors: PromptPoli
       port.disconnect();
     }
   } catch {
-    return pdfUnavailable;
+    return inspectionUnavailable;
   } finally {
     active--;
   }

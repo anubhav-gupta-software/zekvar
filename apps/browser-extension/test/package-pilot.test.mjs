@@ -67,13 +67,20 @@ async function inspect(work, path, signingKey) {
   await writeFile(zipPath, zip);
   const entries = (await run('unzip', ['-Z1', zipPath])).stdout.trim().split('\n');
   const pdfAsset = /^pdf-assets\/(?:|LICENSE|pdf(?:\.worker)?\.min\.mjs|cmaps\/(?:[\w-]+\.bcmap|LICENSE)?|standard_fonts\/(?:[\w-]+\.(?:pfb|ttf)|LICENSE_\w+)?)$/;
-  assert.ok(entries.every((file) => /^(?:[a-z0-9.-]+\.js|manifest\.json|managed-schema\.json|(?:popup|pdf-offscreen)\.html)$/.test(file) || pdfAsset.test(file)));
+  const ocrAssets = ['worker.min.js', 'tesseract-core-simd-lstm.js', 'tesseract-core-simd-lstm.wasm', 'eng.traineddata.gz', 'NOTICE',
+    'TESSERACT-LICENSE', 'CORE-LICENSE'].map((asset) => 'ocr-assets/' + asset);
+  assert.ok(entries.every((file) => /^(?:[a-z0-9.-]+\.js|manifest\.json|managed-schema\.json|(?:popup|pdf-offscreen)\.html)$/.test(file) ||
+    pdfAsset.test(file) || file === 'ocr-assets/' || ocrAssets.includes(file)));
   for (const asset of ['pdf-offscreen.html', 'pdf-offscreen.js', 'pdf-assets/pdf.min.mjs', 'pdf-assets/pdf.worker.min.mjs', 'pdf-assets/LICENSE']) {
     assert.ok(entries.includes(asset), `The signed build is missing ${asset}`);
   }
+  assert.ok(entries.includes('ocr-job.js'));
+  for (const asset of ocrAssets) assert.ok(entries.includes(asset), `The signed build is missing ${asset}`);
   assert.ok(!entries.includes('content.js'));
   const manifest = JSON.parse((await run('unzip', ['-p', zipPath, 'manifest.json'])).stdout);
   assert.deepEqual(manifest.host_permissions, [`${hello}/*`]);
+  assert.equal(manifest.content_security_policy.extension_pages,
+    `script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; worker-src 'self'; connect-src 'self' ${hello}`);
   assert.ok(manifest.permissions.includes('offscreen'));
   assert.equal(manifest.web_accessible_resources, undefined);
   assert.equal(manifest.version, release.version);

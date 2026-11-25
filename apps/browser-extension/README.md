@@ -150,7 +150,15 @@ Browser reads plain UTF-8 text up to 256 KiB per file and recognizes standard `.
 
 Browser v0.35.0 also reads packaged OpenDocument text (`.odt`), spreadsheets (`.ods`), and presentations (`.odp`). It checks paragraphs and headings, stored cell values, slide and speaker-note text, and text in styles such as headers and footers. The package type comes from the document bytes. Password-protected parts, embedded documents, and unsupported external content can make a check incomplete. [OpenDocument package standard](https://docs.oasis-open.org/office/OpenDocument/part2-packages/OpenDocument-v1.4-os-part2-packages.html)
 
-Browser v0.36.0 adds PDF page text under the same file-content policy. It recognizes the PDF header even when a file has a different extension. Inspection uses a bundled PDF.js worker and reads up to 24 pages and 256 KiB of decoded text per PDF. A password prompt, an unextractable page, embedded files, or interactive form content can make the check incomplete. Coverage is the PDF text layer. Image text, scanned pages, and legacy binary Office formats remain outside this coverage. [PDF.js release](https://github.com/mozilla/pdf.js/releases/tag/v6.5.438)
+Browser v0.36.0 adds PDF page text under the same file-content policy. It recognizes the PDF header even when a file has a different extension. Inspection uses a bundled PDF.js worker and reads up to 24 pages and 256 KiB of decoded text per PDF. A password prompt, an unextractable page, embedded files, or interactive form content can make the check incomplete. PDF coverage is the text layer. Scanned PDF pages and legacy binary Office formats remain open. [PDF.js release](https://github.com/mozilla/pdf.js/releases/tag/v6.5.438)
+
+### Inspect text in image attachments
+
+Browser v0.38.0 applies the existing file-content policy to English text in static PNG and JPEG attachments on supported ChatGPT and Gemini pages. The browser identifies the image from its bytes and runs OCR locally using bundled WebAssembly and English training data. Control receives the matching detector or incomplete-check reason and the usual decision metadata. [Tesseract.js local installation](https://github.com/naptha/tesseract.js/blob/master/docs/local-installation.md) · [Bundled English data](https://github.com/naptha/tessdata/blob/gh-pages/README.md)
+
+To test, attach a small high-contrast PNG that displays `ZEKVAR_TEST_SECRET` on one line. Monitor lets the upload proceed and records the match. Block holds the sensitive attachment. Try a clean JPEG containing clear English text to verify that the original bytes are released after the check.
+
+The scanner accepts up to 1 MiB per batch, 1.5 million pixels per image, and 4,096 pixels on either edge. A file that is animated, malformed, over the limits, unreadable, or recognized with low confidence produces an incomplete check. Block holds incomplete checks. Recognition quality varies with typography, resolution, and image quality. Verify the layouts and image types used by the pilot group before switching to Block.
 
 The PDF worker starts on demand through Chrome's `offscreen` permission. Managed builds keep the same host permissions. Older-browser pilot validation is pending. [Chrome Offscreen API](https://developer.chrome.com/docs/extensions/reference/api/offscreen)
 

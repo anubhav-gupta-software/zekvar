@@ -1,6 +1,7 @@
 import { evaluateFileInspection, preferredFileMatch } from '../../../contracts/policy/file-inspection';
 import { privateKeyRule, type PromptPolicy, type RuleMetadata } from '../../../contracts/policy/prompt';
-import { hasPdfHeader, isPdfPayload, maxPdfBytes, pdfUnavailable, type PdfInspection } from './pdf-inspection';
+import { attachmentKind, decodeAttachment, inspectionUnavailable, isInspectionPayload, maxAttachmentBytes,
+  type AttachmentInspection } from './attachment-inspection';
 
 type PdfLibrary = typeof import('pdfjs-dist');
 declare const SERVICE_WORKER_PATH: string;
@@ -8,8 +9,9 @@ const resources = 'pdf-assets/';
 const maxPages = 24;
 const maxText = 256 * 1024;
 const inspectionMs = 2200;
+let imageActive = false;
 
-async function scanDocument(data: Uint8Array<ArrayBuffer>, detectors: PromptPolicy, pdf: PdfLibrary, port: Worker): Promise<PdfInspection> {
+async function scanDocument(data: Uint8Array<ArrayBuffer>, detectors: PromptPolicy, pdf: PdfLibrary, port: Worker): Promise<AttachmentInspection> {
   const worker = pdf.PDFWorker.create({ port, verbosity: pdf.VerbosityLevel.ERRORS });
   const task = pdf.getDocument({
     data, worker, stopAtErrors: true, disableFontFace: true, useSystemFonts: false, useWasm: false, useWorkerFetch: false,
@@ -20,7 +22,7 @@ async function scanDocument(data: Uint8Array<ArrayBuffer>, detectors: PromptPoli
   });
   try {
     const doc = await task.promise;
-    if (doc.numPages < 1 || doc.numPages > maxPages) return pdfUnavailable;
+    if (doc.numPages < 1 || doc.numPages > maxPages) return inspectionUnavailable;
     const types = pdf.AnnotationType;
     const unsupportedAnnotations = new Set([
       types.TEXT, types.FREETEXT, types.FILEATTACHMENT, types.WIDGET, types.SOUND, types.MOVIE, types.SCREEN, types.THREED, types.RICHMEDIA,
@@ -67,31 +69,28 @@ async function scanDocument(data: Uint8Array<ArrayBuffer>, detectors: PromptPoli
   }
 }
 
-async function inspect(encoded: string, detectors: PromptPolicy): Promise<PdfInspection> {
+async function inspectPdf(encoded: string, detectors: PromptPolicy): Promise<AttachmentInspection> {
   let port: Worker | undefined;
   let expired = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const scan = async () => {
-    const binary = atob(encoded);
-    if (binary.length > maxPdfBytes) return pdfUnavailable;
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-    if (!hasPdfHeader(bytes)) return pdfUnavailable;
+    const bytes = decodeAttachment(encoded);
+    if (bytes.length > maxAttachmentBytes || attachmentKind(bytes) !== 'pdf') return inspectionUnavailable;
     const pdf: PdfLibrary = await import(chrome.runtime.getURL(resources + 'pdf.min.mjs'));
-    if (expired) return pdfUnavailable;
+    if (expired) return inspectionUnavailable;
     // An explicitly created worker also disables PDF.js's main-thread fallback.
     const parsingWorker = port = new Worker(chrome.runtime.getURL(resources + 'pdf.worker.min.mjs'), { type: 'module' });
-    const crashed = new Promise<PdfInspection>((resolve) => parsingWorker.addEventListener('error', (event) => {
+    const crashed = new Promise<AttachmentInspection>((resolve) => parsingWorker.addEventListener('error', (event) => {
       event.preventDefault();
-      resolve(pdfUnavailable);
+      resolve(inspectionUnavailable);
     }, { once: true }));
     return Promise.race([scanDocument(bytes, detectors, pdf, parsingWorker), crashed]);
   };
-  const deadline = new Promise<PdfInspection>((resolve) => { timer = setTimeout(() => resolve(pdfUnavailable), inspectionMs); });
+  const deadline = new Promise<AttachmentInspection>((resolve) => { timer = setTimeout(() => resolve(inspectionUnavailable), inspectionMs); });
   try {
     return await Promise.race([scan(), deadline]);
   } catch {
-    return pdfUnavailable;
+    return inspectionUnavailable;
   } finally {
     expired = true;
     clearTimeout(timer);
@@ -99,21 +98,52 @@ async function inspect(encoded: string, detectors: PromptPolicy): Promise<PdfIns
   }
 }
 
+async function inspectImage(encoded: string, detectors: PromptPolicy, signal: AbortSignal): Promise<AttachmentInspection> {
+  if (imageActive) return inspectionUnavailable;
+  imageActive = true;
+  let job: Worker | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    job = new Worker(chrome.runtime.getURL('ocr-job.js'));
+    const bytes = decodeAttachment(encoded);
+    return await new Promise<AttachmentInspection>((resolve) => {
+      const unavailable = () => resolve(inspectionUnavailable);
+      timer = setTimeout(unavailable, inspectionMs);
+      signal.addEventListener('abort', unavailable, { once: true });
+      job!.onmessage = ({ data }) => resolve(data);
+      job!.onerror = (event) => {
+        event.preventDefault();
+        unavailable();
+      };
+      job!.postMessage({ bytes, detectors }, [bytes.buffer]);
+    });
+  } catch {
+    return inspectionUnavailable;
+  } finally {
+    clearTimeout(timer);
+    job?.terminate();
+    imageActive = false;
+  }
+}
+
 chrome.runtime.onConnect.addListener((port) => {
-  if (port.name !== 'inspect-offscreen-pdf') return;
+  const kind = port.name === 'inspect-offscreen-image' ? 'image' : port.name === 'inspect-offscreen-pdf' ? 'pdf' : undefined;
+  if (!kind) return;
   const sender = port.sender;
   if (sender?.id !== chrome.runtime.id || sender.tab || sender.url !== new URL(SERVICE_WORKER_PATH, location.href).href) {
     port.disconnect();
     return;
   }
   let started = false;
-  let connected = true;
-  port.onDisconnect.addListener(() => { connected = false; });
+  const connection = new AbortController();
+  port.onDisconnect.addListener(() => connection.abort());
   port.onMessage.addListener((message) => {
-    if (started || !isPdfPayload(message?.encoded)) return;
+    if (started || !isInspectionPayload(kind, message?.encoded)) return;
     started = true;
-    void inspect(message.encoded, message.detectors).then((result) => {
-      if (connected) port.postMessage(result);
+    const result = kind === 'image' ? inspectImage(message.encoded, message.detectors, connection.signal) :
+      inspectPdf(message.encoded, message.detectors);
+    void result.then((inspection) => {
+      if (!connection.signal.aborted) port.postMessage(inspection);
     }).catch(() => undefined);
   });
 });
