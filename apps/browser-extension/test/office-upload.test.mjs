@@ -557,4 +557,80 @@ test('protects attachments through native Chrome intake and Control reporting', 
     assert.doesNotMatch(JSON.stringify([...posts, ...evidence]), /ocr-secret|ocr-record|ZEKVAR_TEST_SECRET|234-56-7890|iVBORw0KGgo|\/9j\//);
     assert.equal(fileDataSentToControl, false);
   });
+
+  await t.test('recognizes scanned PDF pages even when the document also contains selectable text', async () => {
+    const image = async (lines) => ({ bytes: await textImage(chat, 'image/jpeg', lines), width: 960, height: 260 });
+    const cleanImage = await image(['Approved scanned page', 'Public reference manual']);
+    const secretImage = await image(['Synthetic scanned document', marker]);
+    const identifierImage = await image(['Synthetic personnel record', 'SSN: 234-56-7890']);
+    const scan = pdfFixture([{ image: secretImage }]);
+    const clean = pdfFixture(Array.from({ length: 3 }, () => ({ image: cleanImage })));
+    const mixed = pdfFixture([['Public cover'], { image: cleanImage }, { lines: ['Public heading'], image: identifierImage }]);
+    const overPages = pdfFixture(Array.from({ length: 4 }, () => ({ image: cleanImage })));
+    const sensitiveOverPages = pdfFixture([['Synthetic cover', marker], ...Array.from({ length: 4 }, () => ({ image: cleanImage }))]);
+    const oversized = pdfFixture([{ image: { ...cleanImage, width: 4500, height: 3000 } }]);
+    const samples = new Map([
+      ['ocr-scanned-disguised.txt', scan],
+      ['ocr-clean-three-pages.pdf', clean],
+      ['ocr-mixed.pdf', mixed],
+      ['ocr-too-many-image-pages.pdf', overPages],
+      ['ocr-sensitive-over-limit.pdf', sensitiveOverPages],
+      ['ocr-oversized-embedded.pdf', oversized],
+    ]);
+    await Promise.all([...samples].map(([name, bytes]) => writeFile(join(root, name), bytes)));
+    const delivered = [];
+    for (const page of [chat, gemini]) {
+      await page.unroute('**/fixture-upload');
+      await page.route('**/fixture-upload', async (route) => {
+        delivered.push(route.request().postDataBuffer());
+        await route.fulfill({ status: 204 });
+      });
+      await input(page).setInputFiles([]);
+    }
+    async function apply(mode) {
+      const policy = await admin('policies', { ssnMode: 'block', fileContentModes: { chatgpt: mode, gemini: mode } });
+      await popup.getByRole('button', { name: 'Sync now' }).click();
+      await expectFileMode(chat, policy.version, mode);
+      await expectFileMode(gemini, policy.version, mode);
+      return policy.version;
+    }
+    const records = async (version) => (await admin('events')).filter(({ policyVersion }) => policyVersion === version);
+    const choose = (page, name) => pick(page, [join(root, name)]);
+    const refused = (page, reason) => page.getByRole('alert').filter({ hasText: reason }).waitFor();
+    const monitor = await apply('monitor');
+    await choose(chat, 'ocr-scanned-disguised.txt');
+    const monitored = await until(async () => (await records(monitor))[0], 'The scanned page did not generate a Monitor decision.');
+    assert.deepEqual([monitored.decision, monitored.ruleId], ['monitor', 'fixture-secret']);
+    assert.deepEqual(delivered, [scan]);
+
+    const block = await apply('block');
+    await drop(gemini, gemini.locator('#drop-zone'), [join(root, 'ocr-mixed.pdf')]);
+    await refused(gemini, 'sensitive content');
+    await input(chat).setInputFiles([]);
+    await choose(chat, 'ocr-scanned-disguised.txt');
+    await refused(chat, 'sensitive content');
+    if (process.env.ZEKVAR_DEMO_ARTIFACTS) {
+      await chat.getByRole('alert').screenshot({ path: join(process.env.ZEKVAR_DEMO_ARTIFACTS, 'scanned-pdf-upload-blocked.png') });
+    }
+    for (const name of ['ocr-too-many-image-pages.pdf', 'ocr-oversized-embedded.pdf']) {
+      await choose(chat, name);
+      await refused(chat, 'could not complete');
+    }
+    await choose(chat, 'ocr-sensitive-over-limit.pdf');
+    await refused(chat, 'sensitive content');
+    assert.equal(delivered.length, 1);
+    await choose(chat, 'ocr-clean-three-pages.pdf');
+    await until(() => delivered.length === 2, 'The original clean scanned PDF did not reach the native upload fixture.');
+    assert.deepEqual(delivered[1], clean);
+    const evidence = await until(async () => {
+      const entries = await records(block);
+      return entries.length === 5 && entries;
+    }, 'Control did not retain the scanned PDF decisions.');
+    assert.deepEqual(evidence.map(({ appId, decision, ruleId, uploadMethod }) => `${appId}/${decision}/${ruleId}/${uploadMethod}`).sort(),
+      ['chatgpt/block/fixture-secret/picker', 'gemini/block/us-social-security-number/drop',
+        'chatgpt/block/fixture-secret/picker',
+        ...Array(2).fill('chatgpt/block/file-inspection-unavailable/picker')].sort());
+    assert.doesNotMatch(JSON.stringify([...posts, ...evidence]), /ocr-scanned|ocr-mixed|ZEKVAR_TEST_SECRET|234-56-7890|Public heading|%PDF|JVBERi/);
+    assert.equal(fileDataSentToControl, false);
+  });
 });

@@ -1,7 +1,6 @@
-import { createWorker, OEM, PSM } from 'tesseract.js';
-import { evaluateFileInspection } from '../../../contracts/policy/file-inspection';
 import type { PromptPolicy } from '../../../contracts/policy/prompt';
 import { inspectionUnavailable, maxAttachmentBytes, type AttachmentInspection } from './attachment-inspection';
+import { openOcr, recognizePixels } from './ocr-engine';
 import { readRaster } from './raster-image';
 
 async function rasterPixels(bytes: Uint8Array<ArrayBuffer>) {
@@ -36,24 +35,9 @@ async function rasterPixels(bytes: Uint8Array<ArrayBuffer>) {
 async function inspect(bytes: Uint8Array<ArrayBuffer>, detectors: PromptPolicy): Promise<AttachmentInspection> {
   const pixels = await rasterPixels(bytes);
   if (!pixels) return inspectionUnavailable;
-  const assets = new URL('ocr-assets/', self.location.href);
-  const worker = await createWorker('eng', OEM.LSTM_ONLY, {
-    workerPath: new URL('worker.min.js', assets).href,
-    corePath: new URL('tesseract-core-simd-lstm.js', assets).href,
-    langPath: assets.href,
-    workerBlobURL: false,
-    cacheMethod: 'none',
-    errorHandler: () => undefined,
-  });
+  const worker = await openOcr();
   try {
-    await worker.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT });
-    const { data } = await worker.recognize(pixels, {}, { text: true, blocks: true });
-    const text = data.text.slice(0, 64 * 1024);
-    const match = evaluateFileInspection(text, detectors);
-    const words = data.blocks?.flatMap((block) => block.paragraphs.flatMap((paragraph) => paragraph.lines.flatMap((line) => line.words))) ?? [];
-    const complete = text.length === data.text.length && /[\p{L}\p{N}]/u.test(text) &&
-      !text.includes('\ufffd') && data.confidence >= 75 && words.length > 0 && words.every((word) => word.confidence >= 65);
-    return { complete, match };
+    return await recognizePixels(worker, pixels, detectors);
   } finally {
     await worker.terminate();
   }

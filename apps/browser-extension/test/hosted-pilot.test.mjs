@@ -611,6 +611,20 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
     'The hosted browser did not report the blocked image.');
     assert.equal(imageEvent.ruleId, 'fixture-secret');
     assert.doesNotMatch(JSON.stringify(imageEvent), /synthetic-hosted-image|Hosted synthetic screenshot|ZEKVAR_TEST_SECRET|iVBORw0KGgo/);
+    const scan = join(scratch, 'synthetic-hosted-scan.pdf');
+    const scanImage = { bytes: await textImage(attachment, 'image/jpeg', ['Synthetic hosted scanned page', 'ZEKVAR_TEST_SECRET']),
+      width: 960, height: 260 };
+    await writeFile(scan, pdfFixture([{ lines: ['Public heading'], image: scanImage }]));
+    const scanPicker = attachment.waitForEvent('filechooser');
+    await field.click();
+    await (await scanPicker).setFiles(scan);
+    await attachment.getByRole('alert').filter({ hasText: 'sensitive content' }).waitFor();
+    assert.deepEqual(await attachment.evaluate(() => window.fileEvents), []);
+    const scanEvent = await until(async () => (await admin('events?appId=chatgpt&decision=block')).find(({ policyVersion, uploadMethod, eventId }) =>
+      policyVersion === fileBlock.version && uploadMethod === 'picker' && eventId !== row.eventId && eventId !== imageEvent.eventId),
+    'The hosted browser did not report the blocked scanned PDF.');
+    assert.equal(scanEvent.ruleId, 'fixture-secret');
+    assert.doesNotMatch(JSON.stringify(scanEvent), /synthetic-hosted-scan|Synthetic hosted scanned page|ZEKVAR_TEST_SECRET|JVBERi/);
   });
   await t.test('groups real prompt and attachment detections into an auditable case over TLS', async () => {
     const investigator = await admin('access', { name: 'Case investigator', role: 'administrator', hours: 1 });

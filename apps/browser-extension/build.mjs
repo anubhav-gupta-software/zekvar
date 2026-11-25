@@ -38,7 +38,7 @@ await build({
     ...(hostedOrigin === undefined ? { content: 'src/content.ts' } : {}),
     chatgpt: 'src/chatgpt.ts', claude: 'src/claude.ts', gemini: 'src/gemini.ts',
     discovery: 'src/discovery.ts', popup: 'src/popup.ts', [worker]: 'src/worker.ts', 'pdf-offscreen': 'src/pdf-offscreen.ts',
-    'ocr-job': 'src/ocr-job.ts',
+    'ocr-job': 'src/ocr-job.ts', 'pdf-job': 'src/pdf-job.ts',
   },
   bundle: true,
   format: 'iife',

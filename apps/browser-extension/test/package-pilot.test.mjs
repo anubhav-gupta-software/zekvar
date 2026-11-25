@@ -75,6 +75,7 @@ async function inspect(work, path, signingKey) {
     assert.ok(entries.includes(asset), `The signed build is missing ${asset}`);
   }
   assert.ok(entries.includes('ocr-job.js'));
+  assert.ok(entries.includes('pdf-job.js'));
   for (const asset of ocrAssets) assert.ok(entries.includes(asset), `The signed build is missing ${asset}`);
   assert.ok(!entries.includes('content.js'));
   const manifest = JSON.parse((await run('unzip', ['-p', zipPath, 'manifest.json'])).stdout);
