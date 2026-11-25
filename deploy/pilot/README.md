@@ -112,6 +112,8 @@ npm --prefix apps/browser-extension run package:pilot -- \
 
 The packager records the source manifest version as `sourceVersion` in `release.json` and leaves the checkout intact. In checkouts that predate `--version`, use a higher manifest version in the rollback checkout. Verify the signed build on a test channel or device before publishing it to the affected group. Record the time to restore protection, confirm the same installation and policy in Control, and confirm queued decisions arrive after reconnection.
 
+If the reviewed source predates a protection the group requires, keep that app out of reach during the rollback. For Claude attachment protection, publish an AI site access block for `claude.ai` to the affected group, verify it on the browsers that will roll back, and close existing Claude tabs before distributing the older code. Chrome applies the block to new top-level navigation. Control keeps the attachment policy pending when the rolled-back browser reports a version it cannot fully enforce. Verify the host block and continued coverage for other apps until a compatible signed build is in place. [Block access to AI sites](../../apps/control-web/README.md#block-access-to-ai-sites)
+
 #### Verify signed distribution in a Linux lab
 
 The package test creates baseline, candidate, wrong-signer, and rollback artifacts without customer credentials. Run it with Chrome for Testing and `unzip` installed. Optional `ZEKVAR_SIGNED_PILOT_ARTIFACTS` saves the artifacts in a new directory for the Linux test. The Linux test needs a disposable VM with Chromium, Node, OpenSSL, passwordless `sudo`, and `npm ci` in the checkout. It writes one named managed browser policy file and removes it at teardown. Point `ZEKVAR_SIGNED_PILOT_API` at a disposable Control API backed by PostgreSQL and reachable on the VM's loopback address, and set `ZEKVAR_DEMO_TOKEN` to the test owner's token. The test serves the update and browser hosts through local HTTPS on port 9443. Set `ZEKVAR_DEMO_HEADED=1` with a display or Xvfb to use a browser window. Set `ZEKVAR_SIGNED_PILOT_SCREENSHOT` to save the blocked submission after rollback.
@@ -123,6 +125,17 @@ ZEKVAR_SIGNED_PILOT_ARTIFACTS=/tmp/zekvar-signed-test \
 ZEKVAR_SIGNED_PILOT_ARTIFACTS=/tmp/zekvar-signed-test \
   node --test apps/browser-extension/test/signed-pilot.test.mjs
 ```
+
+For the v0.39.0 to v0.40.0 Claude attachment transition, prepare the four artifacts with the normal packager and disposable test keys. Use the lab origins `https://browser.zekvar.test:9443` and `https://updates.zekvar.test:9443` with the `pilot` channel.
+
+| Directory | Source and packaging |
+| --- | --- |
+| `first` | Browser v0.39.0 from `902755b`. Use `--first` and the pinned test key. |
+| `next` | Browser v0.40.0 from `cf81a75`. Use the same key and `--previous first/release.json`. |
+| `rollback` | Browser v0.39.0. Use `--previous next/release.json --version 0.40.1` and the same key. |
+| `wrong-signer` | Browser v0.40.0. Use `--first` and an independent key and ID. |
+
+Run the Linux test with the prepared directory in `ZEKVAR_SIGNED_PILOT_ARTIFACTS` and `ZEKVAR_SIGNED_PILOT_CLAUDE_FILES=1`. Set `ZEKVAR_SIGNED_PILOT_ATTACHMENT_SCREENSHOT` to save the controlled Claude block. This mode verifies the policy before the signed upgrade, Claude attachment enforcement after it, and event replay through the versioned rollback. It applies the temporary Claude host block before switching packages and verifies that the block persists while Control is offline.
 
 ## Back up and recover Control
 

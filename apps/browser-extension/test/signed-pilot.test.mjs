@@ -11,12 +11,16 @@ import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright';
+import { textImage } from './image-fixture.mjs';
+import { pdfFixture } from './pdf-fixture.mjs';
 
 const run = promisify(execFile);
 const load = async (file) => JSON.parse(await readFile(file, 'utf8'));
 const { ZEKVAR_SIGNED_PILOT_ARTIFACTS: releases, ZEKVAR_SIGNED_PILOT_API: api,
   ZEKVAR_DEMO_TOKEN: owner, ZEKVAR_SIGNED_PILOT_CHROME: executablePath = '/usr/bin/chromium',
-  ZEKVAR_SIGNED_PILOT_SCREENSHOT: screenshot } = process.env;
+  ZEKVAR_SIGNED_PILOT_SCREENSHOT: screenshot, ZEKVAR_SIGNED_PILOT_CLAUDE_FILES: claudeFiles,
+  ZEKVAR_SIGNED_PILOT_ATTACHMENT_SCREENSHOT: attachmentScreenshot } = process.env;
+const attachmentUpgrade = claudeFiles === '1';
 
 async function until(check, message, timeout = 30_000) {
   const deadline = Date.now() + timeout;
@@ -63,6 +67,10 @@ test('a Linux-managed Chromium profile installs, updates, rolls back, and remove
   const rollback = await release('rollback');
   const wrongSigner = await release('wrong-signer');
   const { extensionId } = first;
+  if (attachmentUpgrade) {
+    assert.equal(first.version, '0.39.0');
+    assert.equal(next.version, '0.40.0');
+  }
   const control = new URL(first.controlOrigin);
   const policy = await load(join(releases, 'first/chrome-policy.json'));
   const certPath = join(work, 'site.pem');
@@ -133,7 +141,9 @@ test('a Linux-managed Chromium profile installs, updates, rolls back, and remove
     installedPolicy = true;
   }
   const existingInstallations = new Set((await admin('installations')).map(({ installationId }) => installationId));
-  const blockPolicy = await admin('policies', { mode: 'block' });
+  let blockPolicy = await admin('policies', { mode: 'block', ...(attachmentUpgrade && {
+    claudePromptEnabled: true, fileContentModes: { claude: 'off' }, blockedAiAppHosts: [],
+  }) });
   const extensionSettings = policy['3rdparty'].extensions[extensionId];
   extensionSettings.EnrollmentGrant = (await admin('enrollment-grants', {})).grant;
   await deployPolicy();
@@ -176,7 +186,7 @@ test('a Linux-managed Chromium profile installs, updates, rolls back, and remove
       if (await coverage.waitFor({ timeout: 1500 }).then(() => true, () => false)) return true;
       await chat.reload();
     }, 'The loaded composer did not show the active Zekvar policy.', 15_000);
-    assert.equal(await chat.locator('html').getAttribute('data-zekvar-test-release'), candidate ? 'candidate' : null);
+    assert.equal(await chat.locator('html').getAttribute('data-zekvar-test-release'), candidate && !attachmentUpgrade ? 'candidate' : null);
     await chat.getByPlaceholder('Ask ChatGPT').fill('Synthetic update draft ZEKVAR_TEST_SECRET');
     if (keyboard) await chat.getByPlaceholder('Ask ChatGPT').press('Enter');
     else await chat.getByRole('button', { name: 'Send message', exact: true }).click();
@@ -188,10 +198,56 @@ test('a Linux-managed Chromium profile installs, updates, rolls back, and remove
     await chat.locator('#fixture-sends').filter({ hasText: /^1$/ }).waitFor();
     await chat.close();
   }
+
+  async function checkClaudeAttachment(blocked, capture = false) {
+    const chat = await browser.newPage();
+    const fixture = await readFile(new URL('./upload-composer.html', import.meta.url), 'utf8');
+    try {
+      await chat.route('https://claude.ai/**', (route) => route.fulfill({ contentType: 'text/html', body: fixture }));
+      await chat.goto('https://claude.ai/new');
+      const status = chat.getByText(new RegExp(`^Zekvar · BLOCK v${blockPolicy.version}(?:\\D|$)`));
+      await status.waitFor({ timeout: 40_000 });
+      assert.equal((await status.textContent()).includes('File content block'), blocked);
+      const image = { bytes: await textImage(chat, 'image/jpeg', ['Synthetic Claude attachment', 'ZEKVAR_TEST_SECRET']),
+        width: 960, height: 260 };
+      const bytes = pdfFixture([{ lines: ['Public heading'], image }]);
+      const file = join(work, 'synthetic-signed-claude.pdf');
+      await writeFile(file, bytes);
+      const field = chat.getByLabel('Attach fixture files');
+      const chooser = chat.waitForEvent('filechooser');
+      await field.click();
+      await (await chooser).setFiles(file);
+      if (blocked) {
+        const notice = chat.getByRole('alert').filter({ hasText: 'sensitive content' });
+        await notice.waitFor();
+        assert.deepEqual(await chat.evaluate(() => window.fileEvents), []);
+        assert.equal(await field.evaluate((input) => input.files.length), 0);
+        if (capture && attachmentScreenshot) await chat.screenshot({ path: attachmentScreenshot, fullPage: true });
+      } else await until(async () => (await chat.evaluate(() => window.fileEvents)).some(([kind]) => kind === 'change'),
+        'The legacy fixture did not receive the file.');
+    } finally {
+      await chat.close();
+    }
+  }
+
+  async function checkClaudeHostBlock() {
+    const tab = await browser.newPage();
+    try {
+      await assert.rejects(tab.goto('https://claude.ai/new'), /ERR_BLOCKED_BY_CLIENT/);
+    } finally {
+      await tab.close();
+    }
+  }
   await enforce();
   assert.equal(enrollmentRequests.length, 1);
   delete extensionSettings.EnrollmentGrant;
   await deployPolicy();
+  if (attachmentUpgrade) {
+    blockPolicy = await admin('policies', { fileContentModes: { claude: 'block' } });
+    await checkClaudeAttachment(false);
+    assert.notEqual((await browserInstallations())[0].appliedPolicyVersion, blockPolicy.version);
+  }
+  const attachmentPolicyVersion = blockPolicy.version;
 
   async function requestUpdate() {
     const devMode = extensions.locator('extensions-toolbar #devMode');
@@ -227,19 +283,23 @@ test('a Linux-managed Chromium profile installs, updates, rolls back, and remove
     extensions = await openExtensions();
     assert.equal((await extensionInfo())?.version, version);
   }
-  await restart(next.version);
+  if (!attachmentUpgrade) await restart(next.version);
   await enforce({ keyboard: true, candidate: true });
-  const released = await until(() => reportedRelease(next.version), 'Control did not observe the new extension release after relaunch.');
+  if (attachmentUpgrade) await checkClaudeAttachment(true, true);
+  const released = await until(() => reportedRelease(next.version), 'Control did not observe the new signed extension release.');
   assert.equal(released.installationId, before.installationId);
   assert.ok(Date.parse(released.extensionVersionReportedAt) > Date.parse(before.extensionVersionReportedAt));
   assert.equal(enrollmentRequests.length, 1);
   assert.deepEqual((await browserInstallations()).map(({ installationId }) => installationId), [before.installationId]);
+  if (attachmentUpgrade) await until(async () => (await reportedRelease(next.version))?.appliedPolicyVersion === blockPolicy.version,
+    'The signed candidate did not acknowledge Claude attachment protection.');
   const installationEvents = async () => (await admin('events')).filter(({ installationId }) => installationId === before.installationId);
+  const onlineDecisions = attachmentUpgrade ? 3 : 2;
   const events = await until(async () => {
     const rows = (await installationEvents()).filter((row) => row.decision === 'block');
-    return rows.length === 2 && rows;
+    return rows.length === onlineDecisions && rows;
   }, 'Control did not receive decisions from both signed versions.');
-  assert.doesNotMatch(JSON.stringify(events), /Synthetic update draft|ZEKVAR_TEST_SECRET/);
+  assert.doesNotMatch(JSON.stringify(events), /Synthetic update draft|ZEKVAR_TEST_SECRET|synthetic-signed-claude|JVBERi/);
 
   const previousRequests = downloads.length;
   const previousChecks = updateEndpoints.length;
@@ -253,9 +313,16 @@ test('a Linux-managed Chromium profile installs, updates, rolls back, and remove
 
   pauseEventDelivery = true;
   await enforce({ candidate: true });
+  if (attachmentUpgrade) {
+    await checkClaudeAttachment(true);
+    blockPolicy = await admin('policies', { blockedAiAppHosts: ['claude.ai'] });
+    await until(async () => (await reportedRelease(next.version))?.appliedPolicyVersion === blockPolicy.version,
+      'The signed candidate did not apply the Claude host block before rollback.', 50_000);
+    await checkClaudeHostBlock();
+  }
   await until(() => withheldEvents > 0, 'The candidate did not attempt to deliver the blocked decision.');
   controlAvailable = false;
-  assert.equal((await installationEvents()).length, 2);
+  assert.equal((await installationEvents()).length, onlineDecisions);
 
   assert.equal(rollback.sourceVersion, first.version);
   manifest = rollback;
@@ -266,23 +333,40 @@ test('a Linux-managed Chromium profile installs, updates, rolls back, and remove
   assert.equal(restored.userMayModify, false);
   await restart(rollback.version);
   await enforce({ keyboard: true, capture: true });
-  assert.equal((await installationEvents()).length, 2);
+  if (attachmentUpgrade) await checkClaudeHostBlock();
+  assert.equal((await installationEvents()).length, onlineDecisions);
   const reopened = Date.now();
   controlAvailable = true;
   pauseEventDelivery = false;
   const restoredReport = await until(() => reportedRelease(rollback.version), 'Control did not observe the rollback release.', 50_000);
   assert.equal(restoredReport.installationId, before.installationId);
-  assert.equal(restoredReport.appliedPolicyVersion, blockPolicy.version);
+  if (attachmentUpgrade) {
+    await until(async () => {
+      const row = await reportedRelease(rollback.version);
+      return row && row.appliedPolicyVersion !== blockPolicy.version;
+    }, 'Control kept the rolled-back release current despite its unavailable Claude file checks.');
+  } else assert.equal(restoredReport.appliedPolicyVersion, blockPolicy.version);
   assert.equal(enrollmentRequests.length, 1);
   assert.deepEqual((await browserInstallations()).map(({ installationId }) => installationId), [before.installationId]);
   const recovered = await until(async () => {
     const rows = await installationEvents();
-    return rows.length === 4 && rows;
-  }, 'Control did not receive both decisions queued during the outage.');
+    return rows.length === (attachmentUpgrade ? 6 : 4) && rows;
+  }, 'Control did not receive all decisions queued during the outage.');
+  const replayed = Date.now();
   assert.ok(recovered.every(({ decision }) => decision === 'block'));
-  assert.doesNotMatch(JSON.stringify(recovered), /Synthetic update draft|ZEKVAR_TEST_SECRET/);
+  assert.equal(new Set(recovered.map(({ eventId }) => eventId)).size, recovered.length);
+  assert.doesNotMatch(JSON.stringify(recovered), /Synthetic update draft|ZEKVAR_TEST_SECRET|synthetic-signed-claude|JVBERi/);
+  if (attachmentUpgrade) {
+    const claude = recovered.filter(({ appId }) => appId === 'claude');
+    assert.deepEqual(claude.map(({ policyVersion, uploadMethod, ruleId }) => [policyVersion, uploadMethod, ruleId]),
+      Array.from({ length: 2 }, () => [attachmentPolicyVersion, 'picker', 'fixture-secret']));
+    const containment = await admin('policies', { fileContentModes: { claude: 'off' } });
+    await until(async () => (await reportedRelease(rollback.version))?.appliedPolicyVersion === containment.version,
+      'The rolled-back browser did not acknowledge the policy once the unavailable attachment check was removed.', 50_000);
+    await checkClaudeHostBlock();
+  }
   assert.ok(updateEndpoints.every(({ hasCookie, hasAuthorization }) => !hasCookie && !hasAuthorization));
-  t.diagnostic(`Rollback and restart took ${reopened - rollbackStarted} ms. Control reconnected and received the queued decisions in ${Date.now() - reopened} ms.`);
+  t.diagnostic(`Rollback and restart took ${reopened - rollbackStarted} ms. Control reconnected and received the queued decisions in ${replayed - reopened} ms.`);
 
   policy.ExtensionSettings[extensionId] = { installation_mode: 'removed' };
   await deployPolicy();
