@@ -10,6 +10,7 @@ import { exceptionDecision } from '../../../contracts/policy/prompt-exceptions';
 import type { BrowserLease } from './prompt-exceptions';
 import { clipboardCategory, clipboardUnavailableRule, type ClipboardMode } from '../../../contracts/policy/clipboard';
 import type { PromptAppModes } from '../../../contracts/policy/prompt-app-modes';
+import type { AdapterControls } from '../../../contracts/policy/adapter-controls';
 import { cloudCredentialRules } from '../../../contracts/policy/cloud-credentials';
 
 export { fixtureRule, fixtureDetector, githubPatRule, credentialDetector, isMode, isDetectorMode } from '../../../contracts/policy/prompt';
@@ -26,7 +27,7 @@ export function discoveredApp(url: string | undefined): BuiltInDiscoveryApp | un
   const origin = url && new URL(url).origin;
   if (origin && Object.hasOwn(builtInDiscoveryApps, origin)) return builtInDiscoveryApps[origin as keyof typeof builtInDiscoveryApps];
 }
-export type Coverage = 'ready' | 'unsupported';
+export type Coverage = 'ready' | 'unsupported' | 'disabled';
 export type Policy = PromptPolicy & {
   version: number; discoveryEnabled?: boolean; assignmentVersion?: number; uploadModes?: UploadModes;
   targetedUploads?: TargetedUploads; extensionInventoryEnabled?: boolean; claudePromptEnabled?: boolean;
@@ -36,6 +37,7 @@ export type Policy = PromptPolicy & {
   clipboardMode?: ClipboardMode;
   promptExceptionRequestsAvailable?: boolean;
   promptAppModes?: PromptAppModes;
+  adapterControls?: AdapterControls;
 };
 export type PolicyEvent = {
   eventId: string;

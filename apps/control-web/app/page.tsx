@@ -2,7 +2,7 @@ import { ApiError, controlApi } from '../lib/api';
 import {
   aiApps, classifications, classificationLabels, composerStateLabels, composerStates, decisionLabels, decisions, discoveryAppName, fileCheckUnavailableLabel,
   isPromptApp, promptAppLabels, ruleLabels, utc,
-  type BrowserComposerReadiness, type BrowserReleaseCount, type ComposerCheck, type Decision, type DiscoveredApp,
+  type BrowserComposerReadiness, type BrowserReleaseCount, type ComposerCheck, type Coverage, type Decision, type DiscoveredApp,
   type Installation, type SecurityEvent,
 } from '../lib/control';
 import { eventFilters, setEventCursor } from '../lib/events';
@@ -405,9 +405,10 @@ function ComposerCell({ check }: { check?: ComposerCheck }) {
     {check.checkedAt && <div className="muted"><Timestamp value={check.checkedAt} /> UTC</div>}</td>;
 }
 
-function CoverageCell({ coverage, checkedAt, enabled = true }: { coverage?: 'ready' | 'unsupported' | null; checkedAt?: string | null; enabled?: boolean }) {
+function CoverageCell({ coverage, checkedAt, enabled = true }: { coverage?: Coverage | null; checkedAt?: string | null; enabled?: boolean }) {
   return <td><span className={`badge ${coverage === 'unsupported' ? 'warn' : ''}`}>
-    {!enabled ? 'Off' : coverage === 'ready' ? 'Detected' : coverage === 'unsupported' ? 'Unsupported' : 'Unobserved'}
+    {!enabled ? 'Off' : coverage === 'ready' ? 'Detected' : coverage === 'unsupported' ? 'Unsupported' :
+      coverage === 'disabled' ? 'Disabled by administrator' : 'Unobserved'}
   </span>{checkedAt && <div className="muted"><Timestamp value={checkedAt} /> UTC</div>}</td>;
 }
 

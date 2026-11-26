@@ -111,17 +111,45 @@ Control keeps a policy version unacknowledged when the browser's build cannot ap
 
 ## Respond to a broken app adapter
 
-An adapter breaks when an AI site changes its page, and Zekvar Browser can no longer recognize the composer or Send control, or a file path. Treat it as Sev 2, or as [Blocker 3](#blocker-3-enforcement-falls-short-of-advertised-coverage) if the app is advertised as covered.
+An adapter breaks when an AI site changes its page and Zekvar Browser can no longer recognize the composer, the Send control, or a file intake path. Treat it as Sev 2, or as [Blocker 3](#blocker-3-enforcement-falls-short-of-advertised-coverage) if the app is advertised as covered in the [coverage matrix](coverage.md).
 
-1. Confirm: reproduce with the synthetic marker on a test profile. Record the Browser version, page route, account type, and result. Check composer readiness for the app across the fleet.
-2. Contain: disable the affected app protection in Control for the affected scope, so the product does not claim coverage it lacks. [A dedicated control for this is being built. Update this step when it ships.]
-3. Compensate if the customer needs the app restricted: publish an AI site access block for the host. It applies to new top-level navigation. See [Block access to AI sites](../apps/control-web/README.md#block-access-to-ai-sites).
-4. Notify affected customers' administrators: which app, which action, since when (as far as known), what to do now.
-5. Fix: the engineer ships a new extension release. Stage it on a test tenant and canary first, then widen. See [Upgrade](install-and-remove.md#upgrade).
-6. Verify: rerun the app-by-action checks for that app. [Coverage (app-by-action matrix): forthcoming.] Confirm composer readiness returns to Detected.
-7. Re-enable the app protection and notify customers.
+Control has a dedicated **Adapter controls** page (Browser v0.42.0 or later). For one app and one scope (the organization baseline or a rollout group), an administrator can:
 
-Interim levers in the current build (check the dashboard before use): a rollout group can turn **Claude prompt protection** Off, set **file upload** and **file content** modes Off per app, and set a prompt mode per app ([Set prompt modes by AI app](../apps/control-web/README.md#set-prompt-modes-by-ai-app)). Each change is a new policy version, can be reviewed, and can be restored.
+- **Disable attachments**: Browser stops holding and inspecting files from the picker, drag and drop, and clipboard file paste on that app. Typed prompts and text paste stay protected.
+- **Disable the whole adapter**: Browser stops intercepting the app entirely. Its panel reads "protection disabled by your administrator", and Control shows the app as **Disabled by administrator**, not Unsupported.
+- Choose a fallback:
+  - **Fail open**: the app stays usable without that protection.
+  - **Fail closed**: Control also adds the app's hosts to the AI app access block for that scope, so users cannot open the app at all. This works on every Browser release that supports AI app access, including releases older than v0.42.0.
+
+Each change is a normal versioned policy. It can be reviewed, restored, and rolled out through an automated rollout plan. An intentionally disabled app passes composer readiness gates. Auditors can see the state but cannot change it.
+
+**Older Browser releases.** A release before v0.42.0 does not request adapter controls. It keeps intercepting the app, which may be broken, and stays **Policy pending** for that version in Control. Fail closed still blocks its access to the app. Upgrade those browsers, or use fail closed when the broken behavior is unacceptable.
+
+### Runbook
+
+1. **Detect.** Watch **Composer readiness** on the dashboard (Browsers section) and the **Adapter controls** page. A broken adapter shows as a rise in **Unsupported** for one app, often for one Browser release or right after the app changed. The Adapter controls page marks the app **Possible broken adapter** when any browser in the scope reports Unsupported. A customer report of prompts or files getting through without a decision is another signal.
+2. **Confirm.** Reproduce with the synthetic marker on a test profile. Record the Browser version, page route, account type, which action fails (Send click, Enter, paste, picker, drop, clipboard file, or one attachment type), and the result. Use **Copy composer diagnostics** in the page panel. Compare with the [coverage matrix](coverage.md).
+3. **Decide the fallback with the customer administrator.** Fail open keeps the app usable without protection. Fail closed blocks the app. If only files break, disable attachments rather than the whole adapter.
+4. **Disable.** In Control, open **Adapter controls**, choose the scope, set the app's interception to **Attachments disabled** or **Whole adapter disabled**, choose the fallback, and publish. Start with a rollout group if only part of the fleet is affected. With policy reviews on, a second administrator approves it. The API equivalent is `POST /v1/admin/policies` (or a group's policies) with `adapterControls`, for example `{ "chatgpt": { "scope": "attachments", "fallback": "open" } }`.
+5. **Verify the switch.** In Adapter controls, the app's browsers move to **Disabled by administrator** (whole adapter) or the **Attachments disabled** count rises. Browsers still on **Policy pending** are older releases or offline.
+6. **Notify affected customers' administrators** with the template below.
+7. **Fix.** Engineering ships a new Browser release. Stage it on a test tenant and a canary group first. See [Upgrade](install-and-remove.md#upgrade).
+8. **Re-enable.** Set the app back to **Active (protected)** for the canary group first. Confirm the app returns to **Detected** in composer readiness and the controlled tests for that app pass. Then re-enable the baseline and other groups. Restoring an earlier policy version also restores its adapter controls, so check the Adapter controls page after any restore.
+9. **Close.** Send the restoration notice, and record the incident and its regression test in the product plan's decision log.
+
+### Customer notice template
+
+> Subject: Zekvar Browser protection change for [App] ([scope])
+>
+> On [date, time UTC], we found that [App] changed its page in a way that stops Zekvar Browser from reliably checking [prompts / file attachments / all actions] on [Browser version or "all versions"].
+>
+> To avoid a false sense of coverage, your administrator has [disabled Zekvar protection for [App] attachments / disabled the Zekvar [App] adapter] for [scope]. While this is in place, [App] is [still available without Zekvar checks for this action (fail open) / blocked in managed Chrome (fail closed)]. Other apps and actions are unaffected.
+>
+> What you should do: [avoid sharing sensitive files in [App] / use [approved alternative]]. We will tell you when protection is restored.
+>
+> Next update: [time UTC]. Contact: [support contact].
+
+Restoration notice: "Zekvar Browser protection for [App] [action] is restored as of [time UTC] on Browser [version] and later. No action is needed beyond keeping Chrome updated."
 
 ## Run an incident
 
@@ -236,7 +264,7 @@ Keep the record factual and free of customer content.
 1. Declare Sev 1 if the flow is advertised as covered. Name an owner.
 2. Reproduce with the synthetic marker. Record Browser version, Chrome version, page layout, account type, and observed result.
 3. Stop relying on it. Tell affected administrators that the flow is not protected as stated.
-4. Compensate if needed: publish an AI site access block for the host for the affected group, or switch off the affected app protection in Control so the group does not assume coverage. [A dedicated control to disable one app's protection is being built.]
+4. Compensate if needed: in Control **Adapter controls**, disable the affected app's attachments or whole adapter for the affected scope, with fail closed to block the app or fail open to keep it usable without that protection. See [Respond to a broken app adapter](#respond-to-a-broken-app-adapter).
 5. If a recent release caused it, roll back the extension release ([Roll back](install-and-remove.md#roll-back)). If an adapter break caused it, follow [Respond to a broken app adapter](#respond-to-a-broken-app-adapter).
 6. Pause promotions to Warn and Block and pause marketing and documentation claims for that flow.
 

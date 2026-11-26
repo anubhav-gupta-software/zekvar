@@ -89,7 +89,7 @@ process.once('SIGTERM', stopOnSignal);
 
 try {
   if (artifacts) await mkdir(artifacts, { recursive: true });
-  for (const directory of ['apps/browser-extension', 'apps/control-api', 'apps/control-web', 'contracts', 'deploy/pilot']) {
+  for (const directory of ['apps/browser-extension', 'apps/control-api', 'apps/control-web', 'contracts', 'deploy/pilot', 'docs', 'scripts']) {
     await mkdir(join(temp, directory), { recursive: true });
     await cp(join(root, directory), join(temp, directory), {
       recursive: true,
@@ -156,6 +156,7 @@ try {
   const composerGateAdmin = randomBytes(32).toString('hex');
   const detectionRulesAdmin = randomBytes(32).toString('hex');
   const rolloutAdmin = randomBytes(32).toString('hex');
+  const adapterAdmin = randomBytes(32).toString('hex');
   const apiServer = startService('dotnet', ['bin/Debug/net10.0/Control.Api.dll'], api, {
     DOTNET_ENVIRONMENT: 'Development', ASPNETCORE_ENVIRONMENT: 'Development', Control__Port: String(apiPort), ConnectionStrings__Control: db,
     Control__Organizations__0__Slug: 'demo', Control__Organizations__0__AdminToken: token,
@@ -178,6 +179,7 @@ try {
     Control__Organizations__19__Slug: 'composer-gate', Control__Organizations__19__AdminToken: composerGateAdmin,
     Control__Organizations__20__Slug: 'detection-rules', Control__Organizations__20__AdminToken: detectionRulesAdmin,
     Control__Organizations__21__Slug: 'automated-rollout', Control__Organizations__21__AdminToken: rolloutAdmin,
+    Control__Organizations__22__Slug: 'adapter-controls', Control__Organizations__22__AdminToken: adapterAdmin,
     ...(flags.has('--pilot') ? {
       Control__Organizations__3__Slug: 'managed-pilot', Control__Organizations__3__AdminToken: pilotAdmin,
       Control__Organizations__4__Slug: 'review-pilot', Control__Organizations__4__AdminToken: reviewAdmin,
@@ -268,6 +270,10 @@ try {
   });
   await run(process.execPath, ['--test', 'test/automated-rollout.test.mjs'], extension, {
     ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: rolloutAdmin,
+    ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_ARTIFACTS: artifacts ?? '',
+  });
+  await run(process.execPath, ['--test', 'test/adapter-controls.test.mjs'], extension, {
+    ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: adapterAdmin, ZEKVAR_DEMO_OTHER_TOKEN: token,
     ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_ARTIFACTS: artifacts ?? '',
   });
   await run('npm', ['run', 'test:control'], extension, {

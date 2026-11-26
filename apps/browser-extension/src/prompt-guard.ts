@@ -13,6 +13,7 @@ import type { Policy } from './protocol';
 import { clipboardUnavailableRule, inspectClipboard } from '../../../contracts/policy/clipboard';
 import { promptPolicyForApp } from '../../../contracts/policy/prompt-app-modes';
 import { inspectAttachment } from './attachment-inspection';
+import { adapterDisabled, attachmentsDisabled } from '../../../contracts/policy/adapter-controls';
 
 type PromptAdapter = {
   appId: AiPromptApp;
@@ -91,6 +92,10 @@ export function bindPromptGuard(adapter: PromptAdapter) {
   const appName = promptAppLabels[adapter.appId];
   const uploadApp = isUploadApp(adapter.appId) ? adapter.appId : undefined;
   const enabled = (summary: Summary | undefined) => summary?.promptApps?.includes(adapter.appId) === true;
+  // An administrator can switch off a broken adapter. Browser then leaves the page untouched and reports that state.
+  const switchedOff = (summary: Summary | undefined) => enabled(summary) && adapterDisabled(summary?.policy?.adapterControls, adapter.appId);
+  const guarded = (summary: Summary | undefined) => enabled(summary) && !switchedOff(summary);
+  const controlKey = (summary: Summary | undefined) => JSON.stringify(summary?.policy?.adapterControls?.[adapter.appId] ?? null);
   const supported = () => adapter.route(location.href) !== 'other';
   let control: Summary | undefined;
   let refreshing = false;
@@ -118,6 +123,17 @@ export function bindPromptGuard(adapter: PromptAdapter) {
       return;
     }
     if (!ui.host.isConnected) document.body.append(ui.host);
+    if (supported() && switchedOff(control) && control?.installationId && control.policy) {
+      clearInterruption();
+      ui.uploadNotice.textContent = '';
+      ui.clipboardNotice.textContent = '';
+      unsupportedSince = 0;
+      unsupportedInput = undefined;
+      const label = `Zekvar · ${appName} protection disabled by your administrator`;
+      if (ui.status.textContent !== label) ui.status.textContent = label;
+      reportCoverage(control.installationId, 'disabled', control.policy, Date.now());
+      return;
+    }
     if (!supported()) {
       clearInterruption();
       ui.uploadNotice.textContent = '';
@@ -165,12 +181,17 @@ export function bindPromptGuard(adapter: PromptAdapter) {
       (isMode(classification) ? ` · Classification rules ${classification}` : '') +
       (upload && upload !== 'off' ? ` · File uploads ${upload}${targetedUpload ? ' (selected types)' : ''}` : '') +
       (content !== 'off' ? ` · File content ${content}` : '') +
-      (clipboard && clipboard !== 'off' ? ` · Clipboard ${clipboard}` : '');
+      (clipboard && clipboard !== 'off' ? ` · Clipboard ${clipboard}` : '') +
+      (uploadApp && attachmentsDisabled(managedPolicy?.adapterControls, uploadApp) ? ' · Attachments disabled by administrator' : '');
     const label = !managedPolicy ? `Zekvar · ${appName} policy unavailable` : coverage === 'unsupported' ?
       `Zekvar · Unsupported composer (${inspection.gap ?? 'Send control missing'})` : !coverage && !waiting ? 'Zekvar · Checking composer…' :
         `Zekvar · ${managedPolicy.mode.toUpperCase()} v${managedPolicy.version}${detectors}${control?.status === 'offline' ? ' · Offline policy' : ''}${current?.button ? '' : ' · Waiting for Send control'}`;
     if (ui.status.textContent !== label) ui.status.textContent = label;
     if (!managedPolicy || !installationId || !coverage) return;
+    reportCoverage(installationId, coverage, managedPolicy, now);
+  }
+
+  function reportCoverage(installationId: string, coverage: Coverage, managedPolicy: Policy, now: number) {
     if (lastCoverage?.installationId === installationId && lastCoverage.coverage === coverage &&
         lastCoverage.version === managedPolicy.version && lastCoverage.assignment === managedPolicy.assignmentVersion &&
         now - lastCoverage.at < 60_000) return;
@@ -191,7 +212,8 @@ export function bindPromptGuard(adapter: PromptAdapter) {
       if (!reply.summary) return;
       if (control?.installationId !== reply.summary.installationId || control?.policy?.version !== reply.summary.policy?.version ||
           control?.policy?.assignmentVersion !== reply.summary.policy?.assignmentVersion ||
-          control?.policy?.mode !== reply.summary.policy?.mode || enabled(control) !== enabled(reply.summary)) {
+          control?.policy?.mode !== reply.summary.policy?.mode || enabled(control) !== enabled(reply.summary) ||
+          controlKey(control) !== controlKey(reply.summary)) {
         clearInterruption();
         ui.uploadNotice.textContent = '';
         ui.clipboardNotice.textContent = '';
@@ -208,7 +230,7 @@ export function bindPromptGuard(adapter: PromptAdapter) {
   function check(event: Event, current: Composer) {
     const policy = control?.policy;
     const installationId = control?.installationId;
-    if (!policy || !installationId || !enabled(control)) return;
+    if (!policy || !installationId || !guarded(control)) return;
     const value = promptText(current.input);
     const { match, exception } = evaluate(value, policy);
     if (exception) {
@@ -261,14 +283,14 @@ export function bindPromptGuard(adapter: PromptAdapter) {
   }
 
   window.addEventListener('click', (event) => {
-    if (!event.isTrusted || !enabled(control) || !supported() || !(event.target instanceof Element) || !event.target.closest('button')) return;
+    if (!event.isTrusted || !guarded(control) || !supported() || !(event.target instanceof Element) || !event.target.closest('button')) return;
     const current = adapter.inspect().composer;
     if (current?.button?.contains(event.target) && !current.button.disabled) check(event, current);
   }, { capture: true });
 
   window.addEventListener('keydown', (event) => {
     if (!event.isTrusted || event.key !== 'Enter' || event.shiftKey || event.altKey || event.metaKey || event.ctrlKey ||
-        event.isComposing || event.keyCode === 229 || !enabled(control) || !supported() || !(event.target instanceof Node)) return;
+        event.isComposing || event.keyCode === 229 || !guarded(control) || !supported() || !(event.target instanceof Node)) return;
     const inspection = adapter.inspect();
     const current = inspection.composer;
     if (!current?.input.contains(event.target)) return;
@@ -302,7 +324,7 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     clearInterruption();
     if (!draft || current?.input !== draft.input || !current.button || current.button.disabled ||
         promptText(current.input) !== draft.value || draft.page !== location.href || !supported() ||
-        !enabled(control) || control?.installationId !== draft.installationId || !control.policy) return;
+        !guarded(control) || control?.installationId !== draft.installationId || !control.policy) return;
     const { match, exception } = evaluate(draft.value, control.policy);
     if (exception) return;
     if (match.action === 'allow' || match.action !== draft.match.action || match.ruleId !== draft.match.ruleId ||
@@ -383,7 +405,7 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     const policy = control?.policy;
     const installationId = control?.installationId;
     const mode = policy?.clipboardMode;
-    if (!event.isTrusted || !event.cancelable || event.defaultPrevented || !supported() || !enabled(control) ||
+    if (!event.isTrusted || !event.cancelable || event.defaultPrevented || !supported() || !guarded(control) ||
         !policy || !installationId || !mode || mode === 'off' || !(event.target instanceof Node)) return;
     const composer = adapter.inspect().composer;
     if (!composer?.input.contains(event.target)) return;
@@ -431,7 +453,8 @@ export function bindPromptGuard(adapter: PromptAdapter) {
   }
 
   if (uploadApp) bindUploadGuard(() => {
-    if (!supported() || !enabled(control) || !control?.installationId || !control.policy) return;
+    if (!supported() || !guarded(control) || !control?.installationId || !control.policy ||
+        attachmentsDisabled(control.policy.adapterControls, uploadApp)) return;
     const { policy, installationId } = control;
     const content = fileContentMode(policy, uploadApp);
     const mode = policy.uploadModes?.[uploadApp];

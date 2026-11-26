@@ -64,6 +64,10 @@ Browser v0.40.0 adds Claude file protection on those chat routes. In Control's t
 
 Enroll Browser v0.34.0 and open **Policy preview** in Control. Set a different prompt mode for each enabled AI app. After publication and sync, send a synthetic test marker through each supported composer and check its decision and policy version in **Security events**. For setup and preview, see the Control guide. [Set prompt modes by AI app](../control-web/README.md#set-prompt-modes-by-ai-app)
 
+## Test adapter controls
+
+Browser v0.42.0 applies the administrator adapter controls from Control's **Adapter controls** page. In a test rollout group, set ChatGPT to **Attachments disabled** with **Fail open** and select **Sync now**. On the ChatGPT page, the Zekvar panel ends with "Attachments disabled by administrator", and a file with the synthetic marker reaches the page while a typed marker is still checked. Set **Whole adapter disabled** to see "ChatGPT protection disabled by your administrator". Browser then leaves the page untouched and reports **Disabled by administrator** to composer readiness. With **Fail closed**, a new top-level visit to the app's hosts shows Chrome's blocked page. Set the app back to **Active (protected)** to restore protection. The connected test `test/adapter-controls.test.mjs` runs these steps in verify-demo, including an older-release case. [Control runbook](../control-web/README.md#disable-a-broken-adapter)
+
 ## Try the GitHub classic PAT rule
 
 Set **GitHub classic PAT** under **Publish a policy** in Control, publish, and use **Sync now** in the Zekvar Browser popup. The rule starts **Off** and has its own setting. In **Monitor**, it records a matching attempt and allows Send. **Warn** asks the user to edit or continue. **Block** holds the attempt until the prompt is edited. When both rules match, Zekvar applies the stricter action and reports the rule that determined it. A tie is attributed to the GitHub rule.
@@ -268,7 +272,7 @@ npx playwright install chromium --no-shell
 npm test
 ```
 
-The suite loads the compiled extension into Playwright's bundled browser and serves the fixture within its temporary browser profile. It can run while the manual demo is open. It checks click and keyboard submission, warning edit and override, retry, event fields and privacy, and extension scope.
+The suite loads the compiled extension into Playwright's bundled browser and serves the fixture within its temporary browser profile. It can run while the manual demo is open. It checks click and keyboard submission, warning edit and override, retry, event fields and privacy, and extension scope. It also checks that `contracts/coverage/matrix.json` names only tests that exist and that `docs/coverage.md` matches it. After changing the matrix, run `node scripts/coverage-doc.mjs` from the repository root. [Coverage matrix](../../docs/coverage.md)
 
 To run the connected tests, point them at a disposable Control organization. They publish policies, enroll and revoke test installations, and write synthetic decisions. The suite isolates the extension build and Chrome profile, simulates intermittent network responses, and serves a controlled composer at the ChatGPT origin in the test profile. Event delivery uses the real API and PostgreSQL.
 

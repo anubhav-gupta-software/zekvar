@@ -171,6 +171,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
       discoveryEnabled: editor.discoveryEnabled, presetDiscoveryEnabled: editor.presetDiscoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled,
       extensionDeployment: reference.extensionDeployment,
       browserHardening: reference.browserHardening,
+      adapterControls: reference.adapterControls,
       blockedAiAppHosts: editor.blockedAiAppHosts,
       claudePromptEnabled: editor.claudePromptEnabled, domainRules, pathRules,
       uploadModes: editor.uploadModes, uploadTypes: { chatgpt, gemini, claude }, fileInspection: editor.fileInspection,

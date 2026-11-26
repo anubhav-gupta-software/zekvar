@@ -1,0 +1,2281 @@
+{
+  "schemaVersion": 1,
+  "description": "App-by-action coverage for Zekvar Browser. Edit this file, then run node scripts/coverage-doc.mjs to regenerate docs/coverage.md.",
+  "statuses": {
+    "supported": "On by default for the app and proven by a named controlled-fixture connected test for this app, action, and mode.",
+    "experimental": "Implemented, but the app is opt-in or the named tests prove this mode through a sibling app, a shared engine unit test, or a different mode.",
+    "unsupported": "Not implemented. Browser does not intercept or offer this mode."
+  },
+  "evidence": {
+    "fixture": "Controlled fixture: Playwright drives real Chrome with the extension against a local page shaped like the app, served at the app origin.",
+    "unit": "Unit test of the shared inspection engine without a browser.",
+    "api": "Control API suite against PostgreSQL.",
+    "live-signed-out": "Optional live check against the public signed-out site (node scripts/verify-demo.mjs --live). Results are not recorded in the repository.",
+    "live-signed-in": "Live check against a signed-in customer workspace. None exists yet."
+  },
+  "evidenceLabels": {
+    "fixture": "Controlled fixture",
+    "unit": "Unit",
+    "api": "Control API",
+    "live-signed-out": "Live signed-out",
+    "live-signed-in": "Live signed-in"
+  },
+  "apps": [
+    {
+      "id": "chatgpt",
+      "name": "ChatGPT"
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini"
+    },
+    {
+      "id": "claude",
+      "name": "Claude",
+      "note": "Opt-in through Claude prompt protection, so every Claude cell is experimental."
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit-click",
+      "label": "Typed prompt sent with the Send control",
+      "kind": "prompt",
+      "modes": [
+        "monitor",
+        "warn",
+        "block",
+        "redact"
+      ]
+    },
+    {
+      "id": "submit-enter",
+      "label": "Typed prompt sent with Enter",
+      "kind": "prompt",
+      "modes": [
+        "monitor",
+        "warn",
+        "block",
+        "redact"
+      ]
+    },
+    {
+      "id": "paste-text",
+      "label": "Native text paste into the composer",
+      "kind": "prompt",
+      "modes": [
+        "monitor",
+        "block"
+      ]
+    },
+    {
+      "id": "file-picker",
+      "label": "Native file picker selection",
+      "kind": "intake",
+      "modes": [
+        "monitor",
+        "block"
+      ]
+    },
+    {
+      "id": "drag-drop",
+      "label": "Native file drag and drop",
+      "kind": "intake",
+      "modes": [
+        "monitor",
+        "block"
+      ]
+    },
+    {
+      "id": "clipboard-image",
+      "label": "Clipboard file or image paste",
+      "kind": "intake",
+      "modes": [
+        "monitor",
+        "block"
+      ]
+    },
+    {
+      "id": "attachment-text",
+      "label": "Plain text attachment content",
+      "kind": "attachment",
+      "modes": [
+        "monitor",
+        "block"
+      ]
+    },
+    {
+      "id": "attachment-ooxml",
+      "label": "Office Open XML attachment (Word, Excel, PowerPoint)",
+      "kind": "attachment",
+      "modes": [
+        "monitor",
+        "block"
+      ]
+    },
+    {
+      "id": "attachment-opendocument",
+      "label": "OpenDocument attachment (text, spreadsheet, presentation)",
+      "kind": "attachment",
+      "modes": [
+        "monitor",
+        "block"
+      ]
+    },
+    {
+      "id": "attachment-pdf-text",
+      "label": "PDF with selectable text",
+      "kind": "attachment",
+      "modes": [
+        "monitor",
+        "block"
+      ]
+    },
+    {
+      "id": "attachment-pdf-scanned",
+      "label": "Scanned or mixed PDF pages (local OCR)",
+      "kind": "attachment",
+      "modes": [
+        "monitor",
+        "block"
+      ]
+    },
+    {
+      "id": "attachment-image-ocr",
+      "label": "PNG or JPEG image text (local OCR)",
+      "kind": "attachment",
+      "modes": [
+        "monitor",
+        "block"
+      ]
+    }
+  ],
+  "modes": [
+    "monitor",
+    "warn",
+    "block",
+    "redact"
+  ],
+  "cells": [
+    {
+      "app": "chatgpt",
+      "action": "submit-click",
+      "mode": "monitor",
+      "status": "supported",
+      "minBrowser": "0.3.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/demo.test.mjs",
+          "name": "restores Monitor and delivers a queued event exactly once after a lost acknowledgment",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "submit-click",
+      "mode": "warn",
+      "status": "supported",
+      "minBrowser": "0.3.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "allows one ChatGPT warning override for the unchanged draft",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/prompt-requests.test.mjs",
+          "name": "previews and enforces different prompt modes in three composers and preserves clipboard policy",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "submit-click",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.3.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "guards click and Enter on the supported ChatGPT-shaped composer and sends edited text",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/demo.test.mjs",
+          "name": "publishes Block, verifies Chrome applied it, and shows Send and Enter decisions in Control",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/demo.test.mjs",
+          "name": "live public ChatGPT in the same fresh profile",
+          "evidence": "live-signed-out"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "submit-click",
+      "mode": "redact",
+      "status": "supported",
+      "minBrowser": "0.9.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "redacts a blocked multiline editor draft as one recoverable edit and requires a separate send",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "redacts a warned guest textarea draft and invalidates stale draft and policy actions",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "submit-enter",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.3.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/demo.test.mjs",
+          "name": "restores Monitor and delivers a queued event exactly once after a lost acknowledgment",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "guards click and Enter on the supported ChatGPT-shaped composer and sends edited text",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "submit-enter",
+      "mode": "warn",
+      "status": "supported",
+      "minBrowser": "0.3.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "allows one ChatGPT warning override for the unchanged draft",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "submit-enter",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.3.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "guards click and Enter on the supported ChatGPT-shaped composer and sends edited text",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/demo.test.mjs",
+          "name": "publishes Block, verifies Chrome applied it, and shows Send and Enter decisions in Control",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/demo.test.mjs",
+          "name": "live public ChatGPT in the same fresh profile",
+          "evidence": "live-signed-out"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "submit-enter",
+      "mode": "redact",
+      "status": "supported",
+      "minBrowser": "0.9.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "redacts a blocked multiline editor draft as one recoverable edit and requires a separate send",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "paste-text",
+      "mode": "monitor",
+      "status": "supported",
+      "minBrowser": "0.31.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/clipboard-paste.test.mjs",
+          "name": "guards native text paste before it reaches supported AI composers and reports only decision metadata",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "paste-text",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "paste-text",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.31.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/clipboard-paste.test.mjs",
+          "name": "guards native text paste before it reaches supported AI composers and reports only decision metadata",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "paste-text",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "file-picker",
+      "mode": "monitor",
+      "status": "supported",
+      "minBrowser": "0.12.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "applies per-app controls to native picker, drop, and clipboard file events",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects attachments through native Chrome intake and Control reporting",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "file-picker",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "file-picker",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.12.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "releases scanned snapshots and keeps sensitive, unsupported, and stale selections from the site",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "file-picker",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "drag-drop",
+      "mode": "monitor",
+      "status": "supported",
+      "minBrowser": "0.12.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "applies per-app controls to native picker, drop, and clipboard file events",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects attachments through native Chrome intake and Control reporting",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "drag-drop",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "drag-drop",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.12.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "releases scanned snapshots and keeps sensitive, unsupported, and stale selections from the site",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/demo.test.mjs",
+          "name": "holds matching native file drops on live signed-out ChatGPT and Gemini and reports their methods",
+          "evidence": "live-signed-out"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "drag-drop",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "clipboard-image",
+      "mode": "monitor",
+      "status": "supported",
+      "minBrowser": "0.12.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "applies per-app controls to native picker, drop, and clipboard file events",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "clipboard-image",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "clipboard-image",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.27.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "releases scanned snapshots and keeps sensitive, unsupported, and stale selections from the site",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "clipboard-image",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-text",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.24.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/file-inspection.test.mjs",
+          "name": "reads UTF-8 bytes independently of upload names and declared media types",
+          "evidence": "unit"
+        },
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "releases scanned snapshots and keeps sensitive, unsupported, and stale selections from the site",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-text",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-text",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.27.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "releases scanned snapshots and keeps sensitive, unsupported, and stale selections from the site",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-text",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-ooxml",
+      "mode": "monitor",
+      "status": "supported",
+      "minBrowser": "0.25.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects attachments through native Chrome intake and Control reporting",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/office-inspection.test.mjs",
+          "name": "recognizes Word, Excel, and PowerPoint by bytes and combines formatted text runs",
+          "evidence": "unit"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-ooxml",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-ooxml",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.27.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "releases scanned snapshots and keeps sensitive, unsupported, and stale selections from the site",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-ooxml",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-opendocument",
+      "mode": "monitor",
+      "status": "supported",
+      "minBrowser": "0.35.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "monitors and blocks OpenDocument intake and releases clean document bytes",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/office-inspection.test.mjs",
+          "name": "reads OpenDocument formatted text, cell values, notes, and style text by package bytes",
+          "evidence": "unit"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-opendocument",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-opendocument",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.35.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "monitors and blocks OpenDocument intake and releases clean document bytes",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-opendocument",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-pdf-text",
+      "mode": "monitor",
+      "status": "supported",
+      "minBrowser": "0.36.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "scans PDF page text locally and blocks incomplete checks before native attachments reach the site",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-pdf-text",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-pdf-text",
+      "mode": "block",
+      "status": "experimental",
+      "minBrowser": "0.36.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "scans PDF page text locally and blocks incomplete checks before native attachments reach the site",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-pdf-text",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-pdf-scanned",
+      "mode": "monitor",
+      "status": "supported",
+      "minBrowser": "0.39.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "recognizes scanned PDF pages even when the document also contains selectable text",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-pdf-scanned",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-pdf-scanned",
+      "mode": "block",
+      "status": "experimental",
+      "minBrowser": "0.39.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "recognizes scanned PDF pages even when the document also contains selectable text",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-pdf-scanned",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-image-ocr",
+      "mode": "monitor",
+      "status": "supported",
+      "minBrowser": "0.38.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "recognizes English image text from bundled OCR and holds unclear or malformed images",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-image-ocr",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-image-ocr",
+      "mode": "block",
+      "status": "experimental",
+      "minBrowser": "0.38.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "recognizes English image text from bundled OCR and holds unclear or malformed images",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "action": "attachment-image-ocr",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "submit-click",
+      "mode": "monitor",
+      "status": "supported",
+      "minBrowser": "0.10.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "protects Gemini sends, isolates coverage, and clears an ambiguous composer",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/prompt-requests.test.mjs",
+          "name": "previews and enforces different prompt modes in three composers and preserves clipboard policy",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "submit-click",
+      "mode": "warn",
+      "status": "supported",
+      "minBrowser": "0.10.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "protects Gemini sends, isolates coverage, and clears an ambiguous composer",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "submit-click",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.10.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "protects Gemini sends, isolates coverage, and clears an ambiguous composer",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/demo.test.mjs",
+          "name": "live public Gemini blocks click and Enter and sends a reviewed redacted draft",
+          "evidence": "live-signed-out"
+        },
+        {
+          "file": "apps/browser-extension/test/prompt-requests.test.mjs",
+          "name": "blocks Send on signed-out Gemini with a live per-app override",
+          "evidence": "live-signed-out"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "submit-click",
+      "mode": "redact",
+      "status": "supported",
+      "minBrowser": "0.10.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "protects Gemini sends, isolates coverage, and clears an ambiguous composer",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/demo.test.mjs",
+          "name": "live public Gemini blocks click and Enter and sends a reviewed redacted draft",
+          "evidence": "live-signed-out"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "submit-enter",
+      "mode": "monitor",
+      "status": "supported",
+      "minBrowser": "0.10.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "protects Gemini sends, isolates coverage, and clears an ambiguous composer",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "submit-enter",
+      "mode": "warn",
+      "status": "supported",
+      "minBrowser": "0.10.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "protects Gemini sends, isolates coverage, and clears an ambiguous composer",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "submit-enter",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.10.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "protects Gemini sends, isolates coverage, and clears an ambiguous composer",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/demo.test.mjs",
+          "name": "live public Gemini blocks click and Enter and sends a reviewed redacted draft",
+          "evidence": "live-signed-out"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "submit-enter",
+      "mode": "redact",
+      "status": "supported",
+      "minBrowser": "0.10.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "protects Gemini sends, isolates coverage, and clears an ambiguous composer",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/demo.test.mjs",
+          "name": "live public Gemini blocks click and Enter and sends a reviewed redacted draft",
+          "evidence": "live-signed-out"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "paste-text",
+      "mode": "monitor",
+      "status": "supported",
+      "minBrowser": "0.31.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/clipboard-paste.test.mjs",
+          "name": "guards native text paste before it reaches supported AI composers and reports only decision metadata",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "paste-text",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "paste-text",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.31.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/clipboard-paste.test.mjs",
+          "name": "guards native text paste before it reaches supported AI composers and reports only decision metadata",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/prompt-requests.test.mjs",
+          "name": "previews and enforces different prompt modes in three composers and preserves clipboard policy",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "paste-text",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "file-picker",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.12.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "applies per-app controls to native picker, drop, and clipboard file events",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects attachments through native Chrome intake and Control reporting",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "file-picker",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "file-picker",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.12.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "applies per-app controls to native picker, drop, and clipboard file events",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects attachments through native Chrome intake and Control reporting",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "file-picker",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "drag-drop",
+      "mode": "monitor",
+      "status": "supported",
+      "minBrowser": "0.12.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects attachments through native Chrome intake and Control reporting",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "drag-drop",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "drag-drop",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.12.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "applies per-app controls to native picker, drop, and clipboard file events",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/demo.test.mjs",
+          "name": "holds matching native file drops on live signed-out ChatGPT and Gemini and reports their methods",
+          "evidence": "live-signed-out"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "drag-drop",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "clipboard-image",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.12.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "applies per-app controls to native picker, drop, and clipboard file events",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "clipboard-image",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "clipboard-image",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.12.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/control.test.mjs",
+          "name": "applies per-app controls to native picker, drop, and clipboard file events",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "clipboard-image",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-text",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.24.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/file-inspection.test.mjs",
+          "name": "reads UTF-8 bytes independently of upload names and declared media types",
+          "evidence": "unit"
+        },
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "releases scanned snapshots and keeps sensitive, unsupported, and stale selections from the site",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-text",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-text",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.27.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "releases scanned snapshots and keeps sensitive, unsupported, and stale selections from the site",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-text",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-ooxml",
+      "mode": "monitor",
+      "status": "supported",
+      "minBrowser": "0.25.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects attachments through native Chrome intake and Control reporting",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/office-inspection.test.mjs",
+          "name": "recognizes Word, Excel, and PowerPoint by bytes and combines formatted text runs",
+          "evidence": "unit"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-ooxml",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-ooxml",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.27.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "releases scanned snapshots and keeps sensitive, unsupported, and stale selections from the site",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-ooxml",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-opendocument",
+      "mode": "monitor",
+      "status": "supported",
+      "minBrowser": "0.35.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "monitors and blocks OpenDocument intake and releases clean document bytes",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/office-inspection.test.mjs",
+          "name": "reads OpenDocument formatted text, cell values, notes, and style text by package bytes",
+          "evidence": "unit"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-opendocument",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-opendocument",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.35.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "monitors and blocks OpenDocument intake and releases clean document bytes",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-opendocument",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-pdf-text",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.36.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "scans PDF page text locally and blocks incomplete checks before native attachments reach the site",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-pdf-text",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-pdf-text",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.36.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "scans PDF page text locally and blocks incomplete checks before native attachments reach the site",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-pdf-text",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-pdf-scanned",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.39.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "recognizes scanned PDF pages even when the document also contains selectable text",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-pdf-scanned",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-pdf-scanned",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.39.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "recognizes scanned PDF pages even when the document also contains selectable text",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-pdf-scanned",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-image-ocr",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.38.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "recognizes English image text from bundled OCR and holds unclear or malformed images",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-image-ocr",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-image-ocr",
+      "mode": "block",
+      "status": "supported",
+      "minBrowser": "0.38.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "recognizes English image text from bundled OCR and holds unclear or malformed images",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "action": "attachment-image-ocr",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "submit-click",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.19.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/claude.test.mjs",
+          "name": "Claude opt-in, coverage, and recovery with Control and real Chrome",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "submit-click",
+      "mode": "warn",
+      "status": "experimental",
+      "minBrowser": "0.19.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/claude.test.mjs",
+          "name": "Claude opt-in, coverage, and recovery with Control and real Chrome",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "submit-click",
+      "mode": "block",
+      "status": "experimental",
+      "minBrowser": "0.19.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/claude.test.mjs",
+          "name": "Claude opt-in, coverage, and recovery with Control and real Chrome",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/prompt-requests.test.mjs",
+          "name": "previews and enforces different prompt modes in three composers and preserves clipboard policy",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "submit-click",
+      "mode": "redact",
+      "status": "experimental",
+      "minBrowser": "0.19.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/claude.test.mjs",
+          "name": "Claude opt-in, coverage, and recovery with Control and real Chrome",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "submit-enter",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.19.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/claude.test.mjs",
+          "name": "Claude opt-in, coverage, and recovery with Control and real Chrome",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "submit-enter",
+      "mode": "warn",
+      "status": "experimental",
+      "minBrowser": "0.19.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/claude.test.mjs",
+          "name": "Claude opt-in, coverage, and recovery with Control and real Chrome",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "submit-enter",
+      "mode": "block",
+      "status": "experimental",
+      "minBrowser": "0.19.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/claude.test.mjs",
+          "name": "Claude opt-in, coverage, and recovery with Control and real Chrome",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "submit-enter",
+      "mode": "redact",
+      "status": "experimental",
+      "minBrowser": "0.19.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/claude.test.mjs",
+          "name": "Claude opt-in, coverage, and recovery with Control and real Chrome",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "paste-text",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.31.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/clipboard-paste.test.mjs",
+          "name": "guards native text paste before it reaches supported AI composers and reports only decision metadata",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "paste-text",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "paste-text",
+      "mode": "block",
+      "status": "experimental",
+      "minBrowser": "0.31.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/clipboard-paste.test.mjs",
+          "name": "guards native text paste before it reaches supported AI composers and reports only decision metadata",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "paste-text",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "file-picker",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.40.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects opted-in Claude chats across picker, drop, and clipboard intake",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "file-picker",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "file-picker",
+      "mode": "block",
+      "status": "experimental",
+      "minBrowser": "0.40.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects opted-in Claude chats across picker, drop, and clipboard intake",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/claude.test.mjs",
+          "name": "Claude opt-in, coverage, and recovery with Control and real Chrome",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "file-picker",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "drag-drop",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.40.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects opted-in Claude chats across picker, drop, and clipboard intake",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "drag-drop",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "drag-drop",
+      "mode": "block",
+      "status": "experimental",
+      "minBrowser": "0.40.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects opted-in Claude chats across picker, drop, and clipboard intake",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "drag-drop",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "clipboard-image",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.40.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects opted-in Claude chats across picker, drop, and clipboard intake",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "clipboard-image",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "clipboard-image",
+      "mode": "block",
+      "status": "experimental",
+      "minBrowser": "0.40.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects opted-in Claude chats across picker, drop, and clipboard intake",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "clipboard-image",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "attachment-text",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.40.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/file-inspection.test.mjs",
+          "name": "reads UTF-8 bytes independently of upload names and declared media types",
+          "evidence": "unit"
+        },
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects opted-in Claude chats across picker, drop, and clipboard intake",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "attachment-text",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "attachment-text",
+      "mode": "block",
+      "status": "experimental",
+      "minBrowser": "0.40.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/file-inspection.test.mjs",
+          "name": "reads UTF-8 bytes independently of upload names and declared media types",
+          "evidence": "unit"
+        },
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects opted-in Claude chats across picker, drop, and clipboard intake",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "attachment-text",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "attachment-ooxml",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.40.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects opted-in Claude chats across picker, drop, and clipboard intake",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "attachment-ooxml",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "attachment-ooxml",
+      "mode": "block",
+      "status": "experimental",
+      "minBrowser": "0.40.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects opted-in Claude chats across picker, drop, and clipboard intake",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "attachment-ooxml",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "attachment-opendocument",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.40.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "monitors and blocks OpenDocument intake and releases clean document bytes",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects opted-in Claude chats across picker, drop, and clipboard intake",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "attachment-opendocument",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "attachment-opendocument",
+      "mode": "block",
+      "status": "experimental",
+      "minBrowser": "0.40.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "monitors and blocks OpenDocument intake and releases clean document bytes",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects opted-in Claude chats across picker, drop, and clipboard intake",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "attachment-opendocument",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "attachment-pdf-text",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.40.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "scans PDF page text locally and blocks incomplete checks before native attachments reach the site",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects opted-in Claude chats across picker, drop, and clipboard intake",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "attachment-pdf-text",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "attachment-pdf-text",
+      "mode": "block",
+      "status": "experimental",
+      "minBrowser": "0.40.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects opted-in Claude chats across picker, drop, and clipboard intake",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "attachment-pdf-text",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "attachment-pdf-scanned",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.40.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "recognizes scanned PDF pages even when the document also contains selectable text",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects opted-in Claude chats across picker, drop, and clipboard intake",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "attachment-pdf-scanned",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "attachment-pdf-scanned",
+      "mode": "block",
+      "status": "experimental",
+      "minBrowser": "0.40.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects opted-in Claude chats across picker, drop, and clipboard intake",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "attachment-pdf-scanned",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "attachment-image-ocr",
+      "mode": "monitor",
+      "status": "experimental",
+      "minBrowser": "0.40.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "recognizes English image text from bundled OCR and holds unclear or malformed images",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects opted-in Claude chats across picker, drop, and clipboard intake",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "attachment-image-ocr",
+      "mode": "warn",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    },
+    {
+      "app": "claude",
+      "action": "attachment-image-ocr",
+      "mode": "block",
+      "status": "experimental",
+      "minBrowser": "0.40.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/office-upload.test.mjs",
+          "name": "protects opted-in Claude chats across picker, drop, and clipboard intake",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "action": "attachment-image-ocr",
+      "mode": "redact",
+      "status": "unsupported",
+      "minBrowser": null,
+      "tests": [],
+      "note": "Mode not offered for this action."
+    }
+  ],
+  "controls": [
+    {
+      "app": "chatgpt",
+      "control": "disable-attachments",
+      "fallback": "open",
+      "status": "supported",
+      "minBrowser": "0.42.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/adapter-controls.test.mjs",
+          "name": "disables ChatGPT attachments and the whole adapter for a rollout group, fails closed, and restores protection",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/control-api/test/control.test.mjs",
+          "name": "versions adapter controls with negotiated delivery, fail-closed host blocks, disabled coverage, and tenant isolation",
+          "evidence": "api"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "control": "disable-attachments",
+      "fallback": "closed",
+      "status": "supported",
+      "minBrowser": "0.42.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/adapter-controls.test.mjs",
+          "name": "disables ChatGPT attachments and the whole adapter for a rollout group, fails closed, and restores protection",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/control-api/test/control.test.mjs",
+          "name": "versions adapter controls with negotiated delivery, fail-closed host blocks, disabled coverage, and tenant isolation",
+          "evidence": "api"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "control": "disable-adapter",
+      "fallback": "open",
+      "status": "supported",
+      "minBrowser": "0.42.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/adapter-controls.test.mjs",
+          "name": "disables ChatGPT attachments and the whole adapter for a rollout group, fails closed, and restores protection",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/control-api/test/control.test.mjs",
+          "name": "versions adapter controls with negotiated delivery, fail-closed host blocks, disabled coverage, and tenant isolation",
+          "evidence": "api"
+        }
+      ]
+    },
+    {
+      "app": "chatgpt",
+      "control": "disable-adapter",
+      "fallback": "closed",
+      "status": "supported",
+      "minBrowser": "0.42.0",
+      "tests": [
+        {
+          "file": "apps/browser-extension/test/adapter-controls.test.mjs",
+          "name": "disables ChatGPT attachments and the whole adapter for a rollout group, fails closed, and restores protection",
+          "evidence": "fixture"
+        },
+        {
+          "file": "apps/control-api/test/control.test.mjs",
+          "name": "versions adapter controls with negotiated delivery, fail-closed host blocks, disabled coverage, and tenant isolation",
+          "evidence": "api"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "control": "disable-attachments",
+      "fallback": "open",
+      "status": "experimental",
+      "minBrowser": "0.42.0",
+      "tests": [
+        {
+          "file": "apps/control-api/test/control.test.mjs",
+          "name": "versions adapter controls with negotiated delivery, fail-closed host blocks, disabled coverage, and tenant isolation",
+          "evidence": "api"
+        },
+        {
+          "file": "apps/browser-extension/test/adapter-controls.test.mjs",
+          "name": "disables ChatGPT attachments and the whole adapter for a rollout group, fails closed, and restores protection",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "control": "disable-attachments",
+      "fallback": "closed",
+      "status": "experimental",
+      "minBrowser": "0.42.0",
+      "tests": [
+        {
+          "file": "apps/control-api/test/control.test.mjs",
+          "name": "versions adapter controls with negotiated delivery, fail-closed host blocks, disabled coverage, and tenant isolation",
+          "evidence": "api"
+        },
+        {
+          "file": "apps/browser-extension/test/adapter-controls.test.mjs",
+          "name": "disables ChatGPT attachments and the whole adapter for a rollout group, fails closed, and restores protection",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "control": "disable-adapter",
+      "fallback": "open",
+      "status": "experimental",
+      "minBrowser": "0.42.0",
+      "tests": [
+        {
+          "file": "apps/control-api/test/control.test.mjs",
+          "name": "versions adapter controls with negotiated delivery, fail-closed host blocks, disabled coverage, and tenant isolation",
+          "evidence": "api"
+        },
+        {
+          "file": "apps/browser-extension/test/adapter-controls.test.mjs",
+          "name": "disables ChatGPT attachments and the whole adapter for a rollout group, fails closed, and restores protection",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "gemini",
+      "control": "disable-adapter",
+      "fallback": "closed",
+      "status": "experimental",
+      "minBrowser": "0.42.0",
+      "tests": [
+        {
+          "file": "apps/control-api/test/control.test.mjs",
+          "name": "versions adapter controls with negotiated delivery, fail-closed host blocks, disabled coverage, and tenant isolation",
+          "evidence": "api"
+        },
+        {
+          "file": "apps/browser-extension/test/adapter-controls.test.mjs",
+          "name": "disables ChatGPT attachments and the whole adapter for a rollout group, fails closed, and restores protection",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "control": "disable-attachments",
+      "fallback": "open",
+      "status": "experimental",
+      "minBrowser": "0.42.0",
+      "tests": [
+        {
+          "file": "apps/control-api/test/control.test.mjs",
+          "name": "versions adapter controls with negotiated delivery, fail-closed host blocks, disabled coverage, and tenant isolation",
+          "evidence": "api"
+        },
+        {
+          "file": "apps/browser-extension/test/adapter-controls.test.mjs",
+          "name": "disables ChatGPT attachments and the whole adapter for a rollout group, fails closed, and restores protection",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "control": "disable-attachments",
+      "fallback": "closed",
+      "status": "experimental",
+      "minBrowser": "0.42.0",
+      "tests": [
+        {
+          "file": "apps/control-api/test/control.test.mjs",
+          "name": "versions adapter controls with negotiated delivery, fail-closed host blocks, disabled coverage, and tenant isolation",
+          "evidence": "api"
+        },
+        {
+          "file": "apps/browser-extension/test/adapter-controls.test.mjs",
+          "name": "disables ChatGPT attachments and the whole adapter for a rollout group, fails closed, and restores protection",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "control": "disable-adapter",
+      "fallback": "open",
+      "status": "experimental",
+      "minBrowser": "0.42.0",
+      "tests": [
+        {
+          "file": "apps/control-api/test/control.test.mjs",
+          "name": "versions adapter controls with negotiated delivery, fail-closed host blocks, disabled coverage, and tenant isolation",
+          "evidence": "api"
+        },
+        {
+          "file": "apps/browser-extension/test/adapter-controls.test.mjs",
+          "name": "disables ChatGPT attachments and the whole adapter for a rollout group, fails closed, and restores protection",
+          "evidence": "fixture"
+        }
+      ]
+    },
+    {
+      "app": "claude",
+      "control": "disable-adapter",
+      "fallback": "closed",
+      "status": "experimental",
+      "minBrowser": "0.42.0",
+      "tests": [
+        {
+          "file": "apps/control-api/test/control.test.mjs",
+          "name": "versions adapter controls with negotiated delivery, fail-closed host blocks, disabled coverage, and tenant isolation",
+          "evidence": "api"
+        },
+        {
+          "file": "apps/browser-extension/test/adapter-controls.test.mjs",
+          "name": "disables ChatGPT attachments and the whole adapter for a rollout group, fails closed, and restores protection",
+          "evidence": "fixture"
+        }
+      ]
+    }
+  ]
+}

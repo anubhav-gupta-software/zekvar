@@ -1,3 +1,4 @@
+import type { AdapterControls } from '../../../contracts/policy/adapter-controls';
 import type {
   AppClassification, BrowserHealthView, BrowserReleaseCount, ComposerReadinessReport, DiscoveredApp, DiscoveredAppId, Grant, Installation, Policy, PolicyGroup,
 } from './control';
@@ -146,6 +147,8 @@ export const controlApi = {
   extensionInventory: (token: string) => request<InventoryInstallation[]>('/extension-inventory', token),
   publishExtensionDeployment: (token: string, extensionDeployment: ExtensionDeployment, expectedVersion: number, review: boolean, groupId?: string) =>
     request<PolicyChange>(policiesPath(groupId), token, 'POST', { extensionDeployment, expectedVersion }, review),
+  publishAdapterControls: (token: string, adapterControls: AdapterControls, expectedVersion: number, review: boolean, groupId?: string) =>
+    request<PolicyChange>(policiesPath(groupId), token, 'POST', { adapterControls, expectedVersion }, review),
   publishBrowserHardening: (token: string, browserHardening: BrowserHardening, expectedVersion: number, review: boolean, groupId?: string) =>
     request<PolicyChange>(policiesPath(groupId), token, 'POST', { browserHardening, expectedVersion }, review),
   browserExtensionInventory: (token: string, id: string) => request<InventoryInstallation>(`/extension-inventory/${id}`, token),

@@ -50,6 +50,7 @@ const extensionAlertsAdmin = randomBytes(32).toString('hex');
 const composerGateAdmin = randomBytes(32).toString('hex');
 const detectionRulesAdmin = randomBytes(32).toString('hex');
 const rolloutAdmin = randomBytes(32).toString('hex');
+const adapterAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -60,7 +61,25 @@ const undoSsoSchema = `
       DROP COLUMN oidc_issuer, DROP COLUMN oidc_subject, ALTER COLUMN expires_at SET NOT NULL,
       ADD CONSTRAINT control_access_check1 CHECK ((revoked_at IS NULL) = (token_hash IS NOT NULL));
 `;
+const undoAdapterControlsSchema = `
+  DELETE FROM schema_migrations WHERE version = 53;
+  DELETE FROM composer_observations WHERE coverage = 'disabled';
+  UPDATE installations SET chatgpt_coverage = NULLIF(chatgpt_coverage, 'disabled'),
+    gemini_coverage = NULLIF(gemini_coverage, 'disabled'), claude_coverage = NULLIF(claude_coverage, 'disabled');
+  ALTER TABLE composer_observations DROP CONSTRAINT composer_observations_coverage_check,
+    ADD CONSTRAINT composer_observations_coverage_check CHECK (coverage IN ('ready', 'unsupported'));
+  ALTER TABLE installations
+    DROP CONSTRAINT installations_chatgpt_coverage_check,
+    ADD CONSTRAINT installations_chatgpt_coverage_check CHECK (chatgpt_coverage IN ('ready', 'unsupported')),
+    DROP CONSTRAINT installations_gemini_coverage_check,
+    ADD CONSTRAINT installations_gemini_coverage_check CHECK (gemini_coverage IN ('ready', 'unsupported')),
+    DROP CONSTRAINT installations_claude_coverage_check,
+    ADD CONSTRAINT installations_claude_coverage_check CHECK (claude_coverage IN ('ready', 'unsupported'));
+  ALTER TABLE policy_versions DROP COLUMN adapter_controls;
+  ALTER TABLE policy_deliveries DROP COLUMN adapter_controls;
+`;
 const undoRolloutSchema = `
+  ${undoAdapterControlsSchema}
   DELETE FROM schema_migrations WHERE version = 52;
   DELETE FROM control_audit WHERE action = 'rollout_plan_changed';
   DROP TABLE rollout_stages;
@@ -169,14 +188,15 @@ async function retentionFixture(query) {
 function browserPolicyOnly({ extensionDeployment: _extensionDeployment, browserHardening: _browserHardening, blockedAiAppHosts: _blockedAiAppHosts,
   fileContentModes: _fileContentModes, identifierProtection: _identifierProtection, presetDiscoveryEnabled: _presetDiscovery,
   ssnMode: _ssnMode, clipboardMode: _clipboardMode, githubTokenMode: _githubTokenMode, promptAppModes: _promptAppModes,
-  cloudCredentialMode: _cloudCredentialMode, classificationProtection: _classificationProtection, ...browserPolicy }) {
+  cloudCredentialMode: _cloudCredentialMode, classificationProtection: _classificationProtection, adapterControls: _adapterControls,
+  ...browserPolicy }) {
   return browserPolicy;
 }
 
 async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false,
   extensionVersion, scopedEnrollment = false, composerAware = false, privateKeyAware = false, fileInspectionAware = false,
   aiAppAccessAware = false, fileBlockAware = false, identifiersAware = false, presetAware = false, ssnAware = false, clipboardAware = false,
-  githubTokenAware = false, promptAppModesAware = false, detectionRulesAware = false } = {}) {
+  githubTokenAware = false, promptAppModesAware = false, detectionRulesAware = false, adapterControlsAware = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -197,6 +217,7 @@ async function call(path, { token, method = 'GET', body, expect = 200, assignmen
   if (githubTokenAware) headers['X-Zekvar-GitHub-Token'] = '1';
   if (promptAppModesAware) headers['X-Zekvar-Prompt-App-Modes'] = '1';
   if (detectionRulesAware) headers['X-Zekvar-Detection-Rules'] = '1';
+  if (adapterControlsAware) headers['X-Zekvar-Adapter-Controls'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
@@ -289,6 +310,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__32__AdminToken: detectionRulesAdmin,
       Control__Organizations__33__Slug: `rollout-plans-${suffix}`,
       Control__Organizations__33__AdminToken: rolloutAdmin,
+      Control__Organizations__34__Slug: `adapter-controls-${suffix}`,
+      Control__Organizations__34__AdminToken: adapterAdmin,
       Control__RolloutEvaluationSeconds: '3600',
       ...overrides,
     },
@@ -4708,7 +4731,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(baseline.outsideScope, 1);
     const onApp = (view, app) => view.composers.find(({ appId }) => appId === app).counts;
     assert.deepEqual(onApp(baseline, 'chatgpt'), { detected: postgres ? 1 : 2, unsupported: 1, stale: postgres ? 1 : 0,
-      unobserved: 0, policy_pending: 1 + large, off: 0 });
+      unobserved: 0, policy_pending: 1 + large, off: 0, disabled_by_admin: 0 });
     assert.equal(onApp(baseline, 'gemini').detected, 1);
     assert.equal(onApp(baseline, 'claude').off, 4 + large);
     const inheritedView = await report(`scope=${follows.id}`);
@@ -5609,5 +5632,138 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     for (const browser of [canaryBrowser, pilotBrowser, baselineBrowser]) {
       assert.ok(!evidence.includes(browser.installationId) && !evidence.includes(browser.token));
     }
+  });
+
+  await t.test('versions adapter controls with negotiated delivery, fail-closed host blocks, disabled coverage, and tenant isolation', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: adapterAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const [initial] = await admin('policies');
+    assert.deepEqual(initial.adapterControls, {});
+    if (postgres) {
+      await stop();
+      await retentionFixture(undoAdapterControlsSchema);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 53'), '1');
+      assert.deepEqual((await admin('policies'))[0], initial);
+    }
+    for (const adapterControls of [{ chatgpt: { scope: 'composer', fallback: 'open' } }, { chatgpt: { scope: 'adapter' } },
+      { copilot: { scope: 'adapter', fallback: 'open' } }, { gemini: { scope: 'adapter', fallback: 'OPEN' } }, { claude: 'adapter' },
+      ['adapter'], { chatgpt: { scope: 'adapter', fallback: 'open', note: 'unexpected' } }]) {
+      await post('policies', { adapterControls }, { expect: 400 });
+    }
+    const group = await post('policy-groups', { name: 'Adapter kill switch ring' });
+    const path = `policy-groups/${group.id}/policies`;
+    const auditor = await post('access', { name: 'Adapter auditor', role: 'auditor', hours: 1 });
+    await post(path, { adapterControls: { chatgpt: { scope: 'adapter', fallback: 'open' } } }, { token: auditor.token, expect: 403 });
+    const foreign = await fetch(`${baseUrl}/v1/admin/${path}`, { method: 'POST', body: JSON.stringify({ adapterControls: {} }),
+      headers: { Authorization: `Bearer ${second}`, 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(5_000) });
+    assert.ok([403, 404].includes(foreign.status), `Another tenant changed this group's adapter controls: ${foreign.status}`);
+    assert.deepEqual(await admin(path), []);
+
+    async function enroll(target) {
+      const { grant } = await post('enrollment-grants');
+      const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+      await call('/v1/browser/policy', { token: browser.token, assignmentAware: true });
+      if (target) await assign(browser, target);
+      return browser;
+    }
+    const assign = (browser, target) => post(`installations/${browser.installationId}/policy-group`, { groupId: target?.id ?? null }, { expect: 204 });
+    const [current, legacy, baseline] = await Promise.all([enroll(group), enroll(group), enroll(null)]);
+    const caps = { assignmentAware: true, claudeAware: true, aiAppAccessAware: true, fileInspectionAware: true, fileBlockAware: true };
+    const deliver = (browser, aware = true) => call('/v1/browser/policy', { token: browser.token, ...caps, adapterControlsAware: aware });
+    const beat = (browser, body, expect = 204) => call('/v1/browser/heartbeat', { token: browser.token, method: 'POST', body, expect,
+      composerAware: true });
+    const applied = async (browser) => (await admin('installations')).find(({ installationId }) => installationId === browser.installationId);
+    const readiness = async () => (await admin(`reports/composer-readiness?rolloutGroup=${group.id}`)).apps.find(({ appId }) => appId === 'chatgpt');
+    const event = (version, assignmentVersion, fields = {}) => ({ ...contract.event, eventId: randomUUID(), appId: 'chatgpt',
+      timestamp: new Date().toISOString(), policyVersion: version, assignmentVersion, decision: initial.mode, ...fields });
+    const write = (browser, body, expect) => call('/v1/browser/events', { token: browser.token, method: 'POST', body, expect });
+    const files = { fileInspectionApplied: true, fileContentBlockApplied: true };
+
+    // Attachments only, fail open, for one rollout group. Older Browser releases keep inspecting and stay pending.
+    const attachmentsOff = { chatgpt: { scope: 'attachments', fallback: 'open' } };
+    const attachments = await post(path, { fileContentModes: { chatgpt: 'block' }, adapterControls: attachmentsOff });
+    assert.deepEqual(attachments.adapterControls, attachmentsOff);
+    assert.deepEqual((await admin('policies'))[0].adapterControls, {});
+    const delivered = await deliver(current);
+    assert.deepEqual(delivered.adapterControls, attachmentsOff);
+    assert.deepEqual(delivered.blockedAiAppHosts, []);
+    const older = await deliver(legacy, false);
+    assert.equal(older.adapterControls, undefined);
+    const ack = { policyVersion: attachments.version, assignmentVersion: delivered.assignmentVersion, ...files };
+    await beat(legacy, { ...ack, assignmentVersion: older.assignmentVersion });
+    assert.notEqual((await applied(legacy)).appliedPolicyVersion, attachments.version);
+    await beat(legacy, { ...ack, assignmentVersion: older.assignmentVersion, adapterControlsApplied: true }, 400);
+    await beat(current, ack);
+    assert.notEqual((await applied(current)).appliedPolicyVersion, attachments.version);
+    await beat(current, { ...ack, adapterControlsApplied: true, chatGptCoverage: 'disabled' }, 400);
+    await beat(current, { ...ack, adapterControlsApplied: true, chatGptCoverage: 'ready' });
+    assert.equal((await applied(current)).appliedPolicyVersion, attachments.version);
+    let chatgpt = await readiness();
+    assert.deepEqual([chatgpt.counts.detected, chatgpt.counts.policy_pending, chatgpt.attachmentsDisabled], [1, 1, 1]);
+    const fileEvent = { ruleId: contract.event.ruleId, uploadMethod: 'picker', decision: 'block' };
+    await write(current, event(attachments.version, delivered.assignmentVersion, fileEvent), 400);
+    await write(legacy, event(attachments.version, older.assignmentVersion, fileEvent), 204);
+    await write(current, event(attachments.version, delivered.assignmentVersion), 204);
+
+    // The whole adapter, fail open. Disabled is a distinct coverage state that passes composer gates.
+    await assign(legacy, null);
+    const adapterOff = { chatgpt: { scope: 'adapter', fallback: 'open' } };
+    const adapter = await post(path, { adapterControls: adapterOff });
+    const disabledDelivery = await deliver(current);
+    assert.deepEqual(disabledDelivery.adapterControls, adapterOff);
+    const adapterAck = { ...ack, policyVersion: adapter.version, assignmentVersion: disabledDelivery.assignmentVersion, adapterControlsApplied: true };
+    await beat(current, { ...adapterAck, chatGptCoverage: 'disabled' });
+    assert.equal((await applied(current)).chatGptCoverage, 'disabled');
+    chatgpt = await readiness();
+    assert.deepEqual([chatgpt.counts.disabled_by_admin, chatgpt.counts.unsupported, chatgpt.counts.detected], [1, 0, 0]);
+    await write(current, event(adapter.version, disabledDelivery.assignmentVersion), 400);
+    const gated = await post(path, { mode: initial.mode, expectedVersion: adapter.version, requireComposerReady: ['chatgpt'] });
+    assert.deepEqual(gated.adapterControls, adapterOff);
+
+    // An automated rollout stage that requires ChatGPT readiness completes when ChatGPT is disabled on purpose.
+    const staging = await post('policy-groups', { name: 'Adapter staging' });
+    const source = await post(`policy-groups/${staging.id}/policies`, { fileContentModes: { chatgpt: 'block' }, adapterControls: adapterOff });
+    const rollout = await post('rollout-plans', { requestId: randomUUID(), name: 'Disabled adapter rollout', sourceVersion: source.version,
+      stages: [{ groupId: group.id, minSoakSeconds: 0, minAcknowledgedPercent: 100, requireComposerReady: ['chatgpt'] }] });
+    const staged = await deliver(current);
+    assert.equal(staged.version, rollout.stages[0].publishedVersion);
+    await beat(current, { ...adapterAck, policyVersion: staged.version, assignmentVersion: staged.assignmentVersion, chatGptCoverage: 'disabled' });
+    const finished = await admin(`rollout-plans/${rollout.id}`);
+    assert.equal(finished.status, 'completed', JSON.stringify(finished.gate));
+
+    // Fail closed reuses the AI app access host block, including for older releases, and needs its acknowledgment.
+    await assign(legacy, group);
+    const limit = Array.from({ length: 49 }, (_, index) => `limit-${index}.adapter.test`);
+    await post(path, { domainRules: { allow: [], block: limit }, adapterControls: { chatgpt: { scope: 'adapter', fallback: 'closed' } } },
+      { expect: 400 });
+    const closed = await post(path, { adapterControls: { chatgpt: { scope: 'adapter', fallback: 'closed' } } });
+    assert.deepEqual(closed.blockedAiAppHosts, []);
+    const blocked = await deliver(current);
+    assert.deepEqual(blocked.blockedAiAppHosts, ['chat.openai.com', 'chatgpt.com']);
+    const olderBlocked = await deliver(legacy, false);
+    assert.deepEqual(olderBlocked.blockedAiAppHosts, ['chat.openai.com', 'chatgpt.com']);
+    assert.equal(olderBlocked.adapterControls, undefined);
+    const closedAck = { ...files, policyVersion: closed.version, assignmentVersion: blocked.assignmentVersion, adapterControlsApplied: true };
+    await beat(current, closedAck);
+    assert.notEqual((await applied(current)).appliedPolicyVersion, closed.version);
+    await beat(current, { ...closedAck, aiAppAccessApplied: true, chatGptCoverage: 'disabled' });
+    assert.equal((await applied(current)).appliedPolicyVersion, closed.version);
+    const untouched = await deliver(baseline);
+    assert.deepEqual([untouched.adapterControls, untouched.blockedAiAppHosts], [{}, []]);
+    assert.deepEqual((await call('/v1/admin/policies', { token: second }))[0].adapterControls, {});
+
+    // Re-enabling restores interception; a restored version brings the control back.
+    const restored = await post(path, { adapterControls: {} });
+    const back = await deliver(current);
+    assert.deepEqual([back.adapterControls, back.blockedAiAppHosts], [{}, []]);
+    const backAck = { ...files, policyVersion: restored.version, assignmentVersion: back.assignmentVersion };
+    await beat(current, { ...backAck, chatGptCoverage: 'disabled' }, 400);
+    await beat(current, { ...backAck, chatGptCoverage: 'ready' });
+    assert.equal((await applied(current)).appliedPolicyVersion, restored.version);
+    assert.equal((await readiness()).counts.detected, 1);
+    const reinstated = await post(`${path}/${adapter.version}/restore`);
+    assert.deepEqual(reinstated.adapterControls, adapterOff);
+    assert.deepEqual((await post(path, { adapterControls: {} })).adapterControls, {});
   });
 });

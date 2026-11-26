@@ -17,6 +17,7 @@ import { readClassificationProtection, readIdentifierProtection, sameClassificat
   sameIdentifierProtection } from '../../../contracts/policy/prompt';
 import { isClipboardMode } from '../../../contracts/policy/clipboard';
 import { readPromptAppModes, samePromptAppModes } from '../../../contracts/policy/prompt-app-modes';
+import { adapterDisabled, hasAdapterControls, readAdapterControls, sameAdapterControls } from '../../../contracts/policy/adapter-controls';
 import { fileInspectionDetectors } from '../../../contracts/policy/file-inspection';
 import { inspectionUnavailable, isInspectionPayload, type AttachmentInspection } from './attachment-inspection';
 import { inspectOffscreen } from './pdf-offscreen-client';
@@ -149,6 +150,7 @@ async function request(path: string, token?: string, body?: object): Promise<unk
         'X-Zekvar-Identifiers': '1', 'X-Zekvar-Preset-Discovery': '1', 'X-Zekvar-SSN': '1', 'X-Zekvar-Clipboard-Paste': '1',
         'X-Zekvar-GitHub-Token': '1', 'X-Zekvar-Prompt-Exception-Requests': '1',
         'X-Zekvar-Prompt-App-Modes': '1', 'X-Zekvar-Claude-Files': '1', 'X-Zekvar-Detection-Rules': '1',
+        'X-Zekvar-Adapter-Controls': '1',
         'X-Zekvar-Extension-Version': extensionVersion } : {}),
       ...(path === 'browser/heartbeat' ? { 'X-Zekvar-Composer-Coverage': '1' } : {}),
       ...(path === 'enroll' ? { 'X-Zekvar-Scoped-Enrollment': '1' } : {}),
@@ -289,6 +291,8 @@ async function sync(state: State) {
     const clipboardMode = policy.clipboardMode;
     const promptAppModes = readPromptAppModes(policy.promptAppModes);
     if (policy.promptAppModes !== undefined && !promptAppModes) throw new Error('Invalid AI app prompt modes');
+    const adapterControls = readAdapterControls(policy.adapterControls);
+    if (policy.adapterControls !== undefined && !adapterControls) throw new Error('Invalid AI app adapter controls');
     const identifierProtection = readIdentifierProtection(policy.identifierProtection);
     if (policy.identifierProtection !== undefined && !identifierProtection) throw new Error('Invalid organization identifier policy');
     const classificationProtection = readClassificationProtection(policy.classificationProtection);
@@ -337,6 +341,7 @@ async function sync(state: State) {
           sameClassificationProtection(state.policy.classificationProtection, classificationProtection)) &&
         (state.policy.clipboardMode === undefined || clipboardMode === state.policy.clipboardMode) &&
         (state.policy.promptAppModes === undefined || samePromptAppModes(promptAppModes, state.policy.promptAppModes)) &&
+        (state.policy.adapterControls === undefined || sameAdapterControls(adapterControls, state.policy.adapterControls)) &&
         (!state.policy.identifierProtection || sameIdentifierProtection(state.policy.identifierProtection, identifierProtection)) &&
         (state.policy.fileInspection === undefined || fileInspection !== undefined &&
           retainedUploadApps.every((app) => state.policy?.fileInspection?.[app] === fileInspection[app])) &&
@@ -358,7 +363,7 @@ async function sync(state: State) {
         discoveryEnabled, presetDiscovery, customApps, extensionInventoryEnabled, claudePromptEnabled, clipboardMode, githubTokenMode,
         cloudCredentialMode, classificationProtection,
         promptExceptionRequestsAvailable: policy.promptExceptionRequestsAvailable === true,
-        promptAppModes,
+        promptAppModes, adapterControls,
         assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini, claude: uploads.claude }, targetedUploads };
       promptLease = lease ? { installationId: state.enrollment.installationId, version: policy.version,
         assignment: policy.assignmentVersion, lease } : undefined;
@@ -440,6 +445,7 @@ async function heartbeat(state: State) {
     cloudCredentialModeApplied: isMode(state.policy.cloudCredentialMode) ? true : undefined,
     classificationApplied: isMode(state.policy.classificationProtection?.mode) ? true : undefined,
     promptAppModesApplied: Object.values(state.policy.promptAppModes ?? {}).some(isMode) ? true : undefined,
+    adapterControlsApplied: hasAdapterControls(state.policy.adapterControls) ? true : undefined,
     clipboardModeApplied: state.policy.clipboardMode === 'monitor' || state.policy.clipboardMode === 'block' ? true : undefined,
     identifiersApplied: isMode(state.policy.identifierProtection?.mode) ? true : undefined,
     fileInspectionApplied: legacyUploadApps.some((app) => state.policy?.fileInspection?.[app]) ? true : undefined,
@@ -539,7 +545,8 @@ async function onMessage(message: Record<string, unknown>, app: AppId | undefine
   }
   if (message.type === 'coverage' && app && app !== fixtureApp && appEnabled(state, app) && state.enrollment &&
       message.installationId === state.enrollment.installationId &&
-      (message.coverage === 'ready' || message.coverage === 'unsupported')) {
+      (message.coverage === 'ready' || message.coverage === 'unsupported') !== adapterDisabled(state.policy?.adapterControls, app) &&
+      (message.coverage === 'ready' || message.coverage === 'unsupported' || message.coverage === 'disabled')) {
     if (message.version !== state.policy?.version || message.assignmentVersion !== state.policy?.assignmentVersion) {
       return { summary: summary(state), error: 'Composer coverage belongs to an older policy.' };
     }
@@ -559,7 +566,8 @@ async function onMessage(message: Record<string, unknown>, app: AppId | undefine
   }
   if (message.type === 'decision' && state.enrollment && message.installationId === state.enrollment.installationId) {
     const event = readMetadata(message.event);
-    if (!event || event.appId !== app || (app !== fixtureApp && !appEnabled(state, app))) {
+    if (!event || event.appId !== app || (app !== fixtureApp && (!appEnabled(state, app) ||
+        adapterDisabled(state.policy?.adapterControls, app)))) {
       return { summary: summary(state), error: 'Invalid event metadata.' };
     }
     if (state.queue.some(({ eventId }) => eventId === event.eventId)) return { summary: summary(state) };

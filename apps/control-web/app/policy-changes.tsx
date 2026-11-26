@@ -5,6 +5,11 @@ import { exceptionKey, samePromptExceptions } from '../../../contracts/policy/pr
 import { fixtureRule } from '../../../contracts/policy/prompt';
 import { extensionDeploymentChanges, extensionModeLabels, unlistedLabels, type ExtensionDeployment, type ExtensionRule } from '../lib/extension-deployment';
 import { hardeningDifferences } from '../lib/browser-hardening';
+import { adapterScopeLabels, type AdapterControl } from '../../../contracts/policy/adapter-controls';
+
+function adapterControlLabel(control?: AdapterControl) {
+  return control ? `${adapterScopeLabels[control.scope]} · Fail ${control.fallback}` : 'Active';
+}
 
 export function ExtensionDeploymentChanges({ reference, candidate }: { reference?: ExtensionDeployment; candidate?: ExtensionDeployment }) {
   const before = reference?.unlisted ?? 'preserve';
@@ -42,6 +47,8 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     ['Claude prompt protection', toggle(reference.claudePromptEnabled), toggle(candidate.claudePromptEnabled)],
     ...aiPromptApps.map((app) => [`${promptAppLabels[app]} prompt mode`, promptModeLabel(reference.promptAppModes?.[app]),
       promptModeLabel(candidate.promptAppModes?.[app])]),
+    ...aiPromptApps.map((app) => [`${promptAppLabels[app]} adapter control`, adapterControlLabel(reference.adapterControls?.[app]),
+      adapterControlLabel(candidate.adapterControls?.[app])]),
     ['Clipboard paste protection', detectorModeLabels[reference.clipboardMode ?? 'off'], detectorModeLabels[candidate.clipboardMode ?? 'off']],
     ...uploadApps.map((app) => [`${promptAppLabels[app]} file uploads`, detectorModeLabels[reference.uploadModes[app] ?? 'off'],
       detectorModeLabels[candidate.uploadModes[app] ?? 'off']]),

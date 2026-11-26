@@ -217,7 +217,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
     await browsers.getByText('Unsupported', { exact: true }).first().waitFor();
     const readiness = page.getByRole('table', { name: 'Composer readiness', exact: true });
     const row = readiness.getByRole('row', { name: /^ChatGPT / });
-    assert.deepEqual(await row.getByRole('cell').allTextContents(), ['2', '0', '1', '0', '0', '1', '0']);
+    assert.deepEqual(await row.getByRole('cell').allTextContents(), ['2', '0', '1', '0', '0', '1', '0', '0']);
     const screenshot = process.env.ZEKVAR_TEST_COVERAGE_SCREENSHOT;
     if (screenshot) await readiness.screenshot({ path: screenshot });
     await page.setViewportSize({ width: 390, height: 820 });
@@ -1079,7 +1079,7 @@ test('Control dashboard signs in and manages a real browser installation and eve
       assert.deepEqual(await row.getByRole('cell').allTextContents(), ['2', '2', '1', '1']);
       assert.equal(await cohorts(impact).getByRole('row', { name: /Impact promotion source/ }).count(), 0);
       const composer = impact.getByRole('table', { name: `Composer coverage on v${baseline.version}`, exact: true });
-      assert.deepEqual(await composer.getByRole('row', { name: /^ChatGPT / }).getByRole('cell').allTextContents(), ['1', '0', '0', '0', '1', '0']);
+      assert.deepEqual(await composer.getByRole('row', { name: /^ChatGPT / }).getByRole('cell').allTextContents(), ['1', '0', '0', '0', '1', '0', '0']);
       await impact.setViewportSize({ width: 360, height: 790 });
       await assertFitsViewport(impact);
       await impact.setViewportSize({ width: 1440, height: 1000 });

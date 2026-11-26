@@ -77,6 +77,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 50, "050_claude_attachments.sql", ct);
         await ApplyMigration(connection, 51, "051_detection_rules.sql", ct);
         await ApplyMigration(connection, 52, "052_rollout_plans.sql", ct);
+        await ApplyMigration(connection, 53, "053_adapter_controls.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -175,7 +176,8 @@ internal sealed partial class ControlStore
                 p.custom_apps, p.prompt_exceptions, p.claude_prompt_enabled, p.private_key_mode, p.chatgpt_file_inspection, p.gemini_file_inspection,
                 p.blocked_ai_app_hosts, p.chatgpt_file_content_block, p.gemini_file_content_block, p.identifier_protection, p.extension_deployment,
                 p.preset_discovery_enabled, p.ssn_mode, p.browser_hardening, p.clipboard_mode, p.github_token_mode, p.prompt_app_modes,
-                p.claude_upload_mode, p.claude_upload_types, p.claude_file_content_mode, p.cloud_credential_mode, p.classification_protection
+                p.claude_upload_mode, p.claude_upload_types, p.claude_file_content_mode, p.cloud_credential_mode, p.classification_protection,
+                p.adapter_controls
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.policy_group_id IS NOT DISTINCT FROM $2::uuid ORDER BY p.version DESC LIMIT 100
             """, organizationId, (object?)groupId ?? DBNull.Value);
@@ -188,7 +190,7 @@ internal sealed partial class ControlStore
     public async Task<Policy?> CurrentPolicy(Guid installationId, bool assignmentAware, bool claudeAware, string? extensionVersion, bool privateKeyAware,
         bool fileInspectionAware, bool aiAppAccessAware, bool fileBlockAware, bool identifiersAware, bool presetDiscoveryAware,
         bool ssnAware, bool clipboardAware, bool githubTokenAware, bool promptAppModesAware, bool claudeFilesAware, bool detectionRulesAware,
-        CancellationToken ct)
+        bool adapterControlsAware, CancellationToken ct)
     {
         await using var command = Command("""
             WITH active AS (
@@ -208,17 +210,19 @@ internal sealed partial class ControlStore
             ), delivery AS (
                 INSERT INTO policy_deliveries (organization_id, installation_id, assignment_version, policy_version,
                     exception_scope, claude_prompt, private_key, file_inspection, rollout_group_id, rollout_attributed, ai_app_access, file_content_block,
-                    identifiers, preset_discovery, ssn, clipboard_paste, github_token, prompt_app_modes, claude_files, detection_rules)
+                    identifiers, preset_discovery, ssn, clipboard_paste, github_token, prompt_app_modes, claude_files, detection_rules,
+                    adapter_controls)
                 SELECT e.organization_id, e.id, e.assignment_version, e.version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id,
                     $3 AND p.claude_prompt_enabled, $5 AND p.private_key_mode <> 'off',
                     $6 AND (p.chatgpt_file_inspection AND (NOT p.chatgpt_file_content_block OR $8)
                         OR p.gemini_file_inspection AND (NOT p.gemini_file_content_block OR $8)), e.policy_group_id, true,
-                    $7 AND cardinality(p.blocked_ai_app_hosts) > 0, $8 AND (p.chatgpt_file_content_block OR p.gemini_file_content_block),
+                    $7 AND (cardinality(p.blocked_ai_app_hosts) > 0 OR jsonb_path_exists(p.adapter_controls, '$.* ? (@.fallback == "closed")')), $8 AND (p.chatgpt_file_content_block OR p.gemini_file_content_block),
                     $9 AND p.identifier_protection->>'mode' <> 'off', $10 AND p.discovery_enabled AND p.preset_discovery_enabled,
                     $11 AND p.ssn_mode <> 'off', $12 AND p.clipboard_mode <> 'off', $13 AND p.github_token_mode <> 'off',
                     $14 AND p.prompt_app_modes <> '{}'::jsonb,
                     $15 AND p.claude_prompt_enabled AND (p.claude_upload_mode <> 'off' OR p.claude_file_content_mode <> 'off'),
-                    $16 AND (p.cloud_credential_mode <> 'off' OR p.classification_protection->>'mode' <> 'off')
+                    $16 AND (p.cloud_credential_mode <> 'off' OR p.classification_protection->>'mode' <> 'off'),
+                    $17 AND p.adapter_controls <> '{}'::jsonb
                 FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
                 ON CONFLICT (installation_id, assignment_version, policy_version) DO UPDATE
                 SET claude_prompt = policy_deliveries.claude_prompt OR EXCLUDED.claude_prompt,
@@ -234,6 +238,7 @@ internal sealed partial class ControlStore
                     prompt_app_modes = policy_deliveries.prompt_app_modes OR EXCLUDED.prompt_app_modes,
                     claude_files = policy_deliveries.claude_files OR EXCLUDED.claude_files,
                     detection_rules = policy_deliveries.detection_rules OR EXCLUDED.detection_rules,
+                    adapter_controls = policy_deliveries.adapter_controls OR EXCLUDED.adapter_controls,
                     rollout_group_id = CASE WHEN policy_deliveries.rollout_attributed THEN policy_deliveries.rollout_group_id
                         ELSE EXCLUDED.rollout_group_id END,
                     rollout_attributed = true
@@ -250,6 +255,7 @@ internal sealed partial class ControlStore
                     OR (EXCLUDED.prompt_app_modes AND NOT policy_deliveries.prompt_app_modes)
                     OR (EXCLUDED.claude_files AND NOT policy_deliveries.claude_files)
                     OR (EXCLUDED.detection_rules AND NOT policy_deliveries.detection_rules)
+                    OR (EXCLUDED.adapter_controls AND NOT policy_deliveries.adapter_controls)
                     OR NOT policy_deliveries.rollout_attributed
             )
             SELECT p.version, p.mode, p.published_at, a.restored_from, p.github_pat_mode, p.discovery_enabled,
@@ -259,12 +265,12 @@ internal sealed partial class ControlStore
                 p.blocked_ai_app_hosts, p.chatgpt_file_content_block, p.gemini_file_content_block, p.identifier_protection,
                 e.assignment_version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id, p.preset_discovery_enabled, p.ssn_mode,
                 p.clipboard_mode, p.github_token_mode, p.prompt_app_modes, p.claude_upload_mode, p.claude_upload_types, p.claude_file_content_mode,
-                p.cloud_credential_mode, p.classification_protection
+                p.cloud_credential_mode, p.classification_protection, p.adapter_controls
             FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
             LEFT JOIN policy_audit a ON a.organization_id = p.organization_id AND a.version = p.version
             """, installationId, assignmentAware, claudeAware, (object?)extensionVersion ?? DBNull.Value, privateKeyAware,
             fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware, presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware,
-            promptAppModesAware, claudeFilesAware, detectionRulesAware);
+            promptAppModesAware, claudeFilesAware, detectionRulesAware, adapterControlsAware);
         await using var rows = await command.ExecuteReaderAsync(ct);
         if (!await rows.ReadAsync(ct)) return null;
         var policy = ReadPolicy(rows, includeDeployment: false);
@@ -285,7 +291,7 @@ internal sealed partial class ControlStore
                     AND (NOT p.claude_prompt_enabled OR $14)
                     AND (p.private_key_mode = 'off' OR $16)
                     AND (NOT (p.chatgpt_file_inspection OR p.gemini_file_inspection) OR $17)
-                    AND (cardinality(p.blocked_ai_app_hosts) = 0 OR $18)
+                    AND (cardinality(p.blocked_ai_app_hosts) = 0 AND NOT jsonb_path_exists(p.adapter_controls, '$.* ? (@.fallback == "closed")') OR $18)
                     AND (NOT (p.chatgpt_file_content_block OR p.gemini_file_content_block) OR $19)
                     AND (p.identifier_protection->>'mode' = 'off' OR $20)
                     AND (p.ssn_mode = 'off' OR $21)
@@ -295,6 +301,7 @@ internal sealed partial class ControlStore
                     AND (NOT p.claude_prompt_enabled OR (p.claude_upload_mode = 'off' AND p.claude_file_content_mode = 'off') OR $25)
                     AND (p.cloud_credential_mode = 'off' OR $26)
                     AND (p.classification_protection->>'mode' = 'off' OR $27)
+                    AND (p.adapter_controls = '{}'::jsonb OR $28)
                     AND ($12 OR i.policy_group_id IS DISTINCT FROM p.policy_group_id OR NOT EXISTS (
                         SELECT 1 FROM jsonb_array_elements(p.prompt_exceptions) AS entries(entry)
                         WHERE (entry->>'expiresAt')::timestamptz > now()
@@ -324,15 +331,18 @@ internal sealed partial class ControlStore
                 AND p.organization_id = i.organization_id AND p.version = $2
                 AND ($4 OR cardinality(p.allowed_domains) + cardinality(p.blocked_domains) = 0)
                 AND ($13::text IS NULL OR p.claude_prompt_enabled AND $14)
+                AND ($3::text IS DISTINCT FROM 'disabled' OR p.adapter_controls->'chatgpt'->>'scope' = 'adapter' AND $28)
+                AND ($6::text IS DISTINCT FROM 'disabled' OR p.adapter_controls->'gemini'->>'scope' = 'adapter' AND $28)
+                AND ($13::text IS DISTINCT FROM 'disabled' OR p.adapter_controls->'claude'->>'scope' = 'adapter' AND $28)
                 AND (($5 = 0 AND p.policy_group_id IS NULL AND NOT $14 AND NOT $16 AND NOT $17 AND NOT $18 AND NOT $19 AND NOT $20
-                    AND NOT $21 AND NOT $22 AND NOT $23 AND NOT $24 AND NOT $25 AND NOT $26 AND NOT $27)
+                    AND NOT $21 AND NOT $22 AND NOT $23 AND NOT $24 AND NOT $25 AND NOT $26 AND NOT $27 AND NOT $28)
                     OR EXISTS (SELECT 1 FROM policy_deliveries d
                     WHERE d.installation_id = i.id AND d.assignment_version = $5 AND d.policy_version = $2
                         AND (NOT $14 OR d.claude_prompt) AND (NOT $16 OR d.private_key) AND (NOT $17 OR d.file_inspection)
                         AND (NOT $18 OR d.ai_app_access) AND (NOT $19 OR d.file_content_block) AND (NOT $20 OR d.identifiers)
                         AND (NOT $21 OR d.ssn) AND (NOT $22 OR d.clipboard_paste) AND (NOT $23 OR d.github_token)
                         AND (NOT $24 OR d.prompt_app_modes) AND (NOT $25 OR d.claude_files)
-                        AND (NOT ($26 OR $27) OR d.detection_rules)))
+                        AND (NOT ($26 OR $27) OR d.detection_rules) AND (NOT $28 OR d.adapter_controls)))
             RETURNING i.id, i.organization_id
             ), observed AS (
                 INSERT INTO composer_observations (organization_id, installation_id, app_id, policy_version, assignment_version, coverage)
@@ -352,7 +362,8 @@ internal sealed partial class ControlStore
             request.CustomDiscoveryApplied, request.PromptExceptionsApplied, (object?)request.ClaudeCoverage ?? DBNull.Value,
             request.ClaudePromptApplied, scopedCoverage, request.PrivateKeyModeApplied, request.FileInspectionApplied, request.AiAppAccessApplied,
             request.FileContentBlockApplied, request.IdentifiersApplied, request.SsnModeApplied, request.ClipboardModeApplied, request.GithubTokenModeApplied,
-            request.PromptAppModesApplied, request.ClaudeFilesApplied, request.CloudCredentialModeApplied, request.ClassificationApplied);
+            request.PromptAppModesApplied, request.ClaudeFilesApplied, request.CloudCredentialModeApplied, request.ClassificationApplied,
+            request.AdapterControlsApplied);
         return (bool)(await command.ExecuteScalarAsync(ct))!;
     }
 
@@ -547,7 +558,10 @@ internal sealed partial class ControlStore
                             'anthropic-api-key', 'organization-classification-rule') OR d.detection_rules)
                         AND ($6 <> 'claude' OR $9 IS NULL OR d.claude_files)
                         AND (NOT detector.file_content OR $6 = 'claude' OR d.file_inspection AND ($5 <> 'block' OR d.file_content_block))
-                        AND ($5 <> 'exception_applied' OR d.exception_scope)))
+                        AND ($5 <> 'exception_applied' OR d.exception_scope)
+                        -- A Browser that loaded an administrator disable never inspects that adapter or its attachments.
+                        AND NOT (d.adapter_controls AND (p.adapter_controls->$6->>'scope' = 'adapter'
+                            OR $9::text IS NOT NULL AND p.adapter_controls->$6->>'scope' = 'attachments'))))
             ), written AS (
                 INSERT INTO security_events (organization_id, installation_id, event_id, occurred_at, policy_version, decision, app_id, rule_id, upload_method,
                     rollout_group_id, rollout_attributed, clipboard_paste)
@@ -810,7 +824,8 @@ internal sealed partial class ControlStore
         PromptAppModes: JsonSerializer.Deserialize<PromptAppModes>(rows.GetString(rows.GetOrdinal("prompt_app_modes")), JsonSerializerOptions.Web),
         CloudCredentialMode: rows.GetString(rows.GetOrdinal("cloud_credential_mode")),
         ClassificationProtection: JsonSerializer.Deserialize<ClassificationProtection>(
-            rows.GetString(rows.GetOrdinal("classification_protection")), JsonSerializerOptions.Web));
+            rows.GetString(rows.GetOrdinal("classification_protection")), JsonSerializerOptions.Web),
+        AdapterControls: JsonSerializer.Deserialize<AdapterControls>(rows.GetString(rows.GetOrdinal("adapter_controls")), JsonSerializerOptions.Web));
 
     private static string FileContentMode(bool enabled, bool block) => block ? "block" : enabled ? "monitor" : "off";
     private static string? ConfiguredUploadMode(string mode) => mode == "off" ? null : mode;

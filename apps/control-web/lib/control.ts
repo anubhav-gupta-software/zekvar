@@ -57,6 +57,7 @@ export type Policy = {
   cloudCredentialMode?: DetectorMode;
   classificationProtection?: import('../../../contracts/policy/prompt').ClassificationProtection;
   promptAppModes?: import('../../../contracts/policy/prompt-app-modes').PromptAppModes;
+  adapterControls?: import('../../../contracts/policy/adapter-controls').AdapterControls;
   identifierProtection?: import('../../../contracts/policy/prompt').IdentifierProtection;
   uploadModes?: UploadModes;
   uploadTypes?: UploadTypes;
@@ -78,18 +79,19 @@ export type Policy = {
   restoredFrom: number | null;
 };
 
+export type Coverage = 'ready' | 'unsupported' | 'disabled';
 export type Installation = {
   installationId: string;
   enrolledAt: string;
   lastSeenAt: string;
   appliedPolicyVersion: number | null;
   revokedAt: string | null;
-  chatGptCoverage?: 'ready' | 'unsupported' | null;
+  chatGptCoverage?: Coverage | null;
   chatGptCheckedAt?: string | null;
-  geminiCoverage?: 'ready' | 'unsupported' | null;
+  geminiCoverage?: Coverage | null;
   geminiCheckedAt?: string | null;
   claudePromptEnabled?: boolean;
-  claudeCoverage?: 'ready' | 'unsupported' | null;
+  claudeCoverage?: Coverage | null;
   claudeCheckedAt?: string | null;
   policyGroupId?: string | null;
   policyGroupName?: string | null;
@@ -117,14 +119,14 @@ export type BrowserHealthView = {
 
 export const composerStateLabels = {
   detected: 'Detected', unsupported: 'Unsupported', stale: 'Stale', unobserved: 'Unobserved',
-  policy_pending: 'Policy pending', off: 'Off',
+  policy_pending: 'Policy pending', off: 'Off', disabled_by_admin: 'Disabled by administrator',
 } as const;
 export type ComposerState = keyof typeof composerStateLabels;
 export const composerStates = Object.keys(composerStateLabels) as ComposerState[];
 export type ComposerCheck = { state: ComposerState; checkedAt: string | null };
 export type BrowserComposerReadiness = {
   activeInstallations: number;
-  apps: { appId: AiAppId; counts: Record<ComposerState, number> }[];
+  apps: { appId: AiAppId; counts: Record<ComposerState, number>; attachmentsDisabled?: number }[];
 };
 export type ComposerReadinessReport = BrowserComposerReadiness & {
   schemaVersion: 1;

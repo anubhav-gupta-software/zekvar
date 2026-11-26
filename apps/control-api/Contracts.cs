@@ -121,7 +121,7 @@ internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode 
     string[]? BlockedAiAppHosts = null, UploadModes? FileContentModes = null, IdentifierProtection? IdentifierProtection = null,
     bool? PresetDiscoveryEnabled = null, string? SsnMode = null, BrowserHardening? BrowserHardening = null, string? ClipboardMode = null,
     string? GithubTokenMode = null, PromptAppModes? PromptAppModes = null, string[]? RequireComposerReady = null,
-    string? CloudCredentialMode = null, ClassificationProtection? ClassificationProtection = null);
+    string? CloudCredentialMode = null, ClassificationProtection? ClassificationProtection = null, AdapterControls? AdapterControls = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Claude = null)
 {
@@ -141,11 +141,13 @@ internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = nu
     bool PromptExceptionsApplied = false, string? ClaudeCoverage = null, bool ClaudePromptApplied = false, bool PrivateKeyModeApplied = false,
     bool FileInspectionApplied = false, bool AiAppAccessApplied = false, bool FileContentBlockApplied = false, bool IdentifiersApplied = false,
     bool SsnModeApplied = false, bool ClipboardModeApplied = false, bool GithubTokenModeApplied = false, bool PromptAppModesApplied = false,
-    bool ClaudeFilesApplied = false, bool CloudCredentialModeApplied = false, bool ClassificationApplied = false)
+    bool ClaudeFilesApplied = false, bool CloudCredentialModeApplied = false, bool ClassificationApplied = false,
+    bool AdapterControlsApplied = false)
 {
-    public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported") &&
-        (GeminiCoverage is null or "ready" or "unsupported") &&
-        (ClaudeCoverage is null or "ready" or "unsupported") && (!FileContentBlockApplied || FileInspectionApplied) &&
+    // "disabled" reports that an administrator turned the adapter off; Control accepts it only for a matching policy.
+    public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported" or "disabled") &&
+        (GeminiCoverage is null or "ready" or "unsupported" or "disabled") &&
+        (ClaudeCoverage is null or "ready" or "unsupported" or "disabled") && (!FileContentBlockApplied || FileInspectionApplied) &&
         (!ClaudeFilesApplied || ClaudePromptApplied);
 }
 internal sealed record PolicyEvent(Guid EventId, string AppId, DateTimeOffset Timestamp, string RuleId,
@@ -175,7 +177,8 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? PromptExceptionRequestsAvailable = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PromptAppModes? PromptAppModes = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CloudCredentialMode = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ClassificationProtection? ClassificationProtection = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ClassificationProtection? ClassificationProtection = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] AdapterControls? AdapterControls = null)
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => ClaudePromptEnabled
@@ -208,7 +211,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
 
     public Policy ForBrowser(bool claudeAware, bool privateKeyAware, bool fileInspectionAware, bool aiAppAccessAware,
         bool fileBlockAware, bool identifiersAware, bool presetDiscoveryAware, bool ssnAware, bool clipboardAware, bool githubTokenAware,
-        bool promptAppModesAware, bool claudeFilesAware, bool detectionRulesAware)
+        bool promptAppModesAware, bool claudeFilesAware, bool detectionRulesAware, bool adapterControlsAware)
     {
         var now = DateTimeOffset.UtcNow;
         var nowMs = now.ToUnixTimeMilliseconds();
@@ -244,7 +247,8 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
             PromptAppModes = promptAppModesAware ? PromptAppModes : null,
             ExtensionDeployment = null,
             BrowserHardening = null,
-            BlockedAiAppHosts = aiAppAccessAware ? BlockedAiAppHosts : null,
+            BlockedAiAppHosts = aiAppAccessAware ? AdapterControls.EffectiveBlockedHosts(BlockedAiAppHosts, AdapterControls) : null,
+            AdapterControls = adapterControlsAware ? AdapterControls ?? new() : null,
             PromptExceptions = PromptExceptions is { Length: > 0 } ? null : PromptExceptions,
             PromptExceptionLease = exceptions is { Length: > 0 } ? new(nowMs, exceptions) : null
         };

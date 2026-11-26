@@ -28,6 +28,9 @@ import { casePath, isCaseCategory, type EventReference } from '../lib/cases';
 import { alertPath, extensionAlertPath, extensionAlertsPath } from '../lib/alerts';
 import { maxRolloutStages, rolloutStatuses, type RolloutStageRequest } from '../lib/rollouts';
 import type { AiPromptApp } from '../../../contracts/policy/apps';
+import { promptAppLabels } from '../../../contracts/policy/apps';
+import { adapterFallbacks, adapterScopes, readAdapterControls, type AdapterControls, type AdapterFallback,
+  type AdapterScope } from '../../../contracts/policy/adapter-controls';
 
 export async function signIn(_previous: Feedback, form: FormData): Promise<Feedback> {
   const token = form.get('token');
@@ -532,6 +535,45 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
         return { error: 'Keep each blocked AI app in the draft catalog or clear its access block.' };
       }
       if (error instanceof ApiError && error.status === 409 && !error.code) return { error: 'The policy changed after this preview. Reload and run the comparison again.' };
+      throw error;
+    }
+  });
+}
+
+export async function publishAdapterControl(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const groupId = form.get('groupId');
+  const expectedVersion = Number(form.get('expectedVersion'));
+  const app = aiPromptApps.find((candidate) => candidate === form.get('app'));
+  const scope = form.get('scope');
+  const fallback = form.get('fallback');
+  let current: AdapterControls | undefined;
+  try {
+    current = readAdapterControls(JSON.parse(String(form.get('current') ?? '{}')));
+  } catch {
+    current = undefined;
+  }
+  if ((groupId !== null && !isId(groupId)) || !Number.isInteger(expectedVersion) || expectedVersion < 1 || expectedVersion > 2147483647 ||
+      !app || !current || (scope !== 'active' && !adapterScopes.some((entry) => entry === scope)) ||
+      (scope !== 'active' && !adapterFallbacks.some((entry) => entry === fallback))) {
+    return { error: 'Reload the adapter controls and choose a valid setting.' };
+  }
+  const next: AdapterControls = { ...current };
+  if (scope === 'active') delete next[app];
+  else next[app] = { scope: scope as AdapterScope, fallback: fallback as AdapterFallback };
+  const label = promptAppLabels[app];
+  return perform(async (token) => {
+    try {
+      const policy = await controlApi.publishAdapterControls(token, next, expectedVersion, form.get('expectReview') === 'on', groupId ?? undefined);
+      if ('reviewId' in policy) return queued(policy.reviewId);
+      refreshPolicyViews();
+      revalidatePath('/adapters');
+      return { message: scope === 'active' ? `${label} protection restored in version ${policy.version}.`
+        : `${label} ${scope === 'adapter' ? 'adapter' : 'attachments'} disabled in version ${policy.version}.` };
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'navigation_rule_limit') return { error: navigationRuleLimitError };
+      if (error instanceof ApiError && error.status === 409 && !error.code) {
+        return { error: 'The policy changed. Reload the adapter controls and try again.' };
+      }
       throw error;
     }
   });

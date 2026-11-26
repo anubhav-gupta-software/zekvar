@@ -20,7 +20,7 @@ Agree these before inviting any employee. Write the answers down.
 
 - [ ] Pilot group: who, how many, which Chrome profiles and devices. See [Pick the pilot group](#pick-the-pilot-group).
 - [ ] Data collection: confirm what Control records and what it does not (see [what is sent](security-and-privacy.md#what-is-processed-locally-and-what-is-sent)). Agree retention windows. A new organization has no expiry until you set one.
-- [ ] Supported app flows: which AI apps and which actions you need covered (type and Send, paste, file attach). Read the coverage matrix [forthcoming] and the stated limits. Live signed-in coverage is not yet verified, so list the layouts and account types you use.
+- [ ] Supported app flows: which AI apps and which actions you need covered (type and Send, paste, file attach). Read the [coverage matrix](coverage.md) and the stated limits. Live signed-in coverage is not yet verified, so list the layouts and account types you use.
 - [ ] Allowed actions: for each detector, the intended end state (Monitor, Warn, Block) and who approves the change.
 - [ ] Escalation contact on each side, and how to reach them. Support intake and severity targets: [support document](support-and-incident-response.md#support-intake).
 - [ ] One buying decision: the concrete use case and the person who decides.

@@ -5,7 +5,9 @@ using Npgsql;
 namespace Control;
 
 internal sealed record ComposerCheck(string State, DateTimeOffset? CheckedAt);
-internal sealed record ComposerCounts(string AppId, Dictionary<string, long> Counts);
+// Counts hold one mutually exclusive state per installation. AttachmentsDisabled counts installations that have loaded an
+// administrator disable for this app's attachment intake while its prompt composer stays protected.
+internal sealed record ComposerCounts(string AppId, Dictionary<string, long> Counts, long AttachmentsDisabled = 0);
 internal sealed record BrowserComposerReadiness(long ActiveInstallations, IReadOnlyList<ComposerCounts> Apps);
 internal sealed record ComposerReadinessScope(string RolloutGroup, string? RolloutGroupName, string? BrowserVersion, int? TargetPolicyVersion);
 internal sealed record ComposerReadinessFreshness(int HeartbeatSeconds, int ObservationSeconds);
@@ -55,11 +57,14 @@ internal sealed partial class ControlStore
                 SELECT i.id, app.app_id,
                     CASE WHEN NOT app.enabled THEN 'off'
                         WHEN i.applied_policy_version IS DISTINCT FROM p.version THEN 'policy_pending'
+                        WHEN p.adapter_controls->app.app_id->>'scope' = 'adapter' THEN 'disabled_by_admin'
                         WHEN o.checked_at IS NULL THEN 'unobserved'
                         WHEN i.last_seen_at <= COALESCE($9::timestamptz, now()) - make_interval(secs => $6)
                             OR o.checked_at <= COALESCE($9::timestamptz, now()) - make_interval(secs => $7) THEN 'stale'
                         WHEN o.coverage = 'ready' THEN 'detected' ELSE 'unsupported' END AS state,
-                    CASE WHEN app.enabled AND i.applied_policy_version = p.version THEN o.checked_at END AS checked_at
+                    CASE WHEN app.enabled AND i.applied_policy_version = p.version THEN o.checked_at END AS checked_at,
+                    app.enabled AND i.applied_policy_version IS NOT DISTINCT FROM p.version
+                        AND p.adapter_controls->app.app_id->>'scope' = 'attachments' AS attachments_disabled
                 FROM installations i JOIN organizations org ON org.id = i.organization_id
                 LEFT JOIN policy_groups g ON g.organization_id = org.id AND g.id = i.policy_group_id
                 JOIN policy_versions p ON p.organization_id = org.id AND p.version = COALESCE(g.policy_version, org.policy_version)
@@ -70,14 +75,17 @@ internal sealed partial class ControlStore
                     AND ($4::text IS NULL OR i.extension_version = $4 OR ($4 = 'unreported' AND i.extension_version IS NULL))
                     AND (NOT $8 OR g.policy_version IS NULL)
             )
-            SELECT app_id, state, count(*), jsonb_object_agg(id, checked_at) FILTER (WHERE id = ANY($5))
+            SELECT app_id, state, count(*), jsonb_object_agg(id, checked_at) FILTER (WHERE id = ANY($5)),
+                count(*) FILTER (WHERE attachments_disabled)
             FROM states GROUP BY app_id, state
             """, organizationId, filter.Scoped, (object?)filter.GroupId ?? DBNull.Value, (object?)filter.Version ?? DBNull.Value, visible,
             ReadinessHeartbeatSeconds, ReadinessObservationSeconds, baselineImpact, (object?)evaluatedAt ?? DBNull.Value);
         var counts = DiscoveryCatalog.ComposerAppIds.ToDictionary(app => app, _ => new Dictionary<string, long>(StringComparer.Ordinal)
         {
             ["detected"] = 0, ["unsupported"] = 0, ["stale"] = 0, ["unobserved"] = 0, ["policy_pending"] = 0, ["off"] = 0,
+            ["disabled_by_admin"] = 0,
         });
+        var attachments = DiscoveryCatalog.ComposerAppIds.ToDictionary(app => app, _ => 0L);
         var checks = visible.ToDictionary(id => id, _ => new Dictionary<string, ComposerCheck>(StringComparer.Ordinal));
         await using var rows = await command.ExecuteReaderAsync(ct);
         while (await rows.ReadAsync(ct))
@@ -85,11 +93,12 @@ internal sealed partial class ControlStore
             var app = rows.GetString(0);
             var state = rows.GetString(1);
             counts[app][state] = rows.GetInt64(2);
+            attachments[app] += rows.GetInt64(4);
             if (rows.IsDBNull(3)) continue;
             var details = JsonSerializer.Deserialize<Dictionary<Guid, DateTimeOffset?>>(rows.GetString(3))!;
             foreach (var (id, checkedAt) in details) checks[id].Add(app, new(state, checkedAt));
         }
-        var apps = DiscoveryCatalog.ComposerAppIds.Select(app => new ComposerCounts(app, counts[app])).ToArray();
+        var apps = DiscoveryCatalog.ComposerAppIds.Select(app => new ComposerCounts(app, counts[app], attachments[app])).ToArray();
         return (new(apps[0].Counts.Values.Sum(), apps), checks);
     }
 
@@ -101,7 +110,11 @@ internal sealed partial class ControlStore
         var (readiness, _) = await BrowserComposerReadiness(org, new(groupId.HasValue, groupId, null), [], transaction, ct,
             baselineImpact: groupId is null, evaluatedAt: evaluatedAt);
         return readiness.ActiveInstallations > 0 &&
-            readiness.Apps.Where(app => apps.Contains(app.AppId)).All(app => app.Counts["detected"] == readiness.ActiveInstallations)
+            readiness.Apps.Where(app => apps.Contains(app.AppId)).All(app => ComposerGatePassed(app, readiness.ActiveInstallations))
             ? new(version, apps, readiness.ActiveInstallations) : null;
     }
+
+    // An adapter that an administrator disabled on purpose is a known state, not a readiness failure.
+    internal static bool ComposerGatePassed(ComposerCounts app, long active) =>
+        active > 0 && app.Counts["detected"] + app.Counts["disabled_by_admin"] == active;
 }

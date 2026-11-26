@@ -110,7 +110,7 @@ Popup messages and what they mean:
 4. Open a supported AI site in an enrolled profile and check the composer status in **Browser health**. The states are Detected, Unsupported, Unobserved, Policy pending, Off, and Stale. See [Review composer readiness](../apps/control-web/README.md#review-composer-readiness-before-switching-a-group-to-block).
 5. With a Monitor policy and the synthetic test marker `ZEKVAR_TEST_SECRET`, send a test prompt. A Monitor row should appear under **Events**. Do not use real data.
 
-Coverage by app and action is in the coverage matrix. [Coverage (app-by-action matrix): forthcoming.] Live signed-in app coverage is not yet verified. Test your own workflows before moving a group past Monitor.
+Coverage by app and action is in the [coverage matrix](coverage.md). Live signed-in app coverage is not yet verified. Test your own workflows before moving a group past Monitor.
 
 ## Upgrade
 

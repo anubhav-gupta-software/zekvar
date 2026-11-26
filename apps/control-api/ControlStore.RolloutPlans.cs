@@ -253,7 +253,7 @@ internal sealed partial class ControlStore
         var acknowledgment = new RolloutAcknowledgmentGate(active, acknowledged, stage.MinAcknowledgedPercent,
             stage.MinAcknowledgedPercent == 0 || (active > 0 && acknowledged * 100 >= (long)stage.MinAcknowledgedPercent * active));
         var composers = stage.RequireComposerReady.Select(appId => readiness.Apps.First(app => app.AppId == appId)).Select(app =>
-            new RolloutComposerGate(app.AppId, active, app.Counts["detected"], app.Counts["unsupported"], active > 0 && app.Counts["detected"] == active))
+            new RolloutComposerGate(app.AppId, active, app.Counts["detected"], app.Counts["unsupported"], ComposerGatePassed(app, active)))
             .ToArray();
 
         await using var events = BrowserRead(transaction, """

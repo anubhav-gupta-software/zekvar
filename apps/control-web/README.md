@@ -36,6 +36,7 @@ Open **Browser health** and choose the rollout group and, if needed, a reported 
 - **Detected** or **Unsupported** reflects the latest recent observation for the browser's applied policy and assignment. Test the intended compose workflows in your own pilot.
 - **Unobserved** means no matching observation has arrived. Install Browser v0.22.0 or later and open the app in that profile.
 - **Policy pending** means Control is waiting for acknowledgment of the assigned policy. **Off** means that policy disables Claude prompt protection.
+- **Disabled by administrator** means the browser applied an adapter control that turns that app's adapter off. It is not a failure, and composer gates and automated rollout stages count it as ready. See [Disable a broken adapter](#disable-a-broken-adapter).
 - **Stale** means the observation is at least 24 hours old or the browser has missed 90 seconds of heartbeats. Ask the user to reopen the app and refresh Browser health.
 
 Select **Export composer readiness (JSON)** to save a fresh snapshot for those Browser health filters. The download includes the capture time, selected group and extension version, current target policy for a specific group or the baseline, and counts for every matching active browser. Keep that file with the pilot's enforcement report and hands-on workflow checks. A composer detected under the current policy is a coverage signal. Exercise the actual submit and attachment paths before enabling enforcement for the cohort.
@@ -62,6 +63,28 @@ Control evaluates the current stage every 30 seconds and whenever someone opens 
 - **Stop without rollback** ends automation and leaves published stages in place.
 
 Each stage publication appears in **Audit log** with the plan and stage. Automatic publications show **Automated rollout** or the approving administrator. If the approver loses access, or reviews become required for an unapproved plan, the plan pauses before its next publication. Auditors can view plans but cannot change them. [Rollout plan API](../control-api/README.md#automated-rollout-plans)
+
+## Disable a broken adapter
+
+Use **Adapter controls** when an AI app changes its page and Zekvar Browser stops recognizing the composer or a file path. Browser v0.42.0 or later applies these controls. The page has the coverage view and the switch for one scope at a time.
+
+**Detect.** Open **Adapter controls** and choose the organization baseline or a rollout group. The **Adapter status** table shows, per app, the current control and the composer readiness counts for that scope: Detected, Unsupported, Disabled by administrator, Attachments disabled, Policy pending, and Stale. A rise in **Unsupported** after an app update usually means the adapter is broken, and the row is marked **Possible broken adapter**. Confirm with **Browser health** filtered to the group and release, and with the browser panel's **Copy composer diagnostics**. Compare with the [coverage matrix](../../docs/coverage.md).
+
+**Disable.** In the app's panel, set **interception** to one of:
+
+- **Attachments disabled**: stop holding and inspecting files from the picker, drag and drop, and clipboard file paste. Typed prompts and text paste stay protected.
+- **Whole adapter disabled**: stop all interception on that app. Its browser panel says protection is disabled by the administrator.
+
+Then choose **when disabled**:
+
+- **Fail open**: the app stays usable without that protection.
+- **Fail closed**: also block the app's hosts through AI app access for this scope (`chatgpt.com` and `chat.openai.com`, `gemini.google.com`, or `claude.ai`). Releases older than v0.42.0 enforce this block too.
+
+Select **Publish** and confirm. The change is a new policy version for that scope only. With required reviews, it becomes a review request. Auditors can see the page but have no publish controls. The browser reports **Disabled by administrator** in composer readiness and in its Browsers row. Releases before v0.42.0 keep intercepting and stay **Policy pending**, so upgrade them or use fail closed.
+
+**Notify.** Send affected users the notice in [Support and incident response](../../docs/support-and-incident-response.md#customer-notice-template). Say which app and action, the scope, fail open or fail closed, and when to expect the fix.
+
+**Re-enable.** After a fixed Browser release reaches the scope, set interception back to **Active (protected)** for a canary group first. Confirm that composer readiness returns to **Detected** and the controlled checks for that app pass, then re-enable the remaining scopes. Restoring an older policy version restores its adapter controls, so recheck this page after a restore. [Adapter controls API](../control-api/README.md#adapter-controls)
 
 ## Reuse a published policy
 

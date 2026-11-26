@@ -15,6 +15,7 @@ import { blockedAiAppAt } from '../../../contracts/policy/ai-app-access';
 import { inspectClipboard, type ClipboardMode } from '../../../contracts/policy/clipboard';
 import { ruleLabels as decisionRuleLabels } from './control';
 import { promptPolicyForApp, samePromptAppModes, type PromptAppModes } from '../../../contracts/policy/prompt-app-modes';
+import { failClosedHosts, sameAdapterControls, type AdapterControls } from '../../../contracts/policy/adapter-controls';
 
 export type PreviewPolicy = {
   mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; privateKeyMode?: DetectorMode; discoveryEnabled: boolean;
@@ -25,6 +26,7 @@ export type PreviewPolicy = {
   cloudCredentialMode?: DetectorMode;
   classificationProtection?: ClassificationProtection;
   promptAppModes?: PromptAppModes;
+  adapterControls?: AdapterControls;
   extensionInventoryEnabled: boolean;
   extensionDeployment?: ExtensionDeployment;
   browserHardening?: BrowserHardening;
@@ -52,6 +54,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     cloudCredentialMode: policy.cloudCredentialMode,
     classificationProtection: policy.classificationProtection,
     promptAppModes: policy.promptAppModes,
+    adapterControls: policy.adapterControls,
     identifierProtection: policy.identifierProtection,
     discoveryEnabled: policy.discoveryEnabled ?? false,
     presetDiscoveryEnabled: policy.presetDiscoveryEnabled,
@@ -79,7 +82,7 @@ export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
     (a.githubTokenMode ?? 'off') === (b.githubTokenMode ?? 'off') &&
     (a.cloudCredentialMode ?? 'off') === (b.cloudCredentialMode ?? 'off') &&
     sameClassificationProtection(a.classificationProtection, b.classificationProtection) &&
-    samePromptAppModes(a.promptAppModes, b.promptAppModes) &&
+    samePromptAppModes(a.promptAppModes, b.promptAppModes) && sameAdapterControls(a.adapterControls, b.adapterControls) &&
     sameIdentifierProtection(a.identifierProtection, b.identifierProtection) &&
     a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
     a.presetDiscoveryEnabled === b.presetDiscoveryEnabled &&
@@ -133,8 +136,17 @@ const navigations = [
   { name: 'Similar domain', content: 'https://pilot.example.test.other.test/' },
 ];
 
+// A disabled adapter stops interception. Fail closed blocks the whole app through AI app access instead.
+function adapterOutcome(policy: PreviewPolicy, app: AiPromptApp, attachments: boolean): PreviewDecision | undefined {
+  const control = policy.adapterControls?.[app];
+  if (!control || (control.scope === 'attachments' && !attachments && control.fallback === 'open')) return;
+  return control.fallback === 'closed' ? { action: 'block', rule: `${promptAppLabels[app]} adapter disabled · fail closed` } : { action: 'allow' };
+}
+
 export function promptOutcome(content: string, policy: PreviewPolicy, app: AiPromptApp, now: number): PreviewDecision {
   if (app === claudeApp && !policy.claudePromptEnabled) return { action: 'allow' };
+  const disabled = adapterOutcome(policy, app, false);
+  if (disabled) return disabled;
   const grants = policy.promptExceptions.filter(({ appId, expiresAt }) => appId === app && Date.parse(expiresAt) > now);
   const scoped = promptPolicyForApp(policy, policy.promptAppModes, app);
   const { match, exception } = evaluatePromptWithExceptions(content, scoped, new Set(grants.map(({ ruleId }) => ruleId)));
@@ -145,7 +157,7 @@ export function promptOutcome(content: string, policy: PreviewPolicy, app: AiPro
 }
 
 export function navigationOutcome(url: URL, policy: PreviewPolicy): PreviewDecision {
-  const blockedHost = blockedAiAppAt(url, policy.blockedAiAppHosts ?? []);
+  const blockedHost = blockedAiAppAt(url, [...policy.blockedAiAppHosts ?? [], ...failClosedHosts(policy.adapterControls)]);
   if (blockedHost) return { action: 'block', rule: `AI app access · ${blockedHost}` };
   const outcome = evaluateNavigation(url, policy.domainRules, policy.pathRules);
   return { action: outcome.action, rule: outcome.pathRule ?? outcome.domain };
@@ -153,12 +165,16 @@ export function navigationOutcome(url: URL, policy: PreviewPolicy): PreviewDecis
 
 export function clipboardOutcome(text: string | undefined, policy: PreviewPolicy, app: AiPromptApp): PreviewDecision {
   if (app === claudeApp && !policy.claudePromptEnabled) return { action: 'allow' };
+  const disabled = adapterOutcome(policy, app, false);
+  if (disabled) return disabled;
   const result = inspectClipboard(text, policy, policy.clipboardMode ?? 'off');
   return result ? { action: result.decision, rule: result.ruleId === fixtureRule ? 'Test marker' : decisionRuleLabels[result.ruleId] } : { action: 'allow' };
 }
 
 function uploadOutcome(policy: PreviewPolicy, app: UploadApp, file: UploadFile): PreviewDecision {
   if (app === claudeApp && !policy.claudePromptEnabled) return { action: 'allow' };
+  const disabled = adapterOutcome(policy, app, true);
+  if (disabled) return disabled;
   const mode = policy.uploadModes[app] ?? 'off';
   const types = policy.uploadTypes[app] ?? [];
   if (mode === 'off' || (types.length && !matchesUploadType(file, types))) return { action: 'allow' };
@@ -167,6 +183,8 @@ function uploadOutcome(policy: PreviewPolicy, app: UploadApp, file: UploadFile):
 
 export function fileInspectionOutcome(policy: PreviewPolicy, app: UploadApp, file: UploadFile, text?: string): PreviewDecision {
   if (app === claudeApp && !policy.claudePromptEnabled) return { action: 'allow' };
+  const disabled = adapterOutcome(policy, app, true);
+  if (disabled) return disabled;
   const beforeInspection = uploadOutcome(policy, app, file);
   if (beforeInspection.action === 'block') return beforeInspection;
   const mode = fileContentMode(policy, app);
@@ -214,7 +232,8 @@ export function runComparison(reference: PreviewSnapshot, candidate: PreviewPoli
     const url = new URL(content);
     rows.push({ name, current: navigationOutcome(url, reference), draft: navigationOutcome(url, candidate) });
   }
-  const appHosts = new Set([...(reference.blockedAiAppHosts ?? []), ...(candidate.blockedAiAppHosts ?? [])]);
+  const appHosts = new Set([...(reference.blockedAiAppHosts ?? []), ...(candidate.blockedAiAppHosts ?? []),
+    ...failClosedHosts(reference.adapterControls), ...failClosedHosts(candidate.adapterControls)]);
   for (const host of appHosts) {
     const url = new URL(`https://${host}/`);
     rows.push({ name: `AI access · ${host}`, current: navigationOutcome(url, reference), draft: navigationOutcome(url, candidate) });
