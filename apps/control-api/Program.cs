@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
+ControlLogging.Configure(builder.Logging);
 var hostedPilot = builder.Configuration.GetValue("Control:HostedPilot", false);
 if (hostedPilot ? !builder.Environment.IsProduction() : !builder.Environment.IsDevelopment())
     throw new InvalidOperationException("Run Control in Development for the local demo or explicitly enable HostedPilot in Production.");
@@ -38,7 +39,8 @@ builder.WebHost.ConfigureKestrel(options =>
 builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = false);
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow);
-builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
+// No logger factory is attached, so Npgsql emits no logs; parameter logging also stays off explicitly.
+builder.Services.AddSingleton(_ => new NpgsqlDataSourceBuilder(connectionString).EnableParameterLogging(false).Build());
 builder.Services.AddSingleton(alertWebhooks);
 builder.Services.AddSingleton(services => new ControlStore(services.GetRequiredService<NpgsqlDataSource>(), sso, alertWebhooks)
     { RolloutInterval = TimeSpan.FromSeconds(rolloutSeconds) });
@@ -52,6 +54,7 @@ var app = builder.Build();
 var store = app.Services.GetRequiredService<ControlStore>();
 await store.Initialize(organizations, app.Lifetime.ApplicationStopping);
 
+app.Use(ControlLogging.ContainUnhandledErrors(app.Services.GetRequiredService<ILoggerFactory>()));
 app.Use(async (context, next) =>
 {
     context.Response.Headers.CacheControl = "no-store";

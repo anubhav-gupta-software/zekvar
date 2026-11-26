@@ -78,7 +78,7 @@ Other data the extension sends:
 | Extension inventory | Only if turned on and the employee granted the optional `management` permission | Per installed extension: ID, name, version, enabled, install type, site access category (`none`, `selected`, `all`), and a subset of API permissions. Not host patterns, descriptions, or links. Up to 100 entries. |
 | Policy review request | Only if the employee selects it | An event ID and app ID. |
 
-Network metadata the servers see unavoidably: the source IP address and TLS details. The shipped [Caddyfile](../deploy/pilot/Caddyfile) has no access-log directive. [TO CONFIRM: production logging, retention, and IP handling.]
+Network metadata the servers see unavoidably: the source IP address and TLS details. The shipped [Caddyfile](../deploy/pilot/Caddyfile) keeps access logs off. Caddy's error entries, such as an unreachable upstream, include the client IP, method, host, and path. Its log filter removes query strings and the `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` headers. The Control API does not log requests. [TO CONFIRM: production log retention and IP address handling in Caddy error entries.]
 
 ### What Control stores
 
@@ -143,7 +143,7 @@ Control records audit entries in the same transaction as the change. Actions inc
 
 Administrators and auditors can filter and export up to 1,000 entries per file ([Review and export the audit log](../apps/control-web/README.md#review-and-export-the-audit-log)). Export of audit records to a customer SIEM is not provided. The security event feed carries decision metadata only.
 
-Application logs: the Control API logs warnings with the error type only for retention and webhook background jobs. No logging configuration file is in the repository, so ASP.NET Core defaults apply. [TO CONFIRM: capture and review a log sample from staging to confirm that request logs contain no sensitive content, and set the production log level and retention.]
+Application logs: the Control API writes JSON lines to stdout for the systemd journal or `docker logs`. Framework, HTTP client, and database driver logs are limited to Warning and above, and configuration cannot lower that limit. The API therefore logs no request URLs, query strings, headers, or bodies, and no SQL parameters. Background jobs log the error type only. Unhandled request errors log the exception type, SQL state, route template, trace ID, and stack frames, but not the message. A regression test sends synthetic admin tokens, enrollment grants, browser tokens, feed keys, classification terms, prompt text, query strings, cookies, and malformed bodies. It asserts that none of them appear in the API output ([logging](../apps/control-api/README.md#logging)). [TO CONFIRM: review a log sample from the staging host and set production log retention.]
 
 ## Retention and deletion
 
@@ -260,7 +260,7 @@ All [TO CONFIRM] items from this document:
 3. Subprocessors.
 4. Database encryption at rest and key management.
 5. Minimum TLS version and cipher policy.
-6. Production logging configuration, log retention, IP address handling, and a staging log sample review.
+6. Production log retention, IP address handling in Caddy error entries, and a staging log sample review.
 7. Whether row-level security or stronger tenant separation is required at launch.
 8. Zekvar staff access controls, MFA, background checks, and training.
 9. Process and timeline for deleting installation records, policy history, and a whole organization, including backups.

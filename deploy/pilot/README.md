@@ -137,7 +137,12 @@ For the v0.39.0 to v0.40.0 Claude attachment transition, prepare the four artifa
 
 Run the Linux test with the prepared directory in `ZEKVAR_SIGNED_PILOT_ARTIFACTS` and `ZEKVAR_SIGNED_PILOT_CLAUDE_FILES=1`. Set `ZEKVAR_SIGNED_PILOT_ATTACHMENT_SCREENSHOT` to save the controlled Claude block. This mode verifies the policy before the signed upgrade, Claude attachment enforcement after it, and event replay through the versioned rollback. It applies the temporary Claude host block before switching packages and verifies that the block persists while Control is offline.
 
-## Back up and recover Control
+## Review logs
+
+Caddy access logs are off because no site block has a `log` directive. Caddy still writes runtime messages and HTTP error entries, such as an unreachable upstream, as JSON on stderr. Those entries include the client IP, method, host, and path. The global log filter in the [Caddyfile](Caddyfile) removes query strings and the `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` headers. Query strings can carry OIDC codes and feed cursors. If you add an access log, give it the same `format filter` block. A site `log` directive has its own encoder and does not inherit the global filter.
+
+The Control API writes JSON lines to stdout and logs no request data ([Control logging](../../apps/control-api/README.md#logging)). Read both with `docker compose logs edge api` and set retention with the Docker log driver. Before a customer rollout, trigger an upstream error on the intended host with a synthetic `?code=` value and confirm that the Caddy entry omits it. [Caddy log filters](https://caddyserver.com/docs/caddyfile/directives/log#filter)
+
 
 Install `age` and `age-keygen` on the appropriate operator machines. Generate a recovery identity in the recovery environment with `age-keygen -o pilot-identity.txt`. Derive its public recipient with `age-keygen -y pilot-identity.txt > pilot-recipients.txt`. Store the private identity separately from the host and backup storage. Copy the public recipient file to the backup host. [age command reference](https://github.com/FiloSottile/age/blob/main/doc/age.1.ronn)
 

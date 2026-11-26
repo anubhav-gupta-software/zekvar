@@ -8,6 +8,22 @@
 			idle 1m
 		}
 	}
+	# Access logs stay off: no site block has a log directive. Caddy still writes runtime and HTTP error
+	# entries (for example an unreachable upstream), which include the request. The filter drops query strings,
+	# which can carry OIDC codes and cursors, and credential headers before anything reaches the log.
+	log default {
+		output stderr
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp \?.* ""
+				request>headers>Authorization delete
+				request>headers>Proxy-Authorization delete
+				request>headers>Cookie delete
+				resp_headers>Set-Cookie delete
+			}
+		}
+	}
 }
 
 (pilot_headers) {

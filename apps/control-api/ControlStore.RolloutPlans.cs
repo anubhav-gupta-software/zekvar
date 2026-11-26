@@ -172,12 +172,27 @@ internal sealed partial class ControlStore
 
     // Every transition locks the organization's policy settings and then the plan, and rechecks state under the lock,
     // so concurrent evaluators on any API instance serialize and the later one sees the committed transition.
-    public async Task EvaluateRolloutPlan(Guid org, Guid id, CancellationToken ct)
+    // Reads pass skipIfBusy: when either lock stays held past ReadLockTimeout (another evaluator, the background service,
+    // or a publish), the read rolls back without changes and returns the last committed state. The holder or the next
+    // background pass performs the evaluation, so exactly-once transitions are unchanged.
+    public async Task EvaluateRolloutPlan(Guid org, Guid id, CancellationToken ct, bool skipIfBusy = false)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
-        var required = await LockPolicySettings(transaction, org, ct);
-        var plan = await LockRollout(transaction, org, id, ct);
+        bool required;
+        LockedRollout? plan;
+        try
+        {
+            var configured = skipIfBusy ? await SetLockTimeout(transaction, $"{(int)ReadLockTimeout.TotalMilliseconds}ms", ct) : null;
+            required = await LockPolicySettings(transaction, org, ct);
+            plan = await LockRollout(transaction, org, id, ct);
+            // Once both locks are held, the evaluation waits for any further locks exactly like the background service.
+            if (configured is not null) await SetLockTimeout(transaction, configured, ct);
+        }
+        catch (PostgresException error) when (skipIfBusy && error.SqlState == PostgresErrorCodes.LockNotAvailable)
+        {
+            return;
+        }
         if (plan is not { Status: "running" }) return;
         var stage = plan.Stages[plan.CurrentStage];
         var gate = await EvaluateRolloutGate(transaction, org, stage, ct);
@@ -221,14 +236,30 @@ internal sealed partial class ControlStore
 
     public async Task<IReadOnlyList<RolloutPlan>> RolloutPlans(Guid org, CancellationToken ct)
     {
-        foreach (var (organizationId, planId) in await RunningRolloutPlans(org, ct)) await EvaluateRolloutPlan(organizationId, planId, ct);
+        foreach (var (organizationId, planId) in await RunningRolloutPlans(org, ct))
+            await EvaluateRolloutPlan(organizationId, planId, ct, skipIfBusy: true);
         return await ReadRolloutPlans(org, null, ct);
     }
 
     public async Task<RolloutPlan?> RolloutPlanDetails(Guid org, Guid id, CancellationToken ct)
     {
-        await EvaluateRolloutPlan(org, id, ct);
+        await EvaluateRolloutPlan(org, id, ct, skipIfBusy: true);
         return await ReadRolloutPlan(org, id, ct);
+    }
+
+    private static readonly TimeSpan ReadLockTimeout = TimeSpan.FromMilliseconds(250);
+
+    // A transaction-local setting ends with the transaction, so the pooled connection keeps its configured value afterwards.
+    // Returns the value that applied before the change.
+    private static async Task<string> SetLockTimeout(NpgsqlTransaction transaction, string timeout, CancellationToken ct)
+    {
+        string previous;
+        await using (var read = new NpgsqlCommand("SELECT current_setting('lock_timeout')", transaction.Connection, transaction))
+            previous = (string)(await read.ExecuteScalarAsync(ct))!;
+        await using var command = new NpgsqlCommand("SELECT set_config('lock_timeout', $1, true)", transaction.Connection, transaction);
+        AddParameters(command, timeout);
+        await command.ExecuteNonQueryAsync(ct);
+        return previous;
     }
 
     private async Task<IReadOnlyList<(Guid, Guid)>> RunningRolloutPlans(Guid org, CancellationToken ct)

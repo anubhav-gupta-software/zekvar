@@ -51,6 +51,7 @@ const composerGateAdmin = randomBytes(32).toString('hex');
 const detectionRulesAdmin = randomBytes(32).toString('hex');
 const rolloutAdmin = randomBytes(32).toString('hex');
 const adapterAdmin = randomBytes(32).toString('hex');
+const logsAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -232,6 +233,8 @@ async function call(path, { token, method = 'GET', body, expect = 200, assignmen
 
 let processHandle;
 let exited;
+// Everything the current API process wrote to stdout and stderr, for the log redaction checks.
+let apiLogs = '';
 
 async function start(sweepSeconds = 3600, overrides = {}) {
   processHandle = spawn('dotnet', [app], {
@@ -312,6 +315,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__33__AdminToken: rolloutAdmin,
       Control__Organizations__34__Slug: `adapter-controls-${suffix}`,
       Control__Organizations__34__AdminToken: adapterAdmin,
+      Control__Organizations__35__Slug: `logs-${suffix}`,
+      Control__Organizations__35__AdminToken: logsAdmin,
       Control__RolloutEvaluationSeconds: '3600',
       ...overrides,
     },
@@ -320,11 +325,14 @@ async function start(sweepSeconds = 3600, overrides = {}) {
   exited = once(processHandle, 'exit');
   let logs = '';
   let ready = false;
+  apiLogs = '';
+  const capture = (chunk) => { if (apiLogs.length < 8_000_000) apiLogs += chunk; };
   processHandle.stdout.on('data', (chunk) => {
+    capture(chunk);
     logs = (logs + chunk).slice(-4000);
     ready ||= logs.includes(`Now listening on: ${baseUrl}`);
   });
-  processHandle.stderr.on('data', (chunk) => { logs = (logs + chunk).slice(-4000); });
+  processHandle.stderr.on('data', (chunk) => { capture(chunk); logs = (logs + chunk).slice(-4000); });
   for (let attempt = 0; attempt < 200 && processHandle.exitCode === null && !ready; attempt++) {
     await delay(50);
   }
@@ -339,7 +347,9 @@ async function stop() {
   processHandle = undefined;
 }
 
-test('Control persists tenant-scoped policies, enrollment and metadata in PostgreSQL', { timeout: 120_000 }, async (t) => {
+// The full suite takes about 100 to 130 seconds on a developer laptop and more under load, so the budget leaves headroom
+// for a slow machine while still failing a hung run.
+test('Control persists tenant-scoped policies, enrollment and metadata in PostgreSQL', { timeout: 300_000 }, async (t) => {
   t.after(stop);
   await start();
   let client;
@@ -363,6 +373,53 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     client = await responses.find((response) => response.ok).json();
     await call('/v1/admin/policies', { token: client.token, expect: 401 });
     await call('/v1/browser/policy', { token: first, expect: 401 });
+  });
+
+  await t.test('API logs are structured JSON and omit credentials, grants, bodies, query strings, and policy terms', async () => {
+    const canary = `zkvlogcanary${randomBytes(6).toString('hex')}`;
+    const secrets = [logsAdmin, canary];
+    const { grant } = await call('/v1/admin/enrollment-grants', { method: 'POST', token: logsAdmin });
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    secrets.push(grant, browser.token);
+    await call('/v1/enroll', { method: 'POST', body: { grant }, expect: 401 });
+    const term = `Project ${canary}`;
+    const published = await call('/v1/admin/policies', { method: 'POST', token: logsAdmin,
+      body: { classificationProtection: { mode: 'warn', terms: [term] } } });
+    assert.deepEqual(published.classificationProtection.terms, [term]);
+    const restored = await call(`/v1/admin/policies/${published.version - 1}/restore`, { method: 'POST', token: logsAdmin });
+    assert.deepEqual(restored.classificationProtection, { mode: 'off', terms: [] });
+    await call('/v1/browser/policy', { token: browser.token });
+    const event = { ...contract.event, eventId: randomUUID(), timestamp: new Date().toISOString(), policyVersion: restored.version };
+    await call('/v1/browser/events', { method: 'POST', token: browser.token, body: event, expect: 204 });
+    await call('/v1/browser/events', { method: 'POST', token: browser.token, body: { ...event, prompt: `${canary} prompt` }, expect: 400 });
+    await call('/v1/admin/events', { token: `${canary}bearer`, expect: 401 });
+    await call(`/v1/admin/events?appId=${canary}query&since=${canary}`, { token: logsAdmin, expect: 400 });
+    await call(`/v1/integrations/events?after=${canary}cursor&code=${canary}code`, { token: `zf_${canary}feedkey`, expect: 401 });
+    await call('/v1/internal/sso/session', { method: 'POST', token: `${canary}sso`,
+      body: { issuer: 'https://idp.example.test', subject: `${canary}subject`, expiresAt: new Date(Date.now() + 60_000).toISOString() },
+      expect: 404 });
+    for (const body of [`{"grant":"${canary}malformed`, `{"${canary}unknown":1}`, `{"grant":["${canary}array"]}`]) {
+      const response = await fetch(`${baseUrl}/v1/enroll`, { method: 'POST', headers: { 'Content-Type': 'application/json',
+        Cookie: `session=${canary}cookie` }, body, signal: AbortSignal.timeout(5_000) });
+      assert.equal(response.status, 400);
+    }
+    const oversized = await fetch(`${baseUrl}/v1/browser/events`, { method: 'POST', headers: { 'Content-Type': 'application/json',
+      Authorization: `Bearer ${browser.token}` }, body: JSON.stringify({ ...event, prompt: canary.repeat(2000) }), signal: AbortSignal.timeout(5_000) });
+    assert.ok([400, 413].includes(oversized.status), `oversized body returned ${oversized.status}`);
+    await delay(300);
+
+    for (const secret of secrets) assert.ok(!apiLogs.includes(secret), 'a synthetic secret reached the API logs');
+    assert.ok(!apiLogs.toLowerCase().includes(canary), 'a synthetic value reached the API logs');
+    assert.doesNotMatch(apiLogs, /\/v1\/(enroll|admin|browser|integrations|internal)/);
+    const lines = apiLogs.split('\n').filter((line) => line.trim());
+    assert.ok(lines.some((line) => line.includes('Now listening on')), 'the capture saw the startup log');
+    for (const line of lines) {
+      const entry = JSON.parse(line);
+      assert.equal(typeof entry.LogLevel, 'string');
+      assert.equal(typeof entry.Category, 'string');
+      if (entry.Category.startsWith('Microsoft.') && entry.Category !== 'Microsoft.Hosting.Lifetime')
+        assert.ok(['Warning', 'Error', 'Critical'].includes(entry.LogLevel), line);
+    }
   });
 
   await t.test('the browser sees published policies and a rollback creates a new version', async () => {
@@ -5628,6 +5685,41 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.ok(lifecycle.some(({ rolloutChange }) => rolloutChange.planId === unreviewed.id && rolloutChange.reason === 'review_mode_changed'));
     assert.ok(lifecycle.some(({ rolloutChange, actorAccess }) => rolloutChange.planId === pending.id && rolloutChange.event === 'approved' &&
       actorAccess.id === reviewer.access.id));
+    // A read that finds the settings or plan lock held returns the last committed state promptly instead of waiting,
+    // and the next read after the lock is released evaluates normally.
+    if (postgres) {
+      const contended = await post('rollout-plans', request([stage(canary, { minAcknowledgedPercent: 0 })], { name: 'Contended rollout' }));
+      assert.equal(contended.status, 'running');
+      const holder = `zekvar-lock-${randomBytes(4).toString('hex')}`;
+      for (const lock of [
+        `SELECT 1 FROM organizations WHERE slug = 'rollout-plans-${suffix}' FOR UPDATE`,
+        `SELECT 1 FROM rollout_plans WHERE id = '${contended.id}' FOR UPDATE`,
+      ]) {
+        const held = sql('docker', ['exec', '-e', `PGAPPNAME=${holder}`, postgres, 'psql', '-XAtq', '-U', 'postgres', '-d', 'zekvar',
+          '-c', `BEGIN; ${lock}; SELECT pg_sleep(30); COMMIT;`]).catch(() => undefined);
+        const sleeping = `SELECT count(*) FROM pg_stat_activity WHERE application_name = '${holder}' AND wait_event = 'PgSleep'`;
+        for (let attempt = 0; attempt < 200 && await retentionFixture(sleeping) !== '1'; attempt++) await delay(50);
+        assert.equal(await retentionFixture(sleeping), '1');
+        try {
+          const startedAt = performance.now();
+          const [listed, detailed] = await Promise.all([admin('rollout-plans'), plan(contended.id)]);
+          assert.ok(performance.now() - startedAt < 2_000, 'a read waited for a held rollout lock');
+          for (const snapshot of [listed.find(({ id }) => id === contended.id), detailed]) {
+            assert.equal(snapshot.status, 'running');
+            assert.equal(snapshot.currentStage, 0);
+            assert.deepEqual(snapshot.gate, contended.gate);
+          }
+        } finally {
+          await retentionFixture(`SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE application_name = '${holder}'`);
+          await held;
+        }
+      }
+      const evaluated = await plan(contended.id);
+      assert.equal(evaluated.status, 'completed');
+      assert.equal((await rolloutAudit(contended.id)).filter(({ action }) => action === 'policy_published').length, 1);
+      assert.equal((await act(contended.id, 'rollback')).status, 'rolled_back');
+    }
+
     const evidence = JSON.stringify(await admin('rollout-plans'));
     for (const browser of [canaryBrowser, pilotBrowser, baselineBrowser]) {
       assert.ok(!evidence.includes(browser.installationId) && !evidence.includes(browser.token));
