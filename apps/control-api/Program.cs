@@ -34,6 +34,9 @@ if (organizations is not { Length: > 0 } || organizations.Any(org => !ValidOrgan
 var sso = ControlSso.Read(builder.Configuration, hostedPilot, organizations);
 var alertWebhooks = AlertWebhooks.Read(builder.Configuration, builder.Environment.IsDevelopment(), organizations);
 var deletion = OrganizationDeletionOptions.Read(builder.Configuration);
+var dataProtection = DataProtection.Read(builder.Configuration, hostedPilot, organizations.Select(org => org.AdminToken)
+    .Concat(builder.Configuration.GetSection("Control:AlertWebhooks").GetChildren().Select(entry => entry["SigningSecret"] ?? ""))
+    .Concat([builder.Configuration["Control:Oidc:ExchangeToken"] ?? ""]));
 
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -46,7 +49,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 // No logger factory is attached, so Npgsql emits no logs; parameter logging also stays off explicitly.
 builder.Services.AddSingleton(_ => new NpgsqlDataSourceBuilder(connectionString).EnableParameterLogging(false).Build());
 builder.Services.AddSingleton(alertWebhooks);
-builder.Services.AddSingleton(services => new ControlStore(services.GetRequiredService<NpgsqlDataSource>(), sso, alertWebhooks)
+builder.Services.AddSingleton(services => new ControlStore(services.GetRequiredService<NpgsqlDataSource>(), sso, alertWebhooks, dataProtection)
     { RolloutInterval = TimeSpan.FromSeconds(rolloutSeconds), EnrollmentKeyAttemptsPerMinute = keyAttempts });
 builder.Services.AddHostedService<RolloutAdvancer>(services => new(services.GetRequiredService<ControlStore>(),
     services.GetRequiredService<ILogger<RolloutAdvancer>>(), TimeSpan.FromSeconds(rolloutSeconds)));
@@ -254,8 +257,10 @@ admin.MapGet("/reports/composer-readiness", async (HttpContext http, Cancellatio
     var query = http.Request.Query;
     if (query.Keys.Any(key => key is not ("rolloutGroup" or "browserVersion")) ||
         !TryParseBrowserHealthFilter(query, out var filter)) return InvalidBrowserHealthFilter();
-    return await store.ReadComposerReadinessReport(Identity(http).OrganizationId, filter, ct) is { } report
-        ? Results.Ok(report) : Results.NotFound();
+    if (await store.ReadComposerReadinessReport(Identity(http).OrganizationId, filter, ct) is not { } report) return Results.NotFound();
+    await RecordRead(http, "composer_readiness", new { rolloutGroup = query["rolloutGroup"].FirstOrDefault(),
+        browserVersion = query["browserVersion"].FirstOrDefault() }, report.ActiveInstallations, ct);
+    return Results.Ok(report);
 });
 admin.MapGet("/reports/policy-impact", async (HttpContext http, CancellationToken ct) =>
 {
@@ -281,10 +286,17 @@ admin.MapGet("/reports/policy-impact", async (HttpContext http, CancellationToke
         : stale ? Results.Conflict(new { code = "policy_impact_stale" }) : Results.NotFound();
 });
 admin.MapGet("/extension-inventory", async (HttpContext http, CancellationToken ct) =>
-    Results.Ok(await store.ExtensionInventory(Identity(http).OrganizationId, null, ct)));
+{
+    var inventory = await store.ExtensionInventory(Identity(http).OrganizationId, null, ct);
+    await RecordRead(http, "extension_inventory", new { }, inventory.Count, ct);
+    return Results.Ok(inventory);
+});
 admin.MapGet("/extension-inventory/{id:guid}", async (Guid id, HttpContext http, CancellationToken ct) =>
-    (await store.ExtensionInventory(Identity(http).OrganizationId, id, ct)).FirstOrDefault() is { } installation
-        ? Results.Ok(installation) : Results.NotFound());
+{
+    if ((await store.ExtensionInventory(Identity(http).OrganizationId, id, ct)).FirstOrDefault() is not { } installation) return Results.NotFound();
+    await RecordRead(http, "extension_inventory", new { installationId = id }, installation.ExtensionCount, ct);
+    return Results.Ok(installation);
+});
 admin.MapPost("/installations/{id:guid}/revoke", async (Guid id, HttpContext http, CancellationToken ct) =>
     await store.Revoke(Identity(http), id, ct) ? Results.NoContent() : Results.NotFound());
 admin.MapGet("/policies", async (HttpContext http, CancellationToken ct) =>
@@ -428,17 +440,18 @@ admin.MapGet("/events/history", async ([AsParameters] EventFilters filters, Date
     http.Response.Headers["X-Zekvar-Event-Triage"] = "1";
     return Results.Ok(await store.EventHistory(Identity(http).OrganizationId, filters, cursor, ct));
 });
-admin.MapGet("/events/export", ([AsParameters] EventFilters filters, HttpContext http, CancellationToken ct) =>
+admin.MapGet("/events/export", async ([AsParameters] EventFilters filters, HttpContext http, CancellationToken ct) =>
 {
     if (!filters.Valid() || http.Request.Query["rolloutGroup"].Count > 1 || RepeatedTriageFilters(http.Request.Query))
         return Results.BadRequest(new { error = "Choose valid event filters." });
     var identity = Identity(http);
+    var exportId = await store.BeginExport(identity, "security_events", filters, ct);
     http.Response.Headers.ContentDisposition = "attachment; filename=\"zekvar-security-events.json\"";
     http.Response.Headers.XContentTypeOptions = "nosniff";
     http.Response.Headers["X-Zekvar-Event-Rollout"] = "1";
     http.Response.Headers["X-Zekvar-Event-Triage"] = "1";
     return Results.Ok(new EventExport(identity.OrganizationSlug!, DateTime.UtcNow, filters,
-        store.ReadEvents(identity.OrganizationId, filters, null, null, ct)));
+        CountedExport(identity.OrganizationId, exportId, store.ReadEvents(identity.OrganizationId, filters, null, null, ct))));
 });
 admin.MapGet("/events/triage-assignees", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.EventTriageAssignees(Identity(http).OrganizationId, ct)));
@@ -474,6 +487,7 @@ cases.MapGet("/{id:guid}/export", async (Guid id, HttpContext http, Cancellation
 {
     var identity = Identity(http);
     if (await store.IncidentCaseDetail(identity.OrganizationId, id, ct) is not { } detail) return Results.NotFound();
+    await store.RecordExport(identity, "incident_case", new { caseId = id }, detail.Events.Length, ct);
     http.Response.Headers.ContentDisposition = $"attachment; filename=\"zekvar-case-{id:D}.json\"";
     http.Response.Headers.XContentTypeOptions = "nosniff";
     return Results.Ok(new { organization = identity.OrganizationSlug, exportedAt = DateTime.UtcNow, investigation = detail });
@@ -545,15 +559,66 @@ admin.MapGet("/reports/ai-enforcement", async (HttpContext http, CancellationTok
     var query = AiReportQuery.Parse(http.Request.Query, DateTimeOffset.UtcNow);
     return query is null
         ? Results.BadRequest(new { error = "Choose a supported AI app, reporting window, and rollout group." })
-        : Results.Ok(await store.ReadAiEnforcement(Identity(http), query, ct));
+        : Results.Ok(await RecordAiEnforcement(http, query, ct));
 });
 admin.MapGet("/audit", async (string? action, DateTimeOffset? since, DateTimeOffset? until, DateTimeOffset? beforeAt,
-    Guid? beforeId, int? limit, HttpContext http, CancellationToken ct) =>
+    Guid? beforeId, int? limit, string? category, HttpContext http, CancellationToken ct) =>
 {
-    var filters = new AuditFilters(action, since, until, beforeAt, beforeId, limit ?? 100);
+    var filters = new AuditFilters(action, since, until, beforeAt, beforeId, limit ?? 100, category ?? "changes");
     return filters.IsValid
         ? Results.Ok(await store.AuditHistory(Identity(http).OrganizationId, filters, ct))
-        : Results.BadRequest(new { error = "Choose a valid audit action, time range, cursor, and limit." });
+        : Results.BadRequest(new { error = "Choose a valid audit action, category, time range, cursor, and limit." });
+});
+admin.MapGet("/audit/export", async (string? action, DateTimeOffset? since, DateTimeOffset? until, string? category,
+    HttpContext http, CancellationToken ct) =>
+{
+    var filters = new AuditFilters(action, since, until, null, null, 1000, category ?? "all");
+    if (!filters.IsValid) return Results.BadRequest(new { error = "Choose a valid audit action, category, and time range." });
+    var identity = Identity(http);
+    var page = await store.AuditHistory(identity.OrganizationId, filters, ct);
+    await store.RecordExport(identity, "audit_log", new { action, since, until, category = filters.Category }, page.Entries.Count, ct);
+    http.Response.Headers.ContentDisposition = "attachment; filename=\"zekvar-control-audit.json\"";
+    http.Response.Headers.XContentTypeOptions = "nosniff";
+    return Results.Ok(new { organization = identity.OrganizationSlug, exportedAt = DateTime.UtcNow, page.Entries, page.Next });
+});
+var evidence = admin.MapGroup("").AddEndpointFilter((context, next) =>
+    Identity(context.HttpContext).Role is AccessRoles.Owner or AccessRoles.Auditor ? next(context)
+        : ValueTask.FromResult<object?>(Results.StatusCode(StatusCodes.Status403Forbidden)));
+evidence.MapGet("/access-review", async (int? staleDays, HttpContext http, CancellationToken ct) =>
+{
+    if (staleDays is < 1 or > 365 || http.Request.Query.Any(entry => entry.Key != "staleDays" || entry.Value.Count != 1))
+        return Results.BadRequest(new { error = "Choose a stale credential threshold from 1 to 365 days." });
+    var report = await store.AccessReview(Identity(http).OrganizationId, staleDays ?? 90, ct);
+    await RecordRead(http, "access_review", new { staleDays = report.StaleDays }, report.Credentials.Count, ct);
+    return Results.Ok(report);
+});
+evidence.MapPost("/access-review/attestations", async (AttestAccessReview request, HttpContext http, CancellationToken ct) =>
+{
+    var identity = Identity(http);
+    if (identity.Role != AccessRoles.Owner) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (!request.IsValid()) return Results.BadRequest(new { error = "Enter the reviewer, optional notes up to 1,000 characters, and the reviewed report." });
+    var (attestation, error) = await store.AttestAccessReview(identity, request, ct);
+    return attestation is not null ? Results.Ok(attestation) : Results.Conflict(new { code = error ?? "attestation_exists" });
+});
+evidence.MapPost("/operations/drills", async (RecordDrill request, HttpContext http, CancellationToken ct) =>
+{
+    var identity = Identity(http);
+    if (identity.Role != AccessRoles.Owner) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (!request.IsValid(DateTimeOffset.UtcNow))
+        return Results.BadRequest(new { error = "Choose a drill type, time, outcome, and operator. Use a lowercase SHA-256 checksum and notes up to 1,000 characters." });
+    return await store.Attest(identity, request.Kind!, request.RequestId, request.Details(), ct) is { } drill
+        ? Results.Ok(drill) : Results.Conflict(new { code = "attestation_exists" });
+});
+evidence.MapGet("/evidence-pack", async (int? days, HttpContext http, CancellationToken ct) =>
+{
+    if (days is < 1 or > 400 || http.Request.Query.Any(entry => entry.Key != "days" || entry.Value.Count != 1))
+        return Results.BadRequest(new { error = "Choose an evidence period from 1 to 400 days." });
+    var identity = Identity(http);
+    var pack = await store.EvidencePack(identity, days ?? 90, ct);
+    await store.RecordExport(identity, "evidence_pack", new { days = days ?? 90 }, 1, ct);
+    http.Response.Headers.ContentDisposition = $"attachment; filename=\"zekvar-evidence-{DateTime.UtcNow:yyyy-MM-dd}.json\"";
+    http.Response.Headers.XContentTypeOptions = "nosniff";
+    return Results.Ok(pack);
 });
 admin.MapGet("/retention", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.GetRetention(Identity(http).OrganizationId, ct)));
@@ -613,7 +678,18 @@ offboarding.MapGet("/export", async (HttpContext http, CancellationToken ct) =>
     http.Response.ContentType = "application/json";
     http.Response.Headers.ContentDisposition = "attachment; filename=\"zekvar-organization-export.json\"";
     http.Response.Headers.XContentTypeOptions = "nosniff";
-    await store.WriteOrganizationExport(identity, http.Response.Body, ct);
+    var exportId = await store.BeginExport(identity, "organization_export", new { }, ct);
+    long exported = 0;
+    var completed = false;
+    try
+    {
+        exported = await store.WriteOrganizationExport(identity, http.Response.Body, ct);
+        completed = true;
+    }
+    finally
+    {
+        await store.FinishExport(identity.OrganizationId, exportId, exported, completed, CancellationToken.None);
+    }
     return Results.Empty;
 }).WithMetadata(OffboardingAccess.Allowed);
 app.MapGet("/v1/organization-deletions/{id:guid}/receipt", async (Guid id, HttpContext http, CancellationToken ct) =>
@@ -637,7 +713,11 @@ admin.MapPost("/ai-apps/{appId}/classification", async (string appId, ClassifyAp
 });
 
 admin.MapGet("/saas-apps", async (HttpContext http, CancellationToken ct) =>
-    Results.Ok(await store.SaasInventory(Identity(http).OrganizationId, ct)));
+{
+    var inventory = await store.SaasInventory(Identity(http).OrganizationId, ct);
+    await RecordRead(http, "saas_inventory", new { }, inventory.Apps.Count, ct);
+    return Results.Ok(inventory);
+});
 admin.MapPost("/saas-apps/{appId}/classification", async (string appId, ClassifySaasApp request, HttpContext http, CancellationToken ct) =>
 {
     if (!SaasCatalog.IsApp(appId) || !SaasCatalog.IsStatus(request.Status))
@@ -790,6 +870,40 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
         ? Results.Conflict(new { error = "The policy changed after preview or is unavailable." }) : Results.NotFound());
 }
 
+// Dashboard downloads send X-Zekvar-Export so a report download is one audited export; other reads are hourly view summaries.
+async Task RecordRead(HttpContext http, string resource, object scope, long records, CancellationToken ct)
+{
+    if (http.Request.Headers["X-Zekvar-Export"] == "1") await store.RecordExport(Identity(http), resource, scope, records, ct);
+    else await store.RecordView(Identity(http), resource, scope, records, ct);
+}
+
+async Task<AiEnforcementReport> RecordAiEnforcement(HttpContext http, AiReportQuery query, CancellationToken ct)
+{
+    var report = await store.ReadAiEnforcement(Identity(http), query, ct);
+    await RecordRead(http, "ai_enforcement", new { query.Days, query.AppId, query.RolloutGroup }, report.Counts.Values.Sum(), ct);
+    return report;
+}
+
+// Stores the delivered record count and whether the stream finished once the export response completes or is aborted.
+async IAsyncEnumerable<StoredEvent> CountedExport(Guid organizationId, Guid exportId, IAsyncEnumerable<StoredEvent> source)
+{
+    long count = 0;
+    var completed = false;
+    try
+    {
+        await foreach (var entry in source)
+        {
+            count++;
+            yield return entry;
+        }
+        completed = true;
+    }
+    finally
+    {
+        await store.FinishExport(organizationId, exportId, count, completed, CancellationToken.None);
+    }
+}
+
 static bool ExpectsReview(HttpContext http) => http.Request.Headers["X-Zekvar-Expect-Review"] == "1";
 static bool RepeatedTriageFilters(IQueryCollection query) => query["triageStatus"].Count > 1 || query["triageAssignee"].Count > 1;
 
@@ -868,6 +982,7 @@ Func<EndpointFilterInvocationContext, EndpointFilterDelegate, ValueTask<object?>
     // During the deletion grace period only the owner signs in, and only to review, export, cancel, or download the receipt.
     if (identity.Offboarding && http.GetEndpoint()?.Metadata.GetMetadata<OffboardingAccess>() is null)
         return Results.Json(new { code = "organization_deletion_pending" }, statusCode: StatusCodes.Status403Forbidden);
+    if (!browser) await store.TouchCredential(identity, http.RequestAborted);
     http.Items[typeof(RequestIdentity)] = identity;
     return await next(context);
 };

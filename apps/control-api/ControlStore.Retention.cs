@@ -58,6 +58,8 @@ internal sealed partial class ControlStore
                OR EXISTS (SELECT 1 FROM saas_app_observations s WHERE s.organization_id = r.organization_id
                         AND s.first_seen_day < (r.observation_cutoff AT TIME ZONE 'UTC')::date)
                OR EXISTS (SELECT 1 FROM control_audit a WHERE a.organization_id = r.organization_id AND a.occurred_at < r.audit_cutoff)
+               OR EXISTS (SELECT 1 FROM control_access_log l WHERE l.organization_id = r.organization_id AND l.occurred_at < r.audit_cutoff)
+               OR EXISTS (SELECT 1 FROM control_attestations t WHERE t.organization_id = r.organization_id AND t.occurred_at < r.audit_cutoff)
                OR EXISTS (SELECT 1 FROM incident_cases c WHERE c.organization_id = r.organization_id
                         AND c.status = 'resolved' AND c.updated_at < r.audit_cutoff))
             UNION
@@ -116,6 +118,16 @@ internal sealed partial class ControlStore
                     SELECT a.id FROM control_audit a, cutoff c WHERE a.organization_id = $1 AND a.occurred_at < c.audit_cutoff
                     ORDER BY a.occurred_at LIMIT $2 FOR UPDATE OF a SKIP LOCKED
                 ) RETURNING 1
+            ), removed_access_log AS (
+                DELETE FROM control_access_log WHERE organization_id = $1 AND id IN (
+                    SELECT l.id FROM control_access_log l, cutoff c WHERE l.organization_id = $1 AND l.occurred_at < c.audit_cutoff
+                    ORDER BY l.occurred_at LIMIT $2 FOR UPDATE OF l SKIP LOCKED
+                ) RETURNING 1
+            ), removed_attestations AS (
+                DELETE FROM control_attestations WHERE organization_id = $1 AND id IN (
+                    SELECT t.id FROM control_attestations t, cutoff c WHERE t.organization_id = $1 AND t.occurred_at < c.audit_cutoff
+                    ORDER BY t.occurred_at LIMIT $2 FOR UPDATE OF t SKIP LOCKED
+                ) RETURNING 1
             ), removed_cases AS (
                 DELETE FROM incident_cases WHERE organization_id = $1 AND id IN (
                     SELECT c.id FROM incident_cases c, cutoff r WHERE c.organization_id = $1
@@ -135,24 +147,26 @@ internal sealed partial class ControlStore
                     (SELECT count(*) FROM removed_cases)::integer AS incidents,
                     (SELECT count(*) FROM removed_alerts)::integer AS alert_windows,
                     (SELECT count(*) FROM removed_saas)::integer AS saas_observations,
-                    (SELECT count(*) FROM clamped_saas)::integer AS saas_clamped
+                    (SELECT count(*) FROM clamped_saas)::integer AS saas_clamped,
+                    (SELECT count(*) FROM removed_access_log)::integer + (SELECT count(*) FROM removed_attestations)::integer AS access_entries
             ), audit AS (
                 INSERT INTO control_audit (organization_id, action, cleanup, actor_access_id)
                 SELECT $1, 'retention_cleanup', jsonb_build_object('securityEvents', events,
                     'aiObservations', observations, 'auditEntries', audit_entries, 'source', $3::text)
                     || CASE WHEN incidents > 0 THEN jsonb_build_object('incidentCases', incidents) ELSE '{}'::jsonb END
                     || CASE WHEN alert_windows > 0 THEN jsonb_build_object('alertWindows', alert_windows) ELSE '{}'::jsonb END
-                    || CASE WHEN saas_observations > 0 THEN jsonb_build_object('saasObservations', saas_observations) ELSE '{}'::jsonb END, $4
-                FROM counts WHERE events + observations + audit_entries + incidents + alert_windows + saas_observations > 0
+                    || CASE WHEN saas_observations > 0 THEN jsonb_build_object('saasObservations', saas_observations) ELSE '{}'::jsonb END
+                    || CASE WHEN access_entries > 0 THEN jsonb_build_object('accessLogEntries', access_entries) ELSE '{}'::jsonb END, $4
+                FROM counts WHERE events + observations + audit_entries + incidents + alert_windows + saas_observations + access_entries > 0
             )
-            SELECT events, observations, audit_entries, incidents, alert_windows, saas_observations FROM counts
+            SELECT events, observations, audit_entries, incidents, alert_windows, saas_observations, access_entries FROM counts
             """, connection, transaction);
         AddParameters(command, organizationId, batchSize, source, (object?)actorId ?? DBNull.Value);
         RetentionCleanup result;
         await using (var rows = await command.ExecuteReaderAsync(ct))
         {
             await rows.ReadAsync(ct);
-            result = new(rows.GetInt32(0), rows.GetInt32(1), rows.GetInt32(2), source, rows.GetInt32(3), rows.GetInt32(4), rows.GetInt32(5));
+            result = new(rows.GetInt32(0), rows.GetInt32(1), rows.GetInt32(2), source, rows.GetInt32(3), rows.GetInt32(4), rows.GetInt32(5), rows.GetInt32(6));
         }
         await transaction.CommitAsync(ct);
         return result;

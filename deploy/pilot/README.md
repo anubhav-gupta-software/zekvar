@@ -5,15 +5,23 @@ This single-host deployment uses Caddy as the HTTPS entry point for two DNS name
 ## Set up the host
 
 1. Choose distinct DNS hostnames for the dashboard and browser API and point both at the pilot host. Open ports 80 and 443 for Caddy. Put Caddy directly behind the network edge so its administrator allowlist evaluates the actual client IP.
-2. From the repo root, run `umask 077` and copy `deploy/pilot/.env.example` to `deploy/pilot/.env`. Set the two hostnames, ACME contact, organization slug and administrator source CIDRs. Use the administrator's stable public egress address or VPN network. Generate a distinct value for each of the three empty secrets with `openssl rand -hex 32`.
-3. Validate the Compose inputs without printing their values, then start the services.
+2. From the repo root, run `umask 077` and copy `deploy/pilot/.env.example` to `deploy/pilot/.env`. Set the two hostnames, ACME contact, organization slug and administrator source CIDRs. Use the administrator's stable public egress address or VPN network. Generate a distinct value for the owner token and the two database passwords with `openssl rand -hex 32`.
+3. Put the Docker data root on an encrypted disk before the first start: a LUKS (dm-crypt) volume, or provider block-storage encryption with a customer-managed key. Generate the application data key with `printf '%s=%s\n' "$(date -u +%Y-%m)" "$(openssl rand -hex 32)"` and set it as `ZEKVAR_DATA_KEYS`. Store it in the operator's secret store separately from database backups.
+4. Validate the Compose inputs without printing their values, then start the services.
 
 ```sh
 docker compose --env-file deploy/pilot/.env -f deploy/pilot/compose.yaml config --quiet
 docker compose --env-file deploy/pilot/.env -f deploy/pilot/compose.yaml up -d --build
 ```
 
-4. Open the dashboard over HTTPS from an allowed network. Use the configured owner token to sign in and issue named Control credentials for pilot administrators. Verify `GET https://<browser-host>/health` from a managed device before enrolling it.
+5. Check encryption at rest on the host. The check exits nonzero unless the PostgreSQL volume is on a dm-crypt device. Inside a cloud VM, provider disk encryption is not visible; pass the encrypted volume and key reference with `--provider-encrypted` and keep the provider's evidence with the result.
+
+```sh
+sudo deploy/pilot/storage-preflight.sh zekvar-pilot deploy/pilot/.env
+sudo deploy/pilot/storage-preflight.sh zekvar-pilot deploy/pilot/.env --provider-encrypted aws-ebs:vol-0123/kms:alias/zekvar
+```
+
+6. Open the dashboard over HTTPS from an allowed network. Use the configured owner token to sign in and issue named Control credentials for pilot administrators. Verify `GET https://<browser-host>/health` from a managed device before enrolling it.
 
 Caddy obtains certificates for public DNS names and keeps them in its data volume. The Compose network namespace holds the loopback listeners for the dashboard and API. Its database service listens only on the private database network. The initialization script creates the database-owner application role on a fresh PostgreSQL volume. [Caddy automatic HTTPS](https://caddyserver.com/docs/automatic-https) · [Docker Compose services](https://docs.docker.com/reference/compose-file/services/#network_mode)
 
@@ -229,6 +237,16 @@ ZEKVAR_DELETION_RECEIPT_KEY=... deploy/pilot/organization-deletion.sh verify-fil
 ```
 
 `verify-file` checks a receipt the owner downloaded and needs `jq`. A deleted organization stays in `Control__Organizations` until you remove it. Control does not recreate it while the configured owner token matches the deleted one. Remove its entries from the environment file, or rotate the owner token to provision a new, empty organization with the same name. A deletion that stops with `unhandled_tenant_table` or `batch_failed` resumes on the next check after the cause is fixed. The first means a database table is missing from the deletion plan. Do not drop data by hand.
+
+## Run release checks
+
+Run the supply-chain checks from the repository root before tagging a release, on a machine with registry access. The command fails if any `package.json` dependency or NuGet reference uses a version range, or if `npm audit --omit=dev` or `dotnet list package --vulnerable` reports a high or critical issue. It writes CycloneDX 1.5 SBOMs for the extension, dashboard, and API to `artifacts/sbom/` from the lockfiles. Without network access the audits report `skipped`; `--require-audit` turns that into a failure. Attach the SBOMs and the JSON summary to the release record.
+
+```sh
+SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) node scripts/release-checks.mjs --require-audit
+```
+
+After each scheduled backup check or recovery rehearsal, record the drill in **Compliance evidence** with the archive checksum and measured recovery time so the evidence pack carries it.
 
 ## Verify the deployment
 

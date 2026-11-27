@@ -13,6 +13,7 @@ import type { RolloutAudit } from './rollouts';
 import type { SaasClassification } from '../../../contracts/policy/saas-catalog';
 import type { AiPromptApp } from '../../../contracts/policy/apps';
 import type { DataDeletionAudit } from './deletion';
+import type { Attestation, ReadAccess } from './evidence';
 
 export const auditActions = {
   policy_published: 'Policy published',
@@ -50,13 +51,23 @@ export const auditActions = {
   organization_deletion_requested: 'Organization deletion requested',
   organization_deletion_cancelled: 'Organization deletion cancelled',
   organization_exported: 'Organization data exported',
+  access_review_completed: 'Access review completed',
+  backup_drill_recorded: 'Backup drill recorded',
+  restore_drill_recorded: 'Restore drill recorded',
+  data_exported: 'Data exported',
+  data_viewed: 'Sensitive data viewed',
+  event_feed_read: 'SIEM feed read',
 } as const;
+export const auditCategories = { all: 'Changes and data access', changes: 'Changes only', access: 'Data access only' } as const;
+export type AuditCategory = keyof typeof auditCategories;
 
 export type AuditAction = keyof typeof auditActions;
 export type AuditCursor = { occurredAt: string; id: string };
 export type AuditEntry = AuditCursor & {
   action: AuditAction;
-  actor: 'organization_admin' | 'named_administrator' | 'sso_identity' | 'browser_enrollment' | 'system' | 'automated_rollout';
+  actor: 'organization_admin' | 'named_administrator' | 'sso_identity' | 'browser_enrollment' | 'system' | 'automated_rollout' | 'event_feed_key';
+  readAccess?: ReadAccess;
+  attestation?: Attestation;
   actorAccess?: AccessIdentity;
   subjectAccess?: AccessIdentity;
   reviewChange?: PolicyReviewAudit;
@@ -92,7 +103,7 @@ function utcDay(value: string) {
 
 export function auditSearchValues(params: URLSearchParams): Search {
   const result: Search = {};
-  for (const key of ['action', 'from', 'through', 'beforeAt', 'beforeId']) {
+  for (const key of ['action', 'category', 'from', 'through', 'beforeAt', 'beforeId']) {
     const values = params.getAll(key);
     if (values.length) result[key] = values.length === 1 ? values[0] : values;
   }
@@ -100,7 +111,8 @@ export function auditSearchValues(params: URLSearchParams): Search {
 }
 
 export function auditFilters(search: Search) {
-  const { action = '', from = '', through = '', beforeAt = '', beforeId = '' } = search;
+  const { action = '', category = 'all', from = '', through = '', beforeAt = '', beforeId = '' } = search;
+  if (typeof category !== 'string' || !Object.hasOwn(auditCategories, category)) return;
   if (typeof action !== 'string' || typeof from !== 'string' || typeof through !== 'string' ||
       typeof beforeAt !== 'string' || typeof beforeId !== 'string') return;
   const since = from ? utcDay(from) : undefined;
@@ -117,6 +129,8 @@ export function auditFilters(search: Search) {
     query.set('action', action);
     page.set('action', action);
   }
+  query.set('category', category);
+  if (category !== 'all') page.set('category', category);
   if (since) {
     query.set('since', since.toISOString());
     page.set('from', from);
@@ -129,5 +143,5 @@ export function auditFilters(search: Search) {
     query.set('beforeAt', beforeAt);
     query.set('beforeId', beforeId);
   }
-  return { query, page, action, from, through, beforeAt };
+  return { query, page, action, category: category as AuditCategory, from, through, beforeAt };
 }

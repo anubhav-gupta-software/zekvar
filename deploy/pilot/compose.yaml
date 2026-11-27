@@ -43,6 +43,7 @@ services:
       Control__OrganizationDeletion__ReceiptKey: ${ZEKVAR_DELETION_RECEIPT_KEY:-}
       Control__OrganizationDeletion__GraceDays: ${ZEKVAR_DELETION_GRACE_DAYS:-7}
       Control__BackupRetentionDays: ${ZEKVAR_BACKUP_RETENTION_DAYS:-35}
+      Control__DataKeys: ${ZEKVAR_DATA_KEYS:?generate a data encryption key as id=64-hex}
       ConnectionStrings__Control: "Host=postgres;Database=zekvar;Username=zekvar_app;Password=${ZEKVAR_POSTGRES_APP_PASSWORD:?generate an app database password}"
 
   web:

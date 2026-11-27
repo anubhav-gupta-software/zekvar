@@ -7,7 +7,7 @@ export async function GET(request: Request) {
   const token = await sessionToken();
   if (!token) return new Response('Sign in to export the AI enforcement report.', { status: 401, headers });
   try {
-    const report = await controlApi.aiEnforcement(token, new URL(request.url).searchParams);
+    const report = await controlApi.aiEnforcement(token, new URL(request.url).searchParams, true);
     return Response.json(report, { headers: { ...headers, 'Content-Disposition': 'attachment; filename="zekvar-ai-enforcement.json"' } });
   } catch (error) {
     if (!(error instanceof ApiError)) throw error;

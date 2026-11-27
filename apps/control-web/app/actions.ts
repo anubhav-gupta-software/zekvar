@@ -1151,7 +1151,7 @@ export async function cleanupRetention(): Promise<Feedback> {
   return perform(async (token) => {
     const result = await controlApi.cleanupRetention(token);
     revalidatePath('/retention');
-    return { message: result.securityEvents || result.aiObservations || result.auditEntries || result.incidentCases || result.alertWindows
+    return { message: result.securityEvents || result.aiObservations || result.auditEntries || result.incidentCases || result.alertWindows || result.accessLogEntries
       ? `Deleted ${cleanupCounts(result)}.` : 'No expired records found.' };
   });
 }
@@ -1237,5 +1237,60 @@ export async function changeRolloutPlan(_previous: Feedback, form: FormData): Pr
       if (known) return known;
       throw error;
     }
+  });
+}
+
+const reviewNotesError = 'Enter the reviewer name and up to 1,000 characters of notes.';
+
+export async function attestAccessReview(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const reviewer = form.get('reviewer');
+  const notes = form.get('notes') ?? '';
+  const staleDays = form.get('staleDays');
+  const fingerprint = form.get('fingerprint');
+  if (typeof reviewer !== 'string' || reviewer.trim().length < 2 || reviewer.trim().length > 64 || typeof notes !== 'string' ||
+      notes.trim().length > 1000 || typeof staleDays !== 'string' || !/^\d{1,3}$/.test(staleDays) ||
+      typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(fingerprint)) return { error: reviewNotesError };
+  return perform(async (token) => {
+    try {
+      await controlApi.attestAccessReview(token, { requestId: randomUUID(), reviewer: reviewer.trim(),
+        notes: notes.replace(/\r\n?/g, '\n').trim(), staleDays: Number(staleDays), expectedFingerprint: fingerprint });
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'access_review_changed')
+        return { error: 'Credentials changed since this report loaded. Reload the access review and check it again.' };
+      if (error instanceof ApiError && error.status === 400) return { error: reviewNotesError };
+      throw error;
+    }
+    revalidatePath('/access-review');
+    return { message: 'Access review recorded in the audit log.' };
+  });
+}
+
+export async function recordDrill(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const kind = form.get('kind');
+  const performed = form.get('performedAt');
+  const outcome = form.get('outcome');
+  const operator = form.get('operator');
+  const checksum = form.get('archiveSha256') ?? '';
+  const minutes = form.get('recoveryMinutes') ?? '';
+  const notes = form.get('notes') ?? '';
+  const performedAt = typeof performed === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(performed) ? new Date(`${performed}:00Z`) : undefined;
+  if ((kind !== 'backup_drill' && kind !== 'restore_drill') || !performedAt || !Number.isFinite(performedAt.getTime()) ||
+      (outcome !== 'succeeded' && outcome !== 'failed') || typeof operator !== 'string' || operator.trim().length < 2 ||
+      operator.trim().length > 64 || typeof checksum !== 'string' || (checksum && !/^[a-f0-9]{64}$/.test(checksum.trim().toLowerCase())) ||
+      typeof minutes !== 'string' || (minutes && (!/^\d{1,5}$/.test(minutes) || Number(minutes) > 10080)) ||
+      typeof notes !== 'string' || notes.trim().length > 1000) {
+    return { error: 'Choose the drill type, UTC time, outcome, and operator. Use a SHA-256 checksum and recovery time up to 10,080 minutes.' };
+  }
+  return perform(async (token) => {
+    try {
+      await controlApi.recordDrill(token, { requestId: randomUUID(), kind, performedAt: performedAt.toISOString(), outcome,
+        operator: operator.trim(), archiveSha256: checksum ? checksum.trim().toLowerCase() : null,
+        recoveryMinutes: minutes ? Number(minutes) : null, notes: notes.replace(/\r\n?/g, '\n').trim() });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 400) return { error: 'Enter a drill time from the past two years and valid details.' };
+      throw error;
+    }
+    revalidatePath('/evidence');
+    return { message: 'Drill recorded in the audit log.' };
   });
 }

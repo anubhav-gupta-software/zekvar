@@ -9,10 +9,12 @@ export async function GET(request: Request) {
   if (!token) return new Response('Sign in to export the audit log.', { status: 401, headers });
   const filters = auditFilters(auditSearchValues(new URL(request.url).searchParams));
   if (!filters) return new Response('Invalid audit filters.', { status: 400, headers });
-  filters.query.set('limit', '1000');
+  filters.query.delete('beforeAt');
+  filters.query.delete('beforeId');
   try {
-    const [session, audit] = await Promise.all([controlApi.session(token), controlApi.audit(token, filters.query)]);
-    return Response.json({ organization: session.organization, exportedAt: new Date().toISOString(), ...audit }, {
+    // Control records the export, with its filters and entry count, in the access log.
+    const audit = await controlApi.exportAudit(token, filters.query);
+    return Response.json(audit, {
       headers: { ...headers, 'Content-Disposition': 'attachment; filename="zekvar-control-audit.json"' },
     });
   } catch (error) {

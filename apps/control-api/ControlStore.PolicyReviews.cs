@@ -91,7 +91,8 @@ internal sealed partial class ControlStore
             """, connection, transaction);
         AddParameters(insert, id, org, identity.Access!.Id, operation, (object?)groupId ?? DBNull.Value,
             (object?)sourceGroupId ?? DBNull.Value, (object?)sourceVersion ?? DBNull.Value, before.Version,
-            JsonSerializer.Serialize(new PolicySnapshots(before, candidate, templateOrigin, composerGate?.Apps), JsonSerializerOptions.Web));
+            protection.SealObject(JsonSerializer.Serialize(new PolicySnapshots(before, candidate, templateOrigin, composerGate?.Apps),
+                JsonSerializerOptions.Web), org, ReviewSnapshotField, "template"));
         await insert.ExecuteNonQueryAsync(ct);
         await AuditPolicyReview(transaction, identity, "policy_review_requested",
             new(id, operation, "pending", groupId, before.Version, sourceVersion), ct);
@@ -261,7 +262,7 @@ internal sealed partial class ControlStore
                 p.blocked_ai_app_hosts, p.chatgpt_file_content_block, p.gemini_file_content_block, p.identifier_protection, p.extension_deployment,
                 p.preset_discovery_enabled, p.ssn_mode, p.browser_hardening, p.clipboard_mode, p.github_token_mode, p.prompt_app_modes,
                 p.claude_upload_mode, p.claude_upload_types, p.claude_file_content_mode, p.cloud_credential_mode, p.classification_protection,
-                p.adapter_controls, p.saas_discovery_enabled, p.health_protection
+                p.adapter_controls, p.saas_discovery_enabled, p.health_protection, p.organization_id
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.version = $2 AND (NOT $3 OR p.policy_group_id IS NOT DISTINCT FROM $4::uuid)
             """, transaction.Connection, transaction);
@@ -365,17 +366,20 @@ internal sealed partial class ControlStore
             inspectChatgpt, inspectGemini,
             JsonSerializer.Serialize(policy.ExtensionDeployment ?? ExtensionDeployment.Empty, JsonSerializerOptions.Web), policy.BlockedAiAppHosts ?? [],
             content.Chatgpt == "block", content.Gemini == "block",
-            JsonSerializer.Serialize(policy.IdentifierProtection ?? IdentifierProtection.Disabled, JsonSerializerOptions.Web),
+            protection.SealMember(JsonSerializer.Serialize(policy.IdentifierProtection ?? IdentifierProtection.Disabled, JsonSerializerOptions.Web),
+                "formats", identity.OrganizationId, IdentifierField),
             policy.PresetDiscoveryEnabled ?? false, policy.SsnMode ?? "off",
             JsonSerializer.Serialize(policy.BrowserHardening ?? BrowserHardening.Empty, JsonSerializerOptions.Web), policy.ClipboardMode ?? "off",
             policy.GithubTokenMode ?? "off", JsonSerializer.Serialize(policy.PromptAppModes ?? new(), JsonSerializerOptions.Web),
             composerGate is null ? DBNull.Value : JsonSerializer.Serialize(composerGate, JsonSerializerOptions.Web),
             policy.UploadModes.Claude ?? "off", policy.UploadTypes?.Claude ?? [], content.Claude ?? "off",
             policy.CloudCredentialMode ?? "off",
-            JsonSerializer.Serialize(policy.ClassificationProtection ?? ClassificationProtection.Disabled, JsonSerializerOptions.Web),
+            protection.SealMember(JsonSerializer.Serialize(policy.ClassificationProtection ?? ClassificationProtection.Disabled, JsonSerializerOptions.Web),
+                "terms", identity.OrganizationId, ClassificationField),
             rollout is null ? DBNull.Value : JsonSerializer.Serialize(rollout, JsonSerializerOptions.Web),
             JsonSerializer.Serialize(policy.AdapterControls ?? new(), JsonSerializerOptions.Web), policy.SaasDiscoveryEnabled ?? false,
-            JsonSerializer.Serialize(policy.HealthProtection ?? HealthProtection.Disabled, JsonSerializerOptions.Web));
+            protection.SealMember(JsonSerializer.Serialize(policy.HealthProtection ?? HealthProtection.Disabled, JsonSerializerOptions.Web),
+                "recordFormats", identity.OrganizationId, HealthField));
         await using var rows = await command.ExecuteReaderAsync(ct);
         await rows.ReadAsync(ct);
         return policy with { Version = rows.GetInt32(0), PublishedAt = rows.GetDateTime(1), RestoredFrom = restoredFrom,
@@ -414,7 +418,7 @@ internal sealed partial class ControlStore
             r.operation, r.group_id, g.name AS group_name, r.source_group_id, s.name AS source_name,
             r.source_version, r.requested_at, r.expires_at, r.decided_at, r.published_version,
             author.id AS author_id, author.display_name AS author_name, author.role AS author_role,
-            reviewer.id AS reviewer_id, reviewer.display_name AS reviewer_name, reviewer.role AS reviewer_role, r.snapshots
+            reviewer.id AS reviewer_id, reviewer.display_name AS reviewer_name, reviewer.role AS reviewer_role, r.snapshots, r.organization_id AS review_organization
         FROM policy_reviews r JOIN control_access author ON author.organization_id = r.organization_id AND author.id = r.requested_by
         LEFT JOIN control_access reviewer ON reviewer.organization_id = r.organization_id AND reviewer.id = r.decided_by
         LEFT JOIN policy_groups g ON g.organization_id = r.organization_id AND g.id = r.group_id
@@ -427,5 +431,6 @@ internal sealed partial class ControlStore
         rows.IsDBNull(7) ? null : rows.GetInt32(7), rows.GetDateTime(8), rows.GetDateTime(9),
         rows.IsDBNull(10) ? null : rows.GetDateTime(10), rows.IsDBNull(11) ? null : rows.GetInt32(11),
         ReadAccessIdentity(rows, 12)!, ReadAccessIdentity(rows, 15),
-        JsonSerializer.Deserialize<PolicySnapshots>(rows.GetString(18), JsonSerializerOptions.Web)!);
+        JsonSerializer.Deserialize<PolicySnapshots>(protection.OpenObject(rows.GetString(18), rows.GetGuid(19), ReviewSnapshotField),
+            JsonSerializerOptions.Web)!);
 }

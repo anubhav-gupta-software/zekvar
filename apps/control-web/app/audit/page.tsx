@@ -3,7 +3,8 @@ import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../../lib/api';
 import { roleLabels } from '../../lib/access';
 import { reviewOperations, reviewStatuses } from '../../lib/reviews';
-import { auditActions, auditFilters, type AuditEntry } from '../../lib/audit';
+import { auditActions, auditCategories, auditFilters, type AuditEntry } from '../../lib/audit';
+import { credentialKinds, drillKinds, readAccessSummary } from '../../lib/evidence';
 import { classificationLabels, discoveryAppName, promptAppLabels, utc } from '../../lib/control';
 import { saasApp, saasClassificationLabels } from '../../../../contracts/policy/saas-catalog';
 import { cleanupCounts, retentionFields, type RetentionField } from '../../lib/retention';
@@ -53,6 +54,11 @@ export default async function Audit({ searchParams }: { searchParams: Promise<Re
               {Object.entries(auditActions).map(([action, label]) => <option key={action} value={action}>{label}</option>)}
             </select>
           </div>
+          <div><label htmlFor="audit-category">Activity</label>
+            <select id="audit-category" name="category" defaultValue={filters?.category ?? 'all'}>
+              {Object.entries(auditCategories).map(([category, label]) => <option key={category} value={category}>{label}</option>)}
+            </select>
+          </div>
           <div><label htmlFor="audit-from">From (UTC)</label>
             <input id="audit-from" name="from" type="date" defaultValue={filters?.from ?? ''} />
           </div>
@@ -73,7 +79,7 @@ export default async function Audit({ searchParams }: { searchParams: Promise<Re
             </div>
             {!audit.entries.length && <p className="empty">No audit entries match this view.</p>}
             <div className="table-footer">
-              <p className="table-note">JSON export includes up to 1,000 matching entries, newest first.</p>
+              <p className="table-note">JSON export includes up to 1,000 matching entries, newest first. Data access entries record who read what and how many records, never the records.</p>
               <div className="form-row">
                 {filters.beforeAt && <a className="button small" href={`/audit?${previousFilters ?? ''}`}>Newest entries</a>}
                 {audit.next && <a className="button small" href={`/audit?${older}`}>Older entries</a>}
@@ -86,12 +92,20 @@ export default async function Audit({ searchParams }: { searchParams: Promise<Re
 }
 
 const actorLabels = { organization_admin: 'Organization admin', named_administrator: 'Named administrator',
-  sso_identity: 'Single sign-on identity', browser_enrollment: 'Browser enrollment', system: 'Scheduled cleanup', automated_rollout: 'Automated rollout' };
+  sso_identity: 'Single sign-on identity', browser_enrollment: 'Browser enrollment', system: 'Scheduled cleanup', automated_rollout: 'Automated rollout',
+  event_feed_key: credentialKinds.event_feed_key };
 
 function auditDetails(entry: AuditEntry) {
   const saas = entry.saasClassification;
   if (saas) return `${saasApp(saas.appId)?.name ?? saas.appId} · ${saasClassificationLabels[saas.previous]} → ${saasClassificationLabels[saas.status]}`;
   if (entry.dataDeletion) return dataDeletionDetails(entry.action, entry.dataDeletion);
+  if (entry.readAccess) return <span title={entry.readAccess.keyId}>{readAccessSummary(entry.readAccess)}</span>;
+  const attestation = entry.attestation;
+  if (attestation?.kind === 'access_review') return <>Reviewed by {attestation.reviewer} · {attestation.activeCredentials} active
+    {' · '}{attestation.staleCredentials} stale over {attestation.staleDays} days{attestation.notes ? <> · {attestation.notes}</> : null}</>;
+  if (attestation) return <>{drillKinds[attestation.kind as keyof typeof drillKinds]} · {attestation.outcome === 'succeeded' ? 'Succeeded' : 'Failed'}
+    {' · '}{attestation.operator}{attestation.recoveryMinutes != null && <> · {attestation.recoveryMinutes} min</>}
+    {attestation.archiveSha256 && <> · <code title={attestation.archiveSha256}>{attestation.archiveSha256.slice(0, 12)}</code></>}</>;
   const rollout = entry.rolloutChange;
   if (rollout) return <><a className="underline" href={`/rollouts?plan=${rollout.planId}`}>{rollout.planName}</a>
     {' · '}{rolloutEvents[rollout.event] ?? rollout.event}

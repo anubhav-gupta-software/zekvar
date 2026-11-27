@@ -348,6 +348,16 @@ Open **Audit log** from the Control sidebar. The log shows policy publishes and 
 
 **Export JSON** downloads up to 1,000 matching entries in newest-first order with the organization, export timestamp, and API cursor when more entries are available. The export includes names and credential IDs for attributed actions and access changes. Actions performed with the configured owner token appear under the organization-admin category. [Audit API](../control-api/README.md#audit-log)
 
+Choose **Activity** to show changes and data access together, changes only, or data access only. Data access entries show **Data exported** for each export with its record count, **Sensitive data viewed** for hourly summaries of report, extension, and access review views, and **SIEM feed read** for hourly summaries per feed key. They never contain the exported records. Exports from this page go through Control, which records the audit export itself.
+
+## Review Control access
+
+Owners and auditors can open **Access review**. It lists the owner token, named tokens, SSO identities, and event feed keys with role, SSO subject, last use, expiry, and creator. A credential is **Stale** when it is active and has not been used for the chosen number of days (default 90). Revoke credentials that are no longer needed in **Control access**, then enter the reviewer name and notes and select **Record access review**. Control rejects the record if credentials changed after the report loaded. Auditors can view the report but cannot record a review.
+
+## Download compliance evidence
+
+Owners and auditors can open **Compliance evidence** and download a JSON evidence pack for the last 30, 90, 180, or 365 days. The owner can record backup and restore drills with the time, outcome, operator, archive checksum, and recovery time. Each download and drill is recorded in the audit log. [Evidence API](../control-api/README.md#compliance-evidence)
+
 ## Set data retention
 
 Open **Data retention** to set independent windows for security events, AI observations, and audit history. Enter a whole number from 1 to 3,650 days or leave a field blank for no expiry. Saving requires confirmation because shortening a window immediately expires records from views and exports and makes them eligible for permanent deletion. Widening or clearing a window applies to records that have yet to expire.

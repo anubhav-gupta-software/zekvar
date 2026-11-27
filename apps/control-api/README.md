@@ -282,6 +282,31 @@ The `policy_template_changed` audit action records creation, revision, applicati
 
 Audited changes and their records are written together. Repeating a revocation or saving the same classification preserves one entry for the change. Migration 006 backfills policy and installation history. Migration 014 adds `actorAccess` for named administrator activity and `subjectAccess` for issuance and revocation. Both objects contain an ID, name, and role. Earlier records keep their original actor category. Credential values, hashes, prompts, grant values, and policy content stay out of the audit payload.
 
+### Data access log
+
+Control records reads in a separate access log that `GET /v1/admin/audit` merges into history. Pass `category=changes` (default, for compatibility), `access`, or `all`. A specific `action` searches both. `GET /v1/admin/audit/export` returns up to 1,000 matching entries with `category` defaulting to `all` and records the export.
+
+- `data_exported`: one entry per `events/export`, `cases/{id}/export`, `audit/export`, and `evidence-pack`, and per report request that sends `X-Zekvar-Export: 1` (the dashboard's composer readiness and AI enforcement downloads). The event export entry is written before streaming starts and updated with the delivered count and `completed` when the stream ends or is aborted.
+- `data_viewed`: report, extension inventory, and access review reads, summarized per actor, resource, and UTC hour with `requests` and `records`.
+- `event_feed_read`: SIEM feed reads per key and UTC hour, including rejected cursors. Entries carry `keyId` and `keyName`; the actor is `event_feed_key`.
+
+`readAccess` holds `resource`, `scope` (filters and identifiers, never record content), `records`, `requests`, `completed`, and `lastAt`. Access entries and attestations follow `auditDays` and are deleted by retention cleanup, which reports `accessLogEntries`.
+
+## Compliance evidence
+
+These routes accept the owner and auditors; administrators receive HTTP 403. Auditors can use `GET` only.
+
+- `GET /v1/admin/access-review?staleDays=90` lists every credential (owner token, named tokens, SSO identities, event feed keys, and credentials revoked in the last 90 days) with `kind`, `role`, `issuer`, `subject`, `issuedAt`, `expiresAt`, `lastUsedAt`, `status`, `createdBy`, and `stale`. `lastUsedAt` is recorded at most once a minute per credential. `fingerprint` hashes the active credentials, roles, expiries, and stale flags.
+- `POST /v1/admin/access-review/attestations` (owner) takes `requestId`, `reviewer`, optional `notes` (up to 1,000 characters), `staleDays`, and `expectedFingerprint`. A changed credential set returns HTTP 409 `access_review_changed`; a reused request ID returns `attestation_exists`. The audit action is `access_review_completed`.
+- `POST /v1/admin/operations/drills` (owner) records `backup_drill` or `restore_drill` with `performedAt`, `outcome`, `operator`, optional lowercase `archiveSha256`, `recoveryMinutes`, and `notes`. Audit actions are `backup_drill_recorded` and `restore_drill_recorded`.
+- `GET /v1/admin/evidence-pack?days=90` (1 to 400) returns a dated attachment with policy version metadata, policy review and rollout plan approvals, access reviews, drills, retention settings, audit counts by action, data access counts, and data encryption status. It excludes event records, policy contents, detection terms, and credentials.
+
+## Application data encryption
+
+`Control__DataKeys` holds comma-separated `id=key` entries, where the id uses up to 32 lowercase letters, digits, `.`, `_`, or `-` and the key is 64 hex characters distinct from other Control secrets. The first key seals new values; every listed key can open existing ones. The hosted pilot requires at least one key; the local demo runs without one.
+
+Control seals organization classification terms, identifier formats, and policy review snapshots with AES-256-GCM. The associated data binds each value to its organization, field, and key id, so a value copied to another organization does not open. Modes and the template reference stay readable for SQL. At startup, under the migration lock, Control seals plaintext rows and re-seals values under older keys. To rotate, put a new key first, restart, confirm `valuesOnActiveKey` equals `sealedValues` in the evidence pack, then remove the old key. Control refuses to start when stored values use a key that is not configured. Keep the keys in the deployment secret store separately from database backups; restoring a backup needs the keys that sealed it.
+
 ## Data retention
 
 `GET /v1/admin/retention` reads the authenticated organization's settings. `POST /v1/admin/retention` replaces the three windows and requires `securityEventDays`, `aiObservationDays`, and `auditDays`. Each value is a whole number from 1 to 3,650 or `null` for no expiry. Organizations start with no expiry until an administrator sets a window. The 30-day AI inventory view still caps the date range for observations it displays.

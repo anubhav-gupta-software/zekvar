@@ -1,11 +1,16 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace Control;
 
 internal sealed record AuditFilters(string? Action, DateTimeOffset? Since, DateTimeOffset? Until,
-    DateTimeOffset? BeforeAt, Guid? BeforeId, int Limit)
+    DateTimeOffset? BeforeAt, Guid? BeforeId, int Limit, string Category = "changes")
 {
-    public bool IsValid =>
+    public static readonly string[] AccessActions = ["data_exported", "data_viewed", "event_feed_read"];
+    public static readonly string[] AttestationActions = ["access_review_completed", "backup_drill_recorded", "restore_drill_recorded"];
+
+    public bool IsValid => (Category is "changes" or "access" or "all") && (AccessActions.Contains(Action) || AttestationActions.Contains(Action) ||
         (Action is null or "policy_published" or "policy_restored" or "grant_issued" or "browser_enrolled" or "browser_revoked"
             or "app_classified" or "retention_changed" or "retention_cleanup" or "policy_group_created" or "policy_group_assigned"
             or "access_issued" or "access_revoked" or "control_sso_signed_in" or "policy_review_setting_changed"
@@ -14,7 +19,7 @@ internal sealed record AuditFilters(string? Action, DateTimeOffset? Since, DateT
             or "event_feed_key_issued" or "event_feed_key_revoked" or "browser_fleet_changed" or "policy_template_changed" or "rollout_plan_changed"
             or "saas_app_classified" or "enrollment_key_issued" or "enrollment_key_revoked"
             or "installation_deleted" or "policy_history_purged" or "organization_deletion_requested" or "organization_deletion_cancelled"
-            or "organization_exported") &&
+            or "organization_exported")) &&
         (Since is null || Until is null || Since < Until) &&
         (BeforeAt is null) == (BeforeId is null) && BeforeId != Guid.Empty && Limit is >= 1 and <= 1000;
 }
@@ -36,10 +41,13 @@ internal sealed record AuditEntry(Guid Id, DateTime OccurredAt, string Action, i
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] RolloutAudit? RolloutChange = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SaasClassificationChange? SaasClassification = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] EnrollmentKeyChange? EnrollmentKeyChange = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] System.Text.Json.JsonElement? DataDeletion = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] System.Text.Json.JsonElement? DataDeletion = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ReadAccessAudit? ReadAccess = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonObject? Attestation = null)
 {
     public string Actor => Action switch
     {
+        "event_feed_read" => "event_feed_key",
         "browser_enrolled" => "browser_enrollment",
         "control_sso_signed_in" => "sso_identity",
         "retention_cleanup" when Cleanup?.Source == "scheduled" => "system",
@@ -51,3 +59,8 @@ internal sealed record AuditEntry(Guid Id, DateTime OccurredAt, string Action, i
 
 internal sealed record AuditCursor(DateTime OccurredAt, Guid Id);
 internal sealed record AuditPage(IReadOnlyList<AuditEntry> Entries, AuditCursor? Next);
+
+// Read-access evidence: what was read and how many records, never the records themselves.
+internal sealed record ReadAccessAudit(string Resource, JsonElement Scope, long Records, int Requests, bool Completed, DateTime LastAt,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? KeyId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? KeyName = null);

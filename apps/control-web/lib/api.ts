@@ -3,6 +3,7 @@ import type {
   AppClassification, BrowserHealthView, BrowserReleaseCount, ComposerReadinessReport, DiscoveredApp, DiscoveredAppId, Grant, Installation, Policy, PolicyGroup,
 } from './control';
 import type { AuditPage } from './audit';
+import type { AccessReviewReport, Attestation } from './evidence';
 import type { EventPage } from './events';
 import type { RetentionCleanup, RetentionPolicy } from './retention';
 import type { PreviewPolicy } from './preview';
@@ -61,12 +62,14 @@ async function apiResponse(path: string, token: string, options: RequestInit = {
   return response;
 }
 
-async function request<T>(path: string, token: string, method = 'GET', body?: unknown, expectReview = false): Promise<T> {
+async function request<T>(path: string, token: string, method = 'GET', body?: unknown, expectReview = false, download = false): Promise<T> {
   const response = await apiResponse(path, token, {
     method,
     headers: {
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
       ...(expectReview ? { 'X-Zekvar-Expect-Review': '1' } : {}),
+      // Control audits a download as one export and summarizes page views per hour.
+      ...(download ? { 'X-Zekvar-Export': '1' } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -145,8 +148,8 @@ export const controlApi = {
   fleet: (token: string, filters: URLSearchParams) => request<FleetPage>(`/installations/fleet?${filters}`, token),
   applyFleetChange: (token: string, change: FleetRequest) => request<FleetChange>('/installations/fleet', token, 'POST', change),
   browserHealth: (token: string, filters: URLSearchParams) => request<BrowserHealthView>(`/browser-health?${filters}`, token),
-  composerReadiness: (token: string, filters: URLSearchParams) =>
-    request<ComposerReadinessReport>(`/reports/composer-readiness?${filters}`, token),
+  composerReadiness: (token: string, filters: URLSearchParams, download = false) =>
+    request<ComposerReadinessReport>(`/reports/composer-readiness?${filters}`, token, 'GET', undefined, false, download),
   browserReleases: (token: string) => request<BrowserReleaseCount[]>('/browser-releases', token).catch((error: unknown) => {
     if (error instanceof ApiError && error.status === 404) return undefined;
     throw error;
@@ -192,9 +195,19 @@ export const controlApi = {
   acknowledgeExtensionAlert: (token: string, id: string) => request<void>(`${extensionAlertPath(id)}/acknowledge`, token, 'POST'),
   exportEvents: (token: string, filters: URLSearchParams, signal: AbortSignal) =>
     eventResponse('/events/export', token, filters, signal),
-  aiEnforcement: (token: string, filters: URLSearchParams) => request<AiEnforcementReport>(`/reports/ai-enforcement?${filters}`, token),
+  aiEnforcement: (token: string, filters: URLSearchParams, download = false) =>
+    request<AiEnforcementReport>(`/reports/ai-enforcement?${filters}`, token, 'GET', undefined, false, download),
   policyImpact: (token: string, query: URLSearchParams) => request<PolicyImpactReport>(`/reports/policy-impact?${query}`, token),
   audit: (token: string, filters: URLSearchParams) => request<AuditPage>(`/audit?${filters}`, token),
+  exportAudit: (token: string, filters: URLSearchParams) =>
+    request<AuditPage & { organization: string; exportedAt: string }>(`/audit/export?${filters}`, token),
+  accessReview: (token: string, staleDays: number) => request<AccessReviewReport>(`/access-review?staleDays=${staleDays}`, token),
+  attestAccessReview: (token: string, review: { requestId: string; reviewer: string; notes: string; staleDays: number; expectedFingerprint: string }) =>
+    request<Attestation>('/access-review/attestations', token, 'POST', review),
+  recordDrill: (token: string, drill: { requestId: string; kind: 'backup_drill' | 'restore_drill'; performedAt: string; outcome: 'succeeded' | 'failed';
+    operator: string; archiveSha256: string | null; recoveryMinutes: number | null; notes: string }) =>
+    request<Attestation>('/operations/drills', token, 'POST', drill),
+  evidencePack: (token: string, days: number) => apiResponse(`/evidence-pack?days=${days}`, token, { signal: AbortSignal.timeout(30_000) }),
   retention: (token: string) => request<RetentionPolicy>('/retention', token),
   saveRetention: (token: string, policy: RetentionPolicy) => request<void>('/retention', token, 'POST', policy),
   cleanupRetention: (token: string) => request<RetentionCleanup>('/retention/cleanup', token, 'POST'),

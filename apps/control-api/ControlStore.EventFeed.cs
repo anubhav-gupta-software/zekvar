@@ -77,21 +77,27 @@ internal sealed partial class ControlStore
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var snapshot = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
         await using var stream = BrowserRead(snapshot, """
-            SELECT s.organization_id, s.stream_id, s.last_sequence
+            SELECT s.organization_id, s.stream_id, s.last_sequence, k.id
             FROM event_feed_keys k JOIN organization_event_streams s USING (organization_id)
             WHERE k.token_hash = $1 AND k.revoked_at IS NULL AND k.expires_at > now() AND NOT organization_offboarding(k.organization_id)
             """, Tokens.Hash(token));
         Guid organizationId;
         Guid streamId;
         long head;
+        Guid keyId;
         await using (var cursor = await stream.ExecuteReaderAsync(ct))
         {
             if (!await cursor.ReadAsync(ct)) return new(false);
             organizationId = cursor.GetGuid(0);
             streamId = cursor.GetGuid(1);
             head = cursor.GetInt64(2);
+            keyId = cursor.GetGuid(3);
         }
-        if (after is { } checkpoint && (checkpoint.StreamId != streamId || checkpoint.Sequence > head)) return new(true);
+        if (after is { } checkpoint && (checkpoint.StreamId != streamId || checkpoint.Sequence > head))
+        {
+            await RecordFeedAccess(organizationId, keyId, 0, ct);
+            return new(true);
+        }
 
         await using var command = BrowserRead(snapshot, $"""
             SELECT e.event_id, e.installation_id, e.occurred_at, e.received_at, e.policy_version,
@@ -119,7 +125,21 @@ internal sealed partial class ControlStore
                 rows.GetString(5), rows.GetString(6), rows.GetString(7), rollout, rows.IsDBNull(10) ? null : rows.GetString(10), rows.GetBoolean(12)));
             lastRead = rows.GetInt64(11);
         }
+        await rows.DisposeAsync();
+        await snapshot.CommitAsync(ct);
+        await RecordFeedAccess(organizationId, keyId, entries.Count, ct);
         return new(true, new(1, entries, new EventFeedCursor(streamId, next).ToString(), hasMore));
+    }
+
+    // SIEM collectors poll often, so reads are summarized per key per UTC hour with request and record counts.
+    private async Task RecordFeedAccess(Guid organizationId, Guid keyId, long records, CancellationToken ct)
+    {
+        await RecordFeedRead(organizationId, keyId, records, ct);
+        await using var touch = Command("""
+            UPDATE event_feed_keys SET last_used_at = statement_timestamp()
+            WHERE organization_id = $1 AND id = $2 AND (last_used_at IS NULL OR last_used_at < statement_timestamp() - interval '1 minute')
+            """, organizationId, keyId);
+        await touch.ExecuteNonQueryAsync(ct);
     }
 
     private static EventFeedKey ReadEventFeedKey(NpgsqlDataReader rows) =>

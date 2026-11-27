@@ -1183,3 +1183,87 @@ test('Control dashboard signs in and manages a real browser installation and eve
     assert.deepEqual(clientErrors, []);
   });
 });
+
+test('owners and auditors review access, record attestations and drills, and download evidence', { timeout: 60_000 }, async (t) => {
+  const browser = await chromium.launch({ channel: 'chromium', headless: process.env.ZEKVAR_DEMO_HEADED !== '1' });
+  t.after(() => browser.close());
+  const signIn = async (credential) => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true });
+    const page = await context.newPage();
+    page.setDefaultTimeout(8000);
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.goto(dashboard);
+    await page.getByLabel('Control token').fill(credential);
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    await page.getByRole('heading', { name: 'Security overview' }).waitFor();
+    return { context, page, errors };
+  };
+  const { context, page, errors } = await signIn(token);
+  const auditorName = `Evidence auditor ${randomUUID().slice(0, 8)}`;
+  const auditor = await post('/admin/access', { name: auditorName, role: 'auditor', hours: 1 }, token);
+
+  await page.getByRole('link', { name: 'Access review' }).click();
+  await page.getByRole('heading', { name: 'Access review' }).waitFor();
+  const inventory = page.getByRole('table', { name: 'Credential inventory' });
+  await inventory.getByRole('row', { name: /Organization owner token/ }).waitFor();
+  await inventory.getByRole('row', { name: new RegExp(auditorName) }).getByText('Never').waitFor();
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+    await assertFitsViewport(page);
+  }
+  await page.getByLabel('Reviewer name').fill('Dashboard Owner');
+  await page.getByLabel('Notes').fill('Quarterly review complete.');
+  await page.getByRole('button', { name: 'Record access review' }).click();
+  await page.getByText('Access review recorded in the audit log.').waitFor();
+  await page.reload();
+  await page.getByRole('table', { name: 'Recorded reviews' }).getByRole('row', { name: /Dashboard Owner/ }).waitFor();
+  await page.goto(`${dashboard}/access-review?staleDays=0`);
+  await page.getByRole('alert').filter({ hasText: 'Choose a stale threshold from 1 to 365 days.' }).waitFor();
+
+  await page.getByRole('link', { name: 'Compliance evidence' }).click();
+  await page.getByRole('heading', { name: 'Compliance evidence' }).waitFor();
+  await page.getByLabel('Drill', { exact: true }).selectOption('restore_drill');
+  await page.getByLabel('Operator').fill('Dashboard Owner');
+  await page.getByLabel('Archive SHA-256').fill('b'.repeat(64));
+  await page.getByLabel('Recovery time (minutes)').fill('35');
+  await page.getByRole('button', { name: 'Record drill' }).click();
+  await page.getByText('Drill recorded in the audit log.').waitFor();
+  await page.reload();
+  await page.getByRole('table', { name: 'Recorded drills' }).getByRole('row', { name: /Restore drill.*Dashboard Owner.*35 min/ }).waitFor();
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+    await assertFitsViewport(page);
+  }
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download evidence pack' }).click();
+  const pack = JSON.parse(await readFile(await (await download).path(), 'utf8'));
+  assert.equal(pack.schemaVersion, 1);
+  assert.equal(pack.accessReviews[0].reviewer, 'Dashboard Owner');
+  assert.equal(pack.backupAndRestoreDrills[0].recoveryMinutes, 35);
+  assert.equal((await context.request.get(`${dashboard}/evidence/export?days=7`)).status(), 400);
+
+  await page.goto(`${dashboard}/audit?category=access`);
+  const audit = page.getByRole('table', { name: 'Control activity' });
+  await audit.getByRole('row', { name: /Data exported.*Evidence pack/ }).waitFor();
+  await audit.getByRole('row', { name: /Sensitive data viewed.*Access review/ }).waitFor();
+  await page.goto(`${dashboard}/audit?category=changes`);
+  await audit.getByRole('row', { name: /Access review completed.*Reviewed by Dashboard Owner/ }).waitFor();
+  assert.equal(await audit.getByRole('row', { name: /Data exported/ }).count(), 0);
+  const exported = await (await context.request.get(`${dashboard}/audit/export?category=access`)).json();
+  assert.ok(exported.entries.length > 0 && exported.entries.every(({ readAccess }) => readAccess));
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertFitsViewport(page);
+  assert.deepEqual(errors, []);
+
+  // Auditors see the report and can download evidence, but cannot attest or record drills.
+  const reviewer = await signIn(auditor.token);
+  await reviewer.page.goto(`${dashboard}/access-review`);
+  await reviewer.page.getByRole('table', { name: 'Credential inventory' }).waitFor();
+  assert.equal(await reviewer.page.getByRole('button', { name: 'Record access review' }).count(), 0);
+  await reviewer.page.goto(`${dashboard}/evidence`);
+  await reviewer.page.getByRole('button', { name: 'Download evidence pack' }).waitFor();
+  assert.equal(await reviewer.page.getByRole('button', { name: 'Record drill' }).count(), 0);
+  assert.equal((await reviewer.context.request.get(`${dashboard}/evidence/export?days=30`)).status(), 200);
+  assert.deepEqual(reviewer.errors, []);
+});

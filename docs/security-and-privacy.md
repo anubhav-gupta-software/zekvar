@@ -105,7 +105,7 @@ Policy exceptions and the organization identifier prefixes are configuration. Th
 | In transit, administrators | HTTPS through Caddy with automatic certificates. Response headers include HSTS (`max-age=31536000`), `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, and `Cache-Control: no-store`. [TO CONFIRM: minimum TLS version and cipher policy for production.] |
 | In transit, internal | The API and dashboard listen on loopback inside the edge network namespace. PostgreSQL sits on a private internal Docker network. |
 | In transit, webhooks and SIEM | Webhook delivery requires an HTTPS endpoint (loopback HTTP is allowed in development). Each payload is signed with HMAC-SHA256. The SIEM feed is served over the dashboard's HTTPS origin. |
-| At rest, database | The pilot stores data in a PostgreSQL volume. The repository shows no application-level or column-level encryption. [TO CONFIRM: disk or volume encryption, key management, and who holds the keys in production.] |
+| At rest, database | Two layers. (1) Volume: the pilot requires the PostgreSQL Docker volume on an encrypted disk. `deploy/pilot/storage-preflight.sh` passes only when the volume's block device has a dm-crypt (LUKS) layer, or records an explicit attestation for cloud provider disk encryption, which the host cannot observe. (2) Application: Control seals organization classification terms, organization identifier formats, and policy review snapshots with AES-256-GCM under a data key from `ZEKVAR_DATA_KEYS`, bound to the organization and field. Existing rows are sealed in place at startup, and a new first key re-seals all values for rotation. The hosted pilot refuses to start without a data key. Webhook signing secrets, OIDC client secrets, and the exchange token are not stored in the database; they stay in the root-only environment file. Bearer credentials are stored only as SHA-256 hashes. [TO CONFIRM: production key custody (who holds the data keys and LUKS passphrase or KMS key), rotation schedule, and the hosting provider's disk encryption.] |
 | At rest, backups | Snapshots are encrypted with `age` before they leave the host, checksummed, and published without overwriting existing files. The recovery identity is kept apart from the host and the backup storage. See [Back up and recover Control](../deploy/pilot/README.md#back-up-and-recover-control). |
 | At rest, device | The extension keeps enrollment, applied policy, and its event queue in a private browser database. It restricts its Chrome storage to trusted extension contexts. |
 | Credential storage | Tokens are 256-bit random values stored as SHA-256 hashes. Control sessions from OIDC are capped at one hour. |
@@ -137,14 +137,18 @@ Roles (see [Named Control access](../apps/control-api/README.md#named-control-ac
 - Event feed keys: read-only, per collector, 1 to 90 days, up to 20 active per organization.
 - Enrollment grants: single-use, 10 minutes, one to 25 per batch.
 - Enrollment keys for device groups: shown once and stored as a SHA-256 hash, 1 to 30 days, an optional limit of 1 to 100,000 browsers, scoped to the baseline or one rollout group, up to 20 active per organization, and revocable. A key can only create installations. Its format never passes API authentication. Each redemption creates a separate installation with its own credential. Control rate-limits attempts per key and counts rejected attempts. A leaked key lets someone enroll browsers into the key's group until it expires, reaches its limit, or is revoked. Administrators can list and revoke every browser a key enrolled.
-- Zekvar staff access to customer deployments. [TO CONFIRM: who can access production data, how access is approved, logged, and reviewed.]
+- Access review: the owner and auditors see every credential with role, SSO subject, last use, expiry, and creator, with stale credentials flagged after a configurable number of unused days. The owner records a dated review with reviewer name and notes. The record is tied to the exact credential set and appears in the audit log and evidence pack.
+- Compliance evidence: owners and auditors can download a dated, metadata-only JSON evidence pack with policy version history, review and rollout approvals, access reviews, retention settings, recorded backup and restore drills, and audit counts.
+- Zekvar staff access to customer deployments. [TO CONFIRM: who can access production data, how access is approved, and how often Zekvar staff access is reviewed.]
 - Zekvar staff MFA, background checks, and security training. [TO CONFIRM]
 
 ## Audit logging
 
 Control records audit entries in the same transaction as the change. Actions include policy publish and restore, grant issue and batch issue and cancel, browser enrollment and revocation, access issue and revoke, SSO sign-ins, retention changes and cleanup counts, event triage, incident case changes, alert settings and acknowledgment, event feed key changes, fleet batches, and policy templates. The full list is in the [audit log section](../apps/control-api/README.md#audit-log).
 
-Administrators and auditors can filter and export up to 1,000 entries per file ([Review and export the audit log](../apps/control-web/README.md#review-and-export-the-audit-log)). Export of audit records to a customer SIEM is not provided. The security event feed carries decision metadata only.
+Control also records data access. Each export of events, incident cases, the audit log, reports, and the evidence pack creates one entry with the actor, filters, and record count. Views of reports, browser extensions, and the access review are summarized per actor, resource, and UTC hour. SIEM feed reads are summarized per key and hour with request and record counts. Access entries never contain exported records. They follow the audit retention window.
+
+Administrators and auditors can filter changes and data access and export up to 1,000 entries per file ([Review and export the audit log](../apps/control-web/README.md#review-and-export-the-audit-log)). Export of audit records to a customer SIEM is not provided. The security event feed carries decision metadata only.
 
 Application logs: the Control API writes JSON lines to stdout for the systemd journal or `docker logs`. Framework, HTTP client, and database driver logs are limited to Warning and above, and configuration cannot lower that limit. The API therefore logs no request URLs, query strings, headers, or bodies, and no SQL parameters. Background jobs log the error type only. Unhandled request errors log the exception type, SQL state, route template, trace ID, and stack frames, but not the message. A regression test sends synthetic admin tokens, enrollment grants, browser tokens, feed keys, classification terms, prompt text, query strings, cookies, and malformed bodies. It asserts that none of them appear in the API output ([logging](../apps/control-api/README.md#logging)). [TO CONFIRM: review a log sample from the staging host and set production log retention.]
 
@@ -224,13 +228,14 @@ What exists today:
 - The Control API restores dependencies in locked mode (`packages.lock.json`) and the extension and dashboard have `package-lock.json` files.
 - Releases of the extension are signed with a key held on a restricted signing machine. Clients accept updates only from the pinned extension ID.
 - Automated suites cover browser enforcement, API, dashboard, signed distribution, rollback, and recovery.
+- `node scripts/release-checks.mjs` fails a release when any `package.json` dependency or NuGet package reference uses a version range. It writes CycloneDX 1.5 SBOMs for the extension, dashboard, and API from the lockfiles without network access, and runs `npm audit --omit=dev` and `dotnet list package --vulnerable` when the registries are reachable. High and critical findings fail the check. An offline run reports the audit as skipped.
 
 Not yet documented. [TO CONFIRM]:
 
 - Vulnerability disclosure contact and policy.
-- Dependency and image scanning cadence and patch timelines by severity.
+- Container image scanning, scheduled dependency scanning between releases, and patch timelines by severity.
 - Penetration testing: scope, cadence, date of last test, and whether reports are shareable.
-- Secure development lifecycle, code review rules, and SBOM availability.
+- Secure development lifecycle, code review rules, and how customers request the SBOM.
 
 ## Incident notification
 
@@ -246,7 +251,7 @@ The plan has a [compliance roadmap](../product_plan.md#compliance-roadmap). Toda
 
 | Item | Status |
 | --- | --- |
-| SOC 2 | Not started as an audit. Readiness work is planned. No Type I or Type II report exists. [TO CONFIRM: target dates.] |
+| SOC 2 | Not started as an audit. No Type I or Type II report exists. Product evidence is in place: data access logging, owner access reviews, recorded backup and restore drills, an evidence pack, application encryption of confidential configuration, and release SBOMs and dependency audits. [TO CONFIRM: CPA firm, criteria, examination period, and target dates.] |
 | ISO/IEC 27001 | Evaluated when procurement demand justifies it. No certificate. |
 | HIPAA | Not enabled for ePHI workloads. No business associate agreement is available. [TO CONFIRM] |
 | GDPR and regional privacy | Data mapping and DPA are planned. [TO CONFIRM: roles, transfer mechanisms, DPA, data subject request process.] |
@@ -264,7 +269,7 @@ All [TO CONFIRM] items from this document:
 1. Whether Zekvar or the customer hosts Control and the extension update channel.
 2. Hosting provider, region, and data residency.
 3. Subprocessors.
-4. Database encryption at rest and key management.
+4. Production key custody and rotation schedule for database volume encryption and application data keys.
 5. Minimum TLS version and cipher policy.
 6. Production log retention, IP address handling in Caddy error entries, and a staging log sample review.
 7. Whether row-level security or stronger tenant separation is required at launch.
@@ -272,7 +277,7 @@ All [TO CONFIRM] items from this document:
 9. Process and timeline for deleting installation records, policy history, and a whole organization, including backups.
 10. Backup retention, RTO and RPO, and disaster recovery site.
 11. Complete review of bundled third-party notices.
-12. Vulnerability disclosure policy, scanning and patch timelines, penetration-test scope, cadence, and last-test date, SDLC and SBOM.
+12. Vulnerability disclosure policy, scanning and patch timelines, penetration-test scope, cadence, and last-test date, SDLC. (Release builds generate CycloneDX SBOMs and run dependency audits with `scripts/release-checks.mjs`.)
 13. Breach and incident notification time and contact method.
 14. SOC 2 and ISO 27001 status and dates.
 15. HIPAA and business associate agreement position.

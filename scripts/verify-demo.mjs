@@ -24,6 +24,8 @@ const temp = await mkdtemp(join(tmpdir(), 'zekvar-verify-'));
 const postgres = `zekvar-demo-${randomBytes(5).toString('hex')}`;
 const password = randomBytes(24).toString('hex');
 const token = randomBytes(32).toString('hex');
+// Hosted and SSO runs share one database, so they share one application data key.
+const hostedDataKeys = `verify=${randomBytes(32).toString('hex')}`;
 const children = new Map();
 const scratch = join(temp, 'scratch');
 await mkdir(scratch);
@@ -100,6 +102,8 @@ try {
   const api = join(temp, 'apps/control-api');
   const web = join(temp, 'apps/control-web');
 
+  console.log('Checking release supply chain and storage preflight logic.');
+  await run(process.execPath, ['--test', 'scripts/test/release-checks.test.mjs', 'scripts/test/storage-preflight.test.mjs'], temp);
   console.log('Building in an isolated checkout.');
   await run('docker', ['version', '--format', '{{.Server.Version}}'], root);
   const builds = await Promise.allSettled([
@@ -355,7 +359,7 @@ try {
     if (flags.has('--sso')) {
       console.log('Verifying Control single sign-on over TLS with an isolated identity provider.');
       await run(process.execPath, ['--test', 'test/sso.test.mjs'], web, {
-        ZEKVAR_SSO_TEST_API: hostedDll, ZEKVAR_SSO_TEST_WEB: standalone, ZEKVAR_SSO_TEST_DATABASE: db,
+        ZEKVAR_SSO_TEST_API: hostedDll, ZEKVAR_SSO_TEST_WEB: standalone, ZEKVAR_SSO_TEST_DATABASE: db, ZEKVAR_SSO_TEST_DATA_KEYS: hostedDataKeys,
         ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_ARTIFACTS: artifacts ?? '',
       });
     }
@@ -369,6 +373,7 @@ try {
         DOTNET_ENVIRONMENT: 'Production', ASPNETCORE_ENVIRONMENT: 'Production', Control__HostedPilot: 'true',
         Control__Port: String(hostedPort), ConnectionStrings__Control: db,
         Control__Organizations__0__Slug: 'tls-pilot', Control__Organizations__0__AdminToken: owner,
+        Control__DataKeys: hostedDataKeys,
       });
       await ready(`http://127.0.0.1:${hostedPort}/health`, hostedApi, hostedApi.log);
       const hostedWeb = startService(process.execPath, ['server.js'], standalone, {

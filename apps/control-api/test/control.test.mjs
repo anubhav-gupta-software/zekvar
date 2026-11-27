@@ -51,6 +51,7 @@ const composerGateAdmin = randomBytes(32).toString('hex');
 const detectionRulesAdmin = randomBytes(32).toString('hex');
 const rolloutAdmin = randomBytes(32).toString('hex');
 const adapterAdmin = randomBytes(32).toString('hex');
+const evidenceAdmin = randomBytes(32).toString('hex');
 const logsAdmin = randomBytes(32).toString('hex');
 const saasAdmin = randomBytes(32).toString('hex');
 const enrollmentKeyAdmin = randomBytes(32).toString('hex');
@@ -107,7 +108,7 @@ const undoEnrollmentKeysSchema = `
 `;
 const undoAdapterControlsSchema = `
   ${undoEnrollmentKeysSchema}
-  DELETE FROM schema_migrations WHERE version = 53;
+  DELETE FROM schema_migrations WHERE version IN (53, 59);
   DELETE FROM composer_observations WHERE coverage = 'disabled';
   UPDATE installations SET chatgpt_coverage = NULLIF(chatgpt_coverage, 'disabled'),
     gemini_coverage = NULLIF(gemini_coverage, 'disabled'), claude_coverage = NULLIF(claude_coverage, 'disabled');
@@ -388,6 +389,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__OrganizationDeletion__ReceiptKey: deletionKey,
       Control__OrganizationDeletion__SweepSeconds: '1',
       Control__OrganizationDeletion__BatchSize: '25',
+      Control__Organizations__45__Slug: `evidence-${suffix}`,
+      Control__Organizations__45__AdminToken: evidenceAdmin,
       Control__RolloutEvaluationSeconds: '3600',
       ...overrides,
     },
@@ -6137,6 +6140,8 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await start();
     assert.ok((await admin('policies')).every((policy) => policy.saasDiscoveryEnabled === false));
     assert.ok((await inventory()).apps.every((app) => app.browsersSeen === 0 && app.status === 'unclassified'));
+    const saasViews = (await call('/v1/admin/audit?category=access&action=data_viewed', { token: saasAdmin })).entries;
+    assert.ok(saasViews.some(({ readAccess }) => readAccess?.resource === 'saas_inventory'), 'The SaaS inventory view is recorded in the access log.');
   });
 
   await t.test('device-manager enrollment keys enroll many profiles into one group with atomic limits, idempotent retries, rotation, and bulk revocation', async () => {
@@ -6657,6 +6662,8 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await call('/v1/integrations/events', { token: feed.token });
     await call('/v1/enroll', { method: 'POST', body: { grant } });
     await call('/v1/enroll/key', { method: 'POST', body: { key: enrollmentKey.token, nonce: keyNonce() } });
+    const exports = (await admin('audit?category=access&action=data_exported')).entries;
+    assert.ok(exports.some(({ readAccess }) => readAccess?.resource === 'organization_export' && readAccess.completed), 'The tenant export is recorded in the access log.');
     assert.equal((await admin('organization/deletion')).deletion.status, 'cancelled');
     assert.equal((await rawFetch(`/v1/organization-deletions/${requested.deletion.id}/receipt`, requested.receiptToken)).status, 401);
     const actions = (await admin('audit?limit=1000')).entries.map(({ action }) => action);
@@ -6830,6 +6837,302 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     for (const [child, parent] of references) {
       if (child === 'policy_groups' && parent === 'policy_versions') continue;
       assert.ok(order.indexOf(child) < order.indexOf(parent), `${child} must be deleted before ${parent}`);
+    }
+  });
+
+  await t.test('audits sensitive reads and exports with counts only, rolls up views and feed reads, and respects retention', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: evidenceAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const raw = async (path, { token = evidenceAdmin, headers = {}, expect = 200 } = {}) => {
+      const response = await fetch(`${baseUrl}/v1/admin/${path}`, { headers: { Authorization: `Bearer ${token}`, ...headers },
+        signal: AbortSignal.timeout(5000) });
+      const text = await response.text();
+      assert.equal(response.status, expect, `${path}: ${text.slice(0, 300)}`);
+      return { response, text };
+    };
+    const access = async (query = '', token = evidenceAdmin) =>
+      (await call(`/v1/admin/audit?category=access${query}`, { token })).entries;
+    const term = 'SYNTHETIC-EVIDENCE-TERM-7731';
+    const { grant } = await post('enrollment-grants');
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const { version } = await post('policies', { mode: 'block', classificationProtection: { mode: 'monitor', terms: [term] } });
+    const events = [randomUUID(), randomUUID()];
+    for (const eventId of events) {
+      await call('/v1/browser/events', { token: browser.token, method: 'POST', expect: 204,
+        body: { ...contract.event, eventId, timestamp: new Date().toISOString(), policyVersion: version, decision: 'block', appId: 'chatgpt' } });
+    }
+    assert.deepEqual(await access(), []);
+
+    // Each export path records one entry with the filters and delivered count before returning content.
+    const exported = await raw('events/export?appId=chatgpt');
+    assert.equal(JSON.parse(exported.text).entries.length, 2);
+    const caseId = randomUUID();
+    await post('cases', { requestId: caseId, category: 'other', installationId: browser.installationId, eventId: events[0] });
+    await raw(`cases/${caseId}/export`);
+    await raw('reports/composer-readiness', { headers: { 'X-Zekvar-Export': '1' } });
+    await raw('reports/ai-enforcement?days=7', { headers: { 'X-Zekvar-Export': '1' } });
+    const auditExport = JSON.parse((await raw('audit/export')).text);
+    assert.ok(auditExport.entries.some(({ action }) => action === 'policy_published'));
+    const exports = await access('&action=data_exported');
+    const byResource = Object.fromEntries(exports.map((entry) => [entry.readAccess.resource, entry]));
+    assert.deepEqual(Object.keys(byResource).sort(), ['ai_enforcement', 'audit_log', 'composer_readiness', 'incident_case', 'security_events']);
+    assert.deepEqual([byResource.security_events.readAccess.records, byResource.security_events.readAccess.completed], [2, true]);
+    assert.equal(byResource.security_events.readAccess.scope.appId, 'chatgpt');
+    assert.deepEqual([byResource.incident_case.readAccess.records, byResource.incident_case.readAccess.scope.caseId], [1, caseId]);
+    assert.equal(byResource.ai_enforcement.readAccess.records, 2);
+    assert.equal(byResource.audit_log.readAccess.records, auditExport.entries.length);
+    assert.ok(exports.every((entry) => entry.actor === 'organization_admin' && entry.readAccess.requests === 1));
+
+    // Views are summarized per actor, resource, and hour.
+    for (let index = 0; index < 3; index++) await admin('reports/composer-readiness');
+    await admin('extension-inventory');
+    await admin(`extension-inventory/${browser.installationId}`);
+    const views = await access('&action=data_viewed');
+    const readiness = views.filter(({ readAccess }) => readAccess.resource === 'composer_readiness');
+    assert.equal(readiness.length, 1);
+    assert.equal(readiness[0].readAccess.requests, 3);
+    assert.match(readiness[0].readAccess.scope.hour, /^\d{4}-\d{2}-\d{2}T\d{2}:00:00Z$/);
+    const inventory = views.find(({ readAccess }) => readAccess.resource === 'extension_inventory');
+    assert.equal(inventory.readAccess.requests, 2);
+
+    // SIEM feed reads are rolled up per key per hour with request and record counts.
+    const { token: feedToken, key } = await post('access/event-feed', { name: 'Evidence collector', days: 1, requestId: randomUUID() });
+    const firstPage = await call('/v1/integrations/events?limit=1', { token: feedToken });
+    await call('/v1/integrations/events?' + new URLSearchParams({ after: firstPage.nextCursor, limit: 5 }), { token: feedToken });
+    await call('/v1/integrations/events?limit=500', { token: feedToken });
+    const feed = await access('&action=event_feed_read');
+    assert.equal(feed.length, 1);
+    assert.deepEqual([feed[0].actor, feed[0].readAccess.keyId, feed[0].readAccess.keyName, feed[0].readAccess.requests,
+      feed[0].readAccess.records], ['event_feed_key', key.id, 'Evidence collector', 3, 4]);
+    await call('/v1/integrations/events', { token: 'zkf_' + '0'.repeat(64), expect: 401 });
+    assert.equal((await access('&action=event_feed_read'))[0].readAccess.requests, 3);
+
+    // A named auditor's export is attributed; default history keeps showing changes only; tenants are isolated.
+    const auditor = await post('access', { name: 'Evidence auditor', role: 'auditor', hours: 1 });
+    await raw('events/export', { token: auditor.token });
+    const attributed = (await access('&action=data_exported')).find(({ actorAccess }) => actorAccess?.id === auditor.access.id);
+    assert.deepEqual([attributed.actor, attributed.readAccess.records], ['named_administrator', 2]);
+    assert.ok((await admin('audit')).entries.every(({ readAccess }) => !readAccess));
+    const all = (await admin('audit?category=all&limit=1000')).entries;
+    assert.ok(all.some(({ readAccess }) => readAccess) && all.some(({ action }) => action === 'policy_published'));
+    await admin('audit?category=reads', { expect: 400 });
+    const otherTenant = JSON.stringify(await call('/v1/admin/audit?category=access&limit=1000', { token: second }));
+    for (const id of [caseId, key.id, auditor.access.id]) assert.ok(!otherTenant.includes(id), id);
+    assert.ok(!JSON.stringify(await call('/v1/admin/audit/export', { token: second })).includes(caseId));
+
+    // Evidence holds identifiers, filters, and counts but never exported content or tokens.
+    const evidence = JSON.stringify(await access('&limit=1000'));
+    for (const secret of [...events, term, browser.token, feedToken, auditor.token, 'fixture-secret']) assert.ok(!evidence.includes(secret), secret);
+
+    if (postgres) {
+      await retentionFixture(`UPDATE control_access_log SET occurred_at = now() - interval '3 days'
+        WHERE organization_id = (SELECT id FROM organizations WHERE slug = 'evidence-${suffix}') AND action = 'data_viewed'`);
+      await post('retention', { securityEventDays: null, aiObservationDays: null, auditDays: 2 }, { expect: 204 });
+      assert.deepEqual(await access('&action=data_viewed'), []);
+      const cleaned = await post('retention/cleanup');
+      assert.equal(cleaned.accessLogEntries, 2);
+      assert.equal(await retentionFixture(`SELECT count(*) FROM control_access_log l JOIN organizations o ON o.id = l.organization_id
+        WHERE o.slug = 'evidence-${suffix}' AND l.action = 'data_viewed'`), '0');
+      await post('retention', { securityEventDays: null, aiObservationDays: null, auditDays: null }, { expect: 204 });
+    }
+  });
+
+  await t.test('reports credentials for access review, flags stale ones, and records owner attestations and drills', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: evidenceAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const operator = await post('access', { name: 'Review operator', role: 'administrator', hours: 2 });
+    const auditor = await post('access', { name: 'Review auditor', role: 'auditor', hours: 2 });
+    await admin('session', { token: operator.token });
+    const report = await admin('access-review');
+    assert.equal(report.staleDays, 90);
+    assert.match(report.fingerprint, /^[a-f0-9]{64}$/);
+    const owner = report.credentials.find(({ kind }) => kind === 'owner_token');
+    assert.deepEqual([owner.role, owner.status, owner.createdBy, owner.stale], ['owner', 'active', 'deployment_configuration', false]);
+    assert.ok(Date.parse(owner.lastUsedAt) > Date.now() - 60_000);
+    const named = report.credentials.find(({ id }) => id === operator.access.id);
+    assert.deepEqual([named.kind, named.role, named.createdBy, named.stale], ['control_token', 'administrator', 'organization_owner', false]);
+    assert.ok(named.lastUsedAt && named.expiresAt);
+    assert.equal(report.credentials.find(({ id }) => id === auditor.access.id).lastUsedAt, null);
+    assert.ok(report.credentials.some(({ kind, name }) => kind === 'event_feed_key' && name === 'Evidence collector'));
+    assert.ok(!JSON.stringify(report).includes(operator.token));
+    for (const staleDays of [0, 366, 'x']) await admin(`access-review?staleDays=${staleDays}`, { expect: 400 });
+    await admin('access-review', { token: operator.token, expect: 403 });
+    assert.equal((await admin('access-review', { token: auditor.token })).fingerprint, report.fingerprint);
+    assert.equal((await admin('access-review', { token: second })).credentials.some(({ id }) => id === operator.access.id), false);
+
+    let current = report;
+    if (postgres) {
+      await retentionFixture(`UPDATE control_access SET issued_at = now() - interval '120 days', last_used_at = now() - interval '100 days'
+        WHERE id = '${auditor.access.id}'`);
+      current = await admin('access-review');
+      assert.equal(current.credentials.find(({ id }) => id === auditor.access.id).stale, true);
+      assert.equal(current.summary.stale, 1);
+      assert.equal((await admin('access-review?staleDays=365')).summary.stale, 0);
+      assert.notEqual(current.fingerprint, report.fingerprint);
+    }
+    const attest = (body, options) => post('access-review/attestations', { requestId: randomUUID(), reviewer: 'Riley Owner',
+      notes: 'Quarterly review.\nRevoke the stale auditor.', staleDays: 90, expectedFingerprint: current.fingerprint, ...body }, options);
+    await attest({}, { token: auditor.token, expect: 403 });
+    await attest({}, { token: operator.token, expect: 403 });
+    await attest({ reviewer: '' }, { expect: 400 });
+    await attest({ notes: 'bad\u0007bell' }, { expect: 400 });
+    await attest({ notes: 'x'.repeat(1001) }, { expect: 400 });
+    if (postgres) assert.deepEqual(await attest({ expectedFingerprint: report.fingerprint }, { expect: 409 }), { code: 'access_review_changed' });
+    const requestId = randomUUID();
+    const attested = await attest({ requestId });
+    assert.deepEqual([attested.reviewer, attested.staleDays, attested.fingerprint, attested.kind], ['Riley Owner', 90, current.fingerprint, 'access_review']);
+    assert.equal(attested.staleCredentials, postgres ? 1 : 0);
+    if (postgres) assert.deepEqual(attested.staleCredentialIds, [auditor.access.id]);
+    assert.deepEqual(await attest({ requestId }, { expect: 409 }), { code: 'attestation_exists' });
+    const recorded = (await admin('audit?action=access_review_completed')).entries;
+    assert.equal(recorded.length, 1);
+    assert.deepEqual([recorded[0].attestation.reviewer, recorded[0].attestation.notes, recorded[0].actor],
+      ['Riley Owner', 'Quarterly review.\nRevoke the stale auditor.', 'organization_admin']);
+    assert.equal((await admin('access-review')).attestations[0].id, requestId);
+    assert.deepEqual((await admin('audit?action=access_review_completed', { token: second })).entries, []);
+
+    const drill = (body, options) => post('operations/drills', { requestId: randomUUID(), kind: 'restore_drill',
+      performedAt: new Date(Date.now() - 3_600_000).toISOString(), outcome: 'succeeded', operator: 'Riley Owner',
+      archiveSha256: 'a'.repeat(64), recoveryMinutes: 42, notes: 'Isolated recovery project.', ...body }, options);
+    await drill({ archiveSha256: 'A'.repeat(64) }, { expect: 400 });
+    await drill({ kind: 'tabletop' }, { expect: 400 });
+    await drill({ performedAt: new Date(Date.now() + 86_400_000).toISOString() }, { expect: 400 });
+    await drill({}, { token: auditor.token, expect: 403 });
+    const restored = await drill({});
+    assert.deepEqual([restored.kind, restored.recoveryMinutes, restored.outcome], ['restore_drill', 42, 'succeeded']);
+    assert.equal((await admin('audit?action=restore_drill_recorded')).entries[0].attestation.archiveSha256, 'a'.repeat(64));
+  });
+
+  await t.test('produces a dated metadata-only evidence pack for owners and auditors with tenant isolation', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: evidenceAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const response = await fetch(`${baseUrl}/v1/admin/evidence-pack?days=30`, { headers: { Authorization: `Bearer ${evidenceAdmin}` } });
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-disposition'), /^attachment; filename="zekvar-evidence-\d{4}-\d{2}-\d{2}\.json"$/);
+    const text = await response.text();
+    const pack = JSON.parse(text);
+    assert.deepEqual([pack.schemaVersion, pack.organization, pack.period.days], [1, `evidence-${suffix}`, 30]);
+    assert.ok(Math.abs(Date.parse(pack.generatedAt) - Date.now()) < 60_000);
+    assert.ok(pack.policyVersions.length >= 2 && pack.policyVersions.every(({ version, publishedAt }) => version && publishedAt));
+    assert.equal(pack.policyVersions[0].publishedBy, 'Organization owner token');
+    assert.deepEqual(Object.keys(pack.changeApprovals).sort(), ['policyReviews', 'reviewRequired', 'rolloutPlans']);
+    assert.equal(pack.accessReviews.length, 1);
+    assert.equal(pack.accessReviews[0].reviewer, 'Riley Owner');
+    assert.equal(pack.backupAndRestoreDrills.length, 1);
+    assert.deepEqual(Object.keys(pack.retention).sort(), ['aiObservationDays', 'auditDays', 'lastChangedAt', 'lastCleanupAt', 'securityEventDays']);
+    assert.ok(pack.auditSummary.changes.policy_published >= 1);
+    assert.ok(pack.auditSummary.access['data_exported:security_events'].records >= 4);
+    assert.equal(pack.dataProtection.applicationEncryption, false);
+    for (const secret of ['SYNTHETIC-EVIDENCE-TERM-7731', 'fixture-secret', evidenceAdmin]) assert.ok(!text.includes(secret), secret);
+
+    const auditor = await post('access', { name: 'Pack auditor', role: 'auditor', hours: 1 });
+    const operator = await post('access', { name: 'Pack operator', role: 'administrator', hours: 1 });
+    assert.equal((await admin('evidence-pack', { token: auditor.token })).period.days, 90);
+    await admin('evidence-pack', { token: operator.token, expect: 403 });
+    for (const days of [0, 401, 'x']) await admin(`evidence-pack?days=${days}`, { expect: 400 });
+    await admin('evidence-pack?days=1&format=zip', { expect: 400 });
+    const other = await admin('evidence-pack', { token: second });
+    assert.deepEqual([other.accessReviews, other.backupAndRestoreDrills], [[], []]);
+    assert.ok(!JSON.stringify(other).includes(`evidence-${suffix}`));
+    const packs = (await admin('audit?action=data_exported&limit=1000')).entries.filter(({ readAccess }) => readAccess.resource === 'evidence_pack');
+    assert.equal(packs.length, 2);
+    assert.ok(packs.some(({ actorAccess }) => actorAccess?.id === auditor.access.id));
+  });
+
+  await t.test('seals confidential detection terms in place, rotates data keys, and refuses to start without them', async (sealing) => {
+    if (!postgres) return sealing.skip('Requires the disposable PostgreSQL container.');
+    const database = `zekvar_sealing_${randomBytes(5).toString('hex')}`;
+    const connection = db.replace(/Database=[^;]+/, `Database=${database}`);
+    assert.notEqual(connection, db);
+    await retentionFixture(`CREATE DATABASE ${database}`);
+    const inDatabase = async (query) => (await sql('docker', ['exec', postgres, 'psql', '-XAtq', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres',
+      '-d', database, '-c', query])).stdout.trim();
+    const k1 = randomBytes(32).toString('hex');
+    const k2 = randomBytes(32).toString('hex');
+    const isolated = (keys) => ({ ConnectionStrings__Control: connection, ...(keys ? { Control__DataKeys: keys } : {}) });
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: evidenceAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const term = 'SYNTHETIC-SEALED-PHRASE-4410';
+    const prefix = 'SYNSEAL-';
+    const plaintext = `SELECT count(*) FROM (SELECT classification_protection::text || identifier_protection::text || health_protection::text AS value FROM policy_versions
+      UNION ALL SELECT snapshots::text FROM policy_reviews) stored WHERE value LIKE '%SYNTHETIC-SEALED%' OR value LIKE '%SYNSEAL%' OR value LIKE '%SYNMRN%'`;
+    const onKey = (id) => `SELECT count(*) FROM (SELECT classification_protection->>'sealed' AS value FROM policy_versions
+      UNION ALL SELECT identifier_protection->>'sealed' FROM policy_versions
+      UNION ALL SELECT health_protection->>'sealed' FROM policy_versions UNION ALL SELECT snapshots->>'sealed' FROM policy_reviews) sealed
+      WHERE value LIKE 'zk1:${id}:%'`;
+    const failsToStart = async (overrides, message) => {
+      const child = spawn('dotnet', [app], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DOTNET_ENVIRONMENT: 'Development',
+        ASPNETCORE_ENVIRONMENT: 'Development', Control__Port: port, Control__Organizations__0__Slug: `evidence-${suffix}`,
+        Control__Organizations__0__AdminToken: evidenceAdmin, ...overrides } });
+      let output = '';
+      child.stdout.on('data', (chunk) => { output += chunk; });
+      child.stderr.on('data', (chunk) => { output += chunk; });
+      const [code] = await once(child, 'exit');
+      assert.notEqual(code, 0);
+      assert.match(output, message);
+    };
+    try {
+      await stop();
+      await start(3600, isolated());
+      const owner = await post('policies', { classificationProtection: { mode: 'block', terms: [term] },
+        identifierProtection: { mode: 'warn', formats: [{ prefix, digits: 6 }] },
+        healthProtection: { mode: 'monitor', recordFormats: [{ prefix: 'SYNMRN-', digits: 7 }] } });
+      const author = await post('access', { name: 'Sealing author', role: 'administrator', hours: 1 });
+      await post('policy-reviews/setting', { required: true }, { expect: 204 });
+      const { reviewId } = await post('policies', { classificationProtection: { mode: 'warn', terms: [term, 'SYNTHETIC-SEALED-SECOND'] },
+        expectedVersion: owner.version }, { token: author.token, expectReview: true, expect: 202 });
+      assert.notEqual(await inDatabase(plaintext), '0');
+      await stop();
+
+      // Existing plaintext rows are sealed in place at startup with the first configured key.
+      await start(3600, isolated(`k1=${k1}`));
+      assert.equal(await inDatabase(plaintext), '0');
+      assert.equal(await inDatabase(onKey('k1')), '4');
+      const history = await admin('policies');
+      assert.deepEqual(history[0].classificationProtection, { mode: 'block', terms: [term] });
+      assert.deepEqual(history[0].identifierProtection, { mode: 'warn', formats: [{ prefix, digits: 6 }] });
+      assert.deepEqual(history[0].healthProtection, { mode: 'monitor', recordFormats: [{ prefix: 'SYNMRN-', digits: 7 }] });
+      assert.match(await inDatabase(`SELECT health_protection->>'sealed' FROM policy_versions WHERE health_protection ? 'sealed' LIMIT 1`), /^zk1:k1:/);
+      const review = (await admin('policy-reviews')).entries.find(({ id }) => id === reviewId);
+      assert.deepEqual(review.snapshots.candidate.classificationProtection.terms, [term, 'SYNTHETIC-SEALED-SECOND']);
+      assert.equal(await retentionFixture(`SELECT count(*) FROM schema_migrations WHERE version = 59`), '1');
+      await post('policy-reviews/setting', { required: false }, { expect: 204 });
+      const sealedVersion = await post('policies', { classificationProtection: { mode: 'monitor', terms: ['SYNTHETIC-SEALED-NEW'] } });
+      assert.equal(await inDatabase(plaintext), '0');
+      assert.equal(await inDatabase(`SELECT classification_protection->>'mode' FROM policy_versions WHERE version = ${sealedVersion.version}
+        AND organization_id = (SELECT id FROM organizations WHERE slug = 'evidence-${suffix}')`), 'monitor');
+      assert.deepEqual((await admin('policies'))[0].classificationProtection.terms, ['SYNTHETIC-SEALED-NEW']);
+      await stop();
+
+      // Rotation: the new first key re-seals every value, then the retired key can be removed.
+      await start(3600, isolated(`k2=${k2},k1=${k1}`));
+      assert.deepEqual([await inDatabase(onKey('k1')), await inDatabase(onKey('k2'))], ['0', '7']);
+      await stop();
+      await start(3600, isolated(`k2=${k2}`));
+      assert.deepEqual((await admin('policies'))[1].classificationProtection.terms, [term]);
+      const pack = await admin('evidence-pack');
+      assert.deepEqual([pack.dataProtection.applicationEncryption, pack.dataProtection.activeKeyId, pack.dataProtection.plaintextValues,
+        pack.dataProtection.valuesOnActiveKey], [true, 'k2', 0, pack.dataProtection.sealedValues]);
+      assert.ok(!JSON.stringify(pack).includes(k2));
+
+      // A sealed value copied to another tenant does not open there.
+      const swap = `UPDATE policy_versions target SET classification_protection = source.classification_protection
+        FROM policy_versions source WHERE source.organization_id = (SELECT id FROM organizations WHERE slug = 'evidence-${suffix}')
+          AND source.version = ${sealedVersion.version}
+          AND target.organization_id = (SELECT id FROM organizations WHERE slug = 'second-${suffix}')
+          AND target.version = (SELECT policy_version FROM organizations WHERE slug = 'second-${suffix}')`;
+      assert.equal(await inDatabase(swap), '');
+      await call('/v1/admin/policies', { token: second, expect: 500 });
+      await stop();
+
+      await failsToStart(isolated(), /sealed\. Configure Control__DataKeys/);
+      await failsToStart(isolated(`k1=${k1}`), /data key missing from Control__DataKeys/);
+      await failsToStart(isolated('k1=short'), /Control__DataKeys/);
+      await failsToStart(isolated(`k3=${evidenceAdmin}`), /distinct from other Control secrets/);
+    } finally {
+      await stop();
+      await retentionFixture(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+      await start();
     }
   });
 });

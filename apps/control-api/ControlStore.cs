@@ -10,9 +10,15 @@ internal sealed partial class ControlStore
     private readonly NpgsqlDataSource dataSource;
     private readonly IReadOnlyDictionary<string, ControlSso> sso;
     private readonly AlertWebhooks alertWebhooks;
+    // Policy readers are static, so the process-wide data key ring is shared with them.
+    private static DataProtection protection = DataProtection.Disabled;
 
-    public ControlStore(NpgsqlDataSource dataSource, IReadOnlyDictionary<string, ControlSso> sso, AlertWebhooks alertWebhooks) =>
+    public ControlStore(NpgsqlDataSource dataSource, IReadOnlyDictionary<string, ControlSso> sso, AlertWebhooks alertWebhooks,
+        DataProtection? dataProtection = null)
+    {
         (this.dataSource, this.sso, this.alertWebhooks) = (dataSource, sso, alertWebhooks);
+        protection = dataProtection ?? DataProtection.Disabled;
+    }
 
     public async Task<int> Initialize(DemoOrganization[] organizations, CancellationToken ct)
     {
@@ -83,6 +89,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 55, "055_data_deletion.sql", ct);
         await ApplyMigration(connection, 56, "056_saas_inventory.sql", ct);
         await ApplyMigration(connection, 58, "058_health_identifiers.sql", ct);
+        await ApplyMigration(connection, 59, "059_soc2_evidence.sql", ct);
 
         foreach (var organization in organizations)
         {
@@ -111,6 +118,7 @@ internal sealed partial class ControlStore
             seed.Parameters.AddWithValue(Tokens.Hash(organization.Slug));
             if (await seed.ExecuteNonQueryAsync(ct) == 0) skipped++;
         }
+        await SealStoredValues(connection, transaction, ct);
         await transaction.CommitAsync(ct);
         return skipped;
     }
@@ -187,7 +195,7 @@ internal sealed partial class ControlStore
                 p.blocked_ai_app_hosts, p.chatgpt_file_content_block, p.gemini_file_content_block, p.identifier_protection, p.extension_deployment,
                 p.preset_discovery_enabled, p.ssn_mode, p.browser_hardening, p.clipboard_mode, p.github_token_mode, p.prompt_app_modes,
                 p.claude_upload_mode, p.claude_upload_types, p.claude_file_content_mode, p.cloud_credential_mode, p.classification_protection,
-                p.adapter_controls, p.saas_discovery_enabled, p.health_protection
+                p.adapter_controls, p.saas_discovery_enabled, p.health_protection, p.organization_id
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.policy_group_id IS NOT DISTINCT FROM $2::uuid ORDER BY p.version DESC LIMIT 100
             """, organizationId, (object?)groupId ?? DBNull.Value);
@@ -281,7 +289,8 @@ internal sealed partial class ControlStore
                 p.blocked_ai_app_hosts, p.chatgpt_file_content_block, p.gemini_file_content_block, p.identifier_protection,
                 e.assignment_version, e.policy_group_id IS NOT DISTINCT FROM p.policy_group_id, p.preset_discovery_enabled, p.ssn_mode,
                 p.clipboard_mode, p.github_token_mode, p.prompt_app_modes, p.claude_upload_mode, p.claude_upload_types, p.claude_file_content_mode,
-                p.cloud_credential_mode, p.classification_protection, p.adapter_controls, p.saas_discovery_enabled, p.health_protection
+                p.cloud_credential_mode, p.classification_protection, p.adapter_controls, p.saas_discovery_enabled, p.health_protection,
+                p.organization_id
             FROM effective e JOIN policy_versions p ON p.organization_id = e.organization_id AND p.version = e.version
             LEFT JOIN policy_audit a ON a.organization_id = p.organization_id AND a.version = p.version
             """, installationId, assignmentAware, claudeAware, (object?)extensionVersion ?? DBNull.Value, privateKeyAware,
@@ -773,15 +782,34 @@ internal sealed partial class ControlStore
     public async Task<AuditPage> AuditHistory(Guid organizationId, AuditFilters filters, CancellationToken ct)
     {
         await using var command = Command("""
+            WITH entries AS (
+                SELECT a.organization_id, a.id, a.occurred_at, a.action, a.policy_version, a.restored_from, a.installation_id, a.app_id,
+                    a.classification, a.retention, a.cleanup, a.group_change, a.actor_access_id, a.subject_access_id, a.review_change,
+                    a.enrollment_batch_change, a.event_triage_change, a.incident_case_change, a.security_alert_change, a.event_feed_key_change,
+                    a.fleet_change, a.template_change, a.composer_gate, a.rollout_change, a.saas_classification, a.enrollment_key_change, a.data_deletion,
+                    NULL::jsonb AS read_access, NULL::jsonb AS attestation
+                FROM control_audit a WHERE a.organization_id = $1 AND $8 <> 'access'
+                UNION ALL
+                SELECT l.organization_id, l.id, l.occurred_at, l.action, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, l.actor_access_id, NULL,
+                    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                    jsonb_build_object('resource', l.resource, 'scope', l.scope, 'records', l.records, 'requests', l.requests,
+                        'completed', l.completed, 'lastAt', l.last_at, 'keyId', l.event_feed_key_id, 'keyName', k.display_name), NULL
+                FROM control_access_log l LEFT JOIN event_feed_keys k ON k.organization_id = l.organization_id AND k.id = l.event_feed_key_id
+                WHERE l.organization_id = $1 AND $8 <> 'changes'
+                UNION ALL
+                SELECT t.organization_id, t.id, t.occurred_at, CASE t.kind WHEN 'access_review' THEN 'access_review_completed'
+                        ELSE t.kind || '_recorded' END, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, t.actor_access_id, NULL,
+                    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, t.details || jsonb_build_object('id', t.id, 'kind', t.kind)
+                FROM control_attestations t WHERE t.organization_id = $1 AND $8 <> 'access'
+            )
             SELECT a.id, occurred_at, action, policy_version, restored_from, installation_id, app_id, classification, retention, cleanup, group_change,
                 actor.id, actor.display_name, actor.role, subject.id, subject.display_name, subject.role, a.review_change, a.enrollment_batch_change,
                 a.event_triage_change, a.incident_case_change, a.security_alert_change, a.event_feed_key_change, a.fleet_change, a.template_change,
-                a.composer_gate, a.rollout_change, a.saas_classification, a.enrollment_key_change, a.data_deletion
-            FROM control_audit a LEFT JOIN retention_cutoffs r ON a.organization_id = r.organization_id
+                a.composer_gate, a.rollout_change, a.saas_classification, a.enrollment_key_change, a.data_deletion, a.read_access, a.attestation
+            FROM entries a LEFT JOIN retention_cutoffs r ON a.organization_id = r.organization_id
             LEFT JOIN control_access actor ON actor.organization_id = a.organization_id AND actor.id = a.actor_access_id
             LEFT JOIN control_access subject ON subject.organization_id = a.organization_id AND subject.id = a.subject_access_id
-            WHERE a.organization_id = $1
-                AND (r.audit_cutoff IS NULL OR occurred_at >= r.audit_cutoff)
+            WHERE (r.audit_cutoff IS NULL OR occurred_at >= r.audit_cutoff)
                 AND ($2::text IS NULL OR action = $2)
                 AND ($3::timestamptz IS NULL OR occurred_at >= $3)
                 AND ($4::timestamptz IS NULL OR occurred_at < $4)
@@ -789,7 +817,7 @@ internal sealed partial class ControlStore
             ORDER BY occurred_at DESC, a.id DESC LIMIT $7
             """, organizationId, (object?)filters.Action ?? DBNull.Value, (object?)filters.Since?.UtcDateTime ?? DBNull.Value,
             (object?)filters.Until?.UtcDateTime ?? DBNull.Value, (object?)filters.BeforeAt?.UtcDateTime ?? DBNull.Value,
-            (object?)filters.BeforeId ?? DBNull.Value, filters.Limit + 1);
+            (object?)filters.BeforeId ?? DBNull.Value, filters.Limit + 1, filters.Action is null ? filters.Category : "all");
         var entries = new List<AuditEntry>();
         await using var rows = await command.ExecuteReaderAsync(ct);
         while (await rows.ReadAsync(ct))
@@ -812,7 +840,9 @@ internal sealed partial class ControlStore
                 rows.IsDBNull(26) ? null : JsonSerializer.Deserialize<RolloutAudit>(rows.GetString(26), JsonSerializerOptions.Web),
                 rows.IsDBNull(27) ? null : JsonSerializer.Deserialize<SaasClassificationChange>(rows.GetString(27), JsonSerializerOptions.Web),
                 rows.IsDBNull(28) ? null : JsonSerializer.Deserialize<EnrollmentKeyChange>(rows.GetString(28), JsonSerializerOptions.Web),
-                rows.IsDBNull(29) ? null : JsonSerializer.Deserialize<JsonElement>(rows.GetString(29))));
+                rows.IsDBNull(29) ? null : JsonSerializer.Deserialize<JsonElement>(rows.GetString(29)),
+                rows.IsDBNull(30) ? null : JsonSerializer.Deserialize<ReadAccessAudit>(rows.GetString(30), JsonSerializerOptions.Web),
+                rows.IsDBNull(31) ? null : System.Text.Json.Nodes.JsonNode.Parse(rows.GetString(31))!.AsObject()));
         if (entries.Count <= filters.Limit) return new(entries, null);
         entries.RemoveAt(filters.Limit);
         var last = entries[^1];
@@ -845,18 +875,22 @@ internal sealed partial class ControlStore
         BlockedAiAppHosts: rows.GetFieldValue<string[]>(22),
         FileContentModes: new(FileContentMode(rows.GetBoolean(20), rows.GetBoolean(23)), FileContentMode(rows.GetBoolean(21), rows.GetBoolean(24)),
             ConfiguredUploadMode(rows.GetString(rows.GetOrdinal("claude_file_content_mode")))),
-        IdentifierProtection: JsonSerializer.Deserialize<IdentifierProtection>(rows.GetString(25), JsonSerializerOptions.Web),
+        IdentifierProtection: JsonSerializer.Deserialize<IdentifierProtection>(protection.OpenMember(rows.GetString(25), "formats",
+            rows.GetGuid(rows.GetOrdinal("organization_id")), IdentifierField), JsonSerializerOptions.Web),
         ExtensionDeployment: includeDeployment ? JsonSerializer.Deserialize<ExtensionDeployment>(rows.GetString(26), JsonSerializerOptions.Web) : null,
         PresetDiscoveryEnabled: rows.GetBoolean(rows.GetOrdinal("preset_discovery_enabled")), SsnMode: rows.GetString(rows.GetOrdinal("ssn_mode")),
         BrowserHardening: includeDeployment ? JsonSerializer.Deserialize<BrowserHardening>(rows.GetString(rows.GetOrdinal("browser_hardening")), JsonSerializerOptions.Web) : null,
         ClipboardMode: rows.GetString(rows.GetOrdinal("clipboard_mode")), GithubTokenMode: rows.GetString(rows.GetOrdinal("github_token_mode")),
         PromptAppModes: JsonSerializer.Deserialize<PromptAppModes>(rows.GetString(rows.GetOrdinal("prompt_app_modes")), JsonSerializerOptions.Web),
         CloudCredentialMode: rows.GetString(rows.GetOrdinal("cloud_credential_mode")),
-        ClassificationProtection: JsonSerializer.Deserialize<ClassificationProtection>(
-            rows.GetString(rows.GetOrdinal("classification_protection")), JsonSerializerOptions.Web),
+        ClassificationProtection: JsonSerializer.Deserialize<ClassificationProtection>(protection.OpenMember(
+            rows.GetString(rows.GetOrdinal("classification_protection")), "terms", rows.GetGuid(rows.GetOrdinal("organization_id")),
+            ClassificationField), JsonSerializerOptions.Web),
         AdapterControls: JsonSerializer.Deserialize<AdapterControls>(rows.GetString(rows.GetOrdinal("adapter_controls")), JsonSerializerOptions.Web),
         SaasDiscoveryEnabled: rows.GetBoolean(rows.GetOrdinal("saas_discovery_enabled")),
-        HealthProtection: JsonSerializer.Deserialize<HealthProtection>(rows.GetString(rows.GetOrdinal("health_protection")), JsonSerializerOptions.Web));
+        HealthProtection: JsonSerializer.Deserialize<HealthProtection>(protection.OpenMember(
+            rows.GetString(rows.GetOrdinal("health_protection")), "recordFormats", rows.GetGuid(rows.GetOrdinal("organization_id")), HealthField),
+            JsonSerializerOptions.Web));
 
     private static string FileContentMode(bool enabled, bool block) => block ? "block" : enabled ? "monitor" : "off";
     private static string? ConfiguredUploadMode(string mode) => mode == "off" ? null : mode;

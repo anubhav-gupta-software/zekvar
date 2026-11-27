@@ -110,9 +110,10 @@ for (const organizationMode of [false, true]) test(
     ZEKVAR_DASHBOARD_HOST: dashboardHost, ZEKVAR_BROWSER_HOST: browserHost, ZEKVAR_ACME_EMAIL: 'fixture@example.test',
     ZEKVAR_API_PORT: String(apiPort), ZEKVAR_WEB_PORT: String(webPort),
   });
+  const dataKeys = process.env.ZEKVAR_SSO_TEST_DATA_KEYS || `sso=${randomBytes(32).toString('hex')}`;
   const startApi = (exchangeToken, explicit = organizationMode) => launch('dotnet', [apiDll], work, {
     DOTNET_ENVIRONMENT: 'Production', ASPNETCORE_ENVIRONMENT: 'Production', Control__HostedPilot: 'true',
-    Control__Port: String(apiPort), ConnectionStrings__Control: database,
+    Control__Port: String(apiPort), ConnectionStrings__Control: database, Control__DataKeys: dataKeys,
     Control__Organizations__0__Slug: slug, Control__Organizations__0__AdminToken: owner,
     Control__Organizations__1__Slug: slug + '-other', Control__Organizations__1__AdminToken: otherOwner,
     ...(explicit ? {
