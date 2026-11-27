@@ -15,6 +15,7 @@ import { classificationTermError } from '../../../contracts/policy/classificatio
 import { identifierFormatError } from '../../../contracts/policy/organization-identifiers';
 import { isUploadMode, parseUploadTypes, uploadTypesError } from '../../../contracts/policy/uploads';
 import { customAppError, isCustomAppId, parseCustomApps } from '../../../contracts/policy/discovery';
+import { isSaasAppId, isSaasClassification, saasApp } from '../../../contracts/policy/saas-catalog';
 import { promptExceptionError, readPromptExceptions } from '../../../contracts/policy/prompt-exceptions';
 import { parseExtensionDeployment } from '../lib/extension-deployment';
 import { parseBrowserHardening } from '../lib/browser-hardening';
@@ -338,6 +339,7 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
   const fileContent = readFileContentSettings(form);
   const discovery = form.get('discoveryEnabled');
   const presetDiscovery = form.get('presetDiscoveryEnabled');
+  const saasDiscovery = form.get('saasDiscoveryEnabled');
   const inventory = form.get('extensionInventoryEnabled');
   const claude = form.get('claudePromptEnabled');
   const groupId = form.get('groupId');
@@ -351,6 +353,7 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
       (cloudCredentialMode !== null && !isDetectorMode(cloudCredentialMode)) ||
       (clipboardMode !== null && !isClipboardMode(clipboardMode)) || !uploadModes || !fileContent ||
       (discovery !== 'on' && discovery !== 'off') || (presetDiscovery !== null && presetDiscovery !== 'on' && presetDiscovery !== 'off') ||
+      (saasDiscovery !== null && saasDiscovery !== 'on' && saasDiscovery !== 'off') ||
       (inventory !== 'on' && inventory !== 'off') || (claude !== 'on' && claude !== 'off')) {
     return { error: 'Choose a setting for each policy control.' };
   }
@@ -362,6 +365,7 @@ export async function publishPolicy(_previous: Feedback, form: FormData): Promis
         cloudCredentialMode: cloudCredentialMode ?? undefined, clipboardMode: clipboardMode ?? undefined,
         uploadModes, uploadTypes, ...fileContent,
         discoveryEnabled: discovery === 'on', presetDiscoveryEnabled: presetDiscovery === null ? undefined : presetDiscovery === 'on',
+        saasDiscoveryEnabled: saasDiscovery === null ? undefined : saasDiscovery === 'on',
         extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on', expectedVersion },
         review, groupId ?? undefined);
       if ('reviewId' in policy) return queued(policy.reviewId);
@@ -386,6 +390,17 @@ export async function classifyAiApp(_previous: Feedback, form: FormData): Promis
     await controlApi.classifyApp(token, app, status);
     revalidatePath('/');
     return { message: `${isCustomAppId(app) ? 'App' : discoveryAppName(app)} classification saved.` };
+  });
+}
+
+export async function classifySaasApp(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const app = form.get('appId');
+  const status = form.get('status');
+  if (!isSaasAppId(app) || !isSaasClassification(status)) return { error: 'Choose a cataloged SaaS app and a valid classification.' };
+  return perform(async (token) => {
+    await controlApi.classifySaasApp(token, app, status);
+    revalidatePath('/saas');
+    return { message: `${saasApp(app)?.name ?? 'App'} classification saved.` };
   });
 }
 
@@ -437,6 +452,7 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
   const fileContent = readFileContentSettings(form);
   const discovery = form.get('discoveryEnabled');
   const presetDiscovery = form.get('presetDiscoveryEnabled');
+  const saasDiscovery = form.get('saasDiscoveryEnabled');
   const inventory = form.get('extensionInventoryEnabled');
   const claude = form.get('claudePromptEnabled');
   const groupId = form.get('groupId');
@@ -447,6 +463,7 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
       (cloudCredentialMode !== null && !isDetectorMode(cloudCredentialMode)) ||
       (clipboardMode !== null && !isClipboardMode(clipboardMode)) || !uploadModes || !fileContent ||
       (discovery !== 'on' && discovery !== 'off') || (presetDiscovery !== null && presetDiscovery !== 'on' && presetDiscovery !== 'off') ||
+      (saasDiscovery !== null && saasDiscovery !== 'on' && saasDiscovery !== 'off') ||
       (inventory !== 'on' && inventory !== 'off') ||
       (claude !== 'on' && claude !== 'off') ||
       (groupId !== null && !isId(groupId)) || !Number.isInteger(expectedVersion) || expectedVersion < 1 ||
@@ -516,6 +533,7 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
         cloudCredentialMode: cloudCredentialMode ?? undefined, clipboardMode: clipboardMode ?? undefined,
         uploadModes, uploadTypes, ...fileContent,
         discoveryEnabled: discovery === 'on', presetDiscoveryEnabled: presetDiscovery === null ? undefined : presetDiscovery === 'on',
+        saasDiscoveryEnabled: saasDiscovery === null ? undefined : saasDiscovery === 'on',
         extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on',
         domainRules, pathRules, customApps, promptExceptions, blockedAiAppHosts, identifierProtection, classificationProtection, promptAppModes,
         requireComposerReady: requireComposerReady.length ? requireComposerReady : undefined },

@@ -548,6 +548,16 @@ admin.MapPost("/ai-apps/{appId}/classification", async (string appId, ClassifyAp
     return await store.ClassifyApp(Identity(http), appId, request.Status, ct) ? Results.NoContent() : Results.NotFound();
 });
 
+admin.MapGet("/saas-apps", async (HttpContext http, CancellationToken ct) =>
+    Results.Ok(await store.SaasInventory(Identity(http).OrganizationId, ct)));
+admin.MapPost("/saas-apps/{appId}/classification", async (string appId, ClassifySaasApp request, HttpContext http, CancellationToken ct) =>
+{
+    if (!SaasCatalog.IsApp(appId) || !SaasCatalog.IsStatus(request.Status))
+        return Results.BadRequest(new { error = "Choose a cataloged SaaS app and a valid classification." });
+    await store.ClassifySaasApp(Identity(http), appId, request.Status!, ct);
+    return Results.NoContent();
+});
+
 app.MapPost("/v1/enroll", async (RedeemGrant request, HttpContext http, CancellationToken ct) =>
     Tokens.IsValid(request.Grant) && await store.Enroll(request.Grant, http.Request.Headers["X-Zekvar-Scoped-Enrollment"] == "1", ct) is { } enrollment
         ? Results.Ok(enrollment) : Results.Unauthorized());
@@ -570,14 +580,15 @@ browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
     var claudeFilesAware = aware && claudeAware && fileBlockAware && http.Request.Headers["X-Zekvar-Claude-Files"] == "1";
     var detectionRulesAware = aware && http.Request.Headers["X-Zekvar-Detection-Rules"] == "1";
     var adapterControlsAware = aware && http.Request.Headers["X-Zekvar-Adapter-Controls"] == "1";
+    var saasDiscoveryAware = aware && http.Request.Headers["X-Zekvar-SaaS-Discovery"] == "1";
     var versionHeader = http.Request.Headers["X-Zekvar-Extension-Version"];
     var extensionVersion = versionHeader.Count == 1 ? BrowserRelease.ReadVersion(versionHeader[0]) : null;
     if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, claudeAware, extensionVersion, privateKeyAware,
         fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware, presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware,
-        promptAppModesAware, claudeFilesAware, detectionRulesAware, adapterControlsAware, ct) is { } policy)
+        promptAppModesAware, claudeFilesAware, detectionRulesAware, adapterControlsAware, saasDiscoveryAware, ct) is { } policy)
         return Results.Ok(policy.ForBrowser(claudeAware, privateKeyAware, fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware,
             presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware, promptAppModesAware, claudeFilesAware, detectionRulesAware,
-            adapterControlsAware) with
+            adapterControlsAware, saasDiscoveryAware) with
         {
             PromptExceptionRequestsAvailable = aware && http.Request.Headers["X-Zekvar-Prompt-Exception-Requests"] == "1" ? true : null
         });
@@ -599,6 +610,9 @@ browser.MapPost("/ai-app-observations", async (AppObservation request, HttpConte
     DiscoveryCatalog.IsApp(request.AppId) && request.PolicyVersion > 0 &&
     await store.ObserveApp(Identity(http).InstallationId!.Value, request, ct)
         ? Results.NoContent() : Results.BadRequest(new { error = "Invalid app observation or discovery disabled." }));
+browser.MapPost("/saas-observations", async (SaasObservation request, HttpContext http, CancellationToken ct) =>
+    request.IsValid() && await store.ObserveSaasApp(Identity(http).InstallationId!.Value, request, ct)
+        ? Results.NoContent() : Results.BadRequest(new { error = "Invalid SaaS app observation or SaaS inventory disabled." }));
 browser.MapPost("/extension-inventory", async (ReportExtensionInventory request, HttpContext http, CancellationToken ct) =>
 {
     if (!request.IsValid(DateTimeOffset.UtcNow)) return Results.BadRequest(new { error = "Invalid extension inventory report." });
@@ -625,7 +639,7 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
               request.IdentifierProtection is not null || request.PresetDiscoveryEnabled.HasValue || request.SsnMode is not null ||
               request.BrowserHardening is not null || request.ClipboardMode is not null || request.GithubTokenMode is not null ||
               request.PromptAppModes is not null || request.CloudCredentialMode is not null || request.ClassificationProtection is not null ||
-              request.AdapterControls is not null)) ||
+              request.AdapterControls is not null || request.SaasDiscoveryEnabled.HasValue)) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode) ||
         !FixtureContract.IsOptionalDetectorMode(request.PrivateKeyMode) || !FixtureContract.IsOptionalDetectorMode(request.SsnMode) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubTokenMode) || !FixtureContract.IsOptionalDetectorMode(request.CloudCredentialMode))

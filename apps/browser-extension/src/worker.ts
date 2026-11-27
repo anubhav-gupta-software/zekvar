@@ -11,6 +11,7 @@ import { fileContentMode, isFileInspection, isUploadApp, isUploadModes, legacyUp
 import { collectExtensionInventory } from './extension-inventory';
 import type { InventoryStatus } from '../../../contracts/policy/extension-inventory';
 import { discoveryPresetAt, isCustomAppId, isDiscoveryPreset, readCustomApps, type CustomApp } from '../../../contracts/policy/discovery';
+import { saasAppAt, saasDay } from '../../../contracts/policy/saas-catalog';
 import { leaseTime, readExceptionLease, sampleClock, type BrowserLease } from './prompt-exceptions';
 import { readBlockedAiAppHosts } from '../../../contracts/policy/ai-app-access';
 import { readClassificationProtection, readIdentifierProtection, sameClassificationProtection,
@@ -27,6 +28,8 @@ declare const CONTROL_ORIGIN: string;
 
 type Enrollment = { installationId: string; token: string; source?: Summary['enrollmentSource'] };
 type PendingCoverage = { coverage: Coverage; observedAt: number };
+// SaaS inventory keeps only the catalog ID and the UTC day. Browser never stores or sends the page URL or title.
+type SaasObservation = { appId: string; day: string; policyVersion: number; assignmentVersion?: number };
 type State = {
   status: Summary['status'];
   controlOrigin?: string;
@@ -44,6 +47,8 @@ type State = {
   claudeCoveragePending?: PendingCoverage | Coverage;
   queue: PolicyEvent[];
   observations?: Partial<Record<DiscoveryApp, AppObservation>>;
+  saasObservations?: Record<string, SaasObservation>;
+  saasReported?: Record<string, string>;
   inventoryStatus?: InventoryStatus;
   inventoryReceipt?: { policyVersion: number; assignmentVersion: number; digest: string; reportedAt: number };
   discarded: number;
@@ -55,6 +60,7 @@ const alarmName = 'control-sync';
 const maxQueue = 100;
 const pendingCoverageLifetimeMs = 60_000;
 const inventoryRefreshMs = 15 * 60_000;
+const saasDeliveryLimit = 25;
 let work = Promise.resolve();
 let deliveryScheduled = false;
 let promptLease: { installationId: string; version: number; assignment?: number; lease: BrowserLease } | undefined;
@@ -150,7 +156,7 @@ async function request(path: string, token?: string, body?: object): Promise<unk
         'X-Zekvar-Identifiers': '1', 'X-Zekvar-Preset-Discovery': '1', 'X-Zekvar-SSN': '1', 'X-Zekvar-Clipboard-Paste': '1',
         'X-Zekvar-GitHub-Token': '1', 'X-Zekvar-Prompt-Exception-Requests': '1',
         'X-Zekvar-Prompt-App-Modes': '1', 'X-Zekvar-Claude-Files': '1', 'X-Zekvar-Detection-Rules': '1',
-        'X-Zekvar-Adapter-Controls': '1',
+        'X-Zekvar-Adapter-Controls': '1', 'X-Zekvar-SaaS-Discovery': '1',
         'X-Zekvar-Extension-Version': extensionVersion } : {}),
       ...(path === 'browser/heartbeat' ? { 'X-Zekvar-Composer-Coverage': '1' } : {}),
       ...(path === 'enroll' ? { 'X-Zekvar-Scoped-Enrollment': '1' } : {}),
@@ -182,6 +188,8 @@ async function lostConnection(state: State, error: unknown) {
     state.enrollment = undefined;
     clearCoverage(state);
     state.observations = undefined;
+    state.saasObservations = undefined;
+    state.saasReported = undefined;
     state.inventoryStatus = undefined;
     state.inventoryReceipt = undefined;
     state.discarded += state.queue.length;
@@ -195,7 +203,7 @@ async function lostConnection(state: State, error: unknown) {
 }
 
 async function deliver(state: State) {
-  if (!state.enrollment || (state.queue.length === 0 && !state.observations)) return;
+  if (!state.enrollment || (state.queue.length === 0 && !state.observations && !state.saasObservations)) return;
   for (let delivered = 0; delivered < 20 && state.queue.length; delivered++) {
     try {
       await request('browser/events', state.enrollment.token, state.queue[0]);
@@ -209,7 +217,32 @@ async function deliver(state: State) {
     state.queue.shift();
   }
   await deliverObservations(state);
+  await deliverSaasObservations(state);
   await save(state);
+}
+
+async function deliverSaasObservations(state: State) {
+  if (!state.enrollment || state.status !== 'connected' || !state.saasObservations) return;
+  if (!state.policy?.saasDiscovery || !await canDiscoverCatalogApps()) {
+    state.saasObservations = undefined;
+    return;
+  }
+  let sent = 0;
+  for (const observation of Object.values(state.saasObservations)) {
+    if (sent++ >= saasDeliveryLimit) return;
+    try {
+      await request('browser/saas-observations', state.enrollment.token, observation);
+    } catch (error) {
+      if (!(error instanceof HttpError && error.status === 400)) {
+        await lostConnection(state, error);
+        return;
+      }
+    }
+    // Control rejects a report it cannot accept for this policy. Either way the day is settled for this app.
+    state.saasReported = { ...state.saasReported, [observation.appId]: observation.day };
+    delete state.saasObservations[observation.appId];
+  }
+  state.saasObservations = undefined;
 }
 
 async function deliverObservations(state: State) {
@@ -277,6 +310,7 @@ async function sync(state: State) {
         (policy.uploadModes !== undefined && !isUploadModes(policy.uploadModes)) ||
         (policy.discoveryEnabled !== undefined && typeof policy.discoveryEnabled !== 'boolean') ||
         (policy.presetDiscoveryEnabled !== undefined && typeof policy.presetDiscoveryEnabled !== 'boolean') ||
+        (policy.saasDiscoveryEnabled !== undefined && typeof policy.saasDiscoveryEnabled !== 'boolean') ||
         (policy.extensionInventoryEnabled !== undefined && typeof policy.extensionInventoryEnabled !== 'boolean') ||
         (policy.claudePromptEnabled !== undefined && typeof policy.claudePromptEnabled !== 'boolean') ||
         policy.appId !== fixtureApp || policy.ruleId !== fixtureRule || policy.detectorCategory !== fixtureDetector) {
@@ -312,6 +346,7 @@ async function sync(state: State) {
     }
     const discoveryEnabled = policy.discoveryEnabled ?? false;
     const presetDiscovery = discoveryEnabled && policy.presetDiscoveryEnabled === true;
+    const saasDiscovery = policy.saasDiscoveryEnabled === true;
     const customApps = readCustomApps(policy.customApps);
     if (!customApps) throw new Error('Invalid custom app catalog');
     const previousCatalog = state.policy?.customApps;
@@ -350,6 +385,7 @@ async function sync(state: State) {
         (!previousUploads || retainedUploadApps.every((app) => uploads[app] === previousUploads[app])) &&
         (!previousTargets || sameTargetedUploads(previousTargets, targetedUploads, retainedUploadApps)) &&
         discoveryEnabled === (state.policy.discoveryEnabled ?? false) &&
+        (state.policy.saasDiscovery === undefined || saasDiscovery === state.policy.saasDiscovery) &&
         (!previousCatalog || (previousCatalog.length === customApps.length && previousCatalog.every(({ id, host, name }, index) =>
           id === customApps[index].id && host === customApps[index].host && name === customApps[index].name))) &&
         (state.policy.extensionInventoryEnabled === undefined || extensionInventoryEnabled === state.policy.extensionInventoryEnabled) &&
@@ -360,7 +396,7 @@ async function sync(state: State) {
       await applyDomainRules(state, domainRules, pathRules, blockedAiAppHosts);
       if (policy.version !== state.policy?.version || assignment !== previousAssignment) clearCoverage(state);
       state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, privateKeyMode, ssnMode, identifierProtection, fileInspection, fileContentModes,
-        discoveryEnabled, presetDiscovery, customApps, extensionInventoryEnabled, claudePromptEnabled, clipboardMode, githubTokenMode,
+        discoveryEnabled, presetDiscovery, saasDiscovery, customApps, extensionInventoryEnabled, claudePromptEnabled, clipboardMode, githubTokenMode,
         cloudCredentialMode, classificationProtection,
         promptExceptionRequestsAvailable: policy.promptExceptionRequestsAvailable === true,
         promptAppModes, adapterControls,
@@ -368,6 +404,8 @@ async function sync(state: State) {
       promptLease = lease ? { installationId: state.enrollment.installationId, version: policy.version,
         assignment: policy.assignmentVersion, lease } : undefined;
       if (!discoveryEnabled || assignment !== previousAssignment) state.observations = undefined;
+      if (!saasDiscovery || assignment !== previousAssignment) state.saasObservations = undefined;
+      if (!saasDiscovery) state.saasReported = undefined;
       state.chatGptEnabled = Array.isArray(policy.appIds) && policy.appIds.includes(chatGptApp);
       state.geminiEnabled = Array.isArray(policy.appIds) && policy.appIds.includes(geminiApp);
       await save(state);
@@ -454,6 +492,7 @@ async function heartbeat(state: State) {
       legacyUploadApps.some((app) => state.policy?.uploadModes?.[app] !== 'off')) ? true : undefined,
     uploadTypesApplied: scopedUploads ? true : undefined,
     customDiscoveryApplied: state.policy.discoveryEnabled && state.policy.customApps?.length && await canDiscoverCatalogApps() ? true : undefined,
+    saasDiscoveryApplied: state.policy.saasDiscovery && await canDiscoverCatalogApps() ? true : undefined,
     promptExceptionsApplied: currentPromptLease(state) ? true : undefined,
     domainRulesApplied: state.domainRules && ruleCount(state.domainRules) ? true : undefined,
     pathRulesApplied: state.pathRules && ruleCount(state.pathRules) ? true : undefined,
@@ -622,18 +661,34 @@ async function observeApp(state: State, appId: DiscoveryApp, observedAt: string)
   return {};
 }
 
+async function observeSaasApp(state: State, appId: string, day: string) {
+  if (!state.enrollment || !state.policy?.saasDiscovery) return;
+  // Report each app at most once per UTC day: skip days Control already settled or that are already queued.
+  if ((state.saasReported?.[appId] ?? '') >= day || (state.saasObservations?.[appId]?.day ?? '') >= day) return;
+  state.saasObservations = { ...state.saasObservations,
+    [appId]: { appId, day, policyVersion: state.policy.version, assignmentVersion: state.policy.assignmentVersion } };
+  await save(state);
+  if (state.status === 'connected') scheduleDelivery();
+}
+
 function observeCatalogNavigation(details: chrome.webNavigation.WebNavigationTransitionCallbackDetails) {
   if (details.frameId !== 0 || details.documentLifecycle !== 'active') return;
   const url = new URL(details.url);
   if (url.protocol !== 'https:' || url.port) return;
+  // Only the hostname is matched. The path, query, fragment, and page title are never read.
   const host = url.hostname;
-  const observedAt = new Date().toISOString();
+  const now = Date.now();
+  const observedAt = new Date(now).toISOString();
   void serial(async () => {
     const state = await readState();
-    if (!state.enrollment || !state.policy?.discoveryEnabled) return;
-    const custom = state.policy.customApps?.find((entry) => entry.host === host);
-    const appId = custom?.id ?? (state.policy.presetDiscovery ? discoveryPresetAt(host) : undefined);
-    if (appId && await canDiscoverCatalogApps()) await observeApp(state, appId, observedAt);
+    if (!state.enrollment || !state.policy) return;
+    if (state.policy.discoveryEnabled) {
+      const custom = state.policy.customApps?.find((entry) => entry.host === host);
+      const appId = custom?.id ?? (state.policy.presetDiscovery ? discoveryPresetAt(host) : undefined);
+      if (appId && await canDiscoverCatalogApps()) await observeApp(state, appId, observedAt);
+    }
+    const saasId = state.policy.saasDiscovery ? saasAppAt(host) : undefined;
+    if (saasId && await canDiscoverCatalogApps()) await observeSaasApp(state, saasId, saasDay(now));
   }).catch(() => undefined);
 }
 
@@ -701,10 +756,11 @@ chrome.permissions.onAdded.addListener(({ permissions }) => {
 chrome.permissions.onRemoved.addListener(({ permissions }) => {
   if (permissions?.includes('webNavigation')) void serial(async () => {
     const state = await readState();
-    if (!state.observations) return;
-    for (const appId of Object.keys(state.observations)) {
-      if (isCustomAppId(appId) || isDiscoveryPreset(appId)) delete state.observations[appId];
+    if (!state.observations && !state.saasObservations) return;
+    for (const appId of Object.keys(state.observations ?? {})) {
+      if (isCustomAppId(appId) || isDiscoveryPreset(appId)) delete state.observations?.[appId];
     }
+    state.saasObservations = undefined;
     await save(state);
   }).catch(() => undefined);
   if (permissions?.some((permission) => permission === 'management' || permission === 'webNavigation')) synchronizeInBackground();

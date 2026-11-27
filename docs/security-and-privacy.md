@@ -75,6 +75,7 @@ Other data the extension sends:
 | Enrollment | Once per profile | The single-use grant. Control returns an installation ID and a token. |
 | Policy fetch and heartbeat | About every 30 seconds while the browser runs | The installation token, the applied policy version, "applied" flags for each capability, the extension manifest version (`X-Zekvar-Extension-Version`), and composer coverage as `ready` or `unsupported` with a check time, per supported app. |
 | App observations | Only if app discovery is on and the employee granted the optional `webNavigation` permission | App ID, observation time, policy and assignment version. No URLs or page content. |
+| SaaS app inventory | Only if SaaS app inventory is on and the employee granted the optional `webNavigation` permission | Bundled catalog app ID, UTC day, policy and assignment version, at most once per app per day. No URLs, paths, queries, or page titles. |
 | Extension inventory | Only if turned on and the employee granted the optional `management` permission | Per installed extension: ID, name, version, enabled, install type, site access category (`none`, `selected`, `all`), and a subset of API permissions. Not host patterns, descriptions, or links. Up to 100 entries. |
 | Policy review request | Only if the employee selects it | An event ID and app ID. |
 
@@ -86,6 +87,7 @@ Network metadata the servers see unavoidably: the source IP address and TLS deta
 | --- | --- | --- |
 | Security events | The event fields above, plus installation ID, receipt time, recorded rollout group, and optional triage (status, assignee, disposition). | Yes, `securityEventDays` |
 | AI observations | App ID, last observed time per browser and app. | Yes, `aiObservationDays` |
+| SaaS app inventory | Catalog app ID with first and last seen UTC day per browser, and the organization's classification per app. | Yes, `aiObservationDays`. Recovery deletes the per-browser records. |
 | Audit log | Actor category or named credential (ID, name, role), action, and subject. No credential values, hashes, prompts, grant values, or policy content. | Yes, `auditDays` |
 | Incident cases and alerts | Case category, status, linked event references, and alert windows and counts. Resolved cases follow the audit window. | Via the audit and event windows |
 | Policies and groups | Versioned policy settings: modes, domain and path rules, blocked AI hosts, custom app catalog, identifier formats (prefix and digit count), temporary exceptions with reasons. | No window. Versions are retained. |
@@ -177,7 +179,7 @@ From [`manifest.json`](../apps/browser-extension/manifest.json) (v0.40.0). The h
 | Host permission: your Control origin | Lets the extension call the Control browser API. |
 | Content scripts on `chatgpt.com`, `gemini.google.com`, `claude.ai` | Recognize the composer and Send control and hold a submission while it is checked. A discovery script on the same three sites reports a visit when app discovery is on. |
 | Optional `management` | Only for extension inventory. The employee must approve a Chrome prompt in the popup. |
-| Optional `webNavigation` | Only for discovery of preset and custom apps. The employee must approve a Chrome prompt. Top-level committed HTTPS pages on cataloged hosts only. |
+| Optional `webNavigation` | Only for discovery of preset and custom apps and for SaaS app inventory. The employee must approve a Chrome prompt. Top-level committed HTTPS pages on cataloged hosts only. |
 
 Extension page content security policy: `script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; worker-src 'self'`, plus `connect-src` limited to `'self'` and your Control origin. `wasm-unsafe-eval` is needed for the bundled OCR engine.
 

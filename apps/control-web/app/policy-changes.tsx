@@ -43,6 +43,7 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     ['Classification labels', classificationTerms(reference), classificationTerms(candidate)],
     ['App discovery', toggle(reference.discoveryEnabled), toggle(candidate.discoveryEnabled)],
     ['AI app preset discovery', toggle(reference.presetDiscoveryEnabled ?? false), toggle(candidate.presetDiscoveryEnabled ?? false)],
+    ['SaaS app inventory', toggle(reference.saasDiscoveryEnabled ?? false), toggle(candidate.saasDiscoveryEnabled ?? false)],
     ['Extension inventory', toggle(reference.extensionInventoryEnabled), toggle(candidate.extensionInventoryEnabled)],
     ['Claude prompt protection', toggle(reference.claudePromptEnabled), toggle(candidate.claudePromptEnabled)],
     ...aiPromptApps.map((app) => [`${promptAppLabels[app]} prompt mode`, promptModeLabel(reference.promptAppModes?.[app]),

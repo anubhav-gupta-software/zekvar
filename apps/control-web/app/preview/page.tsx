@@ -4,12 +4,17 @@ import { canChangePolicy } from '../../lib/access';
 import { previewSnapshot } from '../../lib/preview';
 import { sessionToken } from '../../lib/session';
 import { DeploymentBadge, Sidebar } from '../workspace';
-import { PolicyPreview } from './preview';
+import { PolicyPreview, type SaasBlockSeed } from './preview';
+import { saasApp, saasBlockDomains } from '../../../../contracts/policy/saas-catalog';
 
-export default async function PreviewPage({ searchParams }: { searchParams: Promise<{ group?: string | string[] }> }) {
+export default async function PreviewPage({ searchParams }: {
+  searchParams: Promise<{ group?: string | string[]; blockSaas?: string | string[] }>;
+}) {
   const token = await sessionToken();
   if (!token) redirect('/');
-  const { group: selectedId } = await searchParams;
+  const { group: selectedId, blockSaas } = await searchParams;
+  const blocked = typeof blockSaas === 'string' ? saasApp(blockSaas) : undefined;
+  const blockSeed: SaasBlockSeed | undefined = blocked && { appId: blocked.id, name: blocked.name, domains: saasBlockDomains(blocked.id) };
   const data = await loadPreview(token, selectedId).catch((error) => {
     if (error instanceof ApiError && error.status === 401) redirect('/');
     if (error instanceof ApiError) return undefined;
@@ -27,6 +32,7 @@ export default async function PreviewPage({ searchParams }: { searchParams: Prom
         {data.groups.length > 0 && <section className="panel" aria-labelledby="preview-scope-heading">
           <h2 id="preview-scope-heading">Policy scope</h2>
           <form action="/preview" method="get" className="form-row preview-scope">
+            {blockSeed && <input type="hidden" name="blockSaas" value={blockSeed.appId} />}
             <div className="grid gap-1">
               <label htmlFor="preview-scope">Scope</label>
               <select id="preview-scope" name="group" defaultValue={data.selected?.id ?? ''}>
@@ -39,7 +45,7 @@ export default async function PreviewPage({ searchParams }: { searchParams: Prom
         </section>}
         {data.reference ? <PolicyPreview key={data.selected?.id ?? 'baseline'} reference={data.reference}
           snapshots={data.snapshots} groupId={data.selected?.id} scopeName={data.selected?.name ?? 'Organization baseline'}
-          writable={canChangePolicy(data.session)} review={data.session.reviewRequired} /> :
+          writable={canChangePolicy(data.session)} review={data.session.reviewRequired} blockSeed={blockSeed} /> :
           <section className="panel" role="alert">This policy scope is unavailable. <a className="underline" href="/preview">Open the organization baseline</a></section>}
       </> : <section className="panel" role="alert">Control could not load policy snapshots. Try reloading this page.</section>}
     </main>

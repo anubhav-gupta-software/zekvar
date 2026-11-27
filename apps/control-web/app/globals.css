@@ -159,3 +159,4 @@ td code { color: #d4e5f7; }
   .metric { padding: .65rem; }
   .controls-grid { grid-template-columns: 1fr; gap: 0; }
 }
+.saas-block-seed { display: block; white-space: normal; line-height: 1.5; margin-bottom: .75rem; }

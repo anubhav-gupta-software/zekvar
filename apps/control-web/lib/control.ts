@@ -66,6 +66,7 @@ export type Policy = {
   clipboardMode?: ClipboardMode;
   discoveryEnabled?: boolean;
   presetDiscoveryEnabled?: boolean;
+  saasDiscoveryEnabled?: boolean;
   customApps?: CustomApp[];
   promptExceptions?: PromptException[];
   extensionInventoryEnabled?: boolean;

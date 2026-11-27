@@ -216,6 +216,16 @@ Browser v0.29.0 adds Microsoft Copilot, Perplexity, Grok, Meta AI, and DeepSeek.
 
 Preset and custom discovery use Chrome's optional navigation permission and check only top-level committed HTTPS pages on exact cataloged domains using the default port. Reports contain the app ID, observation time, policy version and assignment. The extension queues the latest unsent observation per app and discards queued preset and custom observations on permission removal. Turn preset discovery Off or remove a custom site to stop collecting new observations. Historic observations follow the retention window. [Chrome navigation API](https://developer.chrome.com/docs/extensions/reference/api/webNavigation#event-onCommitted) · [Chrome optional permissions](https://developer.chrome.com/docs/extensions/reference/api/permissions)
 
+## SaaS app inventory
+
+Browser v0.43.0 adds an opt-in SaaS inventory, separate from AI app discovery. The bundled catalog in `contracts/policy/saas-catalog.json` (version 1, 98 apps) lists collaboration, file sharing, developer, CRM, HR, finance, design, marketing, personal webmail and messaging, and AI tools, each with a category and a risk tag such as **Personal file sharing** or **Unsanctioned AI**. Entries name exact hostnames, such as `mail.google.com`, or domains that match the domain and its subdomains, such as `dropbox.com`. An exact hostname takes precedence, so `gist.github.com` counts as GitHub Gist, not GitHub.
+
+1. In **Policy preview**, set **Draft SaaS app inventory** to **On** for the baseline or a rollout group, run the preview, and publish. The setting is also on the **Publish a policy** form.
+2. Click **Sync now**, then **Allow catalog discovery** and accept Chrome's optional navigation permission. The popup then shows that SaaS app inventory is on. Without the permission, Control leaves the policy pending for that browser.
+3. Open a cataloged HTTPS site in a top-level tab and open **SaaS inventory** in Control.
+
+Browser checks only the hostname of top-level committed HTTPS pages on the default port. It reports `{ appId, day, policyVersion, assignmentVersion }` and never the URL, path, query, fragment, or page title. It reports each app at most once per UTC day, keeps one queued report per app while offline, and drops queued reports when the policy turns the inventory off, the assignment changes, the permission is removed, or the browser is revoked. Older Browser releases never receive the setting, and Control rejects reports from browsers whose delivered policy did not include it.
+
 ## Domain rules
 
 1. Load Browser v0.13.0 or later, start Control, and enroll the Chrome profile you want to test. Open **Navigation rules** on the overview or in a rollout group.

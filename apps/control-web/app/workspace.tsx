@@ -26,7 +26,7 @@ export function DeploymentBadge() {
 }
 
 export function Sidebar({ active, session }: {
-  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews' | 'extensions' | 'enrollment' | 'reports' | 'events' | 'cases' | 'alerts' | 'hardening' | 'fleet' | 'templates' | 'prompt-requests' | 'rollouts' | 'adapters';
+  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews' | 'extensions' | 'enrollment' | 'reports' | 'events' | 'cases' | 'alerts' | 'hardening' | 'fleet' | 'templates' | 'prompt-requests' | 'rollouts' | 'adapters' | 'saas';
   session?: ControlSession;
 }) {
   const root = active ? '/' : '';
@@ -45,6 +45,7 @@ export function Sidebar({ active, session }: {
       <a href="/adapters" aria-current={active === 'adapters' ? 'page' : undefined}>Adapter controls</a>
       {canChangePolicy(session) && <a href={`${root}#domain-rules`}>Navigation rules</a>}
       <a href={`${root}#ai-apps`}>App inventory</a>
+      <a href="/saas" aria-current={active === 'saas' ? 'page' : undefined}>SaaS inventory</a>
       <a href={`${root}#browsers`}>Browsers</a>
       <a href="/fleet" aria-current={active === 'fleet' ? 'page' : undefined}>Browser fleet</a>
       <a href="/enrollment" aria-current={active === 'enrollment' ? 'page' : undefined}>Enrollment batches</a>

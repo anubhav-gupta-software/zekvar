@@ -157,6 +157,7 @@ try {
   const detectionRulesAdmin = randomBytes(32).toString('hex');
   const rolloutAdmin = randomBytes(32).toString('hex');
   const adapterAdmin = randomBytes(32).toString('hex');
+  const saasAdmin = randomBytes(32).toString('hex');
   const apiServer = startService('dotnet', ['bin/Debug/net10.0/Control.Api.dll'], api, {
     DOTNET_ENVIRONMENT: 'Development', ASPNETCORE_ENVIRONMENT: 'Development', Control__Port: String(apiPort), ConnectionStrings__Control: db,
     Control__Organizations__0__Slug: 'demo', Control__Organizations__0__AdminToken: token,
@@ -180,6 +181,7 @@ try {
     Control__Organizations__20__Slug: 'detection-rules', Control__Organizations__20__AdminToken: detectionRulesAdmin,
     Control__Organizations__21__Slug: 'automated-rollout', Control__Organizations__21__AdminToken: rolloutAdmin,
     Control__Organizations__22__Slug: 'adapter-controls', Control__Organizations__22__AdminToken: adapterAdmin,
+    Control__Organizations__23__Slug: 'saas-inventory', Control__Organizations__23__AdminToken: saasAdmin,
     ...(flags.has('--pilot') ? {
       Control__Organizations__3__Slug: 'managed-pilot', Control__Organizations__3__AdminToken: pilotAdmin,
       Control__Organizations__4__Slug: 'review-pilot', Control__Organizations__4__AdminToken: reviewAdmin,
@@ -288,6 +290,10 @@ try {
     ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: appCatalogAdmin,
     ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_LIVE: flags.has('--live') ? '1' : '0',
     ZEKVAR_DEMO_ARTIFACTS: artifacts ?? '',
+  });
+  await run(process.execPath, ['--test', 'test/saas-inventory.test.mjs'], extension, {
+    ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: saasAdmin, ZEKVAR_DEMO_OTHER_TOKEN: token,
+    ZEKVAR_DEMO_POSTGRES: postgres, ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_ARTIFACTS: artifacts ?? '',
   });
   await run(process.execPath, ['--test', 'test/prompt-exceptions.test.mjs'], extension, {
     ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: exceptionsAdmin,

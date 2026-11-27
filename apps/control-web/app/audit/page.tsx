@@ -4,6 +4,7 @@ import { roleLabels } from '../../lib/access';
 import { reviewOperations, reviewStatuses } from '../../lib/reviews';
 import { auditActions, auditFilters, type AuditEntry } from '../../lib/audit';
 import { classificationLabels, discoveryAppName, promptAppLabels, utc } from '../../lib/control';
+import { saasApp, saasClassificationLabels } from '../../../../contracts/policy/saas-catalog';
 import { cleanupCounts, retentionFields, type RetentionField } from '../../lib/retention';
 import { sessionToken } from '../../lib/session';
 import { DeploymentBadge, Sidebar } from '../workspace';
@@ -87,6 +88,8 @@ const actorLabels = { organization_admin: 'Organization admin', named_administra
   sso_identity: 'Single sign-on identity', browser_enrollment: 'Browser enrollment', system: 'Scheduled cleanup', automated_rollout: 'Automated rollout' };
 
 function auditDetails(entry: AuditEntry) {
+  const saas = entry.saasClassification;
+  if (saas) return `${saasApp(saas.appId)?.name ?? saas.appId} · ${saasClassificationLabels[saas.previous]} → ${saasClassificationLabels[saas.status]}`;
   const rollout = entry.rolloutChange;
   if (rollout) return <><a className="underline" href={`/rollouts?plan=${rollout.planId}`}>{rollout.planName}</a>
     {' · '}{rolloutEvents[rollout.event] ?? rollout.event}

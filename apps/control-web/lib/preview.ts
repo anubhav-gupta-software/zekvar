@@ -20,6 +20,7 @@ import { failClosedHosts, sameAdapterControls, type AdapterControls } from '../.
 export type PreviewPolicy = {
   mode: PolicyMode; githubPatMode: DetectorMode; paymentCardMode: DetectorMode; privateKeyMode?: DetectorMode; discoveryEnabled: boolean;
   presetDiscoveryEnabled?: boolean;
+  saasDiscoveryEnabled?: boolean;
   identifierProtection?: IdentifierProtection;
   ssnMode?: DetectorMode;
   githubTokenMode?: DetectorMode;
@@ -58,6 +59,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     identifierProtection: policy.identifierProtection,
     discoveryEnabled: policy.discoveryEnabled ?? false,
     presetDiscoveryEnabled: policy.presetDiscoveryEnabled,
+    saasDiscoveryEnabled: policy.saasDiscoveryEnabled,
     customApps: (policy.customApps ?? []).map(({ host, name }) => ({ host, name })),
     promptExceptions: policy.promptExceptions ?? [],
     extensionInventoryEnabled: policy.extensionInventoryEnabled ?? false,
@@ -85,7 +87,7 @@ export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
     samePromptAppModes(a.promptAppModes, b.promptAppModes) && sameAdapterControls(a.adapterControls, b.adapterControls) &&
     sameIdentifierProtection(a.identifierProtection, b.identifierProtection) &&
     a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
-    a.presetDiscoveryEnabled === b.presetDiscoveryEnabled &&
+    a.presetDiscoveryEnabled === b.presetDiscoveryEnabled && (a.saasDiscoveryEnabled ?? false) === (b.saasDiscoveryEnabled ?? false) &&
     sameExtensionDeployment(a.extensionDeployment, b.extensionDeployment) &&
     hardeningDifferences(a.browserHardening, b.browserHardening).length === 0 &&
     (a.blockedAiAppHosts ?? []).join(',') === (b.blockedAiAppHosts ?? []).join(',') &&

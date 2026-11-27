@@ -7,6 +7,7 @@ export const retentionFields = {
 export type RetentionField = keyof typeof retentionFields;
 export type RetentionPolicy = Record<RetentionField, number | null>;
 export type RetentionCleanup = { securityEvents: number; aiObservations: number; auditEntries: number; incidentCases?: number; alertWindows?: number;
+  saasObservations?: number;
   source: 'manual' | 'scheduled' };
 
 export function cleanupCounts(result: RetentionCleanup) {
@@ -15,5 +16,6 @@ export function cleanupCounts(result: RetentionCleanup) {
     count(result.aiObservations, 'AI observation', 'AI observations'), count(result.auditEntries, 'audit entry', 'audit entries')];
   if (result.incidentCases) removed.push(count(result.incidentCases, 'resolved case', 'resolved cases'));
   if (result.alertWindows) removed.push(count(result.alertWindows, 'alert window', 'alert windows'));
+  if (result.saasObservations) removed.push(count(result.saasObservations, 'SaaS app record', 'SaaS app records'));
   return removed.join(', ');
 }

@@ -1,0 +1,995 @@
+{
+  "version": 1,
+  "apps": [
+    {
+      "id": "slack",
+      "name": "Slack",
+      "category": "collaboration",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "slack.com"
+      ]
+    },
+    {
+      "id": "microsoft-teams",
+      "name": "Microsoft Teams",
+      "category": "collaboration",
+      "risk": "business",
+      "hosts": [
+        "teams.microsoft.com",
+        "teams.live.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "zoom",
+      "name": "Zoom",
+      "category": "collaboration",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "zoom.us"
+      ]
+    },
+    {
+      "id": "webex",
+      "name": "Webex",
+      "category": "collaboration",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "webex.com"
+      ]
+    },
+    {
+      "id": "google-meet",
+      "name": "Google Meet",
+      "category": "collaboration",
+      "risk": "business",
+      "hosts": [
+        "meet.google.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "atlassian",
+      "name": "Atlassian Cloud (Jira, Confluence)",
+      "category": "collaboration",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "atlassian.net"
+      ]
+    },
+    {
+      "id": "trello",
+      "name": "Trello",
+      "category": "collaboration",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "trello.com"
+      ]
+    },
+    {
+      "id": "asana",
+      "name": "Asana",
+      "category": "collaboration",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "asana.com"
+      ]
+    },
+    {
+      "id": "monday",
+      "name": "monday.com",
+      "category": "collaboration",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "monday.com"
+      ]
+    },
+    {
+      "id": "clickup",
+      "name": "ClickUp",
+      "category": "collaboration",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "clickup.com"
+      ]
+    },
+    {
+      "id": "smartsheet",
+      "name": "Smartsheet",
+      "category": "collaboration",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "smartsheet.com"
+      ]
+    },
+    {
+      "id": "basecamp",
+      "name": "Basecamp",
+      "category": "collaboration",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "basecamp.com"
+      ]
+    },
+    {
+      "id": "miro",
+      "name": "Miro",
+      "category": "collaboration",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "miro.com"
+      ]
+    },
+    {
+      "id": "loom",
+      "name": "Loom",
+      "category": "collaboration",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "loom.com"
+      ]
+    },
+    {
+      "id": "discord",
+      "name": "Discord",
+      "category": "personal",
+      "risk": "personal-messaging",
+      "hosts": [],
+      "domains": [
+        "discord.com"
+      ]
+    },
+    {
+      "id": "whatsapp-web",
+      "name": "WhatsApp Web",
+      "category": "personal",
+      "risk": "personal-messaging",
+      "hosts": [
+        "web.whatsapp.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "telegram-web",
+      "name": "Telegram Web",
+      "category": "personal",
+      "risk": "personal-messaging",
+      "hosts": [
+        "web.telegram.org"
+      ],
+      "domains": []
+    },
+    {
+      "id": "messenger",
+      "name": "Messenger",
+      "category": "personal",
+      "risk": "personal-messaging",
+      "hosts": [
+        "www.messenger.com",
+        "messenger.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "notion",
+      "name": "Notion",
+      "category": "productivity",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "notion.so"
+      ]
+    },
+    {
+      "id": "airtable",
+      "name": "Airtable",
+      "category": "productivity",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "airtable.com"
+      ]
+    },
+    {
+      "id": "evernote",
+      "name": "Evernote",
+      "category": "productivity",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "evernote.com"
+      ]
+    },
+    {
+      "id": "calendly",
+      "name": "Calendly",
+      "category": "productivity",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "calendly.com"
+      ]
+    },
+    {
+      "id": "docusign",
+      "name": "DocuSign",
+      "category": "productivity",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "docusign.com",
+        "docusign.net"
+      ]
+    },
+    {
+      "id": "google-docs",
+      "name": "Google Docs, Sheets, and Slides",
+      "category": "productivity",
+      "risk": "business",
+      "hosts": [
+        "docs.google.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "microsoft-365",
+      "name": "Microsoft 365 web apps",
+      "category": "productivity",
+      "risk": "business",
+      "hosts": [
+        "www.office.com",
+        "office.com",
+        "m365.cloud.microsoft"
+      ],
+      "domains": []
+    },
+    {
+      "id": "google-drive",
+      "name": "Google Drive",
+      "category": "file-sharing",
+      "risk": "business",
+      "hosts": [
+        "drive.google.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "sharepoint",
+      "name": "SharePoint and OneDrive for work",
+      "category": "file-sharing",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "sharepoint.com"
+      ]
+    },
+    {
+      "id": "box",
+      "name": "Box",
+      "category": "file-sharing",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "box.com"
+      ]
+    },
+    {
+      "id": "egnyte",
+      "name": "Egnyte",
+      "category": "file-sharing",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "egnyte.com"
+      ]
+    },
+    {
+      "id": "dropbox",
+      "name": "Dropbox",
+      "category": "file-sharing",
+      "risk": "personal-file-sharing",
+      "hosts": [],
+      "domains": [
+        "dropbox.com"
+      ]
+    },
+    {
+      "id": "onedrive-personal",
+      "name": "OneDrive personal",
+      "category": "file-sharing",
+      "risk": "personal-file-sharing",
+      "hosts": [
+        "onedrive.live.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "icloud",
+      "name": "iCloud",
+      "category": "file-sharing",
+      "risk": "personal-file-sharing",
+      "hosts": [],
+      "domains": [
+        "icloud.com"
+      ]
+    },
+    {
+      "id": "wetransfer",
+      "name": "WeTransfer",
+      "category": "file-sharing",
+      "risk": "personal-file-sharing",
+      "hosts": [],
+      "domains": [
+        "wetransfer.com"
+      ]
+    },
+    {
+      "id": "mega",
+      "name": "MEGA",
+      "category": "file-sharing",
+      "risk": "personal-file-sharing",
+      "hosts": [],
+      "domains": [
+        "mega.nz",
+        "mega.io"
+      ]
+    },
+    {
+      "id": "pcloud",
+      "name": "pCloud",
+      "category": "file-sharing",
+      "risk": "personal-file-sharing",
+      "hosts": [],
+      "domains": [
+        "pcloud.com"
+      ]
+    },
+    {
+      "id": "mediafire",
+      "name": "MediaFire",
+      "category": "file-sharing",
+      "risk": "personal-file-sharing",
+      "hosts": [],
+      "domains": [
+        "mediafire.com"
+      ]
+    },
+    {
+      "id": "smash",
+      "name": "Smash",
+      "category": "file-sharing",
+      "risk": "personal-file-sharing",
+      "hosts": [],
+      "domains": [
+        "fromsmash.com"
+      ]
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "category": "developer",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "github.com"
+      ]
+    },
+    {
+      "id": "gitlab",
+      "name": "GitLab",
+      "category": "developer",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "gitlab.com"
+      ]
+    },
+    {
+      "id": "bitbucket",
+      "name": "Bitbucket",
+      "category": "developer",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "bitbucket.org"
+      ]
+    },
+    {
+      "id": "linear",
+      "name": "Linear",
+      "category": "developer",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "linear.app"
+      ]
+    },
+    {
+      "id": "vercel",
+      "name": "Vercel",
+      "category": "developer",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "vercel.com"
+      ]
+    },
+    {
+      "id": "netlify",
+      "name": "Netlify",
+      "category": "developer",
+      "risk": "business",
+      "hosts": [
+        "app.netlify.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "heroku",
+      "name": "Heroku",
+      "category": "developer",
+      "risk": "business",
+      "hosts": [
+        "dashboard.heroku.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "aws-console",
+      "name": "AWS Management Console",
+      "category": "developer",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "console.aws.amazon.com"
+      ]
+    },
+    {
+      "id": "azure-portal",
+      "name": "Azure portal",
+      "category": "developer",
+      "risk": "business",
+      "hosts": [
+        "portal.azure.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "google-cloud-console",
+      "name": "Google Cloud console",
+      "category": "developer",
+      "risk": "business",
+      "hosts": [
+        "console.cloud.google.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "docker-hub",
+      "name": "Docker Hub",
+      "category": "developer",
+      "risk": "business",
+      "hosts": [
+        "hub.docker.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "npm",
+      "name": "npm",
+      "category": "developer",
+      "risk": "business",
+      "hosts": [
+        "www.npmjs.com",
+        "npmjs.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "postman",
+      "name": "Postman",
+      "category": "developer",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "postman.co"
+      ]
+    },
+    {
+      "id": "replit",
+      "name": "Replit",
+      "category": "developer",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "replit.com"
+      ]
+    },
+    {
+      "id": "github-gist",
+      "name": "GitHub Gist",
+      "category": "developer",
+      "risk": "public-paste",
+      "hosts": [
+        "gist.github.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "pastebin",
+      "name": "Pastebin",
+      "category": "developer",
+      "risk": "public-paste",
+      "hosts": [],
+      "domains": [
+        "pastebin.com"
+      ]
+    },
+    {
+      "id": "codepen",
+      "name": "CodePen",
+      "category": "developer",
+      "risk": "public-paste",
+      "hosts": [],
+      "domains": [
+        "codepen.io"
+      ]
+    },
+    {
+      "id": "salesforce",
+      "name": "Salesforce",
+      "category": "crm",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "salesforce.com",
+        "force.com"
+      ]
+    },
+    {
+      "id": "hubspot",
+      "name": "HubSpot",
+      "category": "crm",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "hubspot.com"
+      ]
+    },
+    {
+      "id": "pipedrive",
+      "name": "Pipedrive",
+      "category": "crm",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "pipedrive.com"
+      ]
+    },
+    {
+      "id": "zoho",
+      "name": "Zoho",
+      "category": "crm",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "zoho.com"
+      ]
+    },
+    {
+      "id": "zendesk",
+      "name": "Zendesk",
+      "category": "crm",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "zendesk.com"
+      ]
+    },
+    {
+      "id": "intercom",
+      "name": "Intercom",
+      "category": "crm",
+      "risk": "business",
+      "hosts": [
+        "app.intercom.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "freshdesk",
+      "name": "Freshdesk",
+      "category": "crm",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "freshdesk.com"
+      ]
+    },
+    {
+      "id": "workday",
+      "name": "Workday",
+      "category": "hr",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "myworkday.com"
+      ]
+    },
+    {
+      "id": "bamboohr",
+      "name": "BambooHR",
+      "category": "hr",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "bamboohr.com"
+      ]
+    },
+    {
+      "id": "gusto",
+      "name": "Gusto",
+      "category": "hr",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "gusto.com"
+      ]
+    },
+    {
+      "id": "rippling",
+      "name": "Rippling",
+      "category": "hr",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "rippling.com"
+      ]
+    },
+    {
+      "id": "adp",
+      "name": "ADP",
+      "category": "hr",
+      "risk": "business",
+      "hosts": [
+        "workforcenow.adp.com",
+        "my.adp.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "greenhouse",
+      "name": "Greenhouse",
+      "category": "hr",
+      "risk": "business",
+      "hosts": [
+        "app.greenhouse.io"
+      ],
+      "domains": []
+    },
+    {
+      "id": "lever",
+      "name": "Lever",
+      "category": "hr",
+      "risk": "business",
+      "hosts": [
+        "hire.lever.co"
+      ],
+      "domains": []
+    },
+    {
+      "id": "quickbooks",
+      "name": "QuickBooks Online",
+      "category": "finance",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "qbo.intuit.com"
+      ]
+    },
+    {
+      "id": "xero",
+      "name": "Xero",
+      "category": "finance",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "xero.com"
+      ]
+    },
+    {
+      "id": "expensify",
+      "name": "Expensify",
+      "category": "finance",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "expensify.com"
+      ]
+    },
+    {
+      "id": "bill-com",
+      "name": "BILL",
+      "category": "finance",
+      "risk": "business",
+      "hosts": [
+        "app.bill.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "stripe-dashboard",
+      "name": "Stripe Dashboard",
+      "category": "finance",
+      "risk": "business",
+      "hosts": [
+        "dashboard.stripe.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "brex",
+      "name": "Brex",
+      "category": "finance",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "brex.com"
+      ]
+    },
+    {
+      "id": "ramp",
+      "name": "Ramp",
+      "category": "finance",
+      "risk": "business",
+      "hosts": [
+        "app.ramp.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "paypal",
+      "name": "PayPal",
+      "category": "finance",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "paypal.com"
+      ]
+    },
+    {
+      "id": "figma",
+      "name": "Figma",
+      "category": "design",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "figma.com"
+      ]
+    },
+    {
+      "id": "canva",
+      "name": "Canva",
+      "category": "design",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "canva.com"
+      ]
+    },
+    {
+      "id": "mailchimp",
+      "name": "Mailchimp",
+      "category": "marketing",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "mailchimp.com"
+      ]
+    },
+    {
+      "id": "surveymonkey",
+      "name": "SurveyMonkey",
+      "category": "marketing",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "surveymonkey.com"
+      ]
+    },
+    {
+      "id": "typeform",
+      "name": "Typeform",
+      "category": "marketing",
+      "risk": "business",
+      "hosts": [],
+      "domains": [
+        "typeform.com"
+      ]
+    },
+    {
+      "id": "gmail",
+      "name": "Gmail",
+      "category": "personal",
+      "risk": "personal-webmail",
+      "hosts": [
+        "mail.google.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "outlook-personal",
+      "name": "Outlook.com",
+      "category": "personal",
+      "risk": "personal-webmail",
+      "hosts": [
+        "outlook.live.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "yahoo-mail",
+      "name": "Yahoo Mail",
+      "category": "personal",
+      "risk": "personal-webmail",
+      "hosts": [
+        "mail.yahoo.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "proton-mail",
+      "name": "Proton Mail",
+      "category": "personal",
+      "risk": "personal-webmail",
+      "hosts": [
+        "mail.proton.me"
+      ],
+      "domains": []
+    },
+    {
+      "id": "aol-mail",
+      "name": "AOL Mail",
+      "category": "personal",
+      "risk": "personal-webmail",
+      "hosts": [
+        "mail.aol.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "gmx",
+      "name": "GMX Mail",
+      "category": "personal",
+      "risk": "personal-webmail",
+      "hosts": [],
+      "domains": [
+        "gmx.com",
+        "gmx.net"
+      ]
+    },
+    {
+      "id": "poe",
+      "name": "Poe",
+      "category": "ai",
+      "risk": "unsanctioned-ai",
+      "hosts": [],
+      "domains": [
+        "poe.com"
+      ]
+    },
+    {
+      "id": "character-ai",
+      "name": "Character.AI",
+      "category": "ai",
+      "risk": "unsanctioned-ai",
+      "hosts": [],
+      "domains": [
+        "character.ai"
+      ]
+    },
+    {
+      "id": "mistral-le-chat",
+      "name": "Mistral Le Chat",
+      "category": "ai",
+      "risk": "unsanctioned-ai",
+      "hosts": [
+        "chat.mistral.ai"
+      ],
+      "domains": []
+    },
+    {
+      "id": "you-com",
+      "name": "You.com",
+      "category": "ai",
+      "risk": "unsanctioned-ai",
+      "hosts": [
+        "you.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "pi-ai",
+      "name": "Pi",
+      "category": "ai",
+      "risk": "unsanctioned-ai",
+      "hosts": [
+        "pi.ai"
+      ],
+      "domains": []
+    },
+    {
+      "id": "hugging-face",
+      "name": "Hugging Face",
+      "category": "ai",
+      "risk": "unsanctioned-ai",
+      "hosts": [],
+      "domains": [
+        "huggingface.co"
+      ]
+    },
+    {
+      "id": "quillbot",
+      "name": "QuillBot",
+      "category": "ai",
+      "risk": "unsanctioned-ai",
+      "hosts": [],
+      "domains": [
+        "quillbot.com"
+      ]
+    },
+    {
+      "id": "grammarly",
+      "name": "Grammarly",
+      "category": "ai",
+      "risk": "unsanctioned-ai",
+      "hosts": [
+        "app.grammarly.com"
+      ],
+      "domains": []
+    },
+    {
+      "id": "jasper",
+      "name": "Jasper",
+      "category": "ai",
+      "risk": "unsanctioned-ai",
+      "hosts": [
+        "app.jasper.ai"
+      ],
+      "domains": []
+    },
+    {
+      "id": "otter",
+      "name": "Otter.ai",
+      "category": "ai",
+      "risk": "unsanctioned-ai",
+      "hosts": [],
+      "domains": [
+        "otter.ai"
+      ]
+    },
+    {
+      "id": "notebooklm",
+      "name": "NotebookLM",
+      "category": "ai",
+      "risk": "unsanctioned-ai",
+      "hosts": [
+        "notebooklm.google.com"
+      ],
+      "domains": []
+    }
+  ]
+}

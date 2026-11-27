@@ -164,6 +164,12 @@ Policy reviews are optional by default. The owner can enable the requirement wit
 
 Approved publication and its review decision commit in the same transaction. Audit records include reviewer identity, request ID, status, reference version, and the version published when applicable. Audit payloads exclude the before and candidate policy snapshots.
 
+## SaaS app inventory
+
+Publish `saasDiscoveryEnabled: true` for the baseline or a rollout group. Browser v0.43.0 negotiates the setting with `X-Zekvar-SaaS-Discovery: 1` and acknowledges it with `saasDiscoveryApplied` only when Chrome granted the optional navigation permission. Older releases do not receive the setting and stay pending while it is on. `POST /v1/browser/saas-observations` accepts `{ appId, day, policyVersion, assignmentVersion }` for a catalog app in `contracts/policy/saas-catalog.json` and a UTC day from the day before enrollment, no more than 30 days ago, through tomorrow. Control rejects other fields, reports for a policy the browser did not receive with the setting, and reports superseded by a later policy that turned it off. It keeps one row per browser and app with the first and last seen days.
+
+`GET /v1/admin/saas-apps` returns the catalog version and each app's classification, distinct browsers last seen within 30 days and the retention window, and first and last seen days. `POST /v1/admin/saas-apps/{appId}/classification` takes `unclassified`, `under_review`, `sanctioned`, or `unsanctioned` and records `saas_app_classified` in the audit log when the status changes. Auditors receive 403. Retention cleanup deletes rows last seen before the observation cutoff day and trims older first-seen days.
+
 ## Extension inventory
 
 Policy publishes accept `extensionInventoryEnabled` as an optional boolean. Existing policies start with it Off. Restore, promotion, and the policy review queue preserve the setting.

@@ -25,12 +25,14 @@ const inventoryButton = document.querySelector<HTMLButtonElement>('#inventory-pe
 const discovery = document.querySelector<HTMLElement>('#discovery')!;
 const discoverySummary = document.querySelector<HTMLElement>('#discovery-status')!;
 const discoveryButton = document.querySelector<HTMLButtonElement>('#discovery-permission')!;
+const saasSummary = document.querySelector<HTMLElement>('#saas-status')!;
 let busy = false;
 let inventoryEnabled = false;
 let inventoryAllowed = false;
 let inventoryStatus: Summary['inventoryStatus'];
 let discoveryCount = 0;
 let presetDiscoveryEnabled = false;
+let saasDiscoveryEnabled = false;
 let discoveryAllowed = false;
 
 function renderInventory() {
@@ -51,14 +53,20 @@ async function refreshInventoryPermission() {
 }
 
 function renderDiscovery() {
-  const enabled = discoveryCount > 0 || presetDiscoveryEnabled;
+  const aiEnabled = discoveryCount > 0 || presetDiscoveryEnabled;
+  const enabled = aiEnabled || saasDiscoveryEnabled;
   discovery.hidden = !enabled && !discoveryAllowed;
   discoveryButton.textContent = discoveryAllowed ? 'Remove catalog discovery permission' : 'Allow catalog discovery';
-  const label = !enabled ? 'Catalog discovery is off in Control.' : discoveryAllowed ?
-    (presetDiscoveryEnabled ? 'AI app preset discovery is on.' :
-      `Custom app discovery enabled for ${discoveryCount} cataloged ${discoveryCount === 1 ? 'site' : 'sites'}.`) :
-    'Control requests permission to report visits to the sites in your organization’s app catalog.';
+  const label = !enabled ? 'Catalog discovery is off in Control.' : !discoveryAllowed ?
+    'Control requests permission to report visits to the sites in your organization’s app catalog.' : !aiEnabled ? '' :
+      presetDiscoveryEnabled ? 'AI app preset discovery is on.' :
+        `Custom app discovery enabled for ${discoveryCount} cataloged ${discoveryCount === 1 ? 'site' : 'sites'}.`;
   if (discoverySummary.textContent !== label) discoverySummary.textContent = label;
+  discoverySummary.hidden = !label;
+  const saas = saasDiscoveryEnabled && discoveryAllowed ?
+    'SaaS app inventory is on. Zekvar reports only the catalog app and the day, never the page address or title.' : '';
+  if (saasSummary.textContent !== saas) saasSummary.textContent = saas;
+  saasSummary.hidden = !saas;
 }
 
 async function refreshDiscoveryPermission() {
@@ -96,6 +104,7 @@ function render(summary: Summary) {
   inventoryStatus = summary.inventoryStatus;
   discoveryCount = summary.installationId ? summary.customDiscoveryCount ?? 0 : 0;
   presetDiscoveryEnabled = Boolean(summary.installationId && summary.policy?.presetDiscovery);
+  saasDiscoveryEnabled = Boolean(summary.installationId && summary.policy?.saasDiscovery);
   renderInventory();
   renderDiscovery();
 }
@@ -145,7 +154,7 @@ discoveryButton.addEventListener('click', async () => {
   errorMessage.textContent = '';
   try {
     if (discoveryAllowed) await chrome.permissions.remove(discoveryPermission);
-    else if ((discoveryCount || presetDiscoveryEnabled) && !await chrome.permissions.request(discoveryPermission)) {
+    else if ((discoveryCount || presetDiscoveryEnabled || saasDiscoveryEnabled) && !await chrome.permissions.request(discoveryPermission)) {
       errorMessage.textContent = 'Catalog discovery permission was not granted.';
     }
     await refreshDiscoveryPermission();

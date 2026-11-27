@@ -9,6 +9,7 @@ import type { AlertChange } from './alerts';
 import type { FleetChange } from './fleet';
 import type { PolicyTemplateAudit } from './templates';
 import type { RolloutAudit } from './rollouts';
+import type { SaasClassification } from '../../../contracts/policy/saas-catalog';
 import type { AiPromptApp } from '../../../contracts/policy/apps';
 
 export const auditActions = {
@@ -39,6 +40,7 @@ export const auditActions = {
   browser_fleet_changed: 'Browser fleet changed',
   policy_template_changed: 'Policy template changed',
   rollout_plan_changed: 'Rollout plan changed',
+  saas_app_classified: 'SaaS app classified',
 } as const;
 
 export type AuditAction = keyof typeof auditActions;
@@ -57,6 +59,7 @@ export type AuditEntry = AuditCursor & {
   fleetChange?: FleetChange;
   templateChange?: PolicyTemplateAudit;
   rolloutChange?: RolloutAudit;
+  saasClassification?: { appId: string; status: SaasClassification; previous: SaasClassification };
   composerGate?: { referenceVersion: number; apps: AiPromptApp[]; browsers: number };
   policyVersion: number | null;
   restoredFrom: number | null;

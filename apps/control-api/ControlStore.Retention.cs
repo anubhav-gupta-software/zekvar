@@ -55,6 +55,8 @@ internal sealed partial class ControlStore
                         AND LEAST(e.occurred_at, e.received_at) < r.event_cutoff)
                OR EXISTS (SELECT 1 FROM ai_app_observations o WHERE o.organization_id = r.organization_id
                         AND o.observed_at < r.observation_cutoff)
+               OR EXISTS (SELECT 1 FROM saas_app_observations s WHERE s.organization_id = r.organization_id
+                        AND s.first_seen_day < (r.observation_cutoff AT TIME ZONE 'UTC')::date)
                OR EXISTS (SELECT 1 FROM control_audit a WHERE a.organization_id = r.organization_id AND a.occurred_at < r.audit_cutoff)
                OR EXISTS (SELECT 1 FROM incident_cases c WHERE c.organization_id = r.organization_id
                         AND c.status = 'resolved' AND c.updated_at < r.audit_cutoff)
@@ -95,6 +97,20 @@ internal sealed partial class ControlStore
                     WHERE o.organization_id = $1 AND o.observed_at < c.observation_cutoff
                     ORDER BY o.observed_at LIMIT $2 FOR UPDATE OF o SKIP LOCKED
                 ) RETURNING 1
+            ), removed_saas AS (
+                -- SaaS inventory keeps UTC days. A browser last seen before the cutoff day is removed.
+                DELETE FROM saas_app_observations WHERE (organization_id, app_id, installation_id) IN (
+                    SELECT s.organization_id, s.app_id, s.installation_id FROM saas_app_observations s, cutoff c
+                    WHERE s.organization_id = $1 AND s.last_seen_day < (c.observation_cutoff AT TIME ZONE 'UTC')::date
+                    ORDER BY s.last_seen_day LIMIT $2 FOR UPDATE OF s SKIP LOCKED
+                ) RETURNING 1
+            ), clamped_saas AS (
+                -- A browser still seen inside the window keeps no first-seen day older than the cutoff.
+                UPDATE saas_app_observations s SET first_seen_day = (c.observation_cutoff AT TIME ZONE 'UTC')::date
+                FROM cutoff c WHERE s.organization_id = $1
+                    AND s.first_seen_day < (c.observation_cutoff AT TIME ZONE 'UTC')::date
+                    AND s.last_seen_day >= (c.observation_cutoff AT TIME ZONE 'UTC')::date
+                RETURNING 1
             ), removed_audit AS (
                 DELETE FROM control_audit WHERE id IN (
                     SELECT a.id FROM control_audit a, cutoff c WHERE a.organization_id = $1 AND a.occurred_at < c.audit_cutoff
@@ -117,23 +133,26 @@ internal sealed partial class ControlStore
                     (SELECT count(*) FROM removed_observations)::integer AS observations,
                     (SELECT count(*) FROM removed_audit)::integer AS audit_entries,
                     (SELECT count(*) FROM removed_cases)::integer AS incidents,
-                    (SELECT count(*) FROM removed_alerts)::integer AS alert_windows
+                    (SELECT count(*) FROM removed_alerts)::integer AS alert_windows,
+                    (SELECT count(*) FROM removed_saas)::integer AS saas_observations,
+                    (SELECT count(*) FROM clamped_saas)::integer AS saas_clamped
             ), audit AS (
                 INSERT INTO control_audit (organization_id, action, cleanup, actor_access_id)
                 SELECT $1, 'retention_cleanup', jsonb_build_object('securityEvents', events,
                     'aiObservations', observations, 'auditEntries', audit_entries, 'source', $3::text)
                     || CASE WHEN incidents > 0 THEN jsonb_build_object('incidentCases', incidents) ELSE '{}'::jsonb END
-                    || CASE WHEN alert_windows > 0 THEN jsonb_build_object('alertWindows', alert_windows) ELSE '{}'::jsonb END, $4
-                FROM counts WHERE events + observations + audit_entries + incidents + alert_windows > 0
+                    || CASE WHEN alert_windows > 0 THEN jsonb_build_object('alertWindows', alert_windows) ELSE '{}'::jsonb END
+                    || CASE WHEN saas_observations > 0 THEN jsonb_build_object('saasObservations', saas_observations) ELSE '{}'::jsonb END, $4
+                FROM counts WHERE events + observations + audit_entries + incidents + alert_windows + saas_observations > 0
             )
-            SELECT events, observations, audit_entries, incidents, alert_windows FROM counts
+            SELECT events, observations, audit_entries, incidents, alert_windows, saas_observations FROM counts
             """, connection, transaction);
         AddParameters(command, organizationId, batchSize, source, (object?)actorId ?? DBNull.Value);
         RetentionCleanup result;
         await using (var rows = await command.ExecuteReaderAsync(ct))
         {
             await rows.ReadAsync(ct);
-            result = new(rows.GetInt32(0), rows.GetInt32(1), rows.GetInt32(2), source, rows.GetInt32(3), rows.GetInt32(4));
+            result = new(rows.GetInt32(0), rows.GetInt32(1), rows.GetInt32(2), source, rows.GetInt32(3), rows.GetInt32(4), rows.GetInt32(5));
         }
         await transaction.CommitAsync(ct);
         return result;

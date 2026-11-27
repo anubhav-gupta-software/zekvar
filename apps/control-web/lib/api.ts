@@ -9,6 +9,11 @@ import type { PreviewPolicy } from './preview';
 import type { ControlAccess, ControlSession, DelegatedRole, EventFeedKey, IssuedControlAccess, IssuedEventFeedKey } from './access';
 import type { PolicyChange, PolicyReviewQueue } from './reviews';
 import type { InventoryInstallation } from './extension-inventory';
+import type { SaasClassification } from '../../../contracts/policy/saas-catalog';
+
+export type SaasInventoryApp = { appId: string; status: SaasClassification; browsersSeen: number;
+  firstSeenDay: string | null; lastSeenDay: string | null };
+export type SaasInventory = { catalogVersion: number; discoveryEnabled: boolean; windowDays: number; apps: SaasInventoryApp[] };
 import type { EnrollmentBatch, IssuedEnrollmentBatch } from './enrollment';
 import type { AiEnforcementReport } from './reports';
 import type { ExtensionDeployment } from './extension-deployment';
@@ -192,6 +197,9 @@ export const controlApi = {
   saveRetention: (token: string, policy: RetentionPolicy) => request<void>('/retention', token, 'POST', policy),
   cleanupRetention: (token: string) => request<RetentionCleanup>('/retention/cleanup', token, 'POST'),
   aiApps: (token: string) => request<DiscoveredApp[]>('/ai-apps', token),
+  saasApps: (token: string) => request<SaasInventory>('/saas-apps', token),
+  classifySaasApp: (token: string, appId: string, status: SaasClassification) =>
+    request<void>(`/saas-apps/${encodeURIComponent(appId)}/classification`, token, 'POST', { status }),
   classifyApp: (token: string, appId: DiscoveredAppId, status: AppClassification) =>
     request<void>(`/ai-apps/${appId}/classification`, token, 'POST', { status }),
   publish: (token: string, policy: Omit<PreviewPolicy, 'domainRules' | 'pathRules' | 'customApps' | 'promptExceptions'> & { expectedVersion?: number }, review: boolean, groupId?: string) =>

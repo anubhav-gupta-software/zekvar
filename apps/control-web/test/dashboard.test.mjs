@@ -33,7 +33,7 @@ async function assertFitsViewport(page) {
   assert.equal(scrollWidth, clientWidth);
 }
 
-test('Control dashboard signs in and manages a real browser installation and event', { timeout: 45_000 }, async (t) => {
+test('Control dashboard signs in and manages a real browser installation and event', { timeout: 90_000 }, async (t) => {
   const browser = await chromium.launch({ channel: 'chromium', headless: process.env.ZEKVAR_DEMO_HEADED !== '1' });
   t.after(() => browser.close());
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
@@ -1134,6 +1134,38 @@ test('Control dashboard signs in and manages a real browser installation and eve
     } finally {
       await promotionImpact.close();
     }
+    await page.goto(dashboard);
+  });
+
+  await t.test('filters the SaaS inventory, saves an audited classification, and fits desktop and mobile widths', async () => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(`${dashboard}/saas`);
+    await page.getByRole('heading', { name: 'SaaS inventory', exact: true }).waitFor();
+    const table = page.getByRole('table', { name: 'SaaS apps', exact: true });
+    const catalog = JSON.parse(await readFile(new URL('../../../contracts/policy/saas-catalog.json', import.meta.url)));
+    assert.equal(await table.locator('tbody tr').count(), catalog.apps.length);
+    await assertFitsViewport(page);
+    await page.getByLabel('Category', { exact: true }).selectOption('ai');
+    await page.getByLabel('Risk', { exact: true }).selectOption('unsanctioned-ai');
+    await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
+    await page.waitForURL(/category=ai&risk=unsanctioned-ai/);
+    const rows = table.locator('tbody tr');
+    assert.equal(await rows.count(), catalog.apps.filter(({ category, risk }) => category === 'ai' && risk === 'unsanctioned-ai').length);
+    const poe = rows.filter({ hasText: 'Poe' });
+    await poe.getByLabel('Poe classification', { exact: true }).selectOption('under_review');
+    await poe.getByRole('button', { name: 'Save Poe classification', exact: true }).click();
+    await poe.getByText('Poe classification saved.', { exact: true }).waitFor();
+    // Only unsanctioned apps offer the block shortcut.
+    assert.equal(await poe.getByRole('link', { name: 'Block Poe in policy preview' }).count(), 0);
+    await page.getByLabel('Classification', { exact: true }).selectOption('under_review');
+    await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
+    await page.waitForURL(/status=under_review/);
+    assert.deepEqual(await rows.locator('th').evaluateAll((cells) => cells.map((cell) => cell.firstChild.textContent)), ['Poe']);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await assertFitsViewport(page);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(`${dashboard}/audit?action=saas_app_classified`);
+    await page.getByText('Poe · Unclassified → Under review', { exact: true }).waitFor();
     await page.goto(dashboard);
   });
 

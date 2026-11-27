@@ -45,6 +45,7 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
     identifierFormats: snapshot.identifierProtection?.formats.map(({ prefix, digits }) => `${prefix} ${digits}`).join('\n') ?? '',
     discoveryEnabled: snapshot.discoveryEnabled,
     presetDiscoveryEnabled: snapshot.presetDiscoveryEnabled,
+    saasDiscoveryEnabled: snapshot.saasDiscoveryEnabled,
     extensionInventoryEnabled: snapshot.extensionInventoryEnabled,
     blockedAiAppHosts: snapshot.blockedAiAppHosts,
     claudePromptEnabled: snapshot.claudePromptEnabled,
@@ -60,11 +61,22 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
   };
 }
 
-export function PolicyPreview({ reference, snapshots, groupId, scopeName, writable, review }: {
+// A SaaS inventory row can open the preview with the app's domains added to the draft block list.
+export type SaasBlockSeed = { appId: string; name: string; domains: string[] };
+
+function withBlockedDomains(editor: Editor, seed?: SaasBlockSeed): Editor {
+  if (!seed) return editor;
+  const current = editor.block.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const added = seed.domains.filter((domain) => !current.includes(domain));
+  return added.length ? { ...editor, block: [...current, ...added].join('\n') } : editor;
+}
+
+export function PolicyPreview({ reference, snapshots, groupId, scopeName, writable, review, blockSeed }: {
   reference: PreviewSnapshot; snapshots: PreviewSnapshot[]; groupId?: string; scopeName: string; writable: boolean; review: boolean;
+  blockSeed?: SaasBlockSeed;
 }) {
   const [source, setSource] = useState(reference.version);
-  const [editor, setEditor] = useState(() => editorFor(reference));
+  const [editor, setEditor] = useState(() => withBlockedDomains(editorFor(reference), blockSeed));
   const [customPrompt, setCustomPrompt] = useState('');
   const [customUrl, setCustomUrl] = useState('');
   const [customFile, setCustomFile] = useState({ name: '', type: '' });
@@ -169,6 +181,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
       clipboardMode: editor.clipboardMode,
       identifierProtection: identifiers,
       discoveryEnabled: editor.discoveryEnabled, presetDiscoveryEnabled: editor.presetDiscoveryEnabled, extensionInventoryEnabled: editor.extensionInventoryEnabled,
+      saasDiscoveryEnabled: editor.saasDiscoveryEnabled,
       extensionDeployment: reference.extensionDeployment,
       browserHardening: reference.browserHardening,
       adapterControls: reference.adapterControls,
@@ -190,6 +203,9 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
           <PolicyImpactLink groupId={groupId} version={reference.version} /></div>
       </div>
       <p className="muted">Compare an editable draft with the current policy for {scopeName}.</p>
+      {blockSeed && <p className="badge warn saas-block-seed" role="status" id="saas-block-seed">Draft blocks {blockSeed.name} from SaaS inventory:{' '}
+        {blockSeed.domains.map((domain, index) => <span key={domain}>{index > 0 && ', '}<code>{domain}</code></span>)} and their subdomains.
+        Run the preview, review the changes, then publish to block navigation in enrolled browsers.</p>}
       <div className="form-row preview-inputs">
         <div className="grid gap-1">
           <label htmlFor="draft-source">Load draft from</label>
@@ -260,6 +276,13 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
           <label htmlFor="draft-preset-discovery">Draft AI app preset discovery</label>
           <select id="draft-preset-discovery" value={editor.presetDiscoveryEnabled ? 'on' : 'off'}
             onChange={(event) => edit('presetDiscoveryEnabled', event.target.value === 'on')}>
+            <option value="off">Off</option><option value="on">On</option>
+          </select>
+        </div>}
+        {editor.saasDiscoveryEnabled !== undefined && <div className="grid gap-1">
+          <label htmlFor="draft-saas-discovery">Draft SaaS app inventory</label>
+          <select id="draft-saas-discovery" value={editor.saasDiscoveryEnabled ? 'on' : 'off'}
+            onChange={(event) => edit('saasDiscoveryEnabled', event.target.value === 'on')}>
             <option value="off">Off</option><option value="on">On</option>
           </select>
         </div>}
@@ -508,6 +531,8 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         <input type="hidden" name="discoveryEnabled" value={candidate.discoveryEnabled ? 'on' : 'off'} />
         {candidate.presetDiscoveryEnabled !== undefined &&
           <input type="hidden" name="presetDiscoveryEnabled" value={candidate.presetDiscoveryEnabled ? 'on' : 'off'} />}
+        {candidate.saasDiscoveryEnabled !== undefined &&
+          <input type="hidden" name="saasDiscoveryEnabled" value={candidate.saasDiscoveryEnabled ? 'on' : 'off'} />}
         <input type="hidden" name="customApps" value={candidate.customApps.map(({ host, name }) => `${host}, ${name}`).join('\n')} />
         {candidate.blockedAiAppHosts && <>
           <input type="hidden" name="aiAppAccess" value="present" />

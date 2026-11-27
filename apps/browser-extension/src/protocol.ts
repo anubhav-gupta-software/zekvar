@@ -34,6 +34,7 @@ export type Policy = PromptPolicy & {
   fileInspection?: FileInspection;
   fileContentModes?: UploadModes;
   presetDiscovery?: boolean;
+  saasDiscovery?: boolean;
   clipboardMode?: ClipboardMode;
   promptExceptionRequestsAvailable?: boolean;
   promptAppModes?: PromptAppModes;

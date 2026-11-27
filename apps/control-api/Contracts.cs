@@ -121,7 +121,8 @@ internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode 
     string[]? BlockedAiAppHosts = null, UploadModes? FileContentModes = null, IdentifierProtection? IdentifierProtection = null,
     bool? PresetDiscoveryEnabled = null, string? SsnMode = null, BrowserHardening? BrowserHardening = null, string? ClipboardMode = null,
     string? GithubTokenMode = null, PromptAppModes? PromptAppModes = null, string[]? RequireComposerReady = null,
-    string? CloudCredentialMode = null, ClassificationProtection? ClassificationProtection = null, AdapterControls? AdapterControls = null);
+    string? CloudCredentialMode = null, ClassificationProtection? ClassificationProtection = null, AdapterControls? AdapterControls = null,
+    bool? SaasDiscoveryEnabled = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Claude = null)
 {
@@ -142,7 +143,7 @@ internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = nu
     bool FileInspectionApplied = false, bool AiAppAccessApplied = false, bool FileContentBlockApplied = false, bool IdentifiersApplied = false,
     bool SsnModeApplied = false, bool ClipboardModeApplied = false, bool GithubTokenModeApplied = false, bool PromptAppModesApplied = false,
     bool ClaudeFilesApplied = false, bool CloudCredentialModeApplied = false, bool ClassificationApplied = false,
-    bool AdapterControlsApplied = false)
+    bool AdapterControlsApplied = false, bool SaasDiscoveryApplied = false)
 {
     // "disabled" reports that an administrator turned the adapter off; Control accepts it only for a matching policy.
     public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported" or "disabled") &&
@@ -178,7 +179,8 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PromptAppModes? PromptAppModes = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CloudCredentialMode = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ClassificationProtection? ClassificationProtection = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] AdapterControls? AdapterControls = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] AdapterControls? AdapterControls = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? SaasDiscoveryEnabled = null)
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => ClaudePromptEnabled
@@ -211,7 +213,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
 
     public Policy ForBrowser(bool claudeAware, bool privateKeyAware, bool fileInspectionAware, bool aiAppAccessAware,
         bool fileBlockAware, bool identifiersAware, bool presetDiscoveryAware, bool ssnAware, bool clipboardAware, bool githubTokenAware,
-        bool promptAppModesAware, bool claudeFilesAware, bool detectionRulesAware, bool adapterControlsAware)
+        bool promptAppModesAware, bool claudeFilesAware, bool detectionRulesAware, bool adapterControlsAware, bool saasDiscoveryAware = false)
     {
         var now = DateTimeOffset.UtcNow;
         var nowMs = now.ToUnixTimeMilliseconds();
@@ -249,6 +251,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
             BrowserHardening = null,
             BlockedAiAppHosts = aiAppAccessAware ? AdapterControls.EffectiveBlockedHosts(BlockedAiAppHosts, AdapterControls) : null,
             AdapterControls = adapterControlsAware ? AdapterControls ?? new() : null,
+            SaasDiscoveryEnabled = saasDiscoveryAware ? SaasDiscoveryEnabled ?? false : null,
             PromptExceptions = PromptExceptions is { Length: > 0 } ? null : PromptExceptions,
             PromptExceptionLease = exceptions is { Length: > 0 } ? new(nowMs, exceptions) : null
         };
@@ -268,6 +271,15 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
 }
 
 internal sealed record AppObservation(string AppId, DateTimeOffset ObservedAt, int PolicyVersion, int AssignmentVersion = 0);
+internal sealed record SaasObservation(string? AppId, string? Day, int PolicyVersion, int AssignmentVersion = 0)
+{
+    public DateOnly? ReportedDay => Day is { Length: 10 } && DateOnly.TryParseExact(Day, "yyyy-MM-dd", out var day) ? day : null;
+    public bool IsValid() => SaasCatalog.IsApp(AppId) && PolicyVersion > 0 && AssignmentVersion >= 0 && ReportedDay is not null;
+}
+internal sealed record ClassifySaasApp(string? Status);
+internal sealed record SaasInventoryApp(string AppId, string Status, long BrowsersSeen, DateOnly? FirstSeenDay, DateOnly? LastSeenDay);
+internal sealed record SaasInventory(int CatalogVersion, bool DiscoveryEnabled, int WindowDays, IReadOnlyList<SaasInventoryApp> Apps);
+internal sealed record SaasClassificationChange(string AppId, string Status, string Previous);
 internal sealed record ClassifyApp(string Status);
 internal sealed record DiscoveredApp(string AppId, string Status, long BrowsersSeen, DateTime? LastObservedAt,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Host = null,

@@ -149,7 +149,7 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
   const ssoSession = await ssoExchange();
   const retention = { securityEventDays: 30, aiObservationDays: 30, auditDays: 90 };
   await admin(source.owner, 'retention', retention, 204);
-  const policy = await admin(source.owner, 'policies', { mode: 'block', extensionInventoryEnabled: true });
+  const policy = await admin(source.owner, 'policies', { mode: 'block', extensionInventoryEnabled: true, saasDiscoveryEnabled: true });
   const alertSettings = await admin(source.owner, 'alerts/extensions/settings', { enabled: true, expectedRevision: 0 });
   const pendingGrant = (await admin(source.owner, 'enrollment-grants', {})).grant;
   const group = await admin(source.owner, 'policy-groups', { name: 'Recovery rollout group' });
@@ -197,7 +197,7 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
   async function enrollInventoryReporter(owner) {
     const { grant } = await admin(owner, 'enrollment-grants', {});
     const installation = await call('enroll', { body: { grant } });
-    await call('browser/policy', { token: installation.token, headers: { 'X-Zekvar-Assignment-Aware': '1' } });
+    await call('browser/policy', { token: installation.token, headers: { 'X-Zekvar-Assignment-Aware': '1', 'X-Zekvar-SaaS-Discovery': '1' } });
     return installation;
   }
   const inventoryReporter = await enrollInventoryReporter(source.owner);
@@ -217,6 +217,11 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
   assert.deepEqual(savedInventory.entries, [upgraded]);
   assert.equal(savedInventory.changeHistory.length, 1);
   const [inventoryAlert] = (await admin(source.owner, 'alerts/extensions')).entries;
+  await call('browser/saas-observations', { token: inventoryReporter.token, expected: 204,
+    body: { appId: 'dropbox', day: new Date().toISOString().slice(0, 10), policyVersion: policy.version } });
+  await admin(source.owner, 'saas-apps/dropbox/classification', { status: 'unsanctioned' }, 204);
+  const saasRow = async (owner) => (await admin(owner, 'saas-apps')).apps.find(({ appId }) => appId === 'dropbox');
+  assert.equal((await saasRow(source.owner)).browsersSeen, 1);
   assert.equal(inventoryAlert.installationId, inventoryReporter.installationId);
   const { version: extensionVersion } = JSON.parse(await readFile(join(extension, 'manifest.json'), 'utf8'));
   assert.equal((await admin(source.owner, 'installations')).find(({ installationId }) =>
@@ -345,6 +350,8 @@ ZEKVAR_POSTGRES_APP_PASSWORD=${database.password}
   assert.equal(await sql(target, 'SELECT count(*) FROM control_sso_sessions'), '0');
   assert.equal(await sql(target, 'SELECT count(*) FROM extension_inventory_snapshots'), '0');
   assert.equal(await sql(target, 'SELECT count(*) FROM extension_inventory_change_batches'), '0', 'Recovery must purge restored extension history and alert evidence.');
+  assert.equal(await sql(target, 'SELECT count(*) FROM saas_app_observations'), '0', 'Recovery must purge SaaS inventory of revoked browsers.');
+  assert.equal(await sql(target, "SELECT status FROM saas_app_classifications WHERE app_id = 'dropbox'"), 'unsanctioned');
   await assert.rejects(restore(), /already contains application objects/);
   await startApi(target);
   const controlReadyMs = elapsed();

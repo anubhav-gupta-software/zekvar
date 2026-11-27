@@ -52,6 +52,7 @@ const detectionRulesAdmin = randomBytes(32).toString('hex');
 const rolloutAdmin = randomBytes(32).toString('hex');
 const adapterAdmin = randomBytes(32).toString('hex');
 const logsAdmin = randomBytes(32).toString('hex');
+const saasAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -62,7 +63,17 @@ const undoSsoSchema = `
       DROP COLUMN oidc_issuer, DROP COLUMN oidc_subject, ALTER COLUMN expires_at SET NOT NULL,
       ADD CONSTRAINT control_access_check1 CHECK ((revoked_at IS NULL) = (token_hash IS NOT NULL));
 `;
+const undoSaasInventorySchema = `
+  DELETE FROM schema_migrations WHERE version = 56;
+  DELETE FROM control_audit WHERE action = 'saas_app_classified';
+  ALTER TABLE control_audit DROP CONSTRAINT control_audit_saas_record_check, DROP COLUMN saas_classification;
+  DROP TABLE saas_app_observations;
+  DROP TABLE saas_app_classifications;
+  ALTER TABLE policy_versions DROP COLUMN saas_discovery_enabled;
+  ALTER TABLE policy_deliveries DROP COLUMN saas_discovery;
+`;
 const undoAdapterControlsSchema = `
+  ${undoSaasInventorySchema}
   DELETE FROM schema_migrations WHERE version = 53;
   DELETE FROM composer_observations WHERE coverage = 'disabled';
   UPDATE installations SET chatgpt_coverage = NULLIF(chatgpt_coverage, 'disabled'),
@@ -190,14 +201,14 @@ function browserPolicyOnly({ extensionDeployment: _extensionDeployment, browserH
   fileContentModes: _fileContentModes, identifierProtection: _identifierProtection, presetDiscoveryEnabled: _presetDiscovery,
   ssnMode: _ssnMode, clipboardMode: _clipboardMode, githubTokenMode: _githubTokenMode, promptAppModes: _promptAppModes,
   cloudCredentialMode: _cloudCredentialMode, classificationProtection: _classificationProtection, adapterControls: _adapterControls,
-  ...browserPolicy }) {
+  saasDiscoveryEnabled: _saasDiscoveryEnabled, ...browserPolicy }) {
   return browserPolicy;
 }
 
 async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false,
   extensionVersion, scopedEnrollment = false, composerAware = false, privateKeyAware = false, fileInspectionAware = false,
   aiAppAccessAware = false, fileBlockAware = false, identifiersAware = false, presetAware = false, ssnAware = false, clipboardAware = false,
-  githubTokenAware = false, promptAppModesAware = false, detectionRulesAware = false, adapterControlsAware = false } = {}) {
+  githubTokenAware = false, promptAppModesAware = false, detectionRulesAware = false, adapterControlsAware = false, saasAware = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -219,6 +230,7 @@ async function call(path, { token, method = 'GET', body, expect = 200, assignmen
   if (promptAppModesAware) headers['X-Zekvar-Prompt-App-Modes'] = '1';
   if (detectionRulesAware) headers['X-Zekvar-Detection-Rules'] = '1';
   if (adapterControlsAware) headers['X-Zekvar-Adapter-Controls'] = '1';
+  if (saasAware) headers['X-Zekvar-SaaS-Discovery'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
@@ -317,6 +329,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__34__AdminToken: adapterAdmin,
       Control__Organizations__35__Slug: `logs-${suffix}`,
       Control__Organizations__35__AdminToken: logsAdmin,
+      Control__Organizations__36__Slug: `saas-inventory-${suffix}`,
+      Control__Organizations__36__AdminToken: saasAdmin,
       Control__RolloutEvaluationSeconds: '3600',
       ...overrides,
     },
@@ -5857,5 +5871,135 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const reinstated = await post(`${path}/${adapter.version}/restore`);
     assert.deepEqual(reinstated.adapterControls, adapterOff);
     assert.deepEqual((await post(path, { adapterControls: {} })).adapterControls, {});
+  });
+
+  await t.test('keeps an opt-in SaaS inventory of catalog IDs and UTC days with classification audit, retention, and isolation', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: saasAdmin, ...options });
+    const catalog = JSON.parse(await readFile(new URL('../../../contracts/policy/saas-catalog.json', import.meta.url)));
+    const inventory = (token = saasAdmin) => call('/v1/admin/saas-apps', { token });
+    const row = async (appId, token) => (await inventory(token)).apps.find((entry) => entry.appId === appId);
+    const classify = (appId, status, token = saasAdmin, expect = 204) =>
+      call(`/v1/admin/saas-apps/${appId}/classification`, { method: 'POST', token, body: { status }, expect });
+    const enroll = async () => {
+      const { grant } = await admin('enrollment-grants', { method: 'POST' });
+      return call('/v1/enroll', { method: 'POST', body: { grant } });
+    };
+    const fetchPolicy = (browser, saasAware = true) => call('/v1/browser/policy', { token: browser.token, assignmentAware: true, saasAware });
+    const observe = (browser, body, expect = 204) => call('/v1/browser/saas-observations', { method: 'POST', token: browser.token, body, expect });
+    const day = (offset = 0) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+
+    // The API catalog mirrors the bundled contract catalog exactly and in order.
+    const initial = await inventory();
+    assert.equal(initial.catalogVersion, catalog.version);
+    assert.equal(initial.discoveryEnabled, false);
+    assert.equal(initial.windowDays, 30);
+    assert.deepEqual(initial.apps.map(({ appId }) => appId), catalog.apps.map(({ id }) => id));
+    assert.ok(initial.apps.every((app) => app.status === 'unclassified' && app.browsersSeen === 0 && app.lastSeenDay === null));
+
+    const browser = await enroll();
+    const another = await enroll();
+    const legacy = await enroll();
+    const off = await fetchPolicy(browser);
+    assert.equal(off.saasDiscoveryEnabled, false);
+    assert.equal((await fetchPolicy(legacy, false)).saasDiscoveryEnabled, undefined);
+    await observe(browser, { appId: 'dropbox', day: day(), policyVersion: off.version }, 400);
+
+    const enabled = await admin('policies', { method: 'POST', body: { saasDiscoveryEnabled: true } });
+    assert.equal(enabled.saasDiscoveryEnabled, true);
+    assert.equal(enabled.discoveryEnabled, false, 'SaaS inventory is separate from AI discovery.');
+    assert.equal((await inventory()).discoveryEnabled, true);
+    const delivered = await fetchPolicy(browser);
+    assert.equal(delivered.saasDiscoveryEnabled, true);
+    await fetchPolicy(another);
+    const unaware = await fetchPolicy(legacy, false);
+    assert.equal(unaware.saasDiscoveryEnabled, undefined);
+    const report = { appId: 'dropbox', day: day(), policyVersion: enabled.version };
+    // An older Browser never received the setting, so Control refuses its reports.
+    await observe(legacy, report, 400);
+    for (const invalid of [{ ...report, appId: 'example' }, { ...report, appId: 'saas:' + 'a'.repeat(64) }, { ...report, appId: 'copilot' },
+      { ...report, day: new Date().toISOString() }, { ...report, day: '2026-13-01' }, { ...report, day: day(2) },
+      { ...report, day: day(-40) }, { ...report, policyVersion: 999 }, { ...report, assignmentVersion: 4 }]) {
+      await observe(browser, invalid, 400);
+    }
+    // A report carrying a URL, path, or title is rejected outright.
+    await observe(browser, { ...report, url: 'https://www.dropbox.com/private?customer=synthetic' }, 400);
+    await observe(browser, { ...report, title: 'Synthetic private title' }, 400);
+    await Promise.all([observe(browser, report), observe(browser, report), observe(browser, report)]);
+    await observe(another, report);
+    await observe(another, { ...report, appId: 'github' });
+    const columns = await retentionFixture(`SELECT string_agg(column_name, ',' ORDER BY column_name) FROM information_schema.columns
+      WHERE table_name = 'saas_app_observations'`);
+    assert.equal(columns, 'app_id,first_seen_day,installation_id,last_seen_day,organization_id');
+    assert.doesNotMatch(await retentionFixture(`SELECT coalesce(string_agg(t::text, ';'), '') FROM saas_app_observations t`), /synthetic|https/);
+    assert.deepEqual(await row('dropbox'), { appId: 'dropbox', status: 'unclassified', browsersSeen: 2, firstSeenDay: day(), lastSeenDay: day() });
+    assert.equal((await row('github')).browsersSeen, 1);
+
+    // Heartbeats acknowledge the policy only when Browser applied SaaS inventory with the Chrome permission.
+    const heartbeat = (applied) => call('/v1/browser/heartbeat', { method: 'POST', token: browser.token,
+      body: { policyVersion: enabled.version, saasDiscoveryApplied: applied }, expect: 204 });
+    const applied = async () => (await admin('installations')).find(({ installationId }) => installationId === browser.installationId)
+      .appliedPolicyVersion;
+    await heartbeat(false);
+    assert.equal(await applied(), null);
+    await heartbeat(true);
+    assert.equal(await applied(), enabled.version);
+
+    // Classification is validated, audited once per change, and limited to owners and administrators.
+    await classify('dropbox', 'approved', saasAdmin, 400);
+    await classify('unknown-app', 'sanctioned', saasAdmin, 400);
+    await classify('dropbox', 'unsanctioned', browser.token, 401);
+    await classify('dropbox', 'under_review');
+    await Promise.all([classify('dropbox', 'unsanctioned'), classify('dropbox', 'unsanctioned')]);
+    assert.equal((await row('dropbox')).status, 'unsanctioned');
+    const audit = (await admin('audit?action=saas_app_classified')).entries;
+    assert.deepEqual(audit.map(({ saasClassification }) => saasClassification), [
+      { appId: 'dropbox', status: 'unsanctioned', previous: 'under_review' },
+      { appId: 'dropbox', status: 'under_review', previous: 'unclassified' },
+    ]);
+    const auditor = await admin('access', { method: 'POST', body: { name: 'SaaS Auditor', role: 'auditor', hours: 1 } });
+    assert.equal((await row('dropbox', auditor.token)).status, 'unsanctioned');
+    await classify('dropbox', 'sanctioned', auditor.token, 403);
+
+    // Another tenant sees none of this inventory or classification, and its changes stay in its own tenant.
+    assert.deepEqual(await row('dropbox', first), { appId: 'dropbox', status: 'unclassified', browsersSeen: 0, firstSeenDay: null, lastSeenDay: null });
+    await classify('github', 'sanctioned', first);
+    assert.equal((await row('github')).status, 'unclassified');
+
+    // Retention expires browsers last seen before the cutoff day and trims older first-seen days.
+    await retentionFixture(`UPDATE saas_app_observations SET first_seen_day = current_date - 10, last_seen_day = current_date - 6
+      WHERE installation_id = '${another.installationId}' AND app_id = 'github'`);
+    await retentionFixture(`UPDATE saas_app_observations SET first_seen_day = current_date - 10
+      WHERE installation_id = '${browser.installationId}' AND app_id = 'dropbox'`);
+    assert.equal((await row('dropbox')).firstSeenDay, day(-10));
+    await admin('retention', { method: 'POST', body: { securityEventDays: null, aiObservationDays: 3, auditDays: null }, expect: 204 });
+    assert.equal((await row('github')).browsersSeen, 0, 'Reads apply the retention cutoff before cleanup.');
+    assert.equal((await row('dropbox')).firstSeenDay, day(-3));
+    await observe(browser, { ...report, appId: 'github', day: day(-5) }, 400);
+    const cleaned = await admin('retention/cleanup', { method: 'POST' });
+    assert.equal(cleaned.saasObservations, 1);
+    assert.equal(await retentionFixture(`SELECT count(*) FROM saas_app_observations WHERE app_id = 'github'
+      AND installation_id = '${another.installationId}'`), '0');
+    assert.equal(await retentionFixture(`SELECT first_seen_day = current_date - 3 FROM saas_app_observations
+      WHERE installation_id = '${browser.installationId}' AND app_id = 'dropbox'`), 't');
+    assert.equal((await admin('retention/cleanup', { method: 'POST' })).saasObservations, undefined);
+
+    // Disabling inventory, revocation, and restarts are respected.
+    const disabled = await admin('policies', { method: 'POST', body: { saasDiscoveryEnabled: false } });
+    await observe(another, { ...report, appId: 'slack' }, 400);
+    assert.equal((await fetchPolicy(another)).saasDiscoveryEnabled, false);
+    await observe(another, { ...report, appId: 'slack', policyVersion: disabled.version }, 400);
+    await admin(`installations/${browser.installationId}/revoke`, { method: 'POST', expect: 204 });
+    await observe(browser, report, 401);
+    const before = await inventory();
+    await stop();
+    await start();
+    assert.deepEqual(await inventory(), before);
+
+    // Upgrading an existing database keeps every published policy with SaaS inventory off.
+    await stop();
+    await retentionFixture(undoSaasInventorySchema);
+    await start();
+    assert.ok((await admin('policies')).every((policy) => policy.saasDiscoveryEnabled === false));
+    assert.ok((await inventory()).apps.every((app) => app.browsersSeen === 0 && app.status === 'unclassified'));
   });
 });

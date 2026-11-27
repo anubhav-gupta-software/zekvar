@@ -185,7 +185,7 @@ test('fresh Chrome profile completes the Control-to-browser demo', { timeout: 90
     await health.getByText('Detected', { exact: true }).waitFor();
     const readiness = dashboard.getByRole('table', { name: 'Composer readiness', exact: true });
     const chatCoverage = readiness.getByRole('row', { name: /^ChatGPT / });
-    assert.deepEqual(await chatCoverage.getByRole('cell').allTextContents(), ['1', '1', '0', '0', '0', '0', '0']);
+    assert.deepEqual(await chatCoverage.getByRole('cell').allTextContents(), ['1', '1', '0', '0', '0', '0', '0', '0']);
     await dashboard.getByLabel('Application', { exact: true }).selectOption('chatgpt');
     await dashboard.getByRole('button', { name: 'Apply filters' }).click();
     await dashboard.waitForURL((url) => url.searchParams.get('app') === 'chatgpt');

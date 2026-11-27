@@ -50,6 +50,10 @@ BEGIN
     IF to_regclass('public.composer_observations') IS NOT NULL THEN
         DELETE FROM public.composer_observations;
     END IF;
+    -- SaaS inventory rows belong to revoked browsers. Classifications stay for fresh enrollments.
+    IF to_regclass('public.saas_app_observations') IS NOT NULL THEN
+        DELETE FROM public.saas_app_observations;
+    END IF;
 END;
 $$;
 

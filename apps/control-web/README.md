@@ -49,6 +49,12 @@ Each selected app needs a detected composer on the browser's current policy and 
 
 For a two-person review, the request shows the selected apps and Control checks them again at approval. When coverage changes, the request stays pending until coverage recovers or the review expires. A successful publication records the app names, reference version, and browser count in **Audit log**. Continue testing the intended text submission and file workflows on the pilot profiles. [Control API contract](../control-api/README.md#require-composer-readiness-for-publication)
 
+## SaaS inventory
+
+Open **SaaS inventory** to see every app in the bundled catalog with its category, risk, distinct browsers in the last 30 days, and first and last seen UTC days. Filter by category, risk, classification, or apps seen in the window. Owners and administrators classify an app as **Sanctioned**, **Unsanctioned**, **Under review**, or **Unclassified**. Each change is recorded once in **Audit log** as **SaaS app classified** with the previous and new status. Auditors can view the page but cannot classify or block.
+
+For an unsanctioned app, select **Block in preview**. Policy preview opens with the app's domains added to **Draft blocked domains**. Run the preview, review the changes, and publish or request review. The block uses the existing domain rules, which also block subdomains, and the 50-rule limit applies. SaaS records follow the **AI observations** retention window, and Control recovery removes records of revoked browsers while keeping classifications.
+
 ## Automate a staged rollout
 
 1. Publish and review the policy version you want to ship, for example in a staging rollout group. Open **Automated rollouts**, or select **Plan automated rollout** from a group to preselect its latest version.
