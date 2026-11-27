@@ -38,12 +38,16 @@ CREATE INDEX enrollment_key_redemptions_by_key ON enrollment_key_redemptions (or
 ALTER TABLE control_audit ADD COLUMN enrollment_key_change jsonb CHECK (jsonb_typeof(enrollment_key_change) = 'object'),
     ADD CONSTRAINT control_audit_enrollment_key_check CHECK (
         (action NOT IN ('enrollment_key_issued', 'enrollment_key_revoked') OR enrollment_key_change IS NOT NULL) AND
-        (enrollment_key_change IS NULL OR action IN ('enrollment_key_issued', 'enrollment_key_revoked', 'browser_enrolled'))),
-    DROP CONSTRAINT control_audit_action_check,
-    ADD CONSTRAINT control_audit_action_check CHECK (action IN ('policy_published', 'policy_restored', 'grant_issued',
-        'browser_enrolled', 'browser_revoked', 'app_classified', 'retention_changed', 'retention_cleanup',
-        'policy_group_created', 'policy_group_assigned', 'access_issued', 'access_revoked', 'control_sso_signed_in',
-        'policy_review_setting_changed', 'policy_review_requested', 'policy_review_decided', 'enrollment_batch_issued',
-        'enrollment_batch_cancelled', 'event_triage_changed', 'incident_case_changed', 'security_alert_settings_changed',
-        'security_alert_acknowledged', 'event_feed_key_issued', 'event_feed_key_revoked', 'browser_fleet_changed', 'policy_template_changed',
-        'rollout_plan_changed', 'enrollment_key_issued', 'enrollment_key_revoked'));
+        (enrollment_key_change IS NULL OR action IN ('enrollment_key_issued', 'enrollment_key_revoked', 'browser_enrolled')));
+
+-- Extend the existing action list in place so actions added by other migrations are preserved.
+DO $$
+DECLARE definition text;
+BEGIN
+    SELECT pg_get_constraintdef(oid) INTO definition FROM pg_constraint
+    WHERE conrelid = 'control_audit'::regclass AND conname = 'control_audit_action_check';
+    IF position('enrollment_key_issued' IN definition) = 0 THEN
+        EXECUTE 'ALTER TABLE control_audit DROP CONSTRAINT control_audit_action_check, ADD CONSTRAINT control_audit_action_check '
+            || replace(definition, 'ARRAY[', 'ARRAY[''enrollment_key_issued''::text, ''enrollment_key_revoked''::text, ');
+    END IF;
+END $$;
