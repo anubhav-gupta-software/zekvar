@@ -180,8 +180,9 @@ test('blocks a cloud credential and a classification label end to end and Contro
   const prior = policyResponses;
   await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
   await until(() => policyResponses > prior, 'The popup did not fetch the restored policy.');
-  await chat.getByText(`Zekvar · MONITOR v${restored.version}`, { exact: true }).waitFor();
+  // The fixture shows its Send control only while the draft has text, so fill the draft before reading the panel.
   await draft.fill(`Deploy with ${awsKey}`);
+  await chat.getByText(`Zekvar · MONITOR v${restored.version}`, { exact: true }).waitFor();
   await draft.press('Enter');
   assert.equal(await sends.textContent(), '2');
 });
