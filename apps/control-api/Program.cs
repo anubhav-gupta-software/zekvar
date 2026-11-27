@@ -23,6 +23,9 @@ if (sweepSeconds is < 1 or > 86400)
 var rolloutSeconds = builder.Configuration.GetValue("Control:RolloutEvaluationSeconds", 30);
 if (rolloutSeconds is < 1 or > 3600)
     throw new InvalidOperationException("Configure a rollout evaluation interval between 1 and 3600 seconds.");
+var keyAttempts = builder.Configuration.GetValue("Control:EnrollmentKeyAttemptsPerMinute", 600);
+if (keyAttempts is < 1 or > 100_000)
+    throw new InvalidOperationException("Configure enrollment key attempts per minute between 1 and 100000.");
 var organizations = builder.Configuration.GetSection("Control:Organizations").Get<DemoOrganization[]>();
 if (organizations is not { Length: > 0 } || organizations.Any(org => !ValidOrganization(org)) ||
     organizations.Select(org => org.Slug).Distinct().Count() != organizations.Length ||
@@ -43,7 +46,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 builder.Services.AddSingleton(_ => new NpgsqlDataSourceBuilder(connectionString).EnableParameterLogging(false).Build());
 builder.Services.AddSingleton(alertWebhooks);
 builder.Services.AddSingleton(services => new ControlStore(services.GetRequiredService<NpgsqlDataSource>(), sso, alertWebhooks)
-    { RolloutInterval = TimeSpan.FromSeconds(rolloutSeconds) });
+    { RolloutInterval = TimeSpan.FromSeconds(rolloutSeconds), EnrollmentKeyAttemptsPerMinute = keyAttempts });
 builder.Services.AddHostedService<RolloutAdvancer>(services => new(services.GetRequiredService<ControlStore>(),
     services.GetRequiredService<ILogger<RolloutAdvancer>>(), TimeSpan.FromSeconds(rolloutSeconds)));
 builder.Services.AddHostedService<RetentionSweep>(services => new(services.GetRequiredService<ControlStore>(),
@@ -189,14 +192,30 @@ admin.MapPost("/enrollment-batches", async (CreateEnrollmentBatch request, HttpC
 });
 admin.MapPost("/enrollment-batches/{id:guid}/cancel", async (Guid id, HttpContext http, CancellationToken ct) =>
     await store.CancelEnrollmentBatch(Identity(http), id, ct) ? Results.NoContent() : Results.NotFound());
+var enrollmentKeys = admin.MapGroup("/enrollment-keys");
+enrollmentKeys.MapGet("", async (HttpContext http, CancellationToken ct) =>
+    Results.Ok(await store.ListEnrollmentKeys(Identity(http).OrganizationId, ct)));
+enrollmentKeys.MapPost("", async (CreateEnrollmentKey request, HttpContext http, CancellationToken ct) =>
+{
+    if (!request.IsValid(out var label))
+        return Results.BadRequest(new { error = "Enter a request ID, a label, a lifetime from 1 to 30 days, and an optional limit from 1 to 100000." });
+    return EnrollmentKeyResult(await store.IssueEnrollmentKey(Identity(http), request, label!, ct));
+});
+enrollmentKeys.MapPost("/{id:guid}/rotate", async (Guid id, RotateEnrollmentKey request, HttpContext http, CancellationToken ct) =>
+    request.IsValid() ? EnrollmentKeyResult(await store.RotateEnrollmentKey(Identity(http), id, request, ct))
+        : Results.BadRequest(new { error = "Enter a request ID, a lifetime from 1 to 30 days, and an optional overlap from 1 to 720 hours." }));
+enrollmentKeys.MapPost("/{id:guid}/revoke", async (Guid id, HttpContext http, CancellationToken ct) =>
+    await store.RevokeEnrollmentKey(Identity(http), id, ct) ? Results.NoContent() : Results.NotFound());
 admin.MapGet("/installations", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.Installations(Identity(http).OrganizationId, ct)));
 admin.MapGet("/installations/fleet", async (HttpContext http, CancellationToken ct) =>
 {
     var query = http.Request.Query;
-    if (query.Any(entry => entry.Key is not ("rolloutGroup" or "beforeAt" or "beforeId") || entry.Value.Count != 1) ||
-        !BrowserHealthFilter.TryParse(query["rolloutGroup"].FirstOrDefault(), null, out var filter))
-        return Results.BadRequest(new { error = "Choose a valid rollout group and fleet cursor." });
+    Guid? enrollmentKey = null;
+    if (query.Any(entry => entry.Key is not ("rolloutGroup" or "beforeAt" or "beforeId" or "enrollmentKey") || entry.Value.Count != 1) ||
+        !BrowserHealthFilter.TryParse(query["rolloutGroup"].FirstOrDefault(), null, out var filter) ||
+        (query.ContainsKey("enrollmentKey") && (!Guid.TryParseExact(query["enrollmentKey"], "D", out var key) || (enrollmentKey = key) == Guid.Empty)))
+        return Results.BadRequest(new { error = "Choose a valid rollout group, enrollment key, and fleet cursor." });
     FleetCursor? before = null;
     if (query.ContainsKey("beforeAt") || query.ContainsKey("beforeId"))
     {
@@ -205,7 +224,7 @@ admin.MapGet("/installations/fleet", async (HttpContext http, CancellationToken 
             return Results.BadRequest(new { error = "Use both values from the fleet cursor." });
         before = new(enrolled.UtcDateTime, id);
     }
-    return await store.ReadFleet(Identity(http).OrganizationId, filter, before, ct) is { } fleet ? Results.Ok(fleet) : Results.NotFound();
+    return await store.ReadFleet(Identity(http).OrganizationId, filter, before, ct, enrollmentKey) is { } fleet ? Results.Ok(fleet) : Results.NotFound();
 });
 admin.MapPost("/installations/fleet", async (FleetRequest request, HttpContext http, CancellationToken ct) =>
 {
@@ -562,6 +581,21 @@ app.MapPost("/v1/enroll", async (RedeemGrant request, HttpContext http, Cancella
     Tokens.IsValid(request.Grant) && await store.Enroll(request.Grant, http.Request.Headers["X-Zekvar-Scoped-Enrollment"] == "1", ct) is { } enrollment
         ? Results.Ok(enrollment) : Results.Unauthorized());
 
+// Enrollment keys only create installations. The key format can never pass bearer authentication.
+app.MapPost("/v1/enroll/key", async (RedeemEnrollmentKey request, HttpContext http, CancellationToken ct) =>
+{
+    if (!request.IsValid()) return Results.BadRequest(new { code = "enrollment_key_request_invalid" });
+    var result = await store.RedeemEnrollmentKey(request.Key!, request.Nonce!, ct);
+    if (result.Enrollment is { } enrollment) return Results.Ok(enrollment);
+    if (result.Error == "enrollment_key_rate_limited")
+    {
+        http.Response.Headers.RetryAfter = result.RetryAfterSeconds.ToString(CultureInfo.InvariantCulture);
+        return Results.Json(new { code = result.Error }, statusCode: StatusCodes.Status429TooManyRequests);
+    }
+    return result.Error == "enrollment_key_invalid" ? Results.Json(new { code = result.Error }, statusCode: StatusCodes.Status401Unauthorized)
+        : Results.Json(new { code = result.Error }, statusCode: StatusCodes.Status410Gone);
+});
+
 var browser = app.MapGroup("/v1/browser").AddEndpointFilter(Authenticate(browser: true));
 browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
 {
@@ -729,6 +763,14 @@ static IResult RolloutOutcome(RolloutResult result) => result switch
     { Error: "rollout_plan_unavailable" or "rollout_source_unavailable" or "rollout_group_unavailable" } =>
         Results.NotFound(new { code = result.Error }),
     { Error: "named_administrator_required" or "self_approval" } => Results.Json(new { code = result.Error }, statusCode: StatusCodes.Status403Forbidden),
+    { Error: { } code } => Results.Conflict(new { code }),
+    _ => Results.NotFound()
+};
+
+static IResult EnrollmentKeyResult(EnrollmentKeyOutcome result) => result switch
+{
+    { Issued: { } issued } => Results.Ok(issued),
+    { Error: "enrollment_key_unavailable" or "enrollment_key_group_unavailable" } => Results.NotFound(new { code = result.Error }),
     { Error: { } code } => Results.Conflict(new { code }),
     _ => Results.NotFound()
 };

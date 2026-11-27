@@ -1,6 +1,6 @@
 import {
   aiPromptApps, chatGptApp, claudeApp, discoveredApp, discoveryPermission, fixtureApp, fixtureDetector, fixtureRule, geminiApp, isDetectorMode,
-  isId, isMode, isRecord, isToken, isVersion, promptApp, readMetadata,
+  isEnrollmentKey, isId, isMode, isRecord, isToken, isVersion, promptApp, readMetadata,
   type AiPromptApp, type AppId, type AppObservation, type Coverage, type DiscoveryApp, type Policy, type PolicyEvent,
   type Reply, type Summary,
 } from './protocol';
@@ -54,6 +54,9 @@ type State = {
   discarded: number;
   managedEnrollment?: Summary['managedEnrollment'];
   usedManagedGrant?: string;
+  // A random per-profile nonce makes a retried key redemption reuse its installation and seat.
+  enrollmentNonce?: string;
+  usedManagedKey?: string;
 };
 
 const alarmName = 'control-sync';
@@ -66,6 +69,7 @@ let deliveryScheduled = false;
 let promptLease: { installationId: string; version: number; assignment?: number; lease: BrowserLease } | undefined;
 
 const managedGrantKey = 'EnrollmentGrant';
+const managedEnrollmentKey = 'EnrollmentKey';
 const managedOriginKey = 'ControlOrigin';
 const hostedControl = CONTROL_ORIGIN.startsWith('https:');
 const extensionVersion = chrome.runtime.getManifest().version;
@@ -137,7 +141,7 @@ function currentPromptLease(state: State) {
 }
 
 class HttpError extends Error {
-  constructor(readonly status: number) {
+  constructor(readonly status: number, readonly code?: string) {
     super(`HTTP ${status}`);
   }
 }
@@ -164,7 +168,10 @@ async function request(path: string, token?: string, body?: object): Promise<unk
     },
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (!response.ok) throw new HttpError(response.status);
+  if (!response.ok) {
+    const failure = path === 'enroll/key' ? await response.json().catch(() => undefined) : undefined;
+    throw new HttpError(response.status, isRecord(failure) && typeof failure.code === 'string' ? failure.code : undefined);
+  }
   return response.status === 204 ? undefined : response.json();
 }
 
@@ -526,10 +533,51 @@ async function enroll(state: State, grant: unknown, managedHash?: string): Promi
       source: managedHash ? 'managed' : 'manual' },
     queue: [], discarded: 0,
     usedManagedGrant: managedHash ?? state.usedManagedGrant,
+    enrollmentNonce: state.enrollmentNonce, usedManagedKey: state.usedManagedKey,
   };
   await save(next);
   await sync(next);
   return { summary: summary(next) };
+}
+
+const keyRejections: Record<string, Summary['managedEnrollment']> = {
+  enrollment_key_expired: 'key_expired', enrollment_key_revoked: 'key_revoked', enrollment_key_exhausted: 'key_exhausted',
+};
+
+async function enrollWithKey(state: State, key: string, keyHash: string): Promise<Reply> {
+  if (!state.enrollmentNonce) {
+    // Persist the nonce before the first request so a lost response is retried with the same value.
+    state.enrollmentNonce = Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, '0')).join('');
+    await save(state);
+  }
+  let enrollment;
+  try {
+    enrollment = await request('enroll/key', undefined, { key, nonce: state.enrollmentNonce });
+  } catch (error) {
+    const final = error instanceof HttpError && (error.status === 401 || error.status === 410);
+    state.managedEnrollment = !final ? 'key_retrying' : keyRejections[(error as HttpError).code ?? ''] ?? 'key_rejected';
+    if (final) state.usedManagedKey = keyHash;
+    await save(state);
+    return { summary: summary(state), error: final
+      ? 'Control rejected the enrollment key from Chrome policy.'
+      : 'Control is unavailable. Check your connection to Control and try again.' };
+  }
+  if (!isRecord(enrollment) || !isToken(enrollment.token) || !isId(enrollment.installationId)) {
+    return { summary: summary(state), error: 'Control returned an invalid enrollment response.' };
+  }
+  const next: State = {
+    status: 'offline', controlOrigin: CONTROL_ORIGIN,
+    enrollment: { installationId: enrollment.installationId, token: enrollment.token, source: 'managed' },
+    queue: [], discarded: 0, usedManagedGrant: state.usedManagedGrant, enrollmentNonce: state.enrollmentNonce, usedManagedKey: keyHash,
+  };
+  await save(next);
+  await sync(next);
+  return { summary: summary(next) };
+}
+
+async function sha256(value: string) {
+  const hashBytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(hashBytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 async function syncOrEnroll(state: State): Promise<Reply> {
@@ -542,10 +590,12 @@ async function syncOrEnroll(state: State): Promise<Reply> {
     await save(state);
   }
   if (!await managedStorageProtected) return { summary: { ...summary(state), managedEnrollment: 'manual_required' } };
-  const managed = await chrome.storage.managed.get([managedGrantKey, managedOriginKey]).catch(() => ({} as Record<string, unknown>));
+  const managed = await chrome.storage.managed.get([managedGrantKey, managedEnrollmentKey, managedOriginKey])
+    .catch(() => ({} as Record<string, unknown>));
   const grant = managed[managedGrantKey];
-  if (!isToken(grant)) {
-    const status = grant === undefined ? undefined : 'invalid';
+  const key = managed[managedEnrollmentKey];
+  if (!isToken(grant) && (key === undefined || !isEnrollmentKey(key))) {
+    const status = key !== undefined ? 'key_invalid' : grant === undefined ? undefined : 'invalid';
     if (state.managedEnrollment !== status) {
       state.managedEnrollment = status;
       await save(state);
@@ -560,10 +610,15 @@ async function syncOrEnroll(state: State): Promise<Reply> {
     }
     return { summary: summary(state) };
   }
-  const hashBytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(grant));
-  const hash = Array.from(new Uint8Array(hashBytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
-  if (state.usedManagedGrant === hash) return { summary: summary(state) };
-  return enroll(state, grant, hash);
+  // A single-use grant keeps precedence. A device-manager key is the shared fallback for the whole device group.
+  if (isToken(grant)) {
+    const hash = await sha256(grant);
+    if (state.usedManagedGrant !== hash) return enroll(state, grant, hash);
+  }
+  if (!isEnrollmentKey(key)) return { summary: summary(state) };
+  const keyHash = await sha256(key);
+  if (state.usedManagedKey === keyHash) return { summary: summary(state) };
+  return enrollWithKey(state, key, keyHash);
 }
 
 function scheduleDelivery() {
@@ -767,7 +822,7 @@ chrome.permissions.onRemoved.addListener(({ permissions }) => {
 });
 listenForCatalogApps();
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'managed' && (managedGrantKey in changes || managedOriginKey in changes)) synchronizeInBackground();
+  if (area === 'managed' && (managedGrantKey in changes || managedEnrollmentKey in changes || managedOriginKey in changes)) synchronizeInBackground();
 });
 
 void serial(async () => {

@@ -257,6 +257,10 @@ With Browser v0.8.0, use the two-profile lab to enroll two managed Chrome profil
 
 Zekvar reads extension metadata and keeps literal host patterns, descriptions, and links out of its reports. It excludes its own extension from the list. Review flags identify certain permissions and install sources. Publisher verification, reputation checks, and extension allow or block enforcement are separate roadmap items. [Chrome management API](https://developer.chrome.com/docs/extensions/reference/api/management) · [Chrome optional permissions](https://developer.chrome.com/docs/extensions/reference/api/permissions)
 
+## Enroll with a device-manager key
+
+Browser v0.43.0 reads `EnrollmentKey` from managed storage, next to `ControlOrigin`. A single-use `EnrollmentGrant` still takes precedence when both are set. On first use the extension stores a random nonce in its private database before redeeming the key. If the response is lost, the retry sends the same nonce and receives the same installation without using another seat. The extension does not store the key itself, only a hash of a key it has already redeemed or that Control rejected, so it does not retry an expired, revoked, or exhausted key. A different key, for example after rotation, is tried again. The popup reports an invalid key, a key waiting to redeem, and expired, revoked, exhausted, or rejected keys. The connected test `test/enrollment-keys.test.mjs` enrolls two Chrome profiles from one key through `chrome://policy/test`, drops one redemption response to check the retry, refuses a third profile at the limit, and enrolls it after rotation. [Control guide](../control-web/README.md#enroll-a-device-group-with-an-enrollment-key)
+
 ## Verify the scenarios
 
 The full demo uses Node.js 22+, the .NET 10 SDK, and a running Docker daemon. From `apps/browser-extension`, run:

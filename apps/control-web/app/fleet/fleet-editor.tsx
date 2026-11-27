@@ -39,7 +39,14 @@ export function FleetEditor({ entries, writable, groups, baselineVersion }: {
   return <>
     <section className="panel table-panel" aria-labelledby="fleet-browsers-heading">
       <div className="panel-heading"><h2 id="fleet-browsers-heading">Active browsers</h2>
-        {writable && <span className="table-note" aria-live="polite">{selection.length} selected · Maximum 25</span>}
+        {writable && <div className="form-row">
+          <span className="table-note" aria-live="polite">{selection.length} selected · Maximum 25</span>
+          {entries.length > 0 && <button type="button" className="button small" disabled={!!review}
+            onClick={() => { setReview(undefined); setSelected(entries.slice(0, 25).map(({ installationId }) => installationId)); }}>
+            Select first {Math.min(entries.length, 25)} shown</button>}
+          {selection.length > 0 && <button type="button" className="button small" disabled={!!review}
+            onClick={() => { setReview(undefined); setSelected([]); }}>Clear selection</button>}
+        </div>}
       </div>
       {entries.length ? <div className="table-scroll" tabIndex={0} role="region" aria-labelledby="fleet-browsers-heading">
         <table aria-labelledby="fleet-browsers-heading">

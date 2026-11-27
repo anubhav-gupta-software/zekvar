@@ -6,7 +6,8 @@ namespace Control;
 
 internal sealed partial class ControlStore
 {
-    public async Task<FleetPage?> ReadFleet(Guid organizationId, BrowserHealthFilter filter, FleetCursor? before, CancellationToken ct)
+    public async Task<FleetPage?> ReadFleet(Guid organizationId, BrowserHealthFilter filter, FleetCursor? before, CancellationToken ct,
+        Guid? enrollmentKey = null)
     {
         const int pageSize = 50;
         await using var connection = await dataSource.OpenConnectionAsync(ct);
@@ -16,6 +17,11 @@ internal sealed partial class ControlStore
             await using var scope = BrowserRead(snapshot, "SELECT EXISTS (SELECT FROM policy_groups WHERE organization_id = $1 AND id = $2)", organizationId, groupId);
             if (await scope.ExecuteScalarAsync(ct) is not true) return null;
         }
+        if (enrollmentKey is { } keyId)
+        {
+            await using var key = BrowserRead(snapshot, "SELECT EXISTS (SELECT FROM enrollment_keys WHERE organization_id = $1 AND id = $2)", organizationId, keyId);
+            if (await key.ExecuteScalarAsync(ct) is not true) return null;
+        }
         await using var command = BrowserRead(snapshot, """
             SELECT i.id, i.enrolled_at, i.last_seen_at, i.policy_group_id, g.name, i.assignment_version,
                 i.assignment_aware, COALESCE(g.policy_version, o.policy_version), i.extension_version
@@ -24,9 +30,12 @@ internal sealed partial class ControlStore
             WHERE i.organization_id = $1 AND i.revoked_at IS NULL
                 AND (NOT $2 OR i.policy_group_id IS NOT DISTINCT FROM $3::uuid)
                 AND ($4::timestamptz IS NULL OR (i.enrolled_at, i.id) < ($4, $5::uuid))
+                AND ($7::uuid IS NULL OR EXISTS (SELECT 1 FROM enrollment_key_redemptions r
+                    WHERE r.organization_id = i.organization_id AND r.key_id = $7 AND r.installation_id = i.id))
             ORDER BY i.enrolled_at DESC, i.id DESC LIMIT $6
             """, organizationId, filter.Scoped, (object?)filter.GroupId ?? DBNull.Value,
-            (object?)before?.EnrolledAt ?? DBNull.Value, (object?)before?.InstallationId ?? DBNull.Value, pageSize + 1);
+            (object?)before?.EnrolledAt ?? DBNull.Value, (object?)before?.InstallationId ?? DBNull.Value, pageSize + 1,
+            (object?)enrollmentKey ?? DBNull.Value);
         var entries = new List<FleetBrowser>(pageSize + 1);
         await using var rows = await command.ExecuteReaderAsync(ct);
         while (await rows.ReadAsync(ct)) entries.Add(new(rows.GetGuid(0), rows.GetDateTime(1), rows.GetDateTime(2),

@@ -3,6 +3,7 @@ import type { RetentionCleanup, RetentionPolicy } from './retention';
 import type { AccessIdentity } from './access';
 import type { PolicyReviewAudit } from './reviews';
 import type { EnrollmentBatchChange } from './enrollment';
+import type { EnrollmentKeyChange } from './enrollment-keys';
 import type { EventTriageChange } from './triage';
 import type { CaseChange } from './cases';
 import type { AlertChange } from './alerts';
@@ -41,6 +42,8 @@ export const auditActions = {
   policy_template_changed: 'Policy template changed',
   rollout_plan_changed: 'Rollout plan changed',
   saas_app_classified: 'SaaS app classified',
+  enrollment_key_issued: 'Enrollment key issued',
+  enrollment_key_revoked: 'Enrollment key revoked',
 } as const;
 
 export type AuditAction = keyof typeof auditActions;
@@ -52,6 +55,7 @@ export type AuditEntry = AuditCursor & {
   subjectAccess?: AccessIdentity;
   reviewChange?: PolicyReviewAudit;
   enrollmentBatchChange?: EnrollmentBatchChange;
+  enrollmentKeyChange?: EnrollmentKeyChange;
   eventTriageChange?: EventTriageChange;
   incidentCaseChange?: CaseChange;
   securityAlertChange?: AlertChange;

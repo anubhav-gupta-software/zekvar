@@ -136,6 +136,7 @@ Roles (see [Named Control access](../apps/control-api/README.md#named-control-ac
 - Network restriction: in the pilot deployment the dashboard accepts connections only from configured administrator networks.
 - Event feed keys: read-only, per collector, 1 to 90 days, up to 20 active per organization.
 - Enrollment grants: single-use, 10 minutes, one to 25 per batch.
+- Enrollment keys for device groups: shown once and stored as a SHA-256 hash, 1 to 30 days, an optional limit of 1 to 100,000 browsers, scoped to the baseline or one rollout group, up to 20 active per organization, and revocable. A key can only create installations. Its format never passes API authentication. Each redemption creates a separate installation with its own credential. Control rate-limits attempts per key and counts rejected attempts. A leaked key lets someone enroll browsers into the key's group until it expires, reaches its limit, or is revoked. Administrators can list and revoke every browser a key enrolled.
 - Zekvar staff access to customer deployments. [TO CONFIRM: who can access production data, how access is approved, logged, and reviewed.]
 - Zekvar staff MFA, background checks, and security training. [TO CONFIRM]
 
@@ -172,7 +173,7 @@ From [`manifest.json`](../apps/browser-extension/manifest.json) (v0.40.0). The h
 
 | Permission | Why it is needed |
 | --- | --- |
-| `storage` | Reads the `EnrollmentGrant` and `ControlOrigin` values your device manager supplies, and holds extension state. |
+| `storage` | Reads the `EnrollmentGrant`, `EnrollmentKey`, and `ControlOrigin` values your device manager supplies, and holds extension state. The extension keeps a random per-profile enrollment nonce and a hash of keys it has used, not the key itself. |
 | `alarms` | Schedules the periodic policy sync and heartbeat, every 30 seconds. |
 | `declarativeNetRequest` | Applies your navigation rules and AI-site blocks to top-level HTTP and HTTPS requests. Rules are evaluated by Chrome. Visited URLs are not sent to Control. |
 | `offscreen` | Runs the bundled PDF and image text engines in a hidden extension page. |

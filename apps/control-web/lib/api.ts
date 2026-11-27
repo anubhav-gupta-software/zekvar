@@ -15,6 +15,7 @@ export type SaasInventoryApp = { appId: string; status: SaasClassification; brow
   firstSeenDay: string | null; lastSeenDay: string | null };
 export type SaasInventory = { catalogVersion: number; discoveryEnabled: boolean; windowDays: number; apps: SaasInventoryApp[] };
 import type { EnrollmentBatch, IssuedEnrollmentBatch } from './enrollment';
+import type { EnrollmentKey, IssuedEnrollmentKey } from './enrollment-keys';
 import type { AiEnforcementReport } from './reports';
 import type { ExtensionDeployment } from './extension-deployment';
 import type { BrowserHardening } from './browser-hardening';
@@ -215,6 +216,12 @@ export const controlApi = {
   issueEnrollmentBatch: (token: string, requestId: string, groupId: string | null, count: number) =>
     request<IssuedEnrollmentBatch>('/enrollment-batches', token, 'POST', { requestId, groupId, count }),
   cancelEnrollmentBatch: (token: string, id: string) => request<void>(`/enrollment-batches/${id}/cancel`, token, 'POST'),
+  enrollmentKeys: (token: string) => request<EnrollmentKey[]>('/enrollment-keys', token),
+  issueEnrollmentKey: (token: string, body: { requestId: string; label: string; groupId: string | null; days: number; maxRedemptions: number | null }) =>
+    request<IssuedEnrollmentKey>('/enrollment-keys', token, 'POST', body),
+  rotateEnrollmentKey: (token: string, id: string, body: { requestId: string; days: number; overlapHours: number | null }) =>
+    request<IssuedEnrollmentKey>(`/enrollment-keys/${id}/rotate`, token, 'POST', body),
+  revokeEnrollmentKey: (token: string, id: string) => request<void>(`/enrollment-keys/${id}/revoke`, token, 'POST'),
   revoke: (token: string, installationId: string) => request<void>(`/installations/${installationId}/revoke`, token, 'POST'),
 };
 

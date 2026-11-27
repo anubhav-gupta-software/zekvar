@@ -4,7 +4,7 @@ This guide is for the IT administrator who manages Chrome for your organization.
 
 Zekvar Browser is a Chrome extension (Manifest V3). Control is the admin dashboard and API. Operators build and host the signed releases. For the operator steps, see the [TLS pilot README](../deploy/pilot/README.md#distribute-signed-browser-releases).
 
-**What has been tested.** Signed install, upgrade, rollback, and removal by policy were verified on managed Linux Chromium in a Zekvar lab. They have not been verified on Windows or macOS, or through Google Admin console, Microsoft Intune, or Jamf. The product plan lists a partner-managed canary as outstanding evidence ([release readiness checkpoint](../product_plan.md#release-readiness-checkpoint)). Treat the device manager notes below as general guidance. Run a canary first.
+**What has been tested.** Signed install, upgrade, rollback, and removal by policy were verified on managed Linux Chromium in a Zekvar lab. Enrollment keys were verified with Chrome's policy test page, which writes the same managed storage a device manager does. They have not been verified on Windows or macOS, or through Google Admin console, Microsoft Intune, or Jamf. The product plan lists a partner-managed canary as outstanding evidence ([release readiness checkpoint](../product_plan.md#release-readiness-checkpoint)). Treat the device manager notes below as general guidance. Run a canary first.
 
 ## Before you start
 
@@ -48,7 +48,7 @@ The packager writes `chrome-policy.json` with two parts. Merge both into the pol
   },
   "3rdparty": {
     "extensions": {
-      "<extension-id>": { "ControlOrigin": "https://browser.example.com" }
+      "<extension-id>": { "ControlOrigin": "https://browser.example.com", "EnrollmentKey": "zke_…" }
     }
   }
 }
@@ -56,20 +56,21 @@ The packager writes `chrome-policy.json` with two parts. Merge both into the pol
 
 - `ExtensionSettings` force-installs the pinned ID from your update URL and keeps later updates on that channel.
 - `3rdparty.extensions.<id>.ControlOrigin` is managed storage for the extension. It must equal the origin built into the package. The schema is [`managed-schema.json`](../apps/browser-extension/managed-schema.json).
+- `3rdparty.extensions.<id>.EnrollmentKey` is the device group's enrollment key. Add it once you create the key in Control. See [Enroll browsers](#enroll-browsers).
 - The same force-install can be written with the older `ExtensionInstallForcelist` policy (`<id>;<update_url>`). The packager emits `ExtensionSettings`. Use that unless your management tool requires the list form.
 
 If your device group already has `ExtensionSettings`, merge instead of replacing. Keep the Zekvar entry. Control's **Chrome extension deployment** page can merge additional extension rules against your current JSON and give you a rollback file. See [Deploy Chrome extension rules](../apps/control-web/README.md#deploy-chrome-extension-rules). For Safe Browsing, download, and profile settings see [Deploy a Chrome hardening plan](../apps/control-web/README.md#deploy-a-chrome-hardening-plan).
 
 ### Device manager notes
 
-These are starting points. Check your vendor's current documentation.
+These are starting points. Check your vendor's current documentation. Control's **Enrollment keys** page generates each of these from your key, extension ID, update URL, and Control origin.
 
-- **Google Admin console.** Under Chrome browser or user settings for the target organizational unit, add the extension by ID with the custom update URL, set it to force install, and paste the extension policy JSON (`ControlOrigin`, and `EnrollmentGrant` for the profile). Per-user unique grants are hard to set through one OU-wide JSON. Plan the grant delivery before you start. See [Enroll browsers](#enroll-browsers).
-- **Microsoft Intune.** On Windows, use a settings catalog or imported Chrome ADMX policy for Chrome extension settings, or a custom configuration. Provide the `ExtensionSettings` JSON and the managed-storage values. On macOS, deploy a configuration profile for the `com.google.Chrome` preferences domain.
-- **Jamf.** Deploy a configuration profile for the `com.google.Chrome` preferences domain that carries `ExtensionSettings` and the extension's managed-storage values. Jamf's custom settings payload accepts a preference domain and a plist.
+- **Google Admin console.** Under Chrome browser or user settings for the target organizational unit, add the extension by ID with the custom update URL and set it to force install. In **Policy for extensions**, paste `{"ControlOrigin": {"Value": "<origin>"}, "EnrollmentKey": {"Value": "zke_…"}}`. One key serves the whole organizational unit.
+- **Microsoft Intune.** On Windows, a custom configuration profile with the Chrome ADMX ingested sets `ExtensionSettings` through the OMA-URI `./Device/Vendor/MSFT/Policy/Config/Chrome~Policy~googlechrome~Extensions/ExtensionSettings`. Chrome reads the extension's managed storage from `HKLM\SOFTWARE\Policies\Google\Chrome\3rdparty\extensions\<extension-id>\policy`. Control generates a platform script that sets `ControlOrigin` and `EnrollmentKey` there. On macOS, use the Jamf steps below with an Intune custom configuration profile.
+- **Jamf.** Under **Application & Custom Settings**, upload one plist for the `com.google.Chrome` domain with `ExtensionSettings`, and one for `com.google.Chrome.extensions.<extension-id>` with `ControlOrigin` and `EnrollmentKey`. Scope both to the same devices.
 - **Linux.** Put the JSON in the managed-policy directory for Chrome or Chromium.
 
-[TO CONFIRM: tested procedures for each device manager. None has been exercised by Zekvar.]
+[TO CONFIRM: tested procedures for each device manager. None has been exercised by Zekvar, including the generated snippets.]
 
 ### Check the policy reached the device
 
@@ -79,9 +80,26 @@ These are starting points. Check your vendor's current documentation.
 
 ## Enroll browsers
 
-Enrollment ties each Chrome profile to your Control organization. A grant is single-use and expires after 10 minutes.
+Enrollment ties each Chrome profile to your Control organization. Each profile gets its own installation and credential. There are two ways to deliver enrollment through managed storage:
+
+- An **enrollment key** for a device group. Use this with Google Admin, Intune, or Jamf. One key, pushed to the whole group, enrolls many profiles. It needs Browser v0.43.0 or later.
+- A single-use **enrollment grant** per profile. It expires after 10 minutes. Use it for a handful of lab profiles or manual enrollment.
+
+### Enroll a device group with a key
 
 1. In Control, create the pilot's rollout group and publish its policy. Start in Monitor. See the [onboarding guide](onboarding.md).
+2. Open **Enrollment keys**. Create a key for the group with a label, a lifetime of up to 30 days, and a **Maximum browsers** value close to the number of profiles in the device group. Copy the key. Control shows it once.
+3. Enter your extension ID, update URL, and Control origin, choose your device manager, and copy the generated policy. Push it to the device group alongside the force-install policy.
+4. Watch the key's redemption count, last redemption, and rejected attempts in **Enrollment keys**. Check **Browser health** for the group and its applied policy.
+5. Leave the key in place for devices that join later. Rotate before it expires: **Rotate a key** issues a replacement and keeps the old key valid for the overlap you choose. Push the new key, confirm enrollments, then revoke the old key. Already enrolled browsers are unaffected by rotation, expiry, or revocation of the key.
+
+The key can only enroll browsers. It cannot sign in to Control or call its APIs. Anyone who obtains it can enroll a browser into your organization until it expires, reaches its limit, or is revoked. Keep the limit tight, the lifetime short, and the scope to the intended group. If a key leaks, revoke it. Then open the key's **active** browsers link, which filters **Browser fleet** to the browsers that key enrolled, and revoke them in batches of up to 25. Push a fresh key to the legitimate devices. Their earlier installations were revoked, so they enroll again with the new key.
+
+A profile retries a redemption that failed to reach it with the same stored nonce, so it never takes two seats. Control limits redemption attempts per key per minute and the extension retries later.
+
+### Enroll individual profiles with grants
+
+1. In Control, create the pilot's rollout group and publish its policy. Start in Monitor.
 2. Open **Enroll browsers in group**. Issue one grant per profile, up to 25 at a time. Copy the codes right away. Control shows them only once. Group grants need Browser v0.21.0 or later. See [Enroll a rollout group](../apps/control-web/README.md#enroll-a-rollout-group).
 3. Deliver each grant to its profile through the device manager as the managed-storage value `EnrollmentGrant`, next to `ControlOrigin`. Deliver within 10 minutes of issue.
 4. After enrollment, remove the grant value from managed settings. Enrolled browsers keep their credential across restarts.
@@ -98,6 +116,11 @@ Popup messages and what they mean:
 | Waiting for Control to redeem the Chrome policy grant | Redemption is retrying. |
 | Chrome policy grant expired or was already used | Issue a fresh grant. |
 | Chrome policy contains an invalid enrollment grant | Check the value was pasted whole. |
+| Waiting for Control to redeem the Chrome policy enrollment key | Redemption is retrying, for example after a network error or rate limit. |
+| Chrome policy contains an invalid enrollment key | The `EnrollmentKey` value is not a whole `zke_` key. |
+| The Chrome policy enrollment key expired / was revoked | Push the current key. |
+| The Chrome policy enrollment key has no enrollments left | The key reached its limit. Rotate the key, or create one with a higher limit. |
+| Control rejected the Chrome policy enrollment key for this browser | This profile's installation was revoked. Push a new key to re-enroll it. |
 | Chrome policy must specify this build's Control origin | `ControlOrigin` is missing or does not match the build. |
 | Paste an enrollment grant to connect | Chrome cannot restrict managed storage here. Enroll by hand. |
 | Control changed. Enroll with a new grant from this destination | The build points at a different Control origin. The extension clears the old enrollment, queued data, and cached enforcement. Update the origin and grant together. |
@@ -141,7 +164,7 @@ To roll back a policy rather than the extension, restore an earlier policy versi
 
 ### Remove the extension from devices
 
-1. In the device group's policy, set `installation_mode` to `removed` for the pinned extension ID. Remove its managed configuration, including any `EnrollmentGrant` and `ControlOrigin` values.
+1. In the device group's policy, set `installation_mode` to `removed` for the pinned extension ID. Remove its managed configuration, including any `EnrollmentKey`, `EnrollmentGrant`, and `ControlOrigin` values.
 2. Reload policy on a canary. Confirm in `chrome://extensions` that Zekvar Browser is gone.
 3. Apply to the rest of the group.
 4. Revoke each installation in Control (see below).
@@ -150,7 +173,7 @@ To roll back a policy rather than the extension, restore an earlier policy versi
 
 1. Open **Browser health** and revoke the installation, or use **Browser fleet** to revoke up to 25 at a time. Revoked browsers need a fresh grant to reconnect. See [Manage browser fleet batches](../apps/control-web/README.md#manage-browser-fleet-batches).
 2. Revocation deletes that browser's extension inventory snapshots, change reports, and composer observations. Revoke after the device removal, or at the same time. A browser that is offline learns of revocation when it next reaches Control.
-3. Delete any unused grants with **Cancel unused grants**.
+3. Delete any unused grants with **Cancel unused grants**, and revoke the group's enrollment key in **Enrollment keys**. To find every browser a key enrolled, open its **active** browsers link.
 
 The Control web guide notes that navigation rules are removed on a revoked browser once it receives confirmation from Control. Removing the extension removes its rules in any case.
 

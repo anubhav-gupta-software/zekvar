@@ -16,6 +16,21 @@ BEGIN
 END;
 $$;
 
+DO $$
+BEGIN
+    -- Device-manager enrollment keys in the snapshot may have been revoked after it was taken.
+    IF to_regclass('public.enrollment_keys') IS NOT NULL THEN
+        WITH revoked AS (
+            UPDATE public.enrollment_keys SET revoked_at = CURRENT_TIMESTAMP
+            WHERE revoked_at IS NULL RETURNING organization_id, id, label, policy_group_id, redeemed, max_redemptions, revoked_at
+        )
+        INSERT INTO public.control_audit (organization_id, occurred_at, action, enrollment_key_change)
+        SELECT organization_id, revoked_at, 'enrollment_key_revoked', jsonb_strip_nulls(jsonb_build_object('keyId', id, 'label', label,
+            'groupId', policy_group_id, 'redeemed', redeemed, 'maxRedemptions', max_redemptions)) FROM revoked;
+    END IF;
+END;
+$$;
+
 WITH revoked AS (
     UPDATE public.control_access SET revoked_at = CURRENT_TIMESTAMP, token_hash = NULL
     WHERE revoked_at IS NULL RETURNING organization_id, id, revoked_at

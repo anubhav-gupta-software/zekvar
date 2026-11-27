@@ -51,13 +51,15 @@ export type PolicyEvent = {
 } & ((RuleMetadata & { uploadMethod?: UploadMethod }) | UploadMetadata |
   { ruleId: typeof clipboardUnavailableRule; detectorCategory: typeof clipboardCategory; uploadMethod?: never });
 
+export type EnrollmentKeyStatus = 'key_invalid' | 'key_retrying' | 'key_expired' | 'key_revoked' | 'key_exhausted' | 'key_rejected';
+
 export type Summary = {
   status: 'standalone' | 'connected' | 'offline' | 'revoked';
   installationId?: string;
   policy?: Policy;
   promptApps?: AiPromptApp[];
   enrollmentSource?: 'managed' | 'manual';
-  managedEnrollment?: 'invalid' | 'rejected' | 'retrying' | 'origin_mismatch' | 'manual_required';
+  managedEnrollment?: 'invalid' | 'rejected' | 'retrying' | 'origin_mismatch' | 'manual_required' | EnrollmentKeyStatus;
   originChanged?: boolean;
   domainRuleCount?: number;
   pathRuleCount?: number;
@@ -118,6 +120,11 @@ export function send(message: Message): Promise<Reply> {
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+// Device-manager enrollment keys carry a fixed prefix so they are never confused with a bearer credential.
+export function isEnrollmentKey(value: unknown): value is string {
+  return typeof value === 'string' && value.startsWith('zke_') && isToken(value.slice(4));
 }
 
 export function isToken(value: unknown): value is string {

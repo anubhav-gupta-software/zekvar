@@ -6,6 +6,11 @@
       "title": "Zekvar enrollment grant",
       "description": "A short-lived, single-use grant for this Chrome profile."
     },
+    "EnrollmentKey": {
+      "type": "string",
+      "title": "Zekvar device-manager enrollment key",
+      "description": "A shared, expiring enrollment key for a device group. Each Chrome profile redeems it once for its own credential."
+    },
     "ControlOrigin": {
       "type": "string",
       "title": "Zekvar Control origin",

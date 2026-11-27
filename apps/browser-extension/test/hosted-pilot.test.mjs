@@ -164,6 +164,9 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
     headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401);
   assert.equal((await call(browserOrigin + '/v1/enroll', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ grant: '0'.repeat(64) }) })).status, 401);
+  assert.equal((await call(browserOrigin + '/v1/enroll/key')).status, 404);
+  assert.equal((await call(browserOrigin + '/v1/enroll/key', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: `zke_${'0'.repeat(64)}`, nonce: '1'.repeat(64) }) })).status, 401);
 
   async function admin(path, body, expected = 200) {
     const response = await fetch(`http://127.0.0.1:${apiPort}/v1/admin/${path}`, {

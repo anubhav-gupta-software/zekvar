@@ -165,6 +165,7 @@ export type Feedback = {
   issuedEventFeedKey?: import('./access').IssuedEventFeedKey;
   fleetChange?: import('./fleet').FleetChange;
   issuedEnrollmentBatch?: import('./enrollment').IssuedEnrollmentBatch; enrollmentRequestId?: string;
+  issuedEnrollmentKey?: import('./enrollment-keys').IssuedEnrollmentKey; enrollmentKeyRequestId?: string;
 };
 
 export const utc = new Intl.DateTimeFormat('en-US', {

@@ -158,6 +158,8 @@ try {
   const rolloutAdmin = randomBytes(32).toString('hex');
   const adapterAdmin = randomBytes(32).toString('hex');
   const saasAdmin = randomBytes(32).toString('hex');
+  const enrollmentKeyAdmin = randomBytes(32).toString('hex');
+  const enrollmentKeyDashboardAdmin = randomBytes(32).toString('hex');
   const apiServer = startService('dotnet', ['bin/Debug/net10.0/Control.Api.dll'], api, {
     DOTNET_ENVIRONMENT: 'Development', ASPNETCORE_ENVIRONMENT: 'Development', Control__Port: String(apiPort), ConnectionStrings__Control: db,
     Control__Organizations__0__Slug: 'demo', Control__Organizations__0__AdminToken: token,
@@ -182,6 +184,8 @@ try {
     Control__Organizations__21__Slug: 'automated-rollout', Control__Organizations__21__AdminToken: rolloutAdmin,
     Control__Organizations__22__Slug: 'adapter-controls', Control__Organizations__22__AdminToken: adapterAdmin,
     Control__Organizations__23__Slug: 'saas-inventory', Control__Organizations__23__AdminToken: saasAdmin,
+    Control__Organizations__24__Slug: 'enrollment-keys', Control__Organizations__24__AdminToken: enrollmentKeyAdmin,
+    Control__Organizations__25__Slug: 'enrollment-key-dashboard', Control__Organizations__25__AdminToken: enrollmentKeyDashboardAdmin,
     ...(flags.has('--pilot') ? {
       Control__Organizations__3__Slug: 'managed-pilot', Control__Organizations__3__AdminToken: pilotAdmin,
       Control__Organizations__4__Slug: 'review-pilot', Control__Organizations__4__AdminToken: reviewAdmin,
@@ -277,6 +281,14 @@ try {
   await run(process.execPath, ['--test', 'test/adapter-controls.test.mjs'], extension, {
     ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_WEB: webOrigin, ZEKVAR_DEMO_TOKEN: adapterAdmin, ZEKVAR_DEMO_OTHER_TOKEN: token,
     ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_ARTIFACTS: artifacts ?? '',
+  });
+  await run(process.execPath, ['--test', 'test/enrollment-keys.test.mjs'], extension, {
+    ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_TOKEN: enrollmentKeyAdmin,
+    ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_ARTIFACTS: artifacts ?? '',
+  });
+  await run(process.execPath, ['--test', 'test/enrollment-keys.test.mjs'], web, {
+    ZEKVAR_TEST_WEB_ORIGIN: webOrigin, ZEKVAR_TEST_API_ORIGIN: apiOrigin, ZEKVAR_TEST_ADMIN_TOKEN: enrollmentKeyDashboardAdmin,
+    ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0',
   });
   await run('npm', ['run', 'test:control'], extension, {
     ZEKVAR_EXTENSION_TEST_API: apiOrigin, ZEKVAR_EXTENSION_TEST_ADMIN_TOKEN: extensionAdmin,

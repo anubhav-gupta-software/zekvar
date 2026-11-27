@@ -119,6 +119,12 @@ function auditDetails(entry: AuditEntry) {
     {triage.after.disposition && <> · {triageDispositions[triage.after.disposition]}</>}
     {triage.before.assigneeId !== triage.after.assigneeId && <> · Assignment changed</>}
   </>;
+  const enrollmentKey = entry.enrollmentKeyChange;
+  if (enrollmentKey) return <>{entry.installationId && <><code title={entry.installationId}>{entry.installationId.slice(0, 13)}</code> · </>}
+    {enrollmentKey.label} · {enrollmentKey.groupName ?? 'Organization baseline'}
+    {enrollmentKey.redeemed !== undefined && <> · {enrollmentKey.redeemed}{enrollmentKey.maxRedemptions ? ` of ${enrollmentKey.maxRedemptions}` : ''} redeemed</>}
+    {enrollmentKey.rotatedFrom && <> · Rotated from <code title={enrollmentKey.rotatedFrom}>{enrollmentKey.rotatedFrom.slice(0, 13)}</code></>}
+    {' · '}<code title={enrollmentKey.keyId}>{enrollmentKey.keyId.slice(0, 13)}</code></>;
   const batch = entry.enrollmentBatchChange;
   if (batch) return <>{entry.installationId && <><code title={entry.installationId}>{entry.installationId.slice(0, 13)}</code> · </>}
     {batch.groupName ?? 'Organization baseline'} · {batch.count} {batch.count === 1 ? 'grant' : 'grants'} ·

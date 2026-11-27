@@ -3,6 +3,7 @@ import { canWrite, type ControlSession } from '../../lib/access';
 import { ApiError, controlApi } from '../../lib/api';
 import type { PolicyGroup } from '../../lib/control';
 import type { FleetPage } from '../../lib/fleet';
+import type { EnrollmentKey } from '../../lib/enrollment-keys';
 import { sessionToken } from '../../lib/session';
 import { RefreshSection } from '../forms';
 import { DeploymentBadge, Sidebar } from '../workspace';
@@ -11,6 +12,7 @@ import { FleetEditor } from './fleet-editor';
 type Search = Record<string, string | string[] | undefined>;
 type FleetView = {
   session: ControlSession; groups: PolicyGroup[]; baselineVersion?: number; filters: URLSearchParams; fleet?: FleetPage; error?: string;
+  enrollmentKey?: EnrollmentKey;
 };
 
 export default async function Fleet({ searchParams }: { searchParams: Promise<Search> }) {
@@ -31,6 +33,8 @@ export default async function Fleet({ searchParams }: { searchParams: Promise<Se
   const scope = new URLSearchParams();
   const group = data?.filters.get('rolloutGroup');
   if (group) scope.set('rolloutGroup', group);
+  const keyId = data?.filters.get('enrollmentKey');
+  if (keyId) scope.set('enrollmentKey', keyId);
 
   return <div className="workspace">
     <Sidebar active="fleet" session={data?.session} />
@@ -50,8 +54,13 @@ export default async function Fleet({ searchParams }: { searchParams: Promise<Se
               {data.groups.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
             </select>
           </div>
+          {keyId && <input type="hidden" name="enrollmentKey" value={keyId} />}
           <button className="button">Filter fleet</button>
         </form>
+        {keyId && <p className="feedback" role="status">Showing active browsers enrolled by key
+          {' '}<strong>{data.enrollmentKey?.label ?? keyId.slice(0, 13)}</strong>.
+          {' '}To contain a leaked key, select these browsers and revoke them, then revoke the key.
+          {' '}<a className="underline" href={group ? `/fleet?rolloutGroup=${group}` : '/fleet'}>Show all browsers</a></p>}
       </section>}
       {data?.fleet ? <>
         <FleetEditor key={data.filters.toString()} entries={data.fleet.entries} writable={canWrite(data.session)}
@@ -69,15 +78,17 @@ async function loadFleet(token: string, search: Search): Promise<FleetView> {
   const [session, groups, baseline] = await Promise.all([controlApi.session(token), controlApi.groups(token), controlApi.policies(token)]);
   const filters = new URLSearchParams();
   const result = { session, groups, baselineVersion: baseline[0]?.version, filters };
-  for (const key of ['rolloutGroup', 'beforeAt', 'beforeId']) {
+  for (const key of ['rolloutGroup', 'beforeAt', 'beforeId', 'enrollmentKey']) {
     const value = search[key];
     if (Array.isArray(value)) return { ...result, error: 'Choose one rollout group and use a fleet page link.' };
     if (value) filters.set(key, value);
   }
-  try { return { ...result, fleet: await controlApi.fleet(token, filters) }; }
+  const keyId = filters.get('enrollmentKey');
+  const enrollmentKey = keyId ? (await controlApi.enrollmentKeys(token)).find(({ id }) => id === keyId) : undefined;
+  try { return { ...result, enrollmentKey, fleet: await controlApi.fleet(token, filters) }; }
   catch (error) {
     if (error instanceof ApiError && (error.status === 400 || error.status === 404)) {
-      return { ...result, error: 'This rollout group or fleet page is unavailable. Filter the fleet again.' };
+      return { ...result, error: 'This rollout group, enrollment key, or fleet page is unavailable. Filter the fleet again.' };
     }
     throw error;
   }

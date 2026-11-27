@@ -94,6 +94,12 @@ function render(summary: Summary) {
     retrying: 'Waiting for Control to redeem the Chrome policy grant.',
     origin_mismatch: 'Chrome policy must specify this build’s Control origin before it can enroll.',
     manual_required: 'Paste an enrollment grant to connect. Automatic enrollment requires protected managed settings.',
+    key_invalid: 'Chrome policy contains an invalid enrollment key.',
+    key_retrying: 'Waiting for Control to redeem the Chrome policy enrollment key.',
+    key_expired: 'The Chrome policy enrollment key expired. Ask your admin for the current key.',
+    key_revoked: 'The Chrome policy enrollment key was revoked. Ask your admin for the current key.',
+    key_exhausted: 'The Chrome policy enrollment key has no enrollments left. Ask your admin to rotate the key.',
+    key_rejected: 'Control rejected the Chrome policy enrollment key for this browser. Ask your admin for a new key.',
   };
   managed.textContent = summary.enrollmentSource === 'managed' ? 'Enrolled by Chrome policy.' :
     summary.managedEnrollment ? onboarding[summary.managedEnrollment] :

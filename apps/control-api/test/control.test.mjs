@@ -53,6 +53,7 @@ const rolloutAdmin = randomBytes(32).toString('hex');
 const adapterAdmin = randomBytes(32).toString('hex');
 const logsAdmin = randomBytes(32).toString('hex');
 const saasAdmin = randomBytes(32).toString('hex');
+const enrollmentKeyAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -72,8 +73,16 @@ const undoSaasInventorySchema = `
   ALTER TABLE policy_versions DROP COLUMN saas_discovery_enabled;
   ALTER TABLE policy_deliveries DROP COLUMN saas_discovery;
 `;
-const undoAdapterControlsSchema = `
+const undoEnrollmentKeysSchema = `
   ${undoSaasInventorySchema}
+  DELETE FROM schema_migrations WHERE version = 54;
+  DELETE FROM control_audit WHERE action IN ('enrollment_key_issued', 'enrollment_key_revoked');
+  ALTER TABLE control_audit DROP CONSTRAINT control_audit_enrollment_key_check, DROP COLUMN enrollment_key_change;
+  DROP TABLE enrollment_key_redemptions;
+  DROP TABLE enrollment_keys;
+`;
+const undoAdapterControlsSchema = `
+  ${undoEnrollmentKeysSchema}
   DELETE FROM schema_migrations WHERE version = 53;
   DELETE FROM composer_observations WHERE coverage = 'disabled';
   UPDATE installations SET chatgpt_coverage = NULLIF(chatgpt_coverage, 'disabled'),
@@ -331,6 +340,9 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__35__AdminToken: logsAdmin,
       Control__Organizations__36__Slug: `saas-inventory-${suffix}`,
       Control__Organizations__36__AdminToken: saasAdmin,
+      Control__Organizations__37__Slug: `enrollment-keys-${suffix}`,
+      Control__Organizations__37__AdminToken: enrollmentKeyAdmin,
+      Control__EnrollmentKeyAttemptsPerMinute: '40',
       Control__RolloutEvaluationSeconds: '3600',
       ...overrides,
     },
@@ -6001,5 +6013,230 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await start();
     assert.ok((await admin('policies')).every((policy) => policy.saasDiscoveryEnabled === false));
     assert.ok((await inventory()).apps.every((app) => app.browsersSeen === 0 && app.status === 'unclassified'));
+  });
+
+  await t.test('device-manager enrollment keys enroll many profiles into one group with atomic limits, idempotent retries, rotation, and bulk revocation', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: enrollmentKeyAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const nonce = () => randomBytes(32).toString('hex');
+    const sha256 = (value) => createHash('sha256').update(value).digest('hex');
+    const create = (fields, options) => post('enrollment-keys', { requestId: randomUUID(), label: 'Device group key', days: 30, ...fields }, options);
+    async function redeem(key, value = nonce()) {
+      const response = await fetch(`${baseUrl}/v1/enroll/key`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, nonce: value }), signal: AbortSignal.timeout(10_000) });
+      const text = await response.text();
+      return { status: response.status, body: text ? JSON.parse(text) : undefined, retryAfter: response.headers.get('retry-after'), nonce: value };
+    }
+    const keyRow = async (id) => (await admin('enrollment-keys')).find((key) => key.id === id);
+    const policy = (token, expect = 200) => call('/v1/browser/policy', { token, assignmentAware: true, expect });
+
+    if (postgres) {
+      await create({ label: 'Before migration replay' });
+      await stop();
+      await retentionFixture(undoEnrollmentKeysSchema);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 54'), '1');
+      assert.deepEqual(await admin('enrollment-keys'), []);
+    }
+
+    const group = await post('policy-groups', { name: 'Intune finance devices' });
+    const groupPolicy = await post(`policy-groups/${group.id}/policies`, { mode: 'block' });
+    for (const body of [{ label: 'x' }, { label: 'Valid', days: 31 }, { label: 'Valid', days: 0 }, { label: 'Valid', maxRedemptions: 0 },
+      { label: 'Valid', maxRedemptions: 100_001 }, { label: 'Bad\nlabel' }, { requestId: '00000000-0000-0000-0000-000000000000' },
+      { label: 'Valid', groupId: '00000000-0000-0000-0000-000000000000' }, { label: 'Valid', scope: 'admin' }]) {
+      await create(body, { expect: 400 });
+    }
+    assert.deepEqual(await create({ groupId: randomUUID() }, { expect: 404 }), { code: 'enrollment_key_group_unavailable' });
+
+    // Issue once; Control keeps only the hash.
+    const requestId = randomUUID();
+    const issued = await create({ requestId, label: 'Finance laptops', groupId: group.id, maxRedemptions: 10 });
+    assert.match(issued.token, /^zke_[a-f0-9]{64}$/);
+    assert.deepEqual([issued.key.status, issued.key.redeemed, issued.key.maxRedemptions, issued.key.groupName, issued.key.label],
+      ['active', 0, 10, group.name, 'Finance laptops']);
+    assert.ok(Math.abs(Date.parse(issued.key.expiresAt) - Date.now() - 30 * 86_400_000) < 120_000);
+    assert.deepEqual(await create({ requestId, label: 'Finance laptops' }, { expect: 409 }), { code: 'enrollment_key_exists' });
+    assert.ok(!JSON.stringify(await admin('enrollment-keys')).includes(issued.token.slice(4)));
+    if (postgres) {
+      assert.equal(await retentionFixture(`SELECT count(*) FROM enrollment_keys WHERE token_hash = '${sha256(issued.token)}'`), '1');
+      assert.equal(await retentionFixture(`SELECT count(*) FROM enrollment_keys WHERE token_hash LIKE '%${issued.token.slice(4, 20)}%'`), '0');
+    }
+
+    // The key only enrolls. It cannot authenticate to admin, browser, or integration APIs, with or without its prefix.
+    for (const bearer of [issued.token, issued.token.slice(4)]) {
+      await call('/v1/admin/session', { token: bearer, expect: 401 });
+      await call('/v1/admin/enrollment-keys', { token: bearer, expect: 401 });
+      await call('/v1/admin/enrollment-grants', { token: bearer, method: 'POST', expect: 401 });
+      await call('/v1/browser/policy', { token: bearer, expect: 401 });
+      await call('/v1/integrations/events', { token: bearer, expect: 401 });
+    }
+    await call('/v1/enroll', { method: 'POST', body: { grant: issued.token.slice(4) }, expect: 401 });
+    for (const body of [{ key: issued.token }, { key: issued.token, nonce: 'short' }, { key: issued.token.slice(4), nonce: nonce() },
+      { key: issued.token, nonce: nonce(), groupId: group.id }]) {
+      await call('/v1/enroll/key', { method: 'POST', body, expect: 400 });
+    }
+    assert.deepEqual(await call('/v1/enroll/key', { method: 'POST', body: { key: `zke_${randomBytes(32).toString('hex')}`, nonce: nonce() },
+      expect: 401 }), { code: 'enrollment_key_invalid' });
+
+    // Thirty concurrent profiles race for ten seats.
+    const raced = await Promise.all(Array.from({ length: 30 }, () => redeem(issued.token)));
+    const enrolled = raced.filter(({ status }) => status === 200);
+    assert.equal(enrolled.length, 10, JSON.stringify(raced.map(({ status, body }) => [status, body?.code])));
+    assert.ok(raced.filter(({ status }) => status !== 200).every(({ status, body }) => status === 410 && body.code === 'enrollment_key_exhausted'));
+    assert.equal(new Set(enrolled.map(({ body }) => body.installationId)).size, 10);
+    assert.equal(new Set(enrolled.map(({ body }) => body.token)).size, 10);
+    for (const { body } of enrolled) {
+      const delivered = await policy(body.token);
+      assert.equal(delivered.version, groupPolicy.version);
+    }
+    const exhausted = await keyRow(issued.key.id);
+    assert.deepEqual([exhausted.status, exhausted.redeemed, exhausted.activeInstallations, exhausted.rejected], ['exhausted', 10, 10, 20]);
+    assert.ok(exhausted.lastRedeemedAt && exhausted.lastRejectedAt);
+    const keyFleet = await admin(`installations/fleet?enrollmentKey=${issued.key.id}`);
+    assert.equal(keyFleet.entries.length, 10);
+    assert.ok(keyFleet.entries.every(({ groupId }) => groupId === group.id));
+    for (const query of ['enrollmentKey=invalid', `enrollmentKey=${issued.key.id}&enrollmentKey=${issued.key.id}`]) {
+      await admin(`installations/fleet?${query}`, { expect: 400 });
+    }
+    await admin(`installations/fleet?enrollmentKey=${randomUUID()}`, { expect: 404 });
+    const audit = (await admin('audit?action=browser_enrolled&limit=100')).entries.filter(({ enrollmentKeyChange }) =>
+      enrollmentKeyChange?.keyId === issued.key.id);
+    assert.equal(audit.length, 10);
+    assert.deepEqual(audit.map(({ enrollmentKeyChange }) => enrollmentKeyChange.redeemed).sort((a, b) => a - b), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    assert.ok(audit.every(({ actor, enrollmentKeyChange }) => actor === 'browser_enrollment' && enrollmentKeyChange.maxRedemptions === 10 &&
+      enrollmentKeyChange.groupId === group.id));
+    const [issuedAudit] = (await admin('audit?action=enrollment_key_issued')).entries.filter(({ enrollmentKeyChange }) =>
+      enrollmentKeyChange.keyId === issued.key.id);
+    assert.deepEqual([issuedAudit.enrollmentKeyChange.label, issuedAudit.enrollmentKeyChange.maxRedemptions], ['Finance laptops', 10]);
+    assert.ok(!JSON.stringify(await admin('audit?limit=1000')).includes(issued.token.slice(4)));
+
+    // A profile that lost the response retries with its nonce: same installation, no extra seat, and only the new credential works.
+    const pair = await create({ label: 'Two seats', maxRedemptions: 2 });
+    const profile = nonce();
+    const lost = await redeem(pair.token, profile);
+    const retried = await redeem(pair.token, profile);
+    assert.equal(retried.status, 200);
+    assert.equal(retried.body.installationId, lost.body.installationId);
+    assert.notEqual(retried.body.token, lost.body.token);
+    await policy(lost.body.token, 401);
+    await policy(retried.body.token);
+    assert.equal((await keyRow(pair.key.id)).redeemed, 1);
+    assert.equal((await redeem(pair.token)).status, 200);
+    assert.equal((await redeem(pair.token)).body.code, 'enrollment_key_exhausted');
+    const late = await redeem(pair.token, profile);
+    assert.deepEqual([late.status, late.body.installationId], [200, lost.body.installationId]);
+    assert.equal((await keyRow(pair.key.id)).redeemed, 2);
+    const burst = await create({ label: 'Same profile burst', maxRedemptions: 5 });
+    const same = nonce();
+    const repeated = await Promise.all(Array.from({ length: 5 }, () => redeem(burst.token, same)));
+    assert.ok(repeated.every(({ status }) => status === 200));
+    assert.equal(new Set(repeated.map(({ body }) => body.installationId)).size, 1);
+    let working = 0;
+    for (const { body } of repeated) {
+      const response = await fetch(`${baseUrl}/v1/browser/policy`, { headers: { Authorization: `Bearer ${body.token}` }, signal: AbortSignal.timeout(5_000) });
+      if (response.status !== 401) working++;
+    }
+    assert.equal(working, 1);
+    assert.equal((await keyRow(burst.key.id)).redeemed, 1);
+
+    // Expiry.
+    const expiring = await create({ label: 'Expiring key', days: 1 });
+    if (postgres) {
+      await retentionFixture(`UPDATE enrollment_keys SET created_at = now() - interval '2 days', expires_at = now() - interval '1 second'
+        WHERE id = '${expiring.key.id}';`);
+      assert.deepEqual((await redeem(expiring.token)).body, { code: 'enrollment_key_expired' });
+      assert.equal((await keyRow(expiring.key.id)).status, 'expired');
+      await post(`enrollment-keys/${expiring.key.id}/rotate`, { requestId: randomUUID(), days: 1 }, { expect: 409 });
+    }
+
+    // Revocation stops new and retried redemptions but leaves enrolled browsers alone until they are revoked.
+    const revocable = await create({ label: 'Revocable key' });
+    const kept = await redeem(revocable.token);
+    await post(`enrollment-keys/${revocable.key.id}/revoke`, undefined, { expect: 204 });
+    await post(`enrollment-keys/${revocable.key.id}/revoke`, undefined, { expect: 204 });
+    await post(`enrollment-keys/${randomUUID()}/revoke`, undefined, { expect: 404 });
+    assert.deepEqual((await redeem(revocable.token)).body, { code: 'enrollment_key_revoked' });
+    assert.deepEqual((await redeem(revocable.token, kept.nonce)).body, { code: 'enrollment_key_revoked' });
+    await policy(kept.body.token);
+    const revokedAudit = (await admin('audit?action=enrollment_key_revoked')).entries;
+    assert.equal(revokedAudit.length, 1);
+    assert.deepEqual([revokedAudit[0].enrollmentKeyChange.keyId, revokedAudit[0].enrollmentKeyChange.redeemed], [revocable.key.id, 1]);
+    assert.deepEqual((await post(`enrollment-keys/${revocable.key.id}/rotate`, { requestId: randomUUID(), days: 7 }, { expect: 409 })),
+      { code: 'enrollment_key_inactive' });
+
+    // Rotation: the new key works while the old one stays valid for the overlap, then the old one is revoked.
+    const current = await create({ label: 'Jamf scope key', groupId: group.id, maxRedemptions: 50 });
+    for (const body of [{ requestId: randomUUID(), days: 31 }, { requestId: randomUUID(), days: 7, overlapHours: 0 },
+      { requestId: randomUUID(), days: 7, overlapHours: 721 }]) {
+      await post(`enrollment-keys/${current.key.id}/rotate`, body, { expect: 400 });
+    }
+    await post(`enrollment-keys/${randomUUID()}/rotate`, { requestId: randomUUID(), days: 7 }, { expect: 404 });
+    const rotated = await post(`enrollment-keys/${current.key.id}/rotate`, { requestId: randomUUID(), days: 14, overlapHours: 24 });
+    assert.notEqual(rotated.token, current.token);
+    assert.deepEqual([rotated.key.rotatedFrom, rotated.key.label, rotated.key.groupId, rotated.key.maxRedemptions, rotated.key.status],
+      [current.key.id, 'Jamf scope key', group.id, 50, 'active']);
+    const previous = await keyRow(current.key.id);
+    assert.equal(previous.status, 'active');
+    assert.ok(Math.abs(Date.parse(previous.expiresAt) - Date.now() - 86_400_000) < 120_000);
+    const [oldRedeemed, newRedeemed] = await Promise.all([redeem(current.token), redeem(rotated.token)]);
+    assert.deepEqual([oldRedeemed.status, newRedeemed.status], [200, 200]);
+    assert.equal((await policy(newRedeemed.body.token)).version, groupPolicy.version);
+    await post(`enrollment-keys/${current.key.id}/revoke`, undefined, { expect: 204 });
+    assert.equal((await redeem(current.token)).body.code, 'enrollment_key_revoked');
+    assert.equal((await redeem(rotated.token)).status, 200);
+    const rotationAudit = (await admin('audit?action=enrollment_key_issued')).entries.find(({ enrollmentKeyChange }) =>
+      enrollmentKeyChange.keyId === rotated.key.id).enrollmentKeyChange;
+    assert.equal(rotationAudit.rotatedFrom, current.key.id);
+    assert.ok(rotationAudit.previousKeyExpiresAt);
+    const plain = await post(`enrollment-keys/${rotated.key.id}/rotate`, { requestId: randomUUID(), days: 3 });
+    assert.equal((await keyRow(rotated.key.id)).expiresAt, rotated.key.expiresAt);
+    assert.equal(plain.key.rotatedFrom, rotated.key.id);
+
+    // Roles and tenants.
+    const operator = await post('access', { name: 'Key operator', role: 'administrator', hours: 1 });
+    const auditor = await post('access', { name: 'Key auditor', role: 'auditor', hours: 1 });
+    const delegated = await create({ label: 'Delegated key' }, { token: operator.token });
+    assert.equal((await admin('audit?action=enrollment_key_issued')).entries.find(({ enrollmentKeyChange }) =>
+      enrollmentKeyChange.keyId === delegated.key.id).actorAccess.name, 'Key operator');
+    assert.ok((await admin('enrollment-keys', { token: auditor.token })).some(({ id }) => id === issued.key.id));
+    assert.equal((await admin(`installations/fleet?enrollmentKey=${issued.key.id}`, { token: auditor.token })).entries.length, 10);
+    await create({ label: 'Auditor key' }, { token: auditor.token, expect: 403 });
+    await post(`enrollment-keys/${delegated.key.id}/revoke`, undefined, { token: auditor.token, expect: 403 });
+    await post(`enrollment-keys/${delegated.key.id}/rotate`, { requestId: randomUUID(), days: 1 }, { token: auditor.token, expect: 403 });
+    assert.equal((await keyRow(delegated.key.id)).status, 'active');
+    const foreign = (path, options) => call(`/v1/admin/${path}`, { token: second, ...options });
+    assert.ok(!(await foreign('enrollment-keys')).some(({ id }) => id === issued.key.id));
+    await foreign(`enrollment-keys/${delegated.key.id}/revoke`, { method: 'POST', expect: 404 });
+    await foreign(`enrollment-keys/${delegated.key.id}/rotate`, { method: 'POST', body: { requestId: randomUUID(), days: 1 }, expect: 404 });
+    await foreign(`installations/fleet?enrollmentKey=${issued.key.id}`, { expect: 404 });
+    await foreign('enrollment-keys', { method: 'POST', body: { requestId: randomUUID(), label: 'Foreign', days: 1, groupId: group.id }, expect: 404 });
+    const foreignIds = new Set((await foreign('installations')).map(({ installationId }) => installationId));
+    assert.ok(enrolled.every(({ body }) => !foreignIds.has(body.installationId)));
+    assert.equal((await keyRow(delegated.key.id)).status, 'active');
+
+    // Bulk revocation of everything a leaked key enrolled reuses the audited fleet batch.
+    const selections = keyFleet.entries.map(({ installationId, assignmentVersion }) => ({ installationId, assignmentVersion }));
+    const change = await post('installations/fleet', { requestId: randomUUID(), operation: 'revoke', groupId: null, expectedPolicyVersion: null,
+      selections });
+    assert.equal(change.changedInstallations.length, 10);
+    for (const { body } of enrolled) await policy(body.token, 401);
+    assert.deepEqual((await admin(`installations/fleet?enrollmentKey=${issued.key.id}`)).entries, []);
+    assert.equal((await keyRow(issued.key.id)).activeInstallations, 0);
+    assert.deepEqual((await redeem(issued.token, enrolled[0].nonce)).body, { code: 'installation_revoked' });
+    assert.equal((await admin('audit?action=browser_fleet_changed')).entries[0].fleetChange.changedInstallations.length, 10);
+
+    // Each key has its own attempt budget per minute.
+    const flood = await create({ label: 'Rate limited key' });
+    const attempts = await Promise.all(Array.from({ length: 45 }, () => redeem(flood.token)));
+    const limited = attempts.filter(({ status }) => status === 429);
+    assert.equal(limited.length, 5);
+    assert.ok(limited.every(({ body, retryAfter }) => body.code === 'enrollment_key_rate_limited' && Number(retryAfter) >= 1 && Number(retryAfter) <= 60));
+    assert.equal(attempts.filter(({ status }) => status === 200).length, 40);
+    assert.equal((await redeem(delegated.token)).status, 200);
+
+    // At most twenty keys can be active at once.
+    const active = (await admin('enrollment-keys')).filter(({ status }) => status === 'active' || status === 'exhausted').length;
+    for (let index = active; index < 20; index++) await create({ label: `Capacity ${index}` });
+    assert.deepEqual(await create({ label: 'One too many' }, { expect: 409 }), { code: 'enrollment_key_limit' });
   });
 });

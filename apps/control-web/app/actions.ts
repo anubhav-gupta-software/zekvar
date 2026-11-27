@@ -201,6 +201,70 @@ export async function issueEnrollmentBatch(_previous: Feedback, form: FormData):
   return { ...result, enrollmentRequestId: result.issuedEnrollmentBatch ? randomUUID() : requestId };
 }
 
+const keyErrors: Record<string, string> = {
+  enrollment_key_exists: 'This request already created a key. Reload the key list before issuing another.',
+  enrollment_key_limit: 'Twenty keys are already active. Revoke a key you no longer need first.',
+  enrollment_key_inactive: 'Only an active key can be rotated. Create a new key instead.',
+  enrollment_key_group_unavailable: 'That rollout group is unavailable. Choose another group.',
+};
+
+function readKeyDays(form: FormData) {
+  const days = Number(form.get('days'));
+  return Number.isInteger(days) && days >= 1 && days <= 30 ? days : undefined;
+}
+
+async function keyChange(requestId: string, change: (token: string) => Promise<import('../lib/enrollment-keys').IssuedEnrollmentKey>) {
+  const token = await sessionToken();
+  if (!token) return { error: 'Your session has expired. Reload and sign in again.', enrollmentKeyRequestId: requestId };
+  try {
+    const issuedEnrollmentKey = await change(token);
+    revalidatePath('/enrollment-keys');
+    return { issuedEnrollmentKey, enrollmentKeyRequestId: randomUUID() };
+  } catch (error) {
+    if (error instanceof ApiError && error.code && keyErrors[error.code]) return { error: keyErrors[error.code], enrollmentKeyRequestId: requestId };
+    const fallback = await perform(async () => { throw error; });
+    return { ...fallback, enrollmentKeyRequestId: requestId };
+  }
+}
+
+export async function issueEnrollmentKey(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const requestId = form.get('requestId');
+  const label = form.get('label');
+  const groupId = form.get('groupId');
+  const limit = form.get('maxRedemptions');
+  const days = readKeyDays(form);
+  const maxRedemptions = limit === '' || limit === null ? null : Number(limit);
+  const name = typeof label === 'string' ? label.trim() : '';
+  if (!isId(requestId) || (groupId !== '' && !isId(groupId)) || !days || name.length < 2 || name.length > 64 || /[\u0000-\u001f\u007f]/.test(name) ||
+      (maxRedemptions !== null && (!Number.isInteger(maxRedemptions) || maxRedemptions < 1 || maxRedemptions > 100_000))) {
+    return { error: 'Enter a label, a lifetime from 1 to 30 days, and an optional limit from 1 to 100,000 browsers.',
+      enrollmentKeyRequestId: isId(requestId) ? requestId : randomUUID() };
+  }
+  return keyChange(requestId, (token) => controlApi.issueEnrollmentKey(token, { requestId, label: name, groupId: groupId || null, days, maxRedemptions }));
+}
+
+export async function rotateEnrollmentKey(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const requestId = form.get('requestId');
+  const id = form.get('keyId');
+  const overlap = form.get('overlapHours');
+  const days = readKeyDays(form);
+  const overlapHours = overlap === '' || overlap === null ? null : Number(overlap);
+  if (!isId(requestId) || !isId(id) || !days || (overlapHours !== null && (!Number.isInteger(overlapHours) || overlapHours < 1 || overlapHours > 720))) {
+    return { error: 'Choose a lifetime from 1 to 30 days and an overlap from 1 to 720 hours.', enrollmentKeyRequestId: isId(requestId) ? requestId : randomUUID() };
+  }
+  return keyChange(requestId, (token) => controlApi.rotateEnrollmentKey(token, id, { requestId, days, overlapHours }));
+}
+
+export async function revokeEnrollmentKey(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const id = form.get('keyId');
+  if (!isId(id)) return { error: 'Choose an enrollment key.' };
+  return perform(async (token) => {
+    await controlApi.revokeEnrollmentKey(token, id);
+    revalidatePath('/enrollment-keys');
+    return { message: 'Enrollment key revoked. Browsers it enrolled keep access until you revoke them.' };
+  });
+}
+
 export async function cancelEnrollmentBatch(_previous: Feedback, form: FormData): Promise<Feedback> {
   const id = form.get('batchId');
   if (!isId(id)) return { error: 'Choose an enrollment batch.' };

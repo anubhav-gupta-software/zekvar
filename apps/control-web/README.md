@@ -103,11 +103,23 @@ Save a new revision to reuse a different published policy. Archiving stops futur
 
 ## Manage browser fleet batches
 
-1. Open **Browser fleet**. Filter by a rollout group or the organization baseline, or use **Older browsers** to page through active installations. Select up to 25 browsers on the current page.
+1. Open **Browser fleet**. Filter by a rollout group or the organization baseline, or use **Older browsers** to page through active installations. Select up to 25 browsers on the current page, or use **Select first 25 shown**. Open the fleet from a key on **Enrollment keys** to see only the browsers that key enrolled.
 2. Choose **Assign to rollout group** or **Revoke browser access**, then select **Review browser batch**. An assignment review shows the destination and its current policy version. Check the selected installation IDs before confirming.
 3. After confirmation, Control shows how many browsers changed and records the batch in **Audit log**. Assigned browsers receive the reviewed destination policy on their next sync, or its latest version if it has since been published. Revoked browsers need fresh enrollment to reconnect.
 
 If a selected installation moves or the destination policy changes during review, refresh and review a new batch. The whole operation must pass these checks. Earlier Browser builds must sync with assignment support before moving. Auditors can inspect the fleet and audit log. [Fleet API and retry behavior](../control-api/README.md#browser-fleet-batches)
+
+## Enroll a device group with an enrollment key
+
+Use an enrollment key when a device manager pushes the same Chrome policy to many devices. Requires Browser v0.43.0 or later.
+
+1. Open **Enrollment keys**. Enter a label, choose the rollout group or organization baseline, set a lifetime of up to 30 days, and set **Maximum browsers** close to the number of profiles you expect. Select **Create enrollment key**. Copy the key right away. Control shows it once.
+2. Under the new key, enter the signed release's extension ID, its HTTPS update URL, and the Control origin. Choose **Google Admin console**, **Microsoft Intune · Windows**, **Jamf Pro · macOS**, or **Chrome policy JSON**, then **Copy policy**. The snippets are built in your browser and are not sent to Control. You can also build them later in **Managed policy snippets** by pasting a key.
+3. Push the policy to the device group. Each Chrome profile redeems the key once with its own random nonce and joins the key's group. The **Keys** table shows redemptions against the limit, the last redemption, rejected attempts, and active browsers. **Review key redemptions** flags active keys with no limit, keys within 20% of their limit, and keys with rejected attempts.
+4. To replace a key, use **Rotate a key**. Choose how long the old key stays valid (24 hours, 3 or 7 days, or until it expires). Push the new key, confirm new browsers enroll, then revoke the old key.
+5. If a key leaks, revoke it, then open its **active** browsers link. The fleet view is filtered to that key. Use **Select first 25 shown**, choose **Revoke browser access**, and review the batch. Repeat for further pages. Rotate a fresh key to the device manager for legitimate devices.
+
+Auditors can review keys and their browsers but cannot change them. [Enrollment key API](../control-api/README.md#device-manager-enrollment-keys)
 
 ## Enroll a rollout group
 
