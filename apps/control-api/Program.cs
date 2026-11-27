@@ -33,6 +33,7 @@ if (organizations is not { Length: > 0 } || organizations.Any(org => !ValidOrgan
     throw new InvalidOperationException("Configure distinct organization slugs and 32-byte hex admin tokens.");
 var sso = ControlSso.Read(builder.Configuration, hostedPilot, organizations);
 var alertWebhooks = AlertWebhooks.Read(builder.Configuration, builder.Environment.IsDevelopment(), organizations);
+var deletion = OrganizationDeletionOptions.Read(builder.Configuration);
 
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -52,10 +53,13 @@ builder.Services.AddHostedService<RolloutAdvancer>(services => new(services.GetR
 builder.Services.AddHostedService<RetentionSweep>(services => new(services.GetRequiredService<ControlStore>(),
     services.GetRequiredService<ILogger<RetentionSweep>>(), TimeSpan.FromSeconds(sweepSeconds)));
 if (alertWebhooks.Enabled) builder.Services.AddHostedService<AlertWebhookDispatcher>();
+builder.Services.AddHostedService<OrganizationDeletionSweep>(services => new(services.GetRequiredService<ControlStore>(), deletion,
+    services.GetRequiredService<ILogger<OrganizationDeletionSweep>>()));
 
 var app = builder.Build();
 var store = app.Services.GetRequiredService<ControlStore>();
-await store.Initialize(organizations, app.Lifetime.ApplicationStopping);
+if (await store.Initialize(organizations, app.Lifetime.ApplicationStopping) is > 0 and var skipped)
+    app.Logger.LogWarning("Control did not recreate {Count} configured organizations that were deleted. Rotate the owner token to provision a new organization.", skipped);
 
 app.Use(ControlLogging.ContainUnhandledErrors(app.Services.GetRequiredService<ILoggerFactory>()));
 app.Use(async (context, next) =>
@@ -99,8 +103,11 @@ admin.MapGet("/session", async (HttpContext http, CancellationToken ct) =>
 {
     var identity = Identity(http);
     var reviewRequired = await store.PolicyReviewRequired(identity.OrganizationId, ct);
+    if (identity.Offboarding)
+        return Results.Ok(new { organization = identity.OrganizationSlug, role = identity.Role, access = identity.Access, reviewRequired,
+            deletion = await store.OrganizationDeletion(identity.OrganizationId, ct) });
     return Results.Ok(new { organization = identity.OrganizationSlug, role = identity.Role, access = identity.Access, reviewRequired });
-});
+}).WithMetadata(OffboardingAccess.Allowed);
 var access = admin.MapGroup("/access").AddEndpointFilter((context, next) =>
     Identity(context.HttpContext).Role == AccessRoles.Owner ? next(context) : ValueTask.FromResult<object?>(Results.StatusCode(403)));
 access.MapGet("", async (HttpContext http, CancellationToken ct) =>
@@ -558,6 +565,68 @@ admin.MapPost("/retention", async (RetentionPolicy policy, HttpContext http, Can
 });
 admin.MapPost("/retention/cleanup", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.CleanupRetention(Identity(http).OrganizationId, scheduled: false, ct, Identity(http).Access?.Id)));
+admin.MapPost("/installations/{id:guid}/delete", async (Guid id, HttpContext http, CancellationToken ct) =>
+{
+    var result = await store.DeleteInstallation(Identity(http), id, ct);
+    return result.Deletion is { } deleted ? Results.Ok(deleted)
+        : result.Error is { } code ? Results.Conflict(new { code }) : Results.NotFound();
+});
+admin.MapPost("/policy-history/purge", async (PurgePolicyHistory request, HttpContext http, CancellationToken ct) =>
+{
+    if (request.GroupId == Guid.Empty || request.PublishedBefore > DateTimeOffset.UtcNow || request.PublishedBefore.Year < 2000)
+        return Results.BadRequest(new { error = "Choose the baseline or a rollout group and a cutoff in the past." });
+    return await store.PurgePolicyHistory(Identity(http), request, ct) is { } purge ? Results.Ok(purge) : Results.NotFound();
+});
+var offboarding = admin.MapGroup("/organization").AddEndpointFilter((context, next) =>
+    Identity(context.HttpContext).Role == AccessRoles.Owner ? next(context) : ValueTask.FromResult<object?>(Results.StatusCode(403)));
+offboarding.MapGet("/deletion", async (HttpContext http, CancellationToken ct) =>
+    await store.OrganizationDeletion(Identity(http).OrganizationId, ct) is { } status
+        ? Results.Ok(new { deletion = status, graceDays = deletion.GraceDays, available = deletion.Available })
+        : Results.Ok(new { deletion = (OrganizationDeletionStatus?)null, graceDays = deletion.GraceDays, available = deletion.Available }))
+    .WithMetadata(OffboardingAccess.Allowed);
+offboarding.MapPost("/deletion", async (RequestOrganizationDeletion request, HttpContext http, CancellationToken ct) =>
+{
+    var identity = Identity(http);
+    if (request.ConfirmSlug != identity.OrganizationSlug)
+        return Results.BadRequest(new { code = "deletion_confirmation_mismatch", error = "Type the organization slug exactly to confirm deletion." });
+    if (!deletion.Available) return Results.Conflict(new { code = "deletion_receipts_unavailable" });
+    var result = await store.RequestOrganizationDeletion(identity, deletion, ct);
+    return result.Requested is { } requested ? Results.Accepted(value: requested) : Results.Conflict(new { code = result.Error });
+});
+offboarding.MapPost("/deletion/cancel", async (HttpContext http, CancellationToken ct) =>
+{
+    var (status, error) = await store.CancelOrganizationDeletion(Identity(http), ct);
+    return status is not null ? Results.Ok(status) : error is { } code ? Results.Conflict(new { code }) : Results.NotFound();
+}).WithMetadata(OffboardingAccess.Allowed);
+offboarding.MapGet("/deletion/receipt", async (HttpContext http, CancellationToken ct) =>
+{
+    if (await store.OrganizationDeletionReceipt(Identity(http).OrganizationId, deletion, ct) is not { } receipt) return Results.NotFound();
+    http.Response.Headers.ContentDisposition = "attachment; filename=\"zekvar-deletion-receipt.json\"";
+    http.Response.Headers.XContentTypeOptions = "nosniff";
+    return Results.Text(receipt, "application/json");
+}).WithMetadata(OffboardingAccess.Allowed);
+offboarding.MapGet("/export", async (HttpContext http, CancellationToken ct) =>
+{
+    var identity = Identity(http);
+    if (await store.OrganizationDeletion(identity.OrganizationId, ct) is { Status: "deleting" })
+        return Results.Conflict(new { code = "organization_deletion_in_progress" });
+    http.Response.ContentType = "application/json";
+    http.Response.Headers.ContentDisposition = "attachment; filename=\"zekvar-organization-export.json\"";
+    http.Response.Headers.XContentTypeOptions = "nosniff";
+    await store.WriteOrganizationExport(identity, http.Response.Body, ct);
+    return Results.Empty;
+}).WithMetadata(OffboardingAccess.Allowed);
+app.MapGet("/v1/organization-deletions/{id:guid}/receipt", async (Guid id, HttpContext http, CancellationToken ct) =>
+{
+    if (BearerToken(http) is not { } token || await store.DeletionReceipt(id, token, deletion, ct) is not { } receipt)
+    {
+        http.Response.Headers.WWWAuthenticate = "Bearer";
+        return Results.Unauthorized();
+    }
+    http.Response.Headers.ContentDisposition = "attachment; filename=\"zekvar-deletion-receipt.json\"";
+    http.Response.Headers.XContentTypeOptions = "nosniff";
+    return Results.Text(receipt, "application/json");
+});
 admin.MapGet("/ai-apps", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.DiscoveredApps(Identity(http).OrganizationId, ct)));
 admin.MapPost("/ai-apps/{appId}/classification", async (string appId, ClassifyApp request, HttpContext http, CancellationToken ct) =>
@@ -796,6 +865,9 @@ Func<EndpointFilterInvocationContext, EndpointFilterDelegate, ValueTask<object?>
     }
     if (identity.Role == AccessRoles.Auditor && !HttpMethods.IsGet(http.Request.Method) && !HttpMethods.IsHead(http.Request.Method))
         return Results.StatusCode(StatusCodes.Status403Forbidden);
+    // During the deletion grace period only the owner signs in, and only to review, export, cancel, or download the receipt.
+    if (identity.Offboarding && http.GetEndpoint()?.Metadata.GetMetadata<OffboardingAccess>() is null)
+        return Results.Json(new { code = "organization_deletion_pending" }, statusCode: StatusCodes.Status403Forbidden);
     http.Items[typeof(RequestIdentity)] = identity;
     return await next(context);
 };
@@ -816,3 +888,8 @@ static RequestIdentity Identity(HttpContext http) => (RequestIdentity)http.Items
 static bool ValidOrganization(DemoOrganization org) => org.Slug is { Length: > 0 and <= 63 } &&
     org.Slug.All(character => character is >= 'a' and <= 'z' or >= '0' and <= '9' or '-') &&
     Tokens.IsValid(org.AdminToken);
+
+internal sealed class OffboardingAccess
+{
+    public static readonly OffboardingAccess Allowed = new();
+}

@@ -1,3 +1,4 @@
+import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../lib/api';
 import {
   aiApps, classifications, classificationLabels, composerStateLabels, composerStates, decisionLabels, decisions, discoveryAppName, fileCheckUnavailableLabel,
@@ -256,6 +257,8 @@ export default async function Control({ searchParams }: { searchParams: Promise<
     </div>;
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) return <SignIn invalid />;
+    // During a scheduled organization deletion the owner can only review, export, cancel, or download the receipt.
+    if (error instanceof ApiError && error.code === 'organization_deletion_pending') redirect('/data-deletion');
     if (!(error instanceof ApiError)) throw error;
     return <main className="auth-shell">
       <section className="auth-card">

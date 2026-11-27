@@ -162,7 +162,7 @@ internal sealed partial class ControlStore
     public async Task<IReadOnlyList<(Guid OrganizationId, Guid PlanId)>> RunningRolloutPlans(CancellationToken ct)
     {
         await using var command = Command("""
-            SELECT organization_id, id FROM rollout_plans WHERE status = 'running' ORDER BY evaluated_at NULLS FIRST LIMIT 500
+            SELECT organization_id, id FROM rollout_plans WHERE status = 'running' AND NOT organization_offboarding(organization_id) ORDER BY evaluated_at NULLS FIRST LIMIT 500
             """);
         var plans = new List<(Guid, Guid)>();
         await using var rows = await command.ExecuteReaderAsync(ct);
@@ -264,7 +264,9 @@ internal sealed partial class ControlStore
 
     private async Task<IReadOnlyList<(Guid, Guid)>> RunningRolloutPlans(Guid org, CancellationToken ct)
     {
-        await using var command = Command("SELECT organization_id, id FROM rollout_plans WHERE organization_id = $1 AND status = 'running'", org);
+        await using var command = Command("""
+            SELECT organization_id, id FROM rollout_plans WHERE organization_id = $1 AND status = 'running' AND NOT organization_offboarding($1)
+            """, org);
         var plans = new List<(Guid, Guid)>();
         await using var rows = await command.ExecuteReaderAsync(ct);
         while (await rows.ReadAsync(ct)) plans.Add((rows.GetGuid(0), rows.GetGuid(1)));

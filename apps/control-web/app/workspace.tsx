@@ -26,7 +26,7 @@ export function DeploymentBadge() {
 }
 
 export function Sidebar({ active, session }: {
-  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews' | 'extensions' | 'enrollment' | 'reports' | 'events' | 'cases' | 'alerts' | 'hardening' | 'fleet' | 'templates' | 'prompt-requests' | 'rollouts' | 'adapters' | 'enrollment-keys' | 'saas';
+  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews' | 'extensions' | 'enrollment' | 'reports' | 'events' | 'cases' | 'alerts' | 'hardening' | 'fleet' | 'templates' | 'prompt-requests' | 'rollouts' | 'adapters' | 'enrollment-keys' | 'saas' | 'data-deletion';
   session?: ControlSession;
 }) {
   const root = active ? '/' : '';
@@ -58,6 +58,7 @@ export function Sidebar({ active, session }: {
       <a href="/reports" aria-current={active === 'reports' ? 'page' : undefined}>Reports</a>
       <a href="/audit" aria-current={active === 'audit' ? 'page' : undefined}>Audit log</a>
       <a href="/retention" aria-current={active === 'retention' ? 'page' : undefined}>Data retention</a>
+      <a href="/data-deletion" aria-current={active === 'data-deletion' ? 'page' : undefined}>Data deletion</a>
       {session?.role === 'owner' && <a href="/access" aria-current={active === 'access' ? 'page' : undefined}>Control access</a>}
     </nav>
     <div className="sidebar-footer">

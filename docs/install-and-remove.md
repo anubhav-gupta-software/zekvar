@@ -182,12 +182,12 @@ The Control web guide notes that navigation rules are removed on a revoked brows
 | Where | What remains | How to delete |
 | --- | --- | --- |
 | Device | The extension, its private database (enrollment credential, cached policy, up to 100 queued events), and its Chrome rules are part of the extension's profile data. Chrome removes extension data when it uninstalls the extension. [TO CONFIRM: verify on a canary profile after removal.] | Removal by policy. |
-| Control: installations | The revoked installation record. | [TO CONFIRM: no self-service deletion of installation records was found in the Control API.] |
+| Control: installations | The revoked installation record and records derived from it. | An administrator deletes them under **Data deletion**. See [Delete a revoked browser's data](#delete-a-revoked-browsers-data). |
 | Control: security events | Decision metadata (see the [data inventory](security-and-privacy.md#what-control-stores)). | Shorten the retention window and run cleanup. See below. |
 | Control: AI observations | App ID, time, policy and assignment versions. | Same as events. |
 | Control: audit log | Policy, enrollment, access, and retention changes. | Same as events, using the audit window. |
-| Control: policy history | Versioned policies for the baseline and groups. | [TO CONFIRM: no self-service deletion of policy history was found.] |
-| Backups | Encrypted database snapshots kept by the operator. | Follow the operator's storage lifecycle. Deleting a record in Control does not alter existing snapshots. |
+| Control: policy history | Versioned policies for the baseline and groups. | An administrator purges superseded versions under **Data deletion**. See [Purge policy history](#purge-policy-history). |
+| Backups | Encrypted database snapshots kept by the operator. | Deleted data persists in encrypted backups until they age out. The pilot keeps them for `ZEKVAR_BACKUP_RETENTION_DAYS` (35 days by default). See [Backup retention](../deploy/pilot/README.md#backup-retention). |
 | Your SIEM or webhook receiver | Copies you collected. | You manage retention there. |
 
 ### Delete retained Control data
@@ -201,4 +201,35 @@ Retention covers security events, AI observations, and audit history. See [Set d
 
 Shortened windows delete permanently. Widening a window later does not revive deleted or expired records.
 
-[TO CONFIRM: customer offboarding process, including deletion of the whole organization, the timeline for deleting backups, and written confirmation of deletion.]
+### Delete a revoked browser's data
+
+1. Revoke the browser first. Control refuses to delete an active browser.
+2. As an owner or administrator, open **Data deletion** and select **Delete data** next to the browser.
+3. Control permanently deletes the installation record and everything derived from it in one transaction: security events, triage, case memberships, alert evidence, prompt exception requests, AI observations, extension inventory snapshots and changes, composer observations, and policy delivery receipts.
+4. The audit log records **Browser data deleted** with the browser ID and the deleted counts. Earlier enrollment and revocation entries keep only the browser ID. Alert counts and case records stay, without the deleted events.
+
+### Purge policy history
+
+Under **Data deletion**, choose the baseline or a rollout group and a cutoff date. **Preview purge** lists what would be removed. **Purge policy history** deletes superseded versions published before the cutoff. Control always keeps:
+
+- the current version of the baseline and every group,
+- versions that an open review or an unfinished rollout plan uses,
+- versions that a retained security event or a browser's applied policy uses,
+- versions that retained extension inventory, a policy template, or an employee exception request cites.
+
+Audit entries, closed reviews, and finished rollout plans keep the version number after the snapshot is gone. A purged version cannot be restored. Browsers still queuing events for a purged version get them rejected.
+
+### Export and delete the whole organization
+
+The owner can download a full JSON export at any time under **Data deletion**. It contains every retained policy version, rollout group, review, template, rollout plan, browser installation record, security event, triage, incident case, alert, retention and alert setting, delegated access record, and audit entry. Credential hashes and unused enrollment grants are left out.
+
+To offboard:
+
+1. Download the export.
+2. Type the organization name and select **Request organization deletion**. Store the deletion ID and receipt token that Control shows once.
+3. A grace period starts (7 days by default, set by the operator). Every delegated token, SSO session, browser credential, enrollment grant, event feed key, and alert webhook stops working immediately. Enrolled browsers show **Control access revoked** and ask for a new grant. Only the owner token still signs in, and only to see the status, export, download the signed receipt, or cancel.
+4. **Cancel organization deletion** during the grace period restores all access.
+5. After the grace period, Control deletes every row of the organization in batches, then checks each table holds zero rows for it. The job resumes from its last committed batch after a failure or restart. Once deletion starts it cannot be cancelled.
+6. The signed receipt lists the organization ID, request, start, and completion times, rows per table, and the zero-count result, with an HMAC-SHA256 signature by the operator's receipt key. Before deletion the owner can download a provisional receipt. Afterwards the operator retrieves and verifies the final receipt with `deploy/pilot/organization-deletion.sh` ([operator steps](../deploy/pilot/README.md#delete-an-organization)).
+
+Deleted data persists in encrypted backups until they age out under the operator's backup retention.

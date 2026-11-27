@@ -12,6 +12,7 @@ import type { PolicyTemplateAudit } from './templates';
 import type { RolloutAudit } from './rollouts';
 import type { SaasClassification } from '../../../contracts/policy/saas-catalog';
 import type { AiPromptApp } from '../../../contracts/policy/apps';
+import type { DataDeletionAudit } from './deletion';
 
 export const auditActions = {
   policy_published: 'Policy published',
@@ -44,6 +45,11 @@ export const auditActions = {
   saas_app_classified: 'SaaS app classified',
   enrollment_key_issued: 'Enrollment key issued',
   enrollment_key_revoked: 'Enrollment key revoked',
+  installation_deleted: 'Browser data deleted',
+  policy_history_purged: 'Policy history purged',
+  organization_deletion_requested: 'Organization deletion requested',
+  organization_deletion_cancelled: 'Organization deletion cancelled',
+  organization_exported: 'Organization data exported',
 } as const;
 
 export type AuditAction = keyof typeof auditActions;
@@ -65,6 +71,7 @@ export type AuditEntry = AuditCursor & {
   rolloutChange?: RolloutAudit;
   saasClassification?: { appId: string; status: SaasClassification; previous: SaasClassification };
   composerGate?: { referenceVersion: number; apps: AiPromptApp[]; browsers: number };
+  dataDeletion?: DataDeletionAudit;
   policyVersion: number | null;
   restoredFrom: number | null;
   installationId: string | null;

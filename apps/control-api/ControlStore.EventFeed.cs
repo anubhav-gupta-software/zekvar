@@ -79,7 +79,7 @@ internal sealed partial class ControlStore
         await using var stream = BrowserRead(snapshot, """
             SELECT s.organization_id, s.stream_id, s.last_sequence
             FROM event_feed_keys k JOIN organization_event_streams s USING (organization_id)
-            WHERE k.token_hash = $1 AND k.revoked_at IS NULL AND k.expires_at > now()
+            WHERE k.token_hash = $1 AND k.revoked_at IS NULL AND k.expires_at > now() AND NOT organization_offboarding(k.organization_id)
             """, Tokens.Hash(token));
         Guid organizationId;
         Guid streamId;

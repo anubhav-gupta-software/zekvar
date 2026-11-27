@@ -55,10 +55,18 @@ const logsAdmin = randomBytes(32).toString('hex');
 const saasAdmin = randomBytes(32).toString('hex');
 const enrollmentKeyAdmin = randomBytes(32).toString('hex');
 const healthAdmin = randomBytes(32).toString('hex');
+const eraseAdmin = randomBytes(32).toString('hex');
+const purgeAdmin = randomBytes(32).toString('hex');
+const offboardCancelAdmin = randomBytes(32).toString('hex');
+const offboardAdmin = randomBytes(32).toString('hex');
+const raceAdmin = randomBytes(32).toString('hex');
+const exportAdmin = randomBytes(32).toString('hex');
+const deletionKey = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
 const undoSsoSchema = `
+  DELETE FROM schema_migrations WHERE version = 55;
   DELETE FROM schema_migrations WHERE version = 21;
   DROP TABLE control_sso_sessions;
   ALTER TABLE control_access DROP CONSTRAINT control_access_type_check,
@@ -90,6 +98,7 @@ const undoSaasInventorySchema = `
 `;
 const undoEnrollmentKeysSchema = `
   ${undoSaasInventorySchema}
+  DELETE FROM schema_migrations WHERE version = 55;
   DELETE FROM schema_migrations WHERE version = 54;
   DELETE FROM control_audit WHERE action IN ('enrollment_key_issued', 'enrollment_key_revoked');
   ALTER TABLE control_audit DROP CONSTRAINT control_audit_enrollment_key_check, DROP COLUMN enrollment_key_change;
@@ -135,6 +144,7 @@ const undoPromptAppModesSchema = `
   ALTER TABLE policy_deliveries DROP COLUMN prompt_app_modes;
 `;
 const undoExtensionAccessAlertsSchema = `
+  DELETE FROM schema_migrations WHERE version = 55;
   DELETE FROM schema_migrations WHERE version = 48;
   DROP TABLE extension_access_alert_settings;
   ALTER TABLE extension_inventory_change_batches DROP COLUMN alert_acknowledged_at, DROP COLUMN alert_id;
@@ -210,6 +220,7 @@ const undoIncidentSchema = `
   ALTER TABLE control_audit DROP COLUMN incident_case_change;
 `;
 const undoPresetSchema = `
+  DELETE FROM schema_migrations WHERE version = 55;
   DELETE FROM schema_migrations WHERE version = 35;
   ALTER TABLE policy_versions DROP COLUMN preset_discovery_enabled;
   ALTER TABLE policy_deliveries DROP COLUMN preset_discovery;
@@ -362,6 +373,21 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__38__Slug: `health-identifiers-${suffix}`,
       Control__Organizations__38__AdminToken: healthAdmin,
       Control__EnrollmentKeyAttemptsPerMinute: '40',
+      Control__Organizations__39__Slug: `erase-installation-${suffix}`,
+      Control__Organizations__39__AdminToken: eraseAdmin,
+      Control__Organizations__40__Slug: `purge-history-${suffix}`,
+      Control__Organizations__40__AdminToken: purgeAdmin,
+      Control__Organizations__41__Slug: `offboard-cancel-${suffix}`,
+      Control__Organizations__41__AdminToken: offboardCancelAdmin,
+      Control__Organizations__42__Slug: `offboard-delete-${suffix}`,
+      Control__Organizations__42__AdminToken: offboardAdmin,
+      Control__Organizations__43__Slug: `offboard-race-${suffix}`,
+      Control__Organizations__43__AdminToken: raceAdmin,
+      Control__Organizations__44__Slug: `export-${suffix}`,
+      Control__Organizations__44__AdminToken: exportAdmin,
+      Control__OrganizationDeletion__ReceiptKey: deletionKey,
+      Control__OrganizationDeletion__SweepSeconds: '1',
+      Control__OrganizationDeletion__BatchSize: '25',
       Control__RolloutEvaluationSeconds: '3600',
       ...overrides,
     },
@@ -6336,5 +6362,474 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const active = (await admin('enrollment-keys')).filter(({ status }) => status === 'active' || status === 'exhausted').length;
     for (let index = active; index < 20; index++) await create({ label: `Capacity ${index}` });
     assert.deepEqual(await create({ label: 'One too many' }, { expect: 409 }), { code: 'enrollment_key_limit' });
+  });
+
+  // Self-service deletion: installation erasure, policy history purge, export, and organization offboarding.
+  const deletionAdmin = (token) => (path, options) => call(`/v1/admin/${path}`, { token, ...options });
+  const deletionPost = (token) => (path, body, options) => call(`/v1/admin/${path}`, { token, method: 'POST', body, ...options });
+  async function enrollIn(token) {
+    const { grant } = await deletionPost(token)('enrollment-grants');
+    return call('/v1/enroll', { method: 'POST', body: { grant } });
+  }
+  async function sendEvent(browser, policyVersion, fields = {}) {
+    const event = { ...contract.event, eventId: randomUUID(), timestamp: new Date().toISOString(), policyVersion, ...fields };
+    await call('/v1/browser/events', { token: browser.token, method: 'POST', body: event, expect: 204 });
+    return event;
+  }
+  const tenantTables = async () => (await retentionFixture(`
+    SELECT string_agg(c.table_name, ',' ORDER BY c.table_name) FROM information_schema.columns c
+    JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+    WHERE c.table_schema = 'public' AND c.column_name = 'organization_id' AND t.table_type = 'BASE TABLE'`)).split(',');
+  async function tenantCounts(organizationId) {
+    // zz_ tables are fixtures created by the deletion test below.
+    const tables = (await tenantTables()).filter((table) => table !== 'organization_deletions' && !table.startsWith('zz_'));
+    const query = tables.map((table) => `SELECT '${table}', count(*) FROM ${table} WHERE organization_id = '${organizationId}'`).join(' UNION ALL ');
+    return Object.fromEntries((await retentionFixture(query)).split('\n').map((line) => line.split('|')).map(([table, count]) => [table, Number(count)]));
+  }
+  const organizationId = async (slug) => retentionFixture(`SELECT id FROM organizations WHERE slug = '${slug}'`);
+  const verifyReceipt = (envelope) => createHmac('sha256', Buffer.from(deletionKey, 'hex'))
+    .update(JSON.stringify(envelope.receipt)).digest('hex') === envelope.signature.value;
+  async function rawFetch(path, token) {
+    return fetch(`${baseUrl}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(10_000) });
+  }
+
+  await t.test('deletes only a revoked installation and its derived records and leaves a metadata-only tombstone', async () => {
+    const admin = deletionAdmin(eraseAdmin);
+    const post = deletionPost(eraseAdmin);
+    const [initial] = await admin('policies');
+    const [doomed, kept] = await Promise.all([enrollIn(eraseAdmin), enrollIn(eraseAdmin)]);
+    for (const browser of [doomed, kept]) {
+      await call('/v1/browser/policy', { token: browser.token });
+      await call('/v1/browser/heartbeat', { token: browser.token, method: 'POST', body: { policyVersion: initial.version }, expect: 204 });
+    }
+    const doomedEvent = await sendEvent(doomed, initial.version);
+    await sendEvent(doomed, initial.version);
+    const keptEvent = await sendEvent(kept, initial.version);
+    await post(`events/${doomed.installationId}/${doomedEvent.eventId}/triage`, { expectedRevision: 0, status: 'investigating' });
+    const { caseId } = await post('cases', { requestId: randomUUID(), category: 'other', installationId: kept.installationId, eventId: keptEvent.eventId });
+    const before = await admin(`cases/${caseId}`);
+    await post(`cases/${caseId}/membership`, { expectedRevision: before.case.triage.revision, installationId: doomed.installationId,
+      eventId: doomedEvent.eventId, linked: true });
+    const delegated = await post('access', { name: 'Erasure admin', role: 'administrator', hours: 1 });
+    const auditor = await post('access', { name: 'Erasure auditor', role: 'auditor', hours: 1 });
+
+    assert.deepEqual(await post(`installations/${doomed.installationId}/delete`, undefined, { expect: 409 }), { code: 'installation_active' });
+    await post(`installations/${doomed.installationId}/revoke`, undefined, { expect: 204 });
+    await post(`installations/${doomed.installationId}/delete`, undefined, { token: auditor.token, expect: 403 });
+    await call(`/v1/admin/installations/${doomed.installationId}/delete`, { method: 'POST', token: second, expect: 404 });
+    await post(`installations/${randomUUID()}/delete`, undefined, { expect: 404 });
+    const attempts = await Promise.all([1, 2].map(() => fetch(`${baseUrl}/v1/admin/installations/${doomed.installationId}/delete`, {
+      method: 'POST', headers: { Authorization: `Bearer ${delegated.token}` }, signal: AbortSignal.timeout(5_000) })));
+    assert.deepEqual(attempts.map(({ status }) => status).sort(), [200, 404]);
+    const deleted = await attempts.find(({ status }) => status === 200).json();
+    assert.equal(deleted.installationId, doomed.installationId);
+    assert.equal(deleted.deletedRows.securityEvents, 2);
+    assert.equal(deleted.deletedRows.eventTriage, 1);
+    assert.equal(deleted.deletedRows.caseMemberships, 1);
+    assert.ok(deleted.deletedRows.deliveryReceipts >= 0);
+
+    const installations = await admin('installations');
+    assert.ok(!installations.some(({ installationId }) => installationId === doomed.installationId));
+    assert.ok(installations.some(({ installationId }) => installationId === kept.installationId));
+    const events = await admin('events');
+    assert.deepEqual(events.map(({ installationId }) => installationId), [kept.installationId]);
+    const after = await admin(`cases/${caseId}`);
+    assert.ok(after.case.triage.revision > before.case.triage.revision + 1);
+    assert.equal(after.case.eventCount, 1);
+    assert.ok(!after.events.some(({ installationId }) => installationId === doomed.installationId));
+    await call('/v1/browser/policy', { token: doomed.token, expect: 401 });
+    await call('/v1/browser/policy', { token: kept.token });
+
+    const { entries } = await admin('audit?action=installation_deleted');
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].actor, 'named_administrator');
+    assert.equal(entries[0].actorAccess.id, delegated.access.id);
+    assert.deepEqual(Object.keys(entries[0].dataDeletion).sort(), ['deletedRows', 'installationId']);
+    assert.equal(entries[0].dataDeletion.installationId, doomed.installationId);
+    assert.deepEqual(entries[0].dataDeletion.deletedRows, deleted.deletedRows);
+    assert.equal(entries[0].installationId, null);
+    // Earlier enrollment and revocation entries keep only the installation ID.
+    const revoked = (await admin('audit?action=browser_revoked')).entries;
+    assert.ok(revoked.some(({ installationId }) => installationId === doomed.installationId));
+    if (postgres) {
+      const remaining = await retentionFixture(`SELECT sum(n) FROM (
+        ${['security_events', 'event_triage', 'incident_case_events', 'security_alert_events', 'prompt_exception_requests', 'ai_app_observations',
+          'extension_inventory_snapshots', 'extension_inventory_change_batches', 'composer_observations', 'policy_deliveries']
+          .map((table) => `SELECT count(*) AS n FROM ${table} WHERE installation_id = '${doomed.installationId}'`).join(' UNION ALL ')}
+        UNION ALL SELECT count(*) FROM installations WHERE id = '${doomed.installationId}') counts`);
+      assert.equal(remaining, '0');
+      assert.equal(await retentionFixture(`SELECT count(*) FROM security_events WHERE installation_id = '${kept.installationId}'`), '1');
+    }
+  });
+
+  await t.test('purges superseded policy history while keeping current, reviewed, rolled-out, and evidenced versions', async () => {
+    const admin = deletionAdmin(purgeAdmin);
+    const post = deletionPost(purgeAdmin);
+    const [v1] = await admin('policies');
+    const eventBrowser = await enrollIn(purgeAdmin);
+    await call('/v1/browser/policy', { token: eventBrowser.token });
+    await sendEvent(eventBrowser, v1.version);
+    const v2 = await post('policies', { mode: 'warn' });
+    const appliedBrowser = await enrollIn(purgeAdmin);
+    await call('/v1/browser/policy', { token: appliedBrowser.token });
+    await call('/v1/browser/heartbeat', { token: appliedBrowser.token, method: 'POST', body: { policyVersion: v2.version }, expect: 204 });
+    const v3 = await post('policies', { mode: 'block' });
+    const v4 = await post('policies', { mode: 'monitor', githubPatMode: 'warn' });
+    const v5 = await post('policies', { mode: 'warn' });
+    const [staging, canary] = await Promise.all(['Purge staging', 'Purge canary'].map((name) => post('policy-groups', { name })));
+    const source = await post(`policy-groups/${staging.id}/policies`, { mode: 'block' });
+    const plan = await post('rollout-plans', { requestId: randomUUID(), name: 'Purge rollout', sourceVersion: source.version,
+      stages: [{ groupId: canary.id, minSoakSeconds: 3600, minAcknowledgedPercent: 100 }] });
+    assert.equal(plan.status, 'running');
+    const stagingCurrent = await post(`policy-groups/${staging.id}/policies`, { mode: 'warn' });
+
+    // The staging source stays while its rollout runs and becomes purgeable once the plan finishes.
+    const groupCutoff = new Date().toISOString();
+    const running = await post('policy-history/purge', { publishedBefore: groupCutoff, groupId: staging.id, dryRun: true });
+    assert.deepEqual(running.versions, []);
+    assert.deepEqual(running.kept, { current: 1, openReview: 0, activeRollout: 1, retainedEvent: 0, installation: 0, evidence: 0 });
+    await post(`rollout-plans/${plan.id}/cancel`);
+    // A concurrent publish serializes with the purge, and the version that is current afterwards is never removed.
+    const [finished, newest] = await Promise.all([
+      post('policy-history/purge', { publishedBefore: groupCutoff, groupId: staging.id }),
+      post(`policy-groups/${staging.id}/policies`, { mode: 'monitor' }),
+    ]);
+    assert.ok(finished.versions.includes(source.version));
+    assert.ok(!finished.versions.includes(newest.version));
+    assert.equal((await admin(`policy-groups/${staging.id}/policies`))[0].version, newest.version);
+    assert.equal((await admin(`rollout-plans/${plan.id}`)).sourceVersion, source.version);
+    assert.ok((await admin('policies')).some(({ version }) => version === v5.version));
+    void stagingCurrent;
+
+    const reviewer = await post('access', { name: 'Purge reviewer', role: 'administrator', hours: 1 });
+    const requester = await post('access', { name: 'Purge requester', role: 'administrator', hours: 1 });
+    const auditor = await post('access', { name: 'Purge auditor', role: 'auditor', hours: 1 });
+    await post('policy-reviews/setting', { required: true }, { expect: 204 });
+    const { reviewId } = await post(`policies/${v3.version}/restore`, undefined, { token: requester.token, expectReview: true, expect: 202 });
+
+    const cutoff = new Date().toISOString();
+    await post('policy-history/purge', { publishedBefore: cutoff, dryRun: true }, { token: auditor.token, expect: 403 });
+    await post('policy-history/purge', { publishedBefore: new Date(Date.now() + 60_000).toISOString() }, { expect: 400 });
+    await post('policy-history/purge', { dryRun: true }, { expect: 400 });
+    await post('policy-history/purge', { publishedBefore: cutoff, groupId: randomUUID() }, { expect: 404 });
+    const foreign = await call('/v1/admin/policy-groups', { method: 'POST', token: second, body: { name: `Purge foreign ${suffix}` } });
+    await post('policy-history/purge', { publishedBefore: cutoff, groupId: foreign.id }, { expect: 404 });
+
+    const preview = await post('policy-history/purge', { publishedBefore: cutoff, dryRun: true });
+    assert.deepEqual(preview.versions, [v4.version]);
+    assert.deepEqual(preview.kept, { current: 1, openReview: 1, activeRollout: 0, retainedEvent: 1, installation: 1, evidence: 0 });
+    assert.equal((await admin('policies')).length, 5);
+    assert.equal((await admin('audit?action=policy_history_purged')).entries.length, 1);
+
+    const purged = await post('policy-history/purge', { publishedBefore: cutoff }, { token: reviewer.token });
+    assert.deepEqual(purged.versions, [v4.version]);
+    assert.deepEqual((await admin('policies')).map(({ version }) => version), [v5.version, v3.version, v2.version, v1.version]);
+    assert.ok((await admin('audit?action=policy_published')).entries.some(({ policyVersion }) => policyVersion === v4.version));
+    const [entry] = (await admin('audit?action=policy_history_purged')).entries;
+    assert.equal(entry.actorAccess.id, reviewer.access.id);
+    assert.deepEqual(entry.dataDeletion.versions, [v4.version]);
+    assert.equal(entry.dataDeletion.scope, 'baseline');
+    assert.deepEqual((await post('policy-history/purge', { publishedBefore: cutoff })).versions, []);
+    assert.equal((await admin('audit?action=policy_history_purged')).entries.length, 2);
+
+    // The pending review still decides against the retained source version.
+    assert.ok((await admin('policy-reviews')).entries.some(({ id, status }) => id === reviewId && status === 'pending'));
+    const approved = await post(`policy-reviews/${reviewId}/decision`, { approve: true }, { token: reviewer.token });
+    assert.equal(approved.restoredFrom, v3.version);
+    await post('policy-reviews/setting', { required: false }, { expect: 204 });
+    await post(`policies/${v4.version}/restore`, undefined, { expect: 404 });
+  });
+
+  await t.test('streams a complete owner-only tenant export without credential hashes', async () => {
+    const admin = deletionAdmin(exportAdmin);
+    const post = deletionPost(exportAdmin);
+    const [initial] = await admin('policies');
+    const browser = await enrollIn(exportAdmin);
+    await call('/v1/browser/policy', { token: browser.token });
+    const events = [];
+    for (let index = 0; index < 30; index++) events.push(await sendEvent(browser, initial.version));
+    await post('cases', { requestId: randomUUID(), category: 'other', installationId: browser.installationId, eventId: events[0].eventId });
+    await post('policies', { mode: 'warn' });
+    const delegated = await post('access', { name: 'Export admin', role: 'administrator', hours: 1 });
+    const auditor = await post('access', { name: 'Export auditor', role: 'auditor', hours: 1 });
+    for (const token of [delegated.token, auditor.token]) assert.equal((await rawFetch('/v1/admin/organization/export', token)).status, 403);
+    assert.equal((await rawFetch('/v1/admin/organization/export')).status, 401);
+
+    const response = await rawFetch('/v1/admin/organization/export', exportAdmin);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-length'), null);
+    assert.match(response.headers.get('content-disposition'), /zekvar-organization-export\.json/);
+    const text = await response.text();
+    for (const secret of [exportAdmin, browser.token, delegated.token, auditor.token]) assert.ok(!text.includes(secret));
+    assert.ok(!text.includes('token_hash'));
+    const exported = JSON.parse(text);
+    assert.equal(exported.type, 'zekvar.organization_export');
+    assert.equal(exported.organization.slug, `export-${suffix}`);
+    const org = exported.organization.id;
+    assert.equal(exported.datasets.security_events.length, 30);
+    assert.deepEqual(new Set(exported.datasets.security_events.map(({ event_id: id }) => id)), new Set(events.map(({ eventId }) => eventId)));
+    assert.equal(exported.datasets.installations[0].id, browser.installationId);
+    assert.equal(exported.datasets.policy_versions.length, 2);
+    assert.equal(exported.datasets.incident_cases.length, 1);
+    assert.equal(exported.datasets.control_access.length, 2);
+    for (const [name, rows] of Object.entries(exported.datasets)) {
+      assert.equal(exported.counts[name], rows.length, name);
+      for (const row of rows) assert.equal(row.organization_id, org, name);
+    }
+    if (postgres) {
+      const counts = await tenantCounts(org);
+      for (const [name, rows] of Object.entries(exported.datasets)) assert.equal(rows.length, counts[name], name);
+      // Every tenant table is exported except credential-only tables.
+      assert.deepEqual(Object.keys(counts).filter((table) => !(table in exported.datasets)).sort(), ['admin_memberships', 'enrollment_grants']);
+    }
+    assert.equal((await admin('audit?action=organization_exported')).entries.length, 1);
+  });
+
+  await t.test('locks every credential during the deletion grace period and restores them when the owner cancels', async () => {
+    const admin = deletionAdmin(offboardCancelAdmin);
+    const post = deletionPost(offboardCancelAdmin);
+    const slug = `offboard-cancel-${suffix}`;
+    const [initial] = await admin('policies');
+    const browser = await enrollIn(offboardCancelAdmin);
+    await call('/v1/browser/policy', { token: browser.token });
+    const delegated = await post('access', { name: 'Offboard admin', role: 'administrator', hours: 1 });
+    const auditor = await post('access', { name: 'Offboard auditor', role: 'auditor', hours: 1 });
+    const feed = await post('access/event-feed', { requestId: randomUUID(), name: 'Offboard SIEM', days: 1 });
+    const { grant } = await post('enrollment-grants');
+    const enrollmentKey = await post('enrollment-keys', { requestId: randomUUID(), label: 'Offboard key', days: 1 });
+    const keyNonce = () => randomBytes(32).toString('hex');
+    await call('/v1/integrations/events', { token: feed.token });
+
+    assert.deepEqual(await admin('organization/deletion'), { deletion: null, graceDays: 7, available: true });
+    await admin('organization/deletion', { token: delegated.token, expect: 403 });
+    await admin('organization/deletion', { token: auditor.token, expect: 403 });
+    await post('organization/deletion', { confirmSlug: slug }, { token: delegated.token, expect: 403 });
+    await admin('organization/export', { token: auditor.token, expect: 403 });
+    for (const confirmSlug of [undefined, '', slug.toUpperCase(), `first-${suffix}`])
+      assert.equal((await post('organization/deletion', { confirmSlug }, { expect: 400 })).code, 'deletion_confirmation_mismatch');
+    await post('organization/deletion/cancel', undefined, { expect: 404 });
+
+    const requested = await post('organization/deletion', { confirmSlug: slug }, { expect: 202 });
+    assert.equal(requested.deletion.status, 'pending');
+    assert.match(requested.receiptToken, /^[a-f0-9]{64}$/);
+    const grace = Date.parse(requested.deletion.purgeAfter) - Date.parse(requested.deletion.requestedAt);
+    assert.equal(grace, 7 * 24 * 3600 * 1000);
+
+    // Credentials stop working immediately.
+    await admin('policies', { token: delegated.token, expect: 401 });
+    await admin('audit', { token: auditor.token, expect: 401 });
+    await call('/v1/browser/policy', { token: browser.token, expect: 401 });
+    await call('/v1/browser/heartbeat', { token: browser.token, method: 'POST', body: { policyVersion: initial.version }, expect: 401 });
+    await call('/v1/browser/events', { token: browser.token, method: 'POST', body: { ...contract.event, eventId: randomUUID() }, expect: 401 });
+    await call('/v1/integrations/events', { token: feed.token, expect: 401 });
+    await call('/v1/enroll', { method: 'POST', body: { grant }, expect: 401 });
+    assert.deepEqual(await call('/v1/enroll/key', { method: 'POST', body: { key: enrollmentKey.token, nonce: keyNonce() }, expect: 401 }),
+      { code: 'enrollment_key_invalid' });
+    // The owner can only review, export, cancel, or download the receipt.
+    for (const path of ['policies', 'installations', 'audit', 'access', 'retention'])
+      assert.deepEqual(await admin(path, { expect: 403 }), { code: 'organization_deletion_pending' });
+    await post('enrollment-grants', undefined, { expect: 403 });
+    await post('organization/deletion', { confirmSlug: slug }, { expect: 403 });
+    const session = await admin('session');
+    assert.equal(session.deletion.id, requested.deletion.id);
+    assert.equal((await admin('organization/deletion')).deletion.status, 'pending');
+    assert.equal((await rawFetch('/v1/admin/organization/export', offboardCancelAdmin)).status, 200);
+    assert.equal((await admin('policies', { token: first })).length >= 1, true);
+
+    const response = await rawFetch('/v1/admin/organization/deletion/receipt', offboardCancelAdmin);
+    assert.match(response.headers.get('content-disposition'), /zekvar-deletion-receipt\.json/);
+    const provisional = await response.json();
+    assert.ok(verifyReceipt(provisional));
+    assert.equal(provisional.receipt.status, 'pending');
+    assert.equal(provisional.receipt.rowsMeaning, 'held_at_issue');
+    assert.equal(provisional.receipt.tables.find(({ table }) => table === 'installations').rows, 1);
+    assert.ok(!verifyReceipt({ ...provisional, receipt: { ...provisional.receipt, totalRows: provisional.receipt.totalRows + 1 } }));
+    assert.equal((await rawFetch(`/v1/organization-deletions/${requested.deletion.id}/receipt`, requested.receiptToken)).status, 200);
+    assert.equal((await rawFetch(`/v1/organization-deletions/${requested.deletion.id}/receipt`, offboardCancelAdmin)).status, 401);
+    assert.equal((await rawFetch(`/v1/organization-deletions/${randomUUID()}/receipt`, requested.receiptToken)).status, 401);
+
+    const cancelled = await post('organization/deletion/cancel');
+    assert.equal(cancelled.status, 'cancelled');
+    await post('organization/deletion/cancel', undefined, { expect: 404 });
+    await admin('policies', { token: delegated.token });
+    await admin('audit', { token: auditor.token });
+    await call('/v1/browser/policy', { token: browser.token });
+    await call('/v1/integrations/events', { token: feed.token });
+    await call('/v1/enroll', { method: 'POST', body: { grant } });
+    await call('/v1/enroll/key', { method: 'POST', body: { key: enrollmentKey.token, nonce: keyNonce() } });
+    assert.equal((await admin('organization/deletion')).deletion.status, 'cancelled');
+    assert.equal((await rawFetch(`/v1/organization-deletions/${requested.deletion.id}/receipt`, requested.receiptToken)).status, 401);
+    const actions = (await admin('audit?limit=1000')).entries.map(({ action }) => action);
+    for (const action of ['organization_deletion_requested', 'organization_deletion_cancelled', 'organization_exported'])
+      assert.ok(actions.includes(action), action);
+    const [requestAudit] = (await admin('audit?action=organization_deletion_requested')).entries;
+    assert.equal(requestAudit.dataDeletion.deletionId, requested.deletion.id);
+    if (postgres) assert.equal(await retentionFixture(`SELECT status FROM organization_deletions WHERE id = '${requested.deletion.id}'`), 'cancelled');
+  });
+
+  await t.test('accepts exactly one of several concurrent deletion requests and one concurrent cancellation', async () => {
+    const post = deletionPost(raceAdmin);
+    const slug = `offboard-race-${suffix}`;
+    const request = () => fetch(`${baseUrl}/v1/admin/organization/deletion`, { method: 'POST', signal: AbortSignal.timeout(5_000),
+      headers: { Authorization: `Bearer ${raceAdmin}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmSlug: slug }) });
+    const statuses = (await Promise.all(Array.from({ length: 6 }, request))).map(({ status }) => status);
+    assert.equal(statuses.filter((status) => status === 202).length, 1, String(statuses));
+    assert.ok(statuses.every((status) => [202, 403, 409].includes(status)), String(statuses));
+    const cancel = () => fetch(`${baseUrl}/v1/admin/organization/deletion/cancel`, { method: 'POST', signal: AbortSignal.timeout(5_000),
+      headers: { Authorization: `Bearer ${raceAdmin}` } });
+    const cancels = (await Promise.all(Array.from({ length: 4 }, cancel))).map(({ status }) => status).sort();
+    assert.deepEqual(cancels, [200, 404, 404, 404]);
+    if (postgres) {
+      assert.equal(await retentionFixture(`SELECT string_agg(status, ',') FROM organization_deletions
+        WHERE organization_id = (SELECT id FROM organizations WHERE slug = '${slug}')`), 'cancelled');
+    }
+    const again = await post('organization/deletion', { confirmSlug: slug }, { expect: 202 });
+    assert.equal((await post('organization/deletion/cancel')).id, again.deletion.id);
+  });
+
+  await t.test('permanently deletes an organization in resumable batches, verifies zero rows, and signs a reproducible receipt', {
+    skip: !postgres && 'Set ZEKVAR_TEST_POSTGRES_CONTAINER to advance the grace period and inject failures.',
+  }, async (deletion) => {
+    deletion.after(() => retentionFixture(`DROP TABLE IF EXISTS zz_unplanned_feature;
+      DROP TRIGGER IF EXISTS zz_block_access_delete ON control_access; DROP FUNCTION IF EXISTS zz_block_access_delete()`));
+    const admin = deletionAdmin(offboardAdmin);
+    const post = deletionPost(offboardAdmin);
+    const slug = `offboard-delete-${suffix}`;
+    const org = await organizationId(slug);
+    const [initial] = await admin('policies');
+    const group = await post('policy-groups', { name: 'Offboard ring' });
+    await post(`policy-groups/${group.id}/policies`, { mode: 'block' });
+    const [browser, revoked] = await Promise.all([enrollIn(offboardAdmin), enrollIn(offboardAdmin)]);
+    for (const installation of [browser, revoked]) await call('/v1/browser/policy', { token: installation.token });
+    const events = [];
+    for (let index = 0; index < 40; index++) events.push(await sendEvent(index % 2 ? browser : revoked, initial.version));
+    await post(`events/${browser.installationId}/${events[1].eventId}/triage`, { expectedRevision: 0, status: 'investigating' });
+    await post('cases', { requestId: randomUUID(), category: 'other', installationId: browser.installationId, eventId: events[1].eventId });
+    await post(`installations/${revoked.installationId}/revoke`, undefined, { expect: 204 });
+    await post('policies', { mode: 'warn' });
+    await post('policy-templates', { name: 'Offboard template', sourceVersion: initial.version });
+    await post('retention', { securityEventDays: 365, aiObservationDays: null, auditDays: null }, { expect: 204 });
+    await post('enrollment-batches', { requestId: randomUUID(), groupId: null, count: 2 });
+    const delegated = await post('access', { name: 'Offboard delete admin', role: 'administrator', hours: 1 });
+    const feed = await post('access/event-feed', { requestId: randomUUID(), name: 'Offboard delete SIEM', days: 1 });
+    const firstPolicies = await call('/v1/admin/policies', { token: first });
+
+    const requested = await post('organization/deletion', { confirmSlug: slug }, { expect: 202 });
+    const before = await tenantCounts(org);
+    const held = Object.values(before).reduce((sum, count) => sum + count, 0);
+    assert.ok(held > 60, `expected a populated tenant, found ${held} rows`);
+    const ledger = (column) => retentionFixture(`SELECT ${column} FROM organization_deletions WHERE id = '${requested.deletion.id}'`);
+    async function waitFor(check, explanation) {
+      for (let attempt = 0; attempt < 150; attempt++) {
+        if (await check()) return;
+        await delay(200);
+      }
+      assert.fail(explanation);
+    }
+
+    // A table the plan does not handle stops deletion before any row is removed.
+    await retentionFixture(`
+      CREATE TABLE zz_unplanned_feature (organization_id uuid NOT NULL);
+      CREATE FUNCTION zz_block_access_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'injected deletion failure'; END $$;
+      CREATE TRIGGER zz_block_access_delete BEFORE DELETE ON control_access FOR EACH ROW
+        WHEN (OLD.organization_id = '${org}') EXECUTE FUNCTION zz_block_access_delete();
+      UPDATE organization_deletions SET purge_after = requested_at + interval '1 millisecond' WHERE id = '${requested.deletion.id}'`);
+    await waitFor(async () => await ledger('last_error') === 'unhandled_tenant_table', 'deletion did not refuse the unplanned table');
+    assert.equal(await ledger('deleted_rows::text'), '{}');
+    assert.deepEqual(await tenantCounts(org), before);
+    assert.equal((await admin('organization/deletion')).deletion.status, 'deleting');
+    assert.deepEqual(await post('organization/deletion/cancel', undefined, { expect: 409 }), { code: 'organization_deletion_in_progress' });
+    assert.deepEqual(await admin('organization/export', { expect: 409 }), { code: 'organization_deletion_in_progress' });
+    await admin('policies', { token: delegated.token, expect: 401 });
+
+    // An injected failure stops the job part way; committed batches stay deleted and the credentials stay locked.
+    await retentionFixture('DROP TABLE zz_unplanned_feature');
+    await waitFor(async () => await ledger('last_error') === 'batch_failed', 'deletion did not record the injected failure');
+    const partial = JSON.parse(await ledger('deleted_rows::text'));
+    assert.equal(partial.security_events, 40);
+    assert.equal(partial.control_access, undefined);
+    assert.ok(Number(await ledger('batches')) > 1);
+    const midway = await tenantCounts(org);
+    assert.equal(midway.security_events, 0);
+    assert.equal(midway.control_access, before.control_access);
+    assert.equal(await retentionFixture(`SELECT count(*) FROM organizations WHERE id = '${org}'`), '1');
+    await call('/v1/integrations/events', { token: feed.token, expect: 401 });
+    await call('/v1/browser/policy', { token: browser.token, expect: 401 });
+    assert.equal((await admin('organization/deletion')).deletion.status, 'deleting');
+
+    // Restarting with the fault removed resumes from the recorded progress.
+    await stop();
+    await retentionFixture('DROP TRIGGER zz_block_access_delete ON control_access; DROP FUNCTION zz_block_access_delete()');
+    await start();
+    await waitFor(async () => await ledger('status') === 'completed', 'deletion did not resume and complete');
+    assert.equal(await ledger('last_error'), '');
+
+    const after = await tenantCounts(org);
+    assert.deepEqual(Object.entries(after).filter(([, count]) => count !== 0), []);
+    assert.equal(await retentionFixture(`SELECT count(*) FROM organizations WHERE id = '${org}' OR slug = '${slug}'`), '0');
+    assert.equal(await retentionFixture(`SELECT count(*) FROM control_sso_sessions s WHERE NOT EXISTS (
+      SELECT 1 FROM control_access c WHERE c.id = s.access_id)`), '0');
+
+    const response = await rawFetch(`/v1/organization-deletions/${requested.deletion.id}/receipt`, requested.receiptToken);
+    assert.equal(response.status, 200);
+    const final = await response.json();
+    assert.ok(verifyReceipt(final));
+    const { receipt } = final;
+    assert.equal(receipt.status, 'completed');
+    assert.equal(receipt.organizationId, org);
+    assert.equal(receipt.deletionId, requested.deletion.id);
+    // The receipt always prints six fractional digits; the API's JSON drops trailing zeros.
+    assert.equal(receipt.requestedAt.replace(/0*Z$/, 'Z'), requested.deletion.requestedAt.replace(/0*Z$/, 'Z'));
+    assert.ok(Date.parse(receipt.completedAt) >= Date.parse(receipt.startedAt));
+    assert.deepEqual(receipt.verification, { method: 'per_table_zero_count', tablesChecked: (await tenantTables()).length, remainingRows: 0 });
+    assert.equal(receipt.backups.notice, 'deleted_data_persists_in_encrypted_backups_until_they_age_out');
+    const receiptRows = Object.fromEntries(receipt.tables.map(({ table, rows }) => [table, rows]));
+    for (const [table, count] of Object.entries(before)) assert.equal(receiptRows[table], count, table);
+    assert.equal(receiptRows.organizations, 1);
+    assert.equal(receipt.totalRows, receipt.tables.reduce((sum, { rows }) => sum + rows, 0));
+    assert.ok(!JSON.stringify(final).includes(slug));
+    // An operator reproduces the signature from the ledger with the server key.
+    const stored = await ledger('receipt');
+    assert.deepEqual(JSON.parse(stored), receipt);
+    assert.equal(createHmac('sha256', Buffer.from(deletionKey, 'hex')).update(stored).digest('hex'), await ledger('receipt_signature'));
+    assert.equal(final.signature.value, await ledger('receipt_signature'));
+
+    // Every credential is gone, and a restart does not recreate the organization from configuration.
+    await call('/v1/admin/session', { token: offboardAdmin, expect: 401 });
+    await call('/v1/admin/session', { token: delegated.token, expect: 401 });
+    await stop();
+    await start();
+    await call('/v1/admin/session', { token: offboardAdmin, expect: 401 });
+    assert.equal(await retentionFixture(`SELECT count(*) FROM organizations WHERE slug = '${slug}'`), '0');
+    assert.equal((await rawFetch(`/v1/organization-deletions/${requested.deletion.id}/receipt`, requested.receiptToken)).status, 200);
+    assert.deepEqual(await call('/v1/admin/policies', { token: first }), firstPolicies);
+  });
+
+  await t.test('organization deletion handles every table in the schema in dependency order', {
+    skip: !postgres && 'Set ZEKVAR_TEST_POSTGRES_CONTAINER to read the schema.',
+  }, async () => {
+    const source = await readFile(new URL('../DataDeletion.cs', import.meta.url), 'utf8');
+    const plan = source.slice(source.indexOf('// BEGIN tenant deletion plan'), source.indexOf('// END tenant deletion plan'));
+    const [ordered, retained] = plan.split('RetainedTables');
+    const order = [...ordered.matchAll(/new\("([a-z_]+)"/g)].map(([, name]) => name);
+    const kept = [...retained.matchAll(/"([a-z_]+)"/g)].map(([, name]) => name);
+    assert.ok(order.length > 30);
+    assert.equal(new Set(order).size, order.length);
+    const tables = (await retentionFixture(`SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition`)).split(',');
+    const unhandled = tables.filter((table) => !order.includes(table) && !kept.includes(table));
+    assert.deepEqual(unhandled, [], `Add these tables to the organization deletion plan in DataDeletion.cs: ${unhandled.join(', ')}`);
+    const tenant = (await tenantTables()).filter((table) => !kept.includes(table));
+    assert.deepEqual(tenant.filter((table) => !order.includes(table)), []);
+    assert.deepEqual(order.filter((table) => !tables.includes(table)), [], 'The deletion plan names a table that does not exist.');
+    // Children are deleted before the rows they reference. Groups and versions reference each other; the job clears
+    // group pointers before deleting versions.
+    const references = (await retentionFixture(`SELECT DISTINCT conrelid::regclass::text || '>' || confrelid::regclass::text
+      FROM pg_constraint WHERE contype = 'f' AND conrelid <> confrelid`)).split('\n').map((line) => line.split('>'));
+    for (const [child, parent] of references) {
+      if (child === 'policy_groups' && parent === 'policy_versions') continue;
+      assert.ok(order.indexOf(child) < order.indexOf(parent), `${child} must be deleted before ${parent}`);
+    }
   });
 });

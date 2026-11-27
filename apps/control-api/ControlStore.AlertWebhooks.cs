@@ -16,6 +16,7 @@ internal sealed partial class ControlStore
                 LEFT JOIN retention_cutoffs r ON r.organization_id = d.organization_id
                 WHERE d.status = 'pending' AND d.available_at <= now() AND (d.lease_until IS NULL OR d.lease_until <= now())
                   AND $1::jsonb ->> o.slug = d.route_fingerprint AND {AlertVisible}
+                  AND NOT organization_offboarding(d.organization_id)
                 ORDER BY d.available_at, d.id LIMIT 1 FOR UPDATE OF d SKIP LOCKED
             ), claimed AS (
                 UPDATE alert_webhook_deliveries d SET attempts = LEAST(d.attempts + 1, $2),

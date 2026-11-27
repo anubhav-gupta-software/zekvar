@@ -115,7 +115,8 @@ internal static class Tokens
 }
 
 internal sealed record DemoOrganization(string Slug, string AdminToken);
-internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId, string? OrganizationSlug, AccessIdentity? Access)
+internal sealed record RequestIdentity(Guid OrganizationId, Guid? InstallationId, string? OrganizationSlug, AccessIdentity? Access,
+    bool Offboarding = false)
 {
     public string? Role => Access?.Role ?? (OrganizationSlug is null ? null : AccessRoles.Owner);
 }

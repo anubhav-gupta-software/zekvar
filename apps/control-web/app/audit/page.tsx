@@ -1,3 +1,4 @@
+import { dataDeletionDetails } from '../../lib/deletion';
 import { redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../../lib/api';
 import { roleLabels } from '../../lib/access';
@@ -90,6 +91,7 @@ const actorLabels = { organization_admin: 'Organization admin', named_administra
 function auditDetails(entry: AuditEntry) {
   const saas = entry.saasClassification;
   if (saas) return `${saasApp(saas.appId)?.name ?? saas.appId} · ${saasClassificationLabels[saas.previous]} → ${saasClassificationLabels[saas.status]}`;
+  if (entry.dataDeletion) return dataDeletionDetails(entry.action, entry.dataDeletion);
   const rollout = entry.rolloutChange;
   if (rollout) return <><a className="underline" href={`/rollouts?plan=${rollout.planId}`}>{rollout.planName}</a>
     {' · '}{rolloutEvents[rollout.event] ?? rollout.event}

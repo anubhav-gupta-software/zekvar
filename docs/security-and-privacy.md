@@ -154,17 +154,20 @@ Application logs: the Control API writes JSON lines to stdout for the systemd jo
 - Expired records are hidden immediately and deleted in batches. Control sweeps at startup and hourly by default. An administrator can run cleanup on demand (up to 1,000 rows per dataset per run).
 - Shortening a window deletes data permanently. Widening cannot revive it.
 - Revoking a browser deletes its extension inventory snapshots and composer observations.
-- Not covered by a window: policy versions and installation records. No self-service deletion of those was found. [TO CONFIRM: process and timeline for deletion at customer request or termination.]
-- Backups follow the operator's storage lifecycle. [TO CONFIRM: backup retention period and how deletions propagate.]
-- How to delete: see [Delete retained Control data](install-and-remove.md#delete-retained-control-data).
-- Data return on termination. [TO CONFIRM]
+- Administrators can permanently delete a revoked browser and every record derived from it. The audit log keeps a tombstone with the browser ID and the deleted counts only.
+- Administrators can purge superseded policy versions before a cutoff. Current versions and versions still used by an open review, an unfinished rollout, a retained event, a browser, or retained evidence stay.
+- Organization deletion (GDPR erasure and offboarding): the owner confirms by typing the organization name. A grace period (7 days by default) suspends every credential, SSO session, browser, event feed key, and webhook at once and can be cancelled by the owner. Control then deletes every tenant row in batches, verifies a zero row count in every table that has an organization column, and keeps an HMAC-signed receipt with per-table counts. The operator can reproduce and verify the receipt. Only the deletion ID, organization ID, hashes used to block an accidental re-creation, and the receipt remain.
+- Data return (portability): the owner can download a streaming JSON export of all retained tenant data at any time, including during the grace period.
+- Deleted data persists in encrypted backups until they age out. The pilot default is 35 days (`ZEKVAR_BACKUP_RETENTION_DAYS`), applied by the local prune command and the S3 lifecycle rule. Receipts state the configured period. Restoring an older backup brings deleted data back, so operators reapply recorded deletions before exposing a restored environment.
+- Everything is role-limited and audited: owners alone export and delete the organization, administrators delete browser data and purge policy history, and auditors read only.
+- How to delete: see [Delete retained Control data](install-and-remove.md#delete-retained-control-data) and [Export and delete the whole organization](install-and-remove.md#export-and-delete-the-whole-organization).
 
 ## Backup and recovery
 
 - Operators take encrypted PostgreSQL snapshots, daily at 02:00 UTC with a systemd timer, plus an independent freshness check on the off-host bucket. See [Schedule off-host backups](../deploy/pilot/README.md#schedule-off-host-backups).
 - Restore revokes previous browser enrollments, named credentials including SSO identities, and event feed keys. It clears extension inventory snapshots, expires unused grants, cancels pending reviews and webhook jobs, and changes the feed generation. Customers re-enroll browsers and reissue credentials after a restore.
 - A disposable-environment drill was run for local and loopback S3 storage. A timed restore on a real staging deployment is outstanding.
-- Recovery time objective, recovery point objective, backup retention, and disaster recovery site. [TO CONFIRM]
+- Backup retention is configurable and defaults to 35 days in the pilot kit. Recovery time objective, recovery point objective, and disaster recovery site. [TO CONFIRM]
 - Behavior when Control is unreachable: the extension keeps enforcing the last saved policy and queues up to 100 metadata events. If the queue fills, it discards the oldest event and shows the discard count in the popup.
 
 ## Browser extension permissions

@@ -6,12 +6,13 @@ export LC_ALL=C AWS_PAGER='' AWS_CLI_AUTO_PROMPT=off AWS_RETRY_MODE=standard AWS
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
 case ${1:-}:$# in
-  publish:4|fetch:4|check:2) ;;
+  publish:4|fetch:4|check:2|lifecycle:2) ;;
   *)
     printf '%s\n' \
       'Usage: s3-backup.sh publish PROJECT ENV_FILE RECIPIENTS_FILE' \
       '       s3-backup.sh fetch OBJECT_KEY ARCHIVE.age SHA256_BASE64' \
-      '       s3-backup.sh check MAX_AGE_HOURS' >&2
+      '       s3-backup.sh check MAX_AGE_HOURS' \
+      '       s3-backup.sh lifecycle RETENTION_DAYS' >&2
     exit 2 ;;
 esac
 
@@ -21,6 +22,18 @@ prefix=${ZEKVAR_BACKUP_PREFIX:-}
 [[ $bucket =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ ]] || fail 'Set ZEKVAR_BACKUP_BUCKET to a general purpose bucket name without dots.'
 [[ $owner =~ ^[0-9]{12}$ ]] || fail 'Set ZEKVAR_BACKUP_BUCKET_OWNER to the bucket owner account ID.'
 [[ $prefix =~ ^[a-z0-9_-]+(/[a-z0-9_-]+)*$ && ${#prefix} -le 120 ]] || fail 'Set ZEKVAR_BACKUP_PREFIX to a dedicated backup prefix.'
+
+# Prints the S3 lifecycle rule that expires archives (and noncurrent versions) under the prefix after RETENTION_DAYS.
+# Apply it with an identity allowed to change bucket lifecycle, separate from the writer:
+#   aws s3api put-bucket-lifecycle-configuration --bucket "$ZEKVAR_BACKUP_BUCKET" \
+#     --expected-bucket-owner "$ZEKVAR_BACKUP_BUCKET_OWNER" --lifecycle-configuration file://lifecycle.json
+if [[ $1 == lifecycle ]]; then
+  days=$2
+  [[ $days =~ ^[1-9][0-9]{0,3}$ ]] && (( days <= 3650 )) || fail 'Specify a retention period from 1 to 3650 days.'
+  printf '{"Rules":[{"ID":"zekvar-backup-retention","Status":"Enabled","Filter":{"Prefix":"%s/"},"Expiration":{"Days":%s},"NoncurrentVersionExpiration":{"NoncurrentDays":1},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}\n' \
+    "$prefix" "$days"
+  exit
+fi
 command -v aws >/dev/null || fail 'Install the AWS CLI on the operator host.'
 
 s3() {

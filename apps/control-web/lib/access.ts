@@ -8,7 +8,10 @@ export const roleLabels: Record<ControlRole, string> = {
 };
 
 export type AccessIdentity = { id: string; name: string; role: DelegatedRole };
-export type ControlSession = { organization: string; role: ControlRole; access: AccessIdentity | null; reviewRequired: boolean };
+export type ControlSession = {
+  organization: string; role: ControlRole; access: AccessIdentity | null; reviewRequired: boolean;
+  deletion?: import('./deletion').OrganizationDeletionStatus;
+};
 export type ControlAccess = AccessIdentity & {
   issuedAt: string; expiresAt: string | null; status: 'active' | 'expired' | 'revoked'; issuer?: string; subject?: string;
 };

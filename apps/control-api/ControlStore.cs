@@ -14,8 +14,9 @@ internal sealed partial class ControlStore
     public ControlStore(NpgsqlDataSource dataSource, IReadOnlyDictionary<string, ControlSso> sso, AlertWebhooks alertWebhooks) =>
         (this.dataSource, this.sso, this.alertWebhooks) = (dataSource, sso, alertWebhooks);
 
-    public async Task Initialize(DemoOrganization[] organizations, CancellationToken ct)
+    public async Task<int> Initialize(DemoOrganization[] organizations, CancellationToken ct)
     {
+        var skipped = 0;
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
         await using var setup = connection.CreateCommand();
@@ -79,6 +80,7 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 52, "052_rollout_plans.sql", ct);
         await ApplyMigration(connection, 53, "053_adapter_controls.sql", ct);
         await ApplyMigration(connection, 54, "054_enrollment_keys.sql", ct);
+        await ApplyMigration(connection, 55, "055_data_deletion.sql", ct);
         await ApplyMigration(connection, 56, "056_saas_inventory.sql", ct);
         await ApplyMigration(connection, 58, "058_health_identifiers.sql", ct);
 
@@ -87,7 +89,10 @@ internal sealed partial class ControlStore
             await using var seed = connection.CreateCommand();
             seed.CommandText = """
                 WITH org AS (
-                    INSERT INTO organizations (id, slug) VALUES ($1, $2)
+                    -- A deleted organization is not recreated from configuration with the same owner token.
+                    INSERT INTO organizations (id, slug) SELECT $1, $2 WHERE NOT EXISTS (
+                        SELECT 1 FROM organization_deletions d WHERE d.slug_hash = $4
+                            AND (d.status = 'deleting' OR (d.status = 'completed' AND d.owner_token_hash = $3)))
                     ON CONFLICT (slug) DO UPDATE SET slug = EXCLUDED.slug RETURNING id
                 ), initial_policy AS (
                     INSERT INTO policy_versions (organization_id, version, mode)
@@ -103,9 +108,11 @@ internal sealed partial class ControlStore
             seed.Parameters.AddWithValue(Guid.NewGuid());
             seed.Parameters.AddWithValue(organization.Slug);
             seed.Parameters.AddWithValue(Tokens.Hash(organization.AdminToken));
-            await seed.ExecuteNonQueryAsync(ct);
+            seed.Parameters.AddWithValue(Tokens.Hash(organization.Slug));
+            if (await seed.ExecuteNonQueryAsync(ct) == 0) skipped++;
         }
         await transaction.CommitAsync(ct);
+        return skipped;
     }
 
     private static async Task ApplyMigration(NpgsqlConnection connection, int version, string resourceName, CancellationToken ct)
@@ -149,7 +156,7 @@ internal sealed partial class ControlStore
         await using var command = Command("""
             WITH redeemed AS (
                 UPDATE enrollment_grants g SET redeemed_at = now()
-                WHERE g.token_hash = $1 AND g.redeemed_at IS NULL AND g.expires_at > now()
+                WHERE g.token_hash = $1 AND g.redeemed_at IS NULL AND g.expires_at > now() AND NOT organization_offboarding(g.organization_id)
                     AND (g.batch_id IS NULL OR EXISTS (SELECT 1 FROM enrollment_batches b WHERE b.organization_id = g.organization_id
                         AND b.id = g.batch_id AND b.cancelled_at IS NULL AND (b.policy_group_id IS NULL OR $4)))
                 RETURNING organization_id, batch_id
@@ -769,7 +776,7 @@ internal sealed partial class ControlStore
             SELECT a.id, occurred_at, action, policy_version, restored_from, installation_id, app_id, classification, retention, cleanup, group_change,
                 actor.id, actor.display_name, actor.role, subject.id, subject.display_name, subject.role, a.review_change, a.enrollment_batch_change,
                 a.event_triage_change, a.incident_case_change, a.security_alert_change, a.event_feed_key_change, a.fleet_change, a.template_change,
-                a.composer_gate, a.rollout_change, a.saas_classification, a.enrollment_key_change
+                a.composer_gate, a.rollout_change, a.saas_classification, a.enrollment_key_change, a.data_deletion
             FROM control_audit a LEFT JOIN retention_cutoffs r ON a.organization_id = r.organization_id
             LEFT JOIN control_access actor ON actor.organization_id = a.organization_id AND actor.id = a.actor_access_id
             LEFT JOIN control_access subject ON subject.organization_id = a.organization_id AND subject.id = a.subject_access_id
@@ -804,7 +811,8 @@ internal sealed partial class ControlStore
                 rows.IsDBNull(25) ? null : JsonSerializer.Deserialize<PolicyComposerGate>(rows.GetString(25), JsonSerializerOptions.Web),
                 rows.IsDBNull(26) ? null : JsonSerializer.Deserialize<RolloutAudit>(rows.GetString(26), JsonSerializerOptions.Web),
                 rows.IsDBNull(27) ? null : JsonSerializer.Deserialize<SaasClassificationChange>(rows.GetString(27), JsonSerializerOptions.Web),
-                rows.IsDBNull(28) ? null : JsonSerializer.Deserialize<EnrollmentKeyChange>(rows.GetString(28), JsonSerializerOptions.Web)));
+                rows.IsDBNull(28) ? null : JsonSerializer.Deserialize<EnrollmentKeyChange>(rows.GetString(28), JsonSerializerOptions.Web),
+                rows.IsDBNull(29) ? null : JsonSerializer.Deserialize<JsonElement>(rows.GetString(29))));
         if (entries.Count <= filters.Limit) return new(entries, null);
         entries.RemoveAt(filters.Limit);
         var last = entries[^1];

@@ -161,6 +161,8 @@ try {
   const enrollmentKeyAdmin = randomBytes(32).toString('hex');
   const enrollmentKeyDashboardAdmin = randomBytes(32).toString('hex');
   const healthAdmin = randomBytes(32).toString('hex');
+  const dataDeletionAdmin = randomBytes(32).toString('hex');
+  const deletedOrganizationAdmin = randomBytes(32).toString('hex');
   const apiServer = startService('dotnet', ['bin/Debug/net10.0/Control.Api.dll'], api, {
     DOTNET_ENVIRONMENT: 'Development', ASPNETCORE_ENVIRONMENT: 'Development', Control__Port: String(apiPort), ConnectionStrings__Control: db,
     Control__Organizations__0__Slug: 'demo', Control__Organizations__0__AdminToken: token,
@@ -188,6 +190,9 @@ try {
     Control__Organizations__24__Slug: 'enrollment-keys', Control__Organizations__24__AdminToken: enrollmentKeyAdmin,
     Control__Organizations__25__Slug: 'enrollment-key-dashboard', Control__Organizations__25__AdminToken: enrollmentKeyDashboardAdmin,
     Control__Organizations__26__Slug: 'health-identifiers', Control__Organizations__26__AdminToken: healthAdmin,
+    Control__Organizations__27__Slug: 'data-deletion', Control__Organizations__27__AdminToken: dataDeletionAdmin,
+    Control__Organizations__28__Slug: 'deleted-organization', Control__Organizations__28__AdminToken: deletedOrganizationAdmin,
+    Control__OrganizationDeletion__ReceiptKey: randomBytes(32).toString('hex'), Control__OrganizationDeletion__SweepSeconds: '1',
     ...(flags.has('--pilot') ? {
       Control__Organizations__3__Slug: 'managed-pilot', Control__Organizations__3__AdminToken: pilotAdmin,
       Control__Organizations__4__Slug: 'review-pilot', Control__Organizations__4__AdminToken: reviewAdmin,
@@ -295,6 +300,15 @@ try {
   await run(process.execPath, ['--test', 'test/enrollment-keys.test.mjs'], web, {
     ZEKVAR_TEST_WEB_ORIGIN: webOrigin, ZEKVAR_TEST_API_ORIGIN: apiOrigin, ZEKVAR_TEST_ADMIN_TOKEN: enrollmentKeyDashboardAdmin,
     ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0',
+  });
+  await run(process.execPath, ['--test', 'test/data-deletion.test.mjs'], web, {
+    ZEKVAR_TEST_WEB_ORIGIN: webOrigin, ZEKVAR_TEST_API_ORIGIN: apiOrigin, ZEKVAR_TEST_ADMIN_TOKEN: dataDeletionAdmin,
+    ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0',
+    ZEKVAR_TEST_DELETION_SCREENSHOT: artifacts ? join(artifacts, '44-control-data-deletion.png') : '',
+  });
+  await run(process.execPath, ['--test', 'test/organization-deletion.test.mjs'], extension, {
+    ZEKVAR_DEMO_API: apiOrigin, ZEKVAR_DEMO_TOKEN: deletedOrganizationAdmin, ZEKVAR_DEMO_OTHER_TOKEN: token,
+    ZEKVAR_TEST_POSTGRES_CONTAINER: postgres, ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0', ZEKVAR_DEMO_ARTIFACTS: artifacts ?? '',
   });
   await run('npm', ['run', 'test:control'], extension, {
     ZEKVAR_EXTENSION_TEST_API: apiOrigin, ZEKVAR_EXTENSION_TEST_ADMIN_TOKEN: extensionAdmin,

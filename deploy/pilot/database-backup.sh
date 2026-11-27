@@ -4,10 +4,26 @@ umask 077
 
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
+# Backup retention: delete local encrypted archives older than DAYS. Deleted Control data stays recoverable from
+# every archive taken before the deletion until that archive is pruned here or expires in off-host storage.
+if [[ ${1:-} == prune ]]; then
+  [[ $# == 3 ]] || fail 'Usage: database-backup.sh prune DIRECTORY DAYS'
+  [[ -d $2 && ! -L $2 ]] || fail 'Specify an existing backup directory.'
+  [[ $3 =~ ^[1-9][0-9]{0,3}$ ]] && (( $3 <= 3650 )) || fail 'Specify a retention period from 1 to 3650 days.'
+  pruned=0
+  while IFS= read -r -d '' archive; do
+    rm -f -- "$archive"
+    pruned=$((pruned + 1))
+  done < <(find "$2" -mindepth 1 -maxdepth 1 -type f -name '*.age' -mmin "+$(( $3 * 1440 ))" -print0)
+  printf 'Pruned %s encrypted backups older than %s days from %s\n' "$pruned" "$3" "$2"
+  exit
+fi
+
 if [[ $# != 5 || ( $1 != backup && $1 != restore ) ]]; then
   printf '%s\n' \
     'Usage: database-backup.sh backup PROJECT ENV_FILE ARCHIVE.age RECIPIENTS_FILE' \
-    '       database-backup.sh restore PROJECT ENV_FILE ARCHIVE.age IDENTITY_FILE' >&2
+    '       database-backup.sh restore PROJECT ENV_FILE ARCHIVE.age IDENTITY_FILE' \
+    '       database-backup.sh prune DIRECTORY DAYS' >&2
   exit 2
 fi
 

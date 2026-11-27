@@ -8,21 +8,21 @@ internal sealed partial class ControlStore
     {
         var sql = browser
             ? """
-                SELECT organization_id, id, NULL::text, NULL::uuid, NULL::text, NULL::text, NULL::text, NULL::text FROM installations
-                WHERE token_hash = $1 AND revoked_at IS NULL
+                SELECT organization_id, id, NULL::text, NULL::uuid, NULL::text, NULL::text, NULL::text, NULL::text, false FROM installations
+                WHERE token_hash = $1 AND revoked_at IS NULL AND NOT organization_offboarding(organization_id)
                 """
             : """
-                SELECT o.id, NULL::uuid, o.slug, NULL::uuid, NULL::text, NULL::text, NULL::text, NULL::text
+                SELECT o.id, NULL::uuid, o.slug, NULL::uuid, NULL::text, NULL::text, NULL::text, NULL::text, organization_offboarding(o.id)
                 FROM admin_memberships m JOIN organizations o ON o.id = m.organization_id WHERE m.token_hash = $1
                 UNION ALL
-                SELECT o.id, NULL::uuid, o.slug, c.id, c.display_name, c.role, NULL::text, NULL::text
+                SELECT o.id, NULL::uuid, o.slug, c.id, c.display_name, c.role, NULL::text, NULL::text, false
                 FROM control_access c JOIN organizations o ON o.id = c.organization_id
-                WHERE c.token_hash = $1 AND c.revoked_at IS NULL AND c.expires_at > now()
+                WHERE c.token_hash = $1 AND c.revoked_at IS NULL AND c.expires_at > now() AND NOT organization_offboarding(o.id)
                 UNION ALL
-                SELECT o.id, NULL::uuid, o.slug, c.id, c.display_name, c.role, c.oidc_issuer, s.bridge_hash
+                SELECT o.id, NULL::uuid, o.slug, c.id, c.display_name, c.role, c.oidc_issuer, s.bridge_hash, false
                 FROM control_sso_sessions s JOIN control_access c ON c.id = s.access_id
                 JOIN organizations o ON o.id = c.organization_id
-                WHERE s.token_hash = $1 AND s.expires_at > now() AND c.revoked_at IS NULL
+                WHERE s.token_hash = $1 AND s.expires_at > now() AND c.revoked_at IS NULL AND NOT organization_offboarding(o.id)
                 """;
         await using var command = Command(sql, Tokens.Hash(token));
         await using var rows = await command.ExecuteReaderAsync(ct);
@@ -34,7 +34,7 @@ internal sealed partial class ControlStore
                 rows.IsDBNull(6) || rows.GetString(6) != settings.Issuer || rows.GetString(7) != settings.BridgeHash)) continue;
             // Reject ambiguous credentials even if a configured owner token collides with a delegated one.
             if (identity is not null) return null;
-            identity = new(rows.GetGuid(0), rows.IsDBNull(1) ? null : rows.GetGuid(1), organization, ReadAccessIdentity(rows, 3));
+            identity = new(rows.GetGuid(0), rows.IsDBNull(1) ? null : rows.GetGuid(1), organization, ReadAccessIdentity(rows, 3), rows.GetBoolean(8));
         }
         return identity;
     }

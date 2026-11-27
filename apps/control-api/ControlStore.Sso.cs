@@ -27,7 +27,7 @@ internal sealed partial class ControlStore
             WITH identity AS (
                 SELECT c.id, c.organization_id FROM control_access c JOIN organizations o ON o.id = c.organization_id
                 WHERE o.slug = $1 AND c.oidc_issuer = $2 AND c.oidc_subject = $3 AND c.revoked_at IS NULL
-                    AND $6::timestamptz > now() FOR UPDATE OF c
+                    AND $6::timestamptz > now() AND NOT organization_offboarding(o.id) FOR UPDATE OF c
             ), session AS (
                 INSERT INTO control_sso_sessions (access_id, token_hash, bridge_hash, expires_at)
                 SELECT id, $4, $5, LEAST($6::timestamptz, now() + interval '1 hour') FROM identity

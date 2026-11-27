@@ -8,6 +8,7 @@ import { aiPromptApps, classifications, decisionLabels, detectorModes, discovery
   type AppClassification, type DetectorMode, type Feedback, type Mode } from '../lib/control';
 import { endSession, sessionToken, startSession } from '../lib/session';
 import { cleanupCounts, retentionFields, type RetentionField, type RetentionPolicy } from '../lib/retention';
+import { keptSummary, versionList } from '../lib/deletion';
 import { navigationRuleLimitError, readNavigationRules } from '../lib/navigation';
 import { isDetectorMode, isMode, readClassificationProtection, readHealthProtection, readIdentifierProtection, type ClassificationProtection,
   type HealthProtection, type IdentifierProtection } from '../../../contracts/policy/prompt';
@@ -1078,6 +1079,71 @@ export async function saveRetention(_previous: Feedback, form: FormData): Promis
     await controlApi.saveRetention(token, policy);
     revalidatePath('/retention');
     return { message: 'Retention settings saved.' };
+  });
+}
+
+export async function deleteInstallationData(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const installationId = form.get('installationId');
+  if (!isId(installationId)) return { error: 'Choose a revoked browser.' };
+  return perform(async (token) => {
+    try {
+      // No revalidation here: the row and its confirmation stay until the next load.
+      const result = await controlApi.deleteInstallation(token, installationId);
+      const total = Object.values(result.deletedRows).reduce((sum, count) => sum + count, 0);
+      return { message: `Deleted browser ${installationId.slice(0, 13)} and ${total} ${total === 1 ? 'record' : 'records'} derived from it.` };
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'installation_active') return { error: 'Revoke this browser before deleting its data.' };
+      throw error;
+    }
+  });
+}
+
+export async function purgePolicyHistory(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const scope = form.get('scope');
+  const before = form.get('publishedBefore');
+  const dryRun = form.get('dryRun') === 'on';
+  const groupId = scope === 'baseline' ? null : isId(scope) ? scope : undefined;
+  if (groupId === undefined) return { error: 'Choose the organization baseline or a rollout group.' };
+  if (typeof before !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(before) || !Number.isFinite(Date.parse(`${before}T00:00:00Z`)) ||
+      Date.parse(`${before}T00:00:00Z`) > Date.now()) return { error: 'Choose a cutoff date that is not in the future.' };
+  return perform(async (token) => {
+    const result = await controlApi.purgePolicyHistory(token, `${before}T00:00:00Z`, groupId, dryRun);
+    if (!dryRun) revalidatePath('/data-deletion');
+    const versions = versionList(result.versions);
+    return { message: `${dryRun ? 'Would purge' : 'Purged'} ${result.versions.length} ${result.versions.length === 1 ? 'version' : 'versions'}: ${versions}. ${keptSummary(result.kept)}` };
+  });
+}
+
+export async function requestOrganizationDeletion(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const confirmSlug = form.get('confirmSlug');
+  if (typeof confirmSlug !== 'string' || !confirmSlug) return { error: 'Type the organization name to confirm.' };
+  return perform(async (token) => {
+    try {
+      // Revalidating would replace the form and hide the one-time receipt token, so the Continue link reloads instead.
+      const { deletion, receiptToken } = await controlApi.requestOrganizationDeletion(token, confirmSlug);
+      return { message: 'Organization deletion scheduled. Control access is suspended until you cancel or deletion completes.',
+        deletionReceipt: { id: deletion.id, token: receiptToken } };
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'deletion_confirmation_mismatch') return { error: 'The organization name does not match.' };
+      if (error instanceof ApiError && error.code === 'organization_deletion_exists') return { error: 'A deletion is already scheduled. Reload the page.' };
+      if (error instanceof ApiError && error.code === 'deletion_receipts_unavailable') {
+        return { error: 'The operator has not configured a deletion receipt key, so deletion is unavailable.' };
+      }
+      throw error;
+    }
+  });
+}
+
+export async function cancelOrganizationDeletion(): Promise<Feedback> {
+  return perform(async (token) => {
+    try {
+      await controlApi.cancelOrganizationDeletion(token);
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'organization_deletion_in_progress') return { error: 'Deletion has already started and cannot be cancelled.' };
+      throw error;
+    }
+    revalidatePath('/data-deletion');
+    return { message: 'Organization deletion cancelled. Control access is restored.' };
   });
 }
 

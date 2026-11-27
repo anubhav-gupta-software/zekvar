@@ -40,6 +40,9 @@ services:
       Control__AlertWebhooks__0__OrganizationSlug: ${ZEKVAR_ORGANIZATION_SLUG:?set the organization slug}
       Control__AlertWebhooks__0__Endpoint: ${ZEKVAR_ALERT_WEBHOOK_ENDPOINT:-}
       Control__AlertWebhooks__0__SigningSecret: ${ZEKVAR_ALERT_WEBHOOK_SIGNING_SECRET:-}
+      Control__OrganizationDeletion__ReceiptKey: ${ZEKVAR_DELETION_RECEIPT_KEY:-}
+      Control__OrganizationDeletion__GraceDays: ${ZEKVAR_DELETION_GRACE_DAYS:-7}
+      Control__BackupRetentionDays: ${ZEKVAR_BACKUP_RETENTION_DAYS:-35}
       ConnectionStrings__Control: "Host=postgres;Database=zekvar;Username=zekvar_app;Password=${ZEKVAR_POSTGRES_APP_PASSWORD:?generate an app database password}"
 
   web:

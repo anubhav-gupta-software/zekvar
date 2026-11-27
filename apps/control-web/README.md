@@ -354,6 +354,12 @@ Open **Data retention** to set independent windows for security events, AI obser
 
 Control checks for expired records at startup and hourly by default. Use **Run cleanup** to delete up to 1,000 expired records per dataset immediately. **Audit log** displays changes to retention settings and counts from cleanup runs. The cleanup scope is the active PostgreSQL database. [Retention API and expiry rules](../control-api/README.md#data-retention)
 
+## Delete data
+
+Open **Data deletion**. Owners and administrators can delete a revoked browser and every record derived from it, and preview or purge superseded policy versions for the baseline or a rollout group before a cutoff date (00:00 UTC). The current version and versions still in use stay. Owners can download a full JSON export and request deletion of the whole organization by typing its name. The page shows the deletion ID and receipt token once. During the grace period, the dashboard opens only this page for the owner, with the scheduled time, **Download signed receipt**, the export, and **Cancel organization deletion**. Auditors see nothing to change. [Deletion API](../control-api/README.md#data-deletion) · [Offboarding steps](../../docs/install-and-remove.md#export-and-delete-the-whole-organization)
+
+The browser test `test/data-deletion.test.mjs` runs at 1440 and 390 pixels against a disposable organization.
+
 ## Verify in Chrome
 
 With both services running against a disposable organization, run the production build or type check separately as needed. The browser test publishes and restores policy versions, enrolls and revokes a test installation, and posts one synthetic event.

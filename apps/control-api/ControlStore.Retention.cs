@@ -51,7 +51,7 @@ internal sealed partial class ControlStore
     {
         await using var command = Command($"""
             SELECT r.organization_id FROM retention_cutoffs r
-            WHERE EXISTS (SELECT 1 FROM security_events e WHERE e.organization_id = r.organization_id
+            WHERE NOT organization_offboarding(r.organization_id) AND (EXISTS (SELECT 1 FROM security_events e WHERE e.organization_id = r.organization_id
                         AND LEAST(e.occurred_at, e.received_at) < r.event_cutoff)
                OR EXISTS (SELECT 1 FROM ai_app_observations o WHERE o.organization_id = r.organization_id
                         AND o.observed_at < r.observation_cutoff)
@@ -59,11 +59,11 @@ internal sealed partial class ControlStore
                         AND s.first_seen_day < (r.observation_cutoff AT TIME ZONE 'UTC')::date)
                OR EXISTS (SELECT 1 FROM control_audit a WHERE a.organization_id = r.organization_id AND a.occurred_at < r.audit_cutoff)
                OR EXISTS (SELECT 1 FROM incident_cases c WHERE c.organization_id = r.organization_id
-                        AND c.status = 'resolved' AND c.updated_at < r.audit_cutoff)
+                        AND c.status = 'resolved' AND c.updated_at < r.audit_cutoff))
             UNION
             SELECT a.organization_id FROM security_alert_windows a
             LEFT JOIN retention_cutoffs r ON r.organization_id = a.organization_id
-            WHERE {AlertExpired}
+            WHERE ({AlertExpired}) AND NOT organization_offboarding(a.organization_id)
             ORDER BY organization_id
             """);
         var organizations = new List<Guid>();

@@ -23,6 +23,7 @@ import type { FleetChange, FleetPage, FleetRequest } from './fleet';
 import type { PolicyTemplate, PolicyTemplateDetails, PolicyTemplatePreview } from './templates';
 import type { PolicyImpactReport } from './policy-impact';
 import type { RolloutPlan, RolloutStageRequest } from './rollouts';
+import type { InstallationDeletion, OrganizationDeletionStatus, OrganizationDeletionView, PolicyPurge, RequestedOrganizationDeletion } from './deletion';
 import type { PromptExceptionRequest, PromptRequestDecision } from './prompt-requests';
 import type { AiPromptApp } from '../../../contracts/policy/apps';
 import { eventPath, type EventDetails, type EventTriage, type TriageAssignee, type TriageUpdate } from './triage';
@@ -223,6 +224,17 @@ export const controlApi = {
     request<IssuedEnrollmentKey>(`/enrollment-keys/${id}/rotate`, token, 'POST', body),
   revokeEnrollmentKey: (token: string, id: string) => request<void>(`/enrollment-keys/${id}/revoke`, token, 'POST'),
   revoke: (token: string, installationId: string) => request<void>(`/installations/${installationId}/revoke`, token, 'POST'),
+  deleteInstallation: (token: string, installationId: string) =>
+    request<InstallationDeletion>(`/installations/${installationId}/delete`, token, 'POST'),
+  purgePolicyHistory: (token: string, publishedBefore: string, groupId: string | null, dryRun: boolean) =>
+    request<PolicyPurge>('/policy-history/purge', token, 'POST', { publishedBefore, groupId, dryRun }),
+  organizationDeletion: (token: string) => request<OrganizationDeletionView>('/organization/deletion', token),
+  requestOrganizationDeletion: (token: string, confirmSlug: string) =>
+    request<RequestedOrganizationDeletion>('/organization/deletion', token, 'POST', { confirmSlug }),
+  cancelOrganizationDeletion: (token: string) => request<OrganizationDeletionStatus>('/organization/deletion/cancel', token, 'POST'),
+  deletionReceipt: (token: string) => apiResponse('/organization/deletion/receipt', token),
+  // The export streams every retained record, so it gets a longer deadline than other reads.
+  organizationExport: (token: string, signal: AbortSignal) => apiResponse('/organization/export', token, { signal }),
 };
 
 export const ssoApi = {

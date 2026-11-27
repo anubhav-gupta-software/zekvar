@@ -12,7 +12,9 @@ internal sealed record AuditFilters(string? Action, DateTimeOffset? Since, DateT
             or "policy_review_requested" or "policy_review_decided" or "enrollment_batch_issued" or "enrollment_batch_cancelled"
             or "event_triage_changed" or "incident_case_changed" or "security_alert_settings_changed" or "security_alert_acknowledged"
             or "event_feed_key_issued" or "event_feed_key_revoked" or "browser_fleet_changed" or "policy_template_changed" or "rollout_plan_changed"
-            or "saas_app_classified" or "enrollment_key_issued" or "enrollment_key_revoked") &&
+            or "saas_app_classified" or "enrollment_key_issued" or "enrollment_key_revoked"
+            or "installation_deleted" or "policy_history_purged" or "organization_deletion_requested" or "organization_deletion_cancelled"
+            or "organization_exported") &&
         (Since is null || Until is null || Since < Until) &&
         (BeforeAt is null) == (BeforeId is null) && BeforeId != Guid.Empty && Limit is >= 1 and <= 1000;
 }
@@ -33,7 +35,8 @@ internal sealed record AuditEntry(Guid Id, DateTime OccurredAt, string Action, i
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PolicyComposerGate? ComposerGate,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] RolloutAudit? RolloutChange = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SaasClassificationChange? SaasClassification = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] EnrollmentKeyChange? EnrollmentKeyChange = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] EnrollmentKeyChange? EnrollmentKeyChange = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] System.Text.Json.JsonElement? DataDeletion = null)
 {
     public string Actor => Action switch
     {

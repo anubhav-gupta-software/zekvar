@@ -207,6 +207,29 @@ ZEKVAR_BACKUP_TEST_OFFSITE=1 ZEKVAR_BACKUP_TEST_HEADED=1 \
   node --test apps/browser-extension/test/database-backup.test.mjs
 ```
 
+### Backup retention
+
+Deleted Control data persists in every encrypted backup taken before the deletion until that backup ages out. Pick one retention period, 35 days by default, and apply it everywhere:
+
+1. Set `ZEKVAR_BACKUP_RETENTION_DAYS` in the environment file. Control prints it on organization deletion receipts.
+2. For local archives, prune on a schedule: `deploy/pilot/database-backup.sh prune /srv/backups/zekvar 35`. It removes only `.age` files older than the period from that directory.
+3. For S3, print the lifecycle rule with `deploy/pilot/s3-backup.sh lifecycle 35` and apply it with an identity allowed to change bucket lifecycle, separate from the backup writer: `aws s3api put-bucket-lifecycle-configuration --bucket "$ZEKVAR_BACKUP_BUCKET" --expected-bucket-owner "$ZEKVAR_BACKUP_BUCKET_OWNER" --lifecycle-configuration file://lifecycle.json`. The rule also expires noncurrent versions a day after they are replaced. S3 Object Lock or a legal hold overrides it.
+
+A restore brings back data deleted after the snapshot was taken. Before exposing a restored environment, reapply the browser deletions, policy purges, and organization deletions recorded in the audit export and the operator's deletion receipts.
+
+### Delete an organization
+
+Owners request deletion in the dashboard under **Data deletion** ([customer steps](../../docs/install-and-remove.md#export-and-delete-the-whole-organization)). Set `ZEKVAR_DELETION_RECEIPT_KEY` to the output of `openssl rand -hex 32` and keep a copy in the operator secret store. Without it, organization deletion is unavailable. `ZEKVAR_DELETION_GRACE_DAYS` sets the grace period from 1 to 30 days (default 7). The API checks for due deletions every 60 seconds.
+
+After completion, verify and reproduce the receipt from the deletion ledger. The script recomputes the HMAC from the stored receipt with the key in the environment file and repeats the zero-count check in every table that has an `organization_id` column. It prints the signed receipt for the customer.
+
+```sh
+deploy/pilot/organization-deletion.sh verify zekvar-pilot deploy/pilot/.env "$DELETION_ID" > receipt.json
+ZEKVAR_DELETION_RECEIPT_KEY=... deploy/pilot/organization-deletion.sh verify-file receipt.json
+```
+
+`verify-file` checks a receipt the owner downloaded and needs `jq`. A deleted organization stays in `Control__Organizations` until you remove it. Control does not recreate it while the configured owner token matches the deleted one. Remove its entries from the environment file, or rotate the owner token to provision a new, empty organization with the same name. A deletion that stops with `unhandled_tenant_table` or `batch_failed` resumes on the next check after the cause is fixed. The first means a database table is missing from the deletion plan. Do not drop data by hand.
+
 ## Verify the deployment
 
 Run the deployment preflight after publishing the HTTPS hosts and the signed Browser update channel. Use Node 22.14 or later and the original protected packager output as `--release-dir`. The command checks the two HTTP-to-HTTPS redirects, certificate trust, API readiness, anonymous access boundaries, and public update delivery. It compares the served manifest and CRX with the trusted release and checks that the update manifest requires revalidation. It sends anonymous GET requests and prints a JSON result. A failed check produces a nonzero exit code.
