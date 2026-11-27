@@ -261,7 +261,7 @@ internal sealed partial class ControlStore
                 p.blocked_ai_app_hosts, p.chatgpt_file_content_block, p.gemini_file_content_block, p.identifier_protection, p.extension_deployment,
                 p.preset_discovery_enabled, p.ssn_mode, p.browser_hardening, p.clipboard_mode, p.github_token_mode, p.prompt_app_modes,
                 p.claude_upload_mode, p.claude_upload_types, p.claude_file_content_mode, p.cloud_credential_mode, p.classification_protection,
-                p.adapter_controls, p.saas_discovery_enabled
+                p.adapter_controls, p.saas_discovery_enabled, p.health_protection
             FROM policy_versions p LEFT JOIN policy_audit a USING (organization_id, version)
             WHERE p.organization_id = $1 AND p.version = $2 AND (NOT $3 OR p.policy_group_id IS NOT DISTINCT FROM $4::uuid)
             """, transaction.Connection, transaction);
@@ -297,6 +297,7 @@ internal sealed partial class ControlStore
         GithubTokenMode = request.GithubTokenMode ?? current.GithubTokenMode,
         CloudCredentialMode = request.CloudCredentialMode ?? current.CloudCredentialMode,
         ClassificationProtection = request.ClassificationProtection ?? current.ClassificationProtection,
+        HealthProtection = request.HealthProtection ?? current.HealthProtection,
         PromptAppModes = request.PromptAppModes ?? current.PromptAppModes,
         AdapterControls = request.AdapterControls ?? current.AdapterControls,
         SaasDiscoveryEnabled = request.SaasDiscoveryEnabled ?? current.SaasDiscoveryEnabled,
@@ -334,10 +335,10 @@ internal sealed partial class ControlStore
                     private_key_mode, chatgpt_file_inspection, gemini_file_inspection, extension_deployment, blocked_ai_app_hosts,
                     chatgpt_file_content_block, gemini_file_content_block, identifier_protection, preset_discovery_enabled, ssn_mode,
                     browser_hardening, clipboard_mode, github_token_mode, prompt_app_modes, claude_upload_mode, claude_upload_types, claude_file_content_mode,
-                    cloud_credential_mode, classification_protection, adapter_controls, saas_discovery_enabled)
+                    cloud_credential_mode, classification_protection, adapter_controls, saas_discovery_enabled, health_protection)
                 SELECT id, policy_sequence, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $16, $17, $18, $19::jsonb, $20::jsonb,
                     $21, $22, $23, $24, $25::jsonb, $26, $27, $28, $29::jsonb, $30, $31, $32::jsonb, $33, $34, $35::jsonb, $37, $38, $39,
-                    $40, $41::jsonb, $43::jsonb, $44
+                    $40, $41::jsonb, $43::jsonb, $44, $45::jsonb
                 FROM next_version
                 RETURNING organization_id, version, published_at
             ), group_pointer AS (
@@ -373,7 +374,8 @@ internal sealed partial class ControlStore
             policy.CloudCredentialMode ?? "off",
             JsonSerializer.Serialize(policy.ClassificationProtection ?? ClassificationProtection.Disabled, JsonSerializerOptions.Web),
             rollout is null ? DBNull.Value : JsonSerializer.Serialize(rollout, JsonSerializerOptions.Web),
-            JsonSerializer.Serialize(policy.AdapterControls ?? new(), JsonSerializerOptions.Web), policy.SaasDiscoveryEnabled ?? false);
+            JsonSerializer.Serialize(policy.AdapterControls ?? new(), JsonSerializerOptions.Web), policy.SaasDiscoveryEnabled ?? false,
+            JsonSerializer.Serialize(policy.HealthProtection ?? HealthProtection.Disabled, JsonSerializerOptions.Web));
         await using var rows = await command.ExecuteReaderAsync(ct);
         await rows.ReadAsync(ct);
         return policy with { Version = rows.GetInt32(0), PublishedAt = rows.GetDateTime(1), RestoredFrom = restoredFrom,
@@ -389,6 +391,7 @@ internal sealed partial class ControlStore
             GithubTokenMode = policy.GithubTokenMode ?? "off",
             CloudCredentialMode = policy.CloudCredentialMode ?? "off",
             ClassificationProtection = policy.ClassificationProtection ?? ClassificationProtection.Disabled,
+            HealthProtection = policy.HealthProtection ?? HealthProtection.Disabled,
             PromptAppModes = policy.PromptAppModes ?? new(),
             AdapterControls = policy.AdapterControls ?? new(),
             SaasDiscoveryEnabled = policy.SaasDiscoveryEnabled ?? false,

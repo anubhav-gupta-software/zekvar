@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { navigationRuleLimitError, readNavigationRules } from '../../lib/navigation';
 import { detectorModes, fixtureRule, githubTokenRule, identifierRule, isMode, modes, privateKeyRule, readClassificationProtection,
-  readIdentifierProtection, ruleLabels, ssnRule, type DetectorMode, type ExceptionRuleId, type PolicyMode } from '../../../../contracts/policy/prompt';
+  readHealthProtection, readIdentifierProtection, ruleLabels, ssnRule, type DetectorMode, type ExceptionRuleId, type PolicyMode } from '../../../../contracts/policy/prompt';
 import { classificationTermError, classificationTermHint, parseClassificationTerms } from '../../../../contracts/policy/classification';
 import { identifierFormatError, identifierFormatHint, parseIdentifierFormats } from '../../../../contracts/policy/organization-identifiers';
 import { parseUploadTypes, uploadApps, uploadModes, uploadTypesError, uploadTypesHint, type UploadApp, type UploadMode } from '../../../../contracts/policy/uploads';
@@ -27,9 +27,11 @@ const navigationFields = [
   ['allow', 'Draft allowed domains'], ['block', 'Draft blocked domains'],
   ['allowPaths', 'Draft allowed paths'], ['blockPaths', 'Draft blocked paths'],
 ] as const;
-type Editor = Omit<PreviewPolicy, 'domainRules' | 'pathRules' | 'uploadTypes' | 'customApps' | 'identifierProtection' | 'classificationProtection'> &
+type Editor = Omit<PreviewPolicy, 'domainRules' | 'pathRules' | 'uploadTypes' | 'customApps' | 'identifierProtection' | 'classificationProtection' |
+  'healthProtection'> &
   Record<typeof navigationFields[number][0], string> & { uploadTypeText: Record<UploadApp, string>; catalog: string;
-    identifierMode?: DetectorMode; identifierFormats: string; classificationMode?: DetectorMode; classificationTerms: string };
+    identifierMode?: DetectorMode; identifierFormats: string; classificationMode?: DetectorMode; classificationTerms: string;
+    healthMode?: DetectorMode; healthRecordFormats: string };
 
 function editorFor(snapshot: PreviewSnapshot): Editor {
   return {
@@ -39,6 +41,8 @@ function editorFor(snapshot: PreviewSnapshot): Editor {
     cloudCredentialMode: snapshot.cloudCredentialMode,
     classificationMode: snapshot.classificationProtection?.mode,
     classificationTerms: snapshot.classificationProtection?.terms.join('\n') ?? '',
+    healthMode: snapshot.healthProtection?.mode,
+    healthRecordFormats: snapshot.healthProtection?.recordFormats.map(({ prefix, digits }) => `${prefix} ${digits}`).join('\n') ?? '',
     promptAppModes: snapshot.promptAppModes,
     clipboardMode: snapshot.clipboardMode,
     identifierMode: snapshot.identifierProtection?.mode,
@@ -169,6 +173,12 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
         'Enter at least one classification label or phrase or set the rule to Off.' : classificationTermError);
       return;
     }
+    const recordFormats = parseIdentifierFormats(editor.healthRecordFormats);
+    const health = editor.healthMode === undefined ? undefined : readHealthProtection({ mode: editor.healthMode, recordFormats });
+    if (editor.healthMode !== undefined && !health) {
+      setError(identifierFormatError);
+      return;
+    }
     const file = customFile.name || customFile.type.trim() ? customFile : undefined;
     setError('');
     const candidate: PreviewPolicy = {
@@ -177,6 +187,7 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
       githubTokenMode: editor.githubTokenMode,
       cloudCredentialMode: editor.cloudCredentialMode,
       classificationProtection: classification,
+      healthProtection: health,
       promptAppModes: editor.promptAppModes,
       clipboardMode: editor.clipboardMode,
       identifierProtection: identifiers,
@@ -360,6 +371,22 @@ export function PolicyPreview({ reference, snapshots, groupId, scopeName, writab
           onChange={(event) => edit('classificationTerms', event.target.value)} />
         <p className="muted" id="draft-classification-hint">{classificationTermHint}</p>
       </div>}
+      {editor.healthMode !== undefined && <div id="draft-health" className="grid gap-2 mb-4">
+        <div className="form-row"><label htmlFor="draft-health-mode">Health identifiers</label>
+          <select id="draft-health-mode" value={editor.healthMode} aria-describedby="draft-health-hint"
+            onChange={(event) => edit('healthMode', event.target.value as DetectorMode)}>
+            {detectorModes.map((mode) => <option key={mode} value={mode}>{detectorModeLabels[mode]}</option>)}
+          </select>
+        </div>
+        <p className="muted" id="draft-health-hint">Labeled U.S. NPIs and DEA numbers with valid check digits, Medicare Beneficiary Identifiers,
+          and your medical record number formats. Events record the rule, never the value.</p>
+        <label htmlFor="draft-health-records">Medical record number formats</label>
+        <textarea id="draft-health-records" rows={2} maxLength={384} spellCheck={false} autoCapitalize="none" autoComplete="off"
+          placeholder={'MRN- 8'} aria-describedby="draft-health-records-hint" value={editor.healthRecordFormats}
+          onChange={(event) => edit('healthRecordFormats', event.target.value)} />
+        <p className="muted" id="draft-health-records-hint">Optional. One prefix and digit count per line. A format matches the prefixed value,
+          such as MRN-00123456, and a value with that many digits after an MRN or medical record label, such as MRN: 00123456.</p>
+      </div>}
       <div className="grid gap-1" id="draft-app-catalog">
         <label htmlFor="draft-custom-apps">Custom app catalog</label>
         <p className="muted" id="custom-apps-hint">Enter the exact hostname and display name for each HTTPS site, one per line.
@@ -522,6 +549,7 @@ function PreviewResults({ result, groupId, scopeName, writable, review }: {
         {candidate.cloudCredentialMode !== undefined && <input type="hidden" name="cloudCredentialMode" value={candidate.cloudCredentialMode} />}
         {candidate.classificationProtection &&
           <input type="hidden" name="classificationProtection" value={JSON.stringify(candidate.classificationProtection)} />}
+        {candidate.healthProtection && <input type="hidden" name="healthProtection" value={JSON.stringify(candidate.healthProtection)} />}
         {candidate.promptAppModes !== undefined && <input type="hidden" name="promptAppModes" value={JSON.stringify(candidate.promptAppModes)} />}
         <input type="hidden" name="paymentCardMode" value={candidate.paymentCardMode} />
         {candidate.privateKeyMode !== undefined && <input type="hidden" name="privateKeyMode" value={candidate.privateKeyMode} />}

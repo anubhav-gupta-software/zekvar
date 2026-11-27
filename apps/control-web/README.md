@@ -242,6 +242,14 @@ The detector uses exact ASCII digit counts and compares the prefix without case 
 
 Older browsers keep their other detectors and remain pending while a version enables either setting. Temporary prompt exceptions and employee review requests do not cover these rules. [Try the rules in Browser](../browser-extension/README.md#protect-cloud-and-api-credentials)
 
+## Protect health identifiers
+
+1. Open **Policy preview** and choose a test rollout group. Set **Health identifiers** to **Monitor**. Under **Medical record number formats**, optionally enter one prefix and digit count per line, such as `MRN- 8`. Prefixes follow the organization identifier rules.
+2. Select **Run preview**. Rows show a labeled synthetic NPI, an NPI-like number that fails its check digit, an unlabeled 10-digit number, a DEA number, an MBI, a row per MRN format, and a synthetic NPI file for each app with file content protection. Publish the draft or request a review. In **Browser health**, confirm that the group runs Browser v0.43.0 and has applied the policy.
+3. Review **Security events** by rule under the **health** category. Control stores the rule and category, never the value. Move to Warn or Block after a Monitor review. Use **Restore** in **Policy history** to roll back.
+
+Older browsers keep their other detectors and remain pending while a version enables health identifiers. Temporary prompt exceptions and employee review requests do not cover these rules. Do not enter real patient values as MRN prefixes. [Try the rules in Browser](../browser-extension/README.md#protect-health-identifiers) · [HIPAA readiness checklist](../../docs/hipaa-readiness.md)
+
 ## Pilot Claude prompt protection
 
 Enable **Claude prompt protection** in a rollout group and sync Browser v0.19.0 or later. **Browser health** shows **Off** when the assigned policy disables the adapter, **Unobserved** before a composer check for the assigned version, and the last observed **Detected** or **Unsupported** status. Filter **Security events** to Claude to review metadata-only decisions. [Experimental Claude test guide](../browser-extension/README.md#try-experimental-claude-prompt-protection)

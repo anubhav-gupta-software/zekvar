@@ -56,6 +56,7 @@ export type Policy = {
   githubTokenMode?: DetectorMode;
   cloudCredentialMode?: DetectorMode;
   classificationProtection?: import('../../../contracts/policy/prompt').ClassificationProtection;
+  healthProtection?: import('../../../contracts/policy/prompt').HealthProtection;
   promptAppModes?: import('../../../contracts/policy/prompt-app-modes').PromptAppModes;
   adapterControls?: import('../../../contracts/policy/adapter-controls').AdapterControls;
   identifierProtection?: import('../../../contracts/policy/prompt').IdentifierProtection;

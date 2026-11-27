@@ -133,6 +133,7 @@ export function PolicyVersionTable({ policies, groupId, writable, review }: {
   const ssnAvailable = policies.some((policy) => policy.ssnMode !== undefined);
   const githubTokensAvailable = policies.some((policy) => policy.githubTokenMode !== undefined);
   const detectionRulesAvailable = policies.some((policy) => policy.cloudCredentialMode !== undefined);
+  const healthAvailable = policies.some((policy) => policy.healthProtection !== undefined);
   return <section className="panel table-panel" id="policy-history" aria-labelledby="history-heading">
     <div className="panel-heading"><h2 id="history-heading">{groupId ? 'Group policy history' : 'Policy history'}</h2>
       <span className="table-note">Latest 100 versions</span></div>
@@ -141,12 +142,14 @@ export function PolicyVersionTable({ policies, groupId, writable, review }: {
         <thead><tr><th>Version</th><th>Test marker</th><th>GitHub classic PAT</th>{githubTokensAvailable && <th>GitHub tokens</th>}
           <th>Payment card number</th><th>Private key</th>
           {ssnAvailable && <th>U.S. SSN</th>}{identifiersAvailable && <th>Organization identifiers</th>}
-          {detectionRulesAvailable && <><th>Cloud and API credentials</th><th>Classification rules</th></>}<th>App discovery</th>
+          {detectionRulesAvailable && <><th>Cloud and API credentials</th><th>Classification rules</th></>}
+          {healthAvailable && <th>Health identifiers</th>}<th>App discovery</th>
           <th>Extension inventory</th><th>Claude prompt protection</th><th>Clipboard paste</th><th>File uploads</th><th>Navigation rules</th><th>Published (UTC)</th><th>Restore source</th>
           <th>Prompt exceptions</th><th>Action</th></tr></thead>
         <tbody>{policies.map((policy, index) => <PolicyRow key={policy.version} policy={policy} current={index === 0}
           groupId={groupId} writable={writable} review={review} identifiersAvailable={identifiersAvailable}
-          ssnAvailable={ssnAvailable} githubTokensAvailable={githubTokensAvailable} detectionRulesAvailable={detectionRulesAvailable} />)}</tbody>
+          ssnAvailable={ssnAvailable} githubTokensAvailable={githubTokensAvailable} detectionRulesAvailable={detectionRulesAvailable}
+          healthAvailable={healthAvailable} />)}</tbody>
       </table>
       {policies.length === 0 && <p className="empty">No policy versions have been published in this scope.</p>}
     </div>
@@ -154,10 +157,11 @@ export function PolicyVersionTable({ policies, groupId, writable, review }: {
 }
 
 function PolicyRow({ policy, current, groupId, writable, review, identifiersAvailable, ssnAvailable, githubTokensAvailable,
-  detectionRulesAvailable }: {
+  detectionRulesAvailable, healthAvailable }: {
   policy: Policy; current: boolean; groupId?: string; writable: boolean; review: boolean; identifiersAvailable: boolean; ssnAvailable: boolean;
-  githubTokensAvailable: boolean; detectionRulesAvailable: boolean;
+  githubTokensAvailable: boolean; detectionRulesAvailable: boolean; healthAvailable: boolean;
 }) {
+  const recordFormats = policy.healthProtection?.recordFormats ?? [];
   const terms = policy.classificationProtection?.terms ?? [];
   const { allow = [], block = [] } = policy.domainRules ?? {};
   const { allow: allowPaths = [], block: blockPaths = [] } = policy.pathRules ?? {};
@@ -184,6 +188,12 @@ function PolicyRow({ policy, current, groupId, writable, review, identifiersAvai
         </details>}
       </td>
     </>}
+    {healthAvailable && <td>{detectorModeLabels[policy.healthProtection?.mode ?? 'off']}
+      {recordFormats.length > 0 && <details className="domain-rule-history">
+        <summary>{recordFormats.length} MRN {recordFormats.length === 1 ? 'format' : 'formats'}</summary>
+        {recordFormats.map(({ prefix, digits }) => <div key={prefix}><code>{prefix}</code> · {digits} digits</div>)}
+      </details>}
+    </td>}
     <td>{policy.discoveryEnabled ? 'On' : 'Off'}
       {policy.presetDiscoveryEnabled && <div className="muted">AI app presets enabled</div>}
       {policy.saasDiscoveryEnabled && <div className="muted">SaaS app inventory enabled</div>}

@@ -1,7 +1,8 @@
 import { evaluateNavigation, parseWebAddress, sameDomainRules, emptyDomainRules, emptyPathRules,
   type DomainRules, type PathRules } from '../../../contracts/policy/domains';
-import { detectionRuleLabels as ruleLabels, fixtureRule, isMode, sameClassificationProtection, sameIdentifierProtection, testMarker,
-  type ClassificationProtection, type DetectorMode, type IdentifierProtection, type PolicyMode } from '../../../contracts/policy/prompt';
+import { detectionRuleLabels as ruleLabels, fixtureRule, isMode, sameClassificationProtection, sameHealthProtection, sameIdentifierProtection,
+  testMarker, type ClassificationProtection, type DetectorMode, type HealthProtection, type IdentifierProtection,
+  type PolicyMode } from '../../../contracts/policy/prompt';
 import { chatGptApp, claudeApp, promptAppLabels, type AiPromptApp } from '../../../contracts/policy/apps';
 import { evaluateFileInspection, fileInspectionDetectors } from '../../../contracts/policy/file-inspection';
 import { allUploadTypes, fileContentMode, matchesUploadType, sameUploadTypes, uploadApps, uploadsOff, type UploadApp, type UploadFile,
@@ -26,6 +27,7 @@ export type PreviewPolicy = {
   githubTokenMode?: DetectorMode;
   cloudCredentialMode?: DetectorMode;
   classificationProtection?: ClassificationProtection;
+  healthProtection?: HealthProtection;
   promptAppModes?: PromptAppModes;
   adapterControls?: AdapterControls;
   extensionInventoryEnabled: boolean;
@@ -54,6 +56,7 @@ export function previewSnapshot(policy: Policy, scope: string): PreviewSnapshot 
     githubTokenMode: policy.githubTokenMode,
     cloudCredentialMode: policy.cloudCredentialMode,
     classificationProtection: policy.classificationProtection,
+    healthProtection: policy.healthProtection,
     promptAppModes: policy.promptAppModes,
     adapterControls: policy.adapterControls,
     identifierProtection: policy.identifierProtection,
@@ -84,6 +87,7 @@ export function samePolicy(a: PreviewPolicy, b: PreviewPolicy) {
     (a.githubTokenMode ?? 'off') === (b.githubTokenMode ?? 'off') &&
     (a.cloudCredentialMode ?? 'off') === (b.cloudCredentialMode ?? 'off') &&
     sameClassificationProtection(a.classificationProtection, b.classificationProtection) &&
+    sameHealthProtection(a.healthProtection, b.healthProtection) &&
     samePromptAppModes(a.promptAppModes, b.promptAppModes) && sameAdapterControls(a.adapterControls, b.adapterControls) &&
     sameIdentifierProtection(a.identifierProtection, b.identifierProtection) &&
     a.discoveryEnabled === b.discoveryEnabled && a.extensionInventoryEnabled === b.extensionInventoryEnabled &&
@@ -131,6 +135,29 @@ const cloudCredentialSamples = [
   { name: 'Synthetic Google API key', content: `${'AI' + 'za'}${syntheticKey(alphanumeric + '_-', 35)}` },
   { name: 'Synthetic OpenAI API key', content: `${'s' + 'k-proj-'}${syntheticKey(alphanumeric, 40)}${'T3Blbk' + 'FJ'}${syntheticKey(alphanumeric, 40, 5)}` },
   { name: 'Synthetic Anthropic API key', content: `${'s' + 'k-ant-api03-'}${syntheticKey(alphanumeric + '_-', 93)}AA` },
+];
+// Synthetic health identifiers are computed at runtime. Check digits follow the published NPI and DEA rules; no value belongs to anyone.
+function luhnDigit(partial: string) {
+  let sum = 0;
+  for (let index = 0; index < partial.length; index++) {
+    let digit = Number(partial[partial.length - 1 - index]);
+    if (index % 2 === 0) digit = digit * 2 > 9 ? digit * 2 - 9 : digit * 2;
+    sum += digit;
+  }
+  return String((10 - (sum % 10)) % 10);
+}
+const npiBase = syntheticKey('0123456789', 8, 3);
+const syntheticNpi = '1' + npiBase + luhnDigit('80840' + '1' + npiBase);
+const otherNpiDigit = String((Number(syntheticNpi[9]) + 1) % 10);
+const deaDigits = syntheticKey('0123456789', 6, 2);
+const deaCheck = String((Number(deaDigits[0]) + Number(deaDigits[2]) + Number(deaDigits[4]) +
+  2 * (Number(deaDigits[1]) + Number(deaDigits[3]) + Number(deaDigits[5]))) % 10);
+const healthSamples = [
+  { name: 'Synthetic NPI with label', content: `Referring provider NPI: ${syntheticNpi}` },
+  { name: 'NPI-like number failing the check digit', content: `Referring provider NPI: ${syntheticNpi.slice(0, 9)}${otherNpiDigit}` },
+  { name: 'Unlabeled 10-digit number', content: `Order ${syntheticNpi} shipped` },
+  { name: 'Synthetic DEA number with label', content: `Prescriber DEA ${'B' + 'R'}${deaDigits}${deaCheck}` },
+  { name: 'Synthetic Medicare Beneficiary Identifier', content: `Medicare ID ${'7' + 'C' + 'K'}3-${'D'}${'Q'}2-${'A' + 'W'}48` },
 ];
 const navigations = [
   { name: 'Sample domain', content: 'https://pilot.example.test/start' },
@@ -214,6 +241,19 @@ export function runComparison(reference: PreviewSnapshot, candidate: PreviewPoli
       rows.push({ name, current: promptOutcome(content, reference, app, now), draft: promptOutcome(content, candidate, app, now) });
     }
   }
+  const healthOn = isMode(reference.healthProtection?.mode) || isMode(candidate.healthProtection?.mode);
+  const recordExamples = new Map([...(reference.healthProtection?.recordFormats ?? []), ...(candidate.healthProtection?.recordFormats ?? [])]
+    .map(({ prefix, digits }) => [`${prefix}${digits}`, { prefix, digits }] as const));
+  if (healthOn) {
+    for (const { name, content } of healthSamples) {
+      rows.push({ name, current: promptOutcome(content, reference, app, now), draft: promptOutcome(content, candidate, app, now) });
+    }
+    for (const { prefix, digits } of recordExamples.values()) {
+      const value = syntheticKey('0123456789', digits, 4);
+      rows.push({ name: `Medical record number · ${prefix} ${digits}`, current: promptOutcome(`MRN: ${value}`, reference, app, now),
+        draft: promptOutcome(`MRN: ${value}`, candidate, app, now) });
+    }
+  }
   const classificationExamples = new Set([...(reference.classificationProtection?.terms ?? []), ...(candidate.classificationProtection?.terms ?? [])]);
   for (const term of classificationExamples) {
     const sample = `Draft notes: ${term.toLowerCase()} summary`;
@@ -259,6 +299,11 @@ export function runComparison(reference: PreviewSnapshot, candidate: PreviewPoli
       if (isMode(reference.cloudCredentialMode) || isMode(candidate.cloudCredentialMode)) {
         const sample = cloudCredentialSamples[0].content;
         rows.push({ name: `${promptAppLabels[app]} synthetic cloud credential file`,
+          current: fileInspectionOutcome(reference, app, textFile, sample), draft: fileInspectionOutcome(candidate, app, textFile, sample) });
+      }
+      if (healthOn) {
+        const sample = healthSamples[0].content;
+        rows.push({ name: `${promptAppLabels[app]} synthetic NPI file`,
           current: fileInspectionOutcome(reference, app, textFile, sample), draft: fileInspectionOutcome(candidate, app, textFile, sample) });
       }
       for (const term of classificationExamples) {

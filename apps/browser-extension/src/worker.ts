@@ -14,7 +14,7 @@ import { discoveryPresetAt, isCustomAppId, isDiscoveryPreset, readCustomApps, ty
 import { saasAppAt, saasDay } from '../../../contracts/policy/saas-catalog';
 import { leaseTime, readExceptionLease, sampleClock, type BrowserLease } from './prompt-exceptions';
 import { readBlockedAiAppHosts } from '../../../contracts/policy/ai-app-access';
-import { readClassificationProtection, readIdentifierProtection, sameClassificationProtection,
+import { readClassificationProtection, readHealthProtection, readIdentifierProtection, sameClassificationProtection, sameHealthProtection,
   sameIdentifierProtection } from '../../../contracts/policy/prompt';
 import { isClipboardMode } from '../../../contracts/policy/clipboard';
 import { readPromptAppModes, samePromptAppModes } from '../../../contracts/policy/prompt-app-modes';
@@ -160,7 +160,7 @@ async function request(path: string, token?: string, body?: object): Promise<unk
         'X-Zekvar-Identifiers': '1', 'X-Zekvar-Preset-Discovery': '1', 'X-Zekvar-SSN': '1', 'X-Zekvar-Clipboard-Paste': '1',
         'X-Zekvar-GitHub-Token': '1', 'X-Zekvar-Prompt-Exception-Requests': '1',
         'X-Zekvar-Prompt-App-Modes': '1', 'X-Zekvar-Claude-Files': '1', 'X-Zekvar-Detection-Rules': '1',
-        'X-Zekvar-Adapter-Controls': '1', 'X-Zekvar-SaaS-Discovery': '1',
+        'X-Zekvar-Adapter-Controls': '1', 'X-Zekvar-SaaS-Discovery': '1', 'X-Zekvar-Health-Identifiers': '1',
         'X-Zekvar-Extension-Version': extensionVersion } : {}),
       ...(path === 'browser/heartbeat' ? { 'X-Zekvar-Composer-Coverage': '1' } : {}),
       ...(path === 'enroll' ? { 'X-Zekvar-Scoped-Enrollment': '1' } : {}),
@@ -338,6 +338,8 @@ async function sync(state: State) {
     if (policy.identifierProtection !== undefined && !identifierProtection) throw new Error('Invalid organization identifier policy');
     const classificationProtection = readClassificationProtection(policy.classificationProtection);
     if (policy.classificationProtection !== undefined && !classificationProtection) throw new Error('Invalid classification rule policy');
+    const healthProtection = readHealthProtection(policy.healthProtection);
+    if (policy.healthProtection !== undefined && !healthProtection) throw new Error('Invalid health identifier policy');
     const fileInspection = policy.fileInspection;
     const fileContentModes = policy.fileContentModes;
     if (fileContentModes && uploadApps.some((app) => ((fileContentModes[app] ?? 'off') !== 'off') !== (fileInspection?.[app] === true))) {
@@ -381,6 +383,7 @@ async function sync(state: State) {
         (state.policy.cloudCredentialMode === undefined || cloudCredentialMode === state.policy.cloudCredentialMode) &&
         (!state.policy.classificationProtection ||
           sameClassificationProtection(state.policy.classificationProtection, classificationProtection)) &&
+        (!state.policy.healthProtection || sameHealthProtection(state.policy.healthProtection, healthProtection)) &&
         (state.policy.clipboardMode === undefined || clipboardMode === state.policy.clipboardMode) &&
         (state.policy.promptAppModes === undefined || samePromptAppModes(promptAppModes, state.policy.promptAppModes)) &&
         (state.policy.adapterControls === undefined || sameAdapterControls(adapterControls, state.policy.adapterControls)) &&
@@ -404,7 +407,7 @@ async function sync(state: State) {
       if (policy.version !== state.policy?.version || assignment !== previousAssignment) clearCoverage(state);
       state.policy = { version: policy.version, mode: policy.mode, githubPatMode, paymentCardMode, privateKeyMode, ssnMode, identifierProtection, fileInspection, fileContentModes,
         discoveryEnabled, presetDiscovery, saasDiscovery, customApps, extensionInventoryEnabled, claudePromptEnabled, clipboardMode, githubTokenMode,
-        cloudCredentialMode, classificationProtection,
+        cloudCredentialMode, classificationProtection, healthProtection,
         promptExceptionRequestsAvailable: policy.promptExceptionRequestsAvailable === true,
         promptAppModes, adapterControls,
         assignmentVersion: policy.assignmentVersion, uploadModes: { chatgpt: uploads.chatgpt, gemini: uploads.gemini, claude: uploads.claude }, targetedUploads };
@@ -489,6 +492,7 @@ async function heartbeat(state: State) {
     githubTokenModeApplied: isMode(state.policy.githubTokenMode) ? true : undefined,
     cloudCredentialModeApplied: isMode(state.policy.cloudCredentialMode) ? true : undefined,
     classificationApplied: isMode(state.policy.classificationProtection?.mode) ? true : undefined,
+    healthIdentifiersApplied: isMode(state.policy.healthProtection?.mode) ? true : undefined,
     promptAppModesApplied: Object.values(state.policy.promptAppModes ?? {}).some(isMode) ? true : undefined,
     adapterControlsApplied: hasAdapterControls(state.policy.adapterControls) ? true : undefined,
     clipboardModeApplied: state.policy.clipboardMode === 'monitor' || state.policy.clipboardMode === 'block' ? true : undefined,

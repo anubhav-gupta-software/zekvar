@@ -32,6 +32,9 @@ internal static class FixtureContract
     public const string ClassificationCategory = "classification";
     public static readonly string[] CloudCredentialRules =
         ["aws-access-key-id", "slack-token", "stripe-live-secret-key", "google-api-key", "openai-api-key", "anthropic-api-key"];
+    public const string HealthCategory = "health";
+    public static readonly string[] HealthRules =
+        ["us-national-provider-identifier", "dea-registration-number", "medicare-beneficiary-identifier", "medical-record-number"];
 
     public static bool IsMode(string? mode) => mode is "monitor" or "warn" or "block";
     public static bool IsOptionalDetectorMode(string? mode) => mode is null or "off" || IsMode(mode);
@@ -41,14 +44,17 @@ internal static class FixtureContract
     public static bool IsPromptRule(string? rule) => rule is RuleId or GitHubPatRule or PaymentCardRule or PrivateKeyRule
         or OrganizationIdentifierRule or SsnRule or GithubTokenRule;
     public static bool IsCloudCredentialRule(string? rule) => rule is not null && CloudCredentialRules.Contains(rule);
-    // Cloud credential and classification rules support enforcement modes but not temporary prompt exceptions.
-    public static bool IsDetectionRule(string? rule) => IsPromptRule(rule) || IsCloudCredentialRule(rule) || rule == ClassificationRule;
+    public static bool IsHealthRule(string? rule) => rule is not null && HealthRules.Contains(rule);
+    // Cloud credential, health identifier, and classification rules support enforcement modes but not temporary prompt exceptions.
+    public static bool IsDetectionRule(string? rule) => IsPromptRule(rule) || IsCloudCredentialRule(rule) || IsHealthRule(rule) ||
+        rule == ClassificationRule;
 
     public static string CategoryForRule(string ruleId) => ruleId switch
     {
         GitHubPatRule or GithubTokenRule or PrivateKeyRule => CredentialCategory,
         _ when IsCloudCredentialRule(ruleId) => CredentialCategory,
         ClassificationRule => ClassificationCategory,
+        _ when IsHealthRule(ruleId) => HealthCategory,
         PaymentCardRule => PaymentCategory,
         OrganizationIdentifierRule => OrganizationIdentifierCategory,
         SsnRule => SsnCategory,
@@ -122,7 +128,7 @@ internal sealed record PublishPolicy(string? Mode = null, string? GithubPatMode 
     bool? PresetDiscoveryEnabled = null, string? SsnMode = null, BrowserHardening? BrowserHardening = null, string? ClipboardMode = null,
     string? GithubTokenMode = null, PromptAppModes? PromptAppModes = null, string[]? RequireComposerReady = null,
     string? CloudCredentialMode = null, ClassificationProtection? ClassificationProtection = null, AdapterControls? AdapterControls = null,
-    bool? SaasDiscoveryEnabled = null);
+    bool? SaasDiscoveryEnabled = null, HealthProtection? HealthProtection = null);
 internal sealed record UploadModes(string? Chatgpt = null, string? Gemini = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Claude = null)
 {
@@ -143,7 +149,7 @@ internal sealed record Heartbeat(int PolicyVersion, string? ChatGptCoverage = nu
     bool FileInspectionApplied = false, bool AiAppAccessApplied = false, bool FileContentBlockApplied = false, bool IdentifiersApplied = false,
     bool SsnModeApplied = false, bool ClipboardModeApplied = false, bool GithubTokenModeApplied = false, bool PromptAppModesApplied = false,
     bool ClaudeFilesApplied = false, bool CloudCredentialModeApplied = false, bool ClassificationApplied = false,
-    bool AdapterControlsApplied = false, bool SaasDiscoveryApplied = false)
+    bool AdapterControlsApplied = false, bool SaasDiscoveryApplied = false, bool HealthIdentifiersApplied = false)
 {
     // "disabled" reports that an administrator turned the adapter off; Control accepts it only for a matching policy.
     public bool IsValid() => (ChatGptCoverage is null or "ready" or "unsupported" or "disabled") &&
@@ -180,7 +186,8 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CloudCredentialMode = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ClassificationProtection? ClassificationProtection = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] AdapterControls? AdapterControls = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? SaasDiscoveryEnabled = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? SaasDiscoveryEnabled = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] HealthProtection? HealthProtection = null)
 {
     public string AppId => FixtureContract.AppId;
     public string[] AppIds => ClaudePromptEnabled
@@ -206,6 +213,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
             FixtureContract.SsnRule => SsnMode,
             FixtureContract.ClassificationRule => ClassificationProtection?.Mode,
             _ when FixtureContract.IsCloudCredentialRule(ruleId) => CloudCredentialMode,
+            _ when FixtureContract.IsHealthRule(ruleId) => HealthProtection?.Mode,
             _ => null
         };
         return appModesAware && FixtureContract.IsMode(mode) ? PromptAppModes?.ForApp(appId) ?? mode : mode;
@@ -213,7 +221,8 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
 
     public Policy ForBrowser(bool claudeAware, bool privateKeyAware, bool fileInspectionAware, bool aiAppAccessAware,
         bool fileBlockAware, bool identifiersAware, bool presetDiscoveryAware, bool ssnAware, bool clipboardAware, bool githubTokenAware,
-        bool promptAppModesAware, bool claudeFilesAware, bool detectionRulesAware, bool adapterControlsAware, bool saasDiscoveryAware = false)
+        bool promptAppModesAware, bool claudeFilesAware, bool detectionRulesAware, bool adapterControlsAware, bool saasDiscoveryAware,
+        bool healthAware)
     {
         var now = DateTimeOffset.UtcNow;
         var nowMs = now.ToUnixTimeMilliseconds();
@@ -246,6 +255,7 @@ internal sealed record Policy(int Version, string Mode, DateTime PublishedAt, in
             GithubTokenMode = githubTokenAware ? GithubTokenMode : null,
             CloudCredentialMode = detectionRulesAware ? CloudCredentialMode : null,
             ClassificationProtection = detectionRulesAware ? ClassificationProtection : null,
+            HealthProtection = healthAware ? HealthProtection : null,
             PromptAppModes = promptAppModesAware ? PromptAppModes : null,
             ExtensionDeployment = null,
             BrowserHardening = null,

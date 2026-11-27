@@ -67,7 +67,8 @@ function attachFixture() {
         (isMode(control.policy?.ssnMode) ? ` · U.S. SSN ${control.policy.ssnMode}` : '') +
         (isMode(control.policy?.cloudCredentialMode) ? ` · Cloud and API credentials ${control.policy.cloudCredentialMode}` : '') +
         (isMode(control.policy?.classificationProtection?.mode) ?
-          ` · Classification rules ${control.policy.classificationProtection.mode}` : '');
+          ` · Classification rules ${control.policy.classificationProtection.mode}` : '') +
+        (isMode(control.policy?.healthProtection?.mode) ? ` · Health identifiers ${control.policy.healthProtection.mode}` : '');
       const label = control.policy ? `${control.policy.mode.toUpperCase()} · v${control.policy.version}${detectors}` : 'waiting for a policy';
       const status = control.status === 'standalone' ? 'Standalone fixture. Open Zekvar Browser to enroll.' :
         control.status === 'connected' ? `Control policy: ${label}` :

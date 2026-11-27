@@ -3,7 +3,7 @@ import { performance } from 'node:perf_hooks';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
-import { buildCorpus, classificationTerms, detectors, identifierFormats, prefixes } from './detection-corpus.mjs';
+import { buildCorpus, classificationTerms, detectors, identifierFormats, prefixes, recordFormats } from './detection-corpus.mjs';
 
 const result = await build({
   stdin: {
@@ -25,8 +25,8 @@ function measure(detector, evaluate) {
     const expected = detector.rules.includes(sample.rule);
     const match = evaluate(sample.text, { mode: 'monitor', ...detector.policy });
     const found = match && match.action !== 'allow' && detector.rules.includes(match.ruleId) ? match.ruleId : undefined;
-    // A cloud credential reported under the wrong provider counts against both rows.
-    const misattributed = detector.cloud && match && match.action !== 'allow' && !found && expected;
+    // A cloud credential or health identifier reported under the wrong rule of its setting counts against both rows.
+    const misattributed = detector.grouped && match && match.action !== 'allow' && !found && expected;
     if (expected && found) counts.tp++;
     else if (expected) counts.fn++;
     else if (found) {
@@ -80,7 +80,7 @@ test('file content inspection reaches the same results as prompts', (t) => {
 test('all detectors together stay within the local latency budget, including adversarial input', (t) => {
   const policy = { mode: 'monitor', githubPatMode: 'block', githubTokenMode: 'block', cloudCredentialMode: 'block', paymentCardMode: 'block',
     privateKeyMode: 'block', ssnMode: 'block', identifierProtection: { mode: 'block', formats: identifierFormats },
-    classificationProtection: { mode: 'block', terms: classificationTerms } };
+    classificationProtection: { mode: 'block', terms: classificationTerms }, healthProtection: { mode: 'block', recordFormats } };
   const negatives = corpus.filter((sample) => !sample.rule).map(({ text }) => text).join('\n');
   let document = '';
   while (document.length < 1024 * 1024) document += negatives + '\n';
@@ -98,6 +98,8 @@ test('all detectors together stay within the local latency budget, including adv
     prefixes.openAi + 'a'.repeat(200_000), (prefixes.aws).repeat(50_000), `${prefixes.slackBot}${'1-'.repeat(50_000)}`,
     prefixes.anthropic + 'A'.repeat(200_000), (prefixes.google + 'A'.repeat(34) + ' ').repeat(5000),
     'Project '.repeat(50_000), 'CONFIDENTIAL - '.repeat(30_000),
+    'NPI '.repeat(50_000), 'NPI: 12'.repeat(40_000), 'DEA AB'.repeat(40_000), '1AC2-'.repeat(60_000), 'MRN: 1234'.repeat(30_000),
+    'Medical record '.repeat(20_000),
   ];
   for (const text of adversarial) {
     const { ms } = timed(text);

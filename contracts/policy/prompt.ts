@@ -4,6 +4,8 @@ import { containsIdentifier, readIdentifierFormats, redactIdentifiers, sameIdent
 import { containsSsn, redactSsns } from './social-security-number';
 import { containsGithubToken, redactGithubTokens } from './github-token';
 import { cloudCredentialLabels, findCloudCredential, redactCloudCredentials, type CloudCredentialRule } from './cloud-credentials';
+import { findHealthIdentifier, healthDetector, healthLabels, readHealthRecordFormats, redactHealthIdentifiers,
+  sameHealthProtection, type HealthProtection, type HealthRule } from './health-identifiers';
 import { containsClassificationTerm, readClassificationTerms, redactClassificationTerms, sameClassificationTerms } from './classification';
 
 export const modes = ['monitor', 'warn', 'block'] as const;
@@ -25,6 +27,7 @@ export const ssnRule = 'us-social-security-number';
 export const ssnDetector = 'government-identifier';
 export const classificationRule = 'organization-classification-rule';
 export const classificationDetector = 'classification';
+export { healthDetector, sameHealthProtection, type HealthProtection } from './health-identifiers';
 export const testMarker = 'ZEKVAR_TEST_SECRET';
 export const ruleLabels = {
   [fixtureRule]: 'Synthetic secret', [githubPatRule]: 'GitHub classic PAT', [paymentCardRule]: 'Payment card number',
@@ -33,9 +36,9 @@ export const ruleLabels = {
   [identifierRule]: 'Organization identifier',
   [ssnRule]: 'U.S. Social Security number',
 } as const;
-// Cloud credential and classification rules support Monitor, Warn, and Block but not temporary prompt exceptions.
+// Cloud credential, health identifier, and classification rules support Monitor, Warn, and Block but not temporary prompt exceptions.
 export const detectionRuleLabels = {
-  ...ruleLabels, ...cloudCredentialLabels, [classificationRule]: 'Organization classification rule',
+  ...ruleLabels, ...cloudCredentialLabels, ...healthLabels, [classificationRule]: 'Organization classification rule',
 } as const;
 
 export type RuleMetadata = { ruleId: typeof fixtureRule; detectorCategory: typeof fixtureDetector } |
@@ -45,14 +48,15 @@ export type RuleMetadata = { ruleId: typeof fixtureRule; detectorCategory: typeo
   { ruleId: typeof identifierRule; detectorCategory: typeof identifierDetector } |
   { ruleId: typeof ssnRule; detectorCategory: typeof ssnDetector } |
   { ruleId: CloudCredentialRule; detectorCategory: typeof credentialDetector } |
-  { ruleId: typeof classificationRule; detectorCategory: typeof classificationDetector };
+  { ruleId: typeof classificationRule; detectorCategory: typeof classificationDetector } |
+  { ruleId: HealthRule; detectorCategory: typeof healthDetector };
 export type PromptRuleId = RuleMetadata['ruleId'];
 export type ExceptionRuleId = keyof typeof ruleLabels;
 export type IdentifierProtection = { mode: DetectorMode; formats: IdentifierFormat[] };
 export type ClassificationProtection = { mode: DetectorMode; terms: string[] };
 export type PromptPolicy = { mode: PolicyMode; githubPatMode?: DetectorMode; paymentCardMode?: DetectorMode; privateKeyMode?: DetectorMode;
   identifierProtection?: IdentifierProtection; ssnMode?: DetectorMode; githubTokenMode?: DetectorMode;
-  cloudCredentialMode?: DetectorMode; classificationProtection?: ClassificationProtection };
+  cloudCredentialMode?: DetectorMode; classificationProtection?: ClassificationProtection; healthProtection?: HealthProtection };
 export type PromptMatch = { action: PolicyMode; reason: string } & RuleMetadata;
 
 const severity: Record<PolicyMode, number> = { monitor: 1, warn: 2, block: 3 };
@@ -88,6 +92,13 @@ export function readClassificationProtection(value: unknown): ClassificationProt
 
 export function sameClassificationProtection(left?: ClassificationProtection, right?: ClassificationProtection) {
   return left?.mode === right?.mode && sameClassificationTerms(left?.terms ?? [], right?.terms ?? []);
+}
+
+export function readHealthProtection(value: unknown): HealthProtection | undefined {
+  if (!value || typeof value !== 'object' || Object.keys(value).length !== 2 || !('mode' in value) || !('recordFormats' in value) ||
+      !isDetectorMode(value.mode)) return;
+  const recordFormats = readHealthRecordFormats(value.recordFormats);
+  if (recordFormats) return { mode: value.mode, recordFormats };
 }
 
 export function evaluatePrompt(prompt: string, policy: PromptPolicy, except?: ReadonlySet<PromptRuleId>): { action: 'allow' } | PromptMatch {
@@ -128,6 +139,14 @@ export function evaluatePrompt(prompt: string, policy: PromptPolicy, except?: Re
         reason: `This prompt contains text that looks like ${article(cloudCredentialLabels[rule])}.` };
     }
   }
+  const health = policy.healthProtection;
+  if (isMode(health?.mode) && (!match || severity[health.mode] >= severity[match.action])) {
+    const rule = findHealthIdentifier(prompt, health.recordFormats);
+    if (rule && !except?.has(rule)) {
+      match = { action: health.mode, ruleId: rule, detectorCategory: healthDetector,
+        reason: `This prompt contains a possible ${healthLabels[rule]}.` };
+    }
+  }
   if (!except?.has(ssnRule) && isMode(policy.ssnMode) && (!match || severity[policy.ssnMode] >= severity[match.action]) && containsSsn(prompt)) {
     match = { action: policy.ssnMode, ruleId: ssnRule, detectorCategory: ssnDetector,
       reason: 'This prompt contains a possible U.S. Social Security number.' };
@@ -157,8 +176,10 @@ export function redactPrompt(prompt: string, policy: PromptPolicy): string {
   const withoutCloud = isMode(policy.cloudCredentialMode) ? redactCloudCredentials(withoutGithubTokens, redacted) : withoutGithubTokens;
   const withoutCards = isMode(policy.paymentCardMode) ? redactPaymentCards(withoutCloud, redacted) : withoutCloud;
   const withoutSsns = isMode(policy.ssnMode) ? redactSsns(withoutCards, redacted) : withoutCards;
+  const health = policy.healthProtection;
+  const withoutHealth = isMode(health?.mode) ? redactHealthIdentifiers(withoutSsns, health.recordFormats, redacted) : withoutSsns;
   const identifiers = policy.identifierProtection;
-  const withoutIdentifiers = isMode(identifiers?.mode) ? redactIdentifiers(withoutSsns, identifiers.formats, redacted) : withoutSsns;
+  const withoutIdentifiers = isMode(identifiers?.mode) ? redactIdentifiers(withoutHealth, identifiers.formats, redacted) : withoutHealth;
   const classification = policy.classificationProtection;
   return isMode(classification?.mode) ? redactClassificationTerms(withoutIdentifiers, classification.terms, redacted) : withoutIdentifiers;
 }

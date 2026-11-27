@@ -168,6 +168,7 @@ export function bindPromptGuard(adapter: PromptAdapter) {
     const identifiers = managedPolicy?.identifierProtection?.mode;
     const cloud = managedPolicy?.cloudCredentialMode;
     const classification = managedPolicy?.classificationProtection?.mode;
+    const health = managedPolicy?.healthProtection?.mode;
     const targetedUpload = uploadApp && managedPolicy?.targetedUploads?.[uploadApp];
     const upload = targetedUpload?.mode ?? (uploadApp && managedPolicy?.uploadModes?.[uploadApp]);
     const content = uploadApp ? fileContentMode(managedPolicy, uploadApp) : 'off';
@@ -179,6 +180,7 @@ export function bindPromptGuard(adapter: PromptAdapter) {
       (isMode(identifiers) ? ` · Organization identifiers ${identifiers}` : '') +
       (isMode(cloud) ? ` · Cloud and API credentials ${cloud}` : '') +
       (isMode(classification) ? ` · Classification rules ${classification}` : '') +
+      (isMode(health) ? ` · Health identifiers ${health}` : '') +
       (upload && upload !== 'off' ? ` · File uploads ${upload}${targetedUpload ? ' (selected types)' : ''}` : '') +
       (content !== 'off' ? ` · File content ${content}` : '') +
       (clipboard && clipboard !== 'off' ? ` · Clipboard ${clipboard}` : '') +

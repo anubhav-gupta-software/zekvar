@@ -24,12 +24,14 @@ export function promptPolicyForApp<T extends PromptPolicy>(policy: T, modes: Pro
   const override = (prior: T['githubPatMode']) => isMode(prior) ? mode : prior;
   const identifiers = policy.identifierProtection;
   const classification = policy.classificationProtection;
+  const health = policy.healthProtection;
   return {
     ...policy, mode,
     githubPatMode: override(policy.githubPatMode), githubTokenMode: override(policy.githubTokenMode),
     paymentCardMode: override(policy.paymentCardMode), ssnMode: override(policy.ssnMode), privateKeyMode: override(policy.privateKeyMode),
     identifierProtection: identifiers && { ...identifiers, mode: isMode(identifiers.mode) ? mode : identifiers.mode },
     cloudCredentialMode: override(policy.cloudCredentialMode),
+    healthProtection: health && { ...health, mode: isMode(health.mode) ? mode : health.mode },
     classificationProtection: classification && { ...classification, mode: isMode(classification.mode) ? mode : classification.mode },
   };
 }

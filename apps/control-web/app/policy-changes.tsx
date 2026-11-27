@@ -41,6 +41,8 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
     ['Classification rules', detectorModeLabels[reference.classificationProtection?.mode ?? 'off'],
       detectorModeLabels[candidate.classificationProtection?.mode ?? 'off']],
     ['Classification labels', classificationTerms(reference), classificationTerms(candidate)],
+    ['Health identifiers', detectorModeLabels[reference.healthProtection?.mode ?? 'off'], detectorModeLabels[candidate.healthProtection?.mode ?? 'off']],
+    ['Medical record number formats', recordFormats(reference), recordFormats(candidate)],
     ['App discovery', toggle(reference.discoveryEnabled), toggle(candidate.discoveryEnabled)],
     ['AI app preset discovery', toggle(reference.presetDiscoveryEnabled ?? false), toggle(candidate.presetDiscoveryEnabled ?? false)],
     ['SaaS app inventory', toggle(reference.saasDiscoveryEnabled ?? false), toggle(candidate.saasDiscoveryEnabled ?? false)],
@@ -96,6 +98,10 @@ export function PolicyChanges({ reference, candidate }: { reference: PreviewPoli
         removed.length > 0 && <li key={`${field}-${action}-remove`}>Remove from {label} <code>{removed.join(', ')}</code></li>];
     }))}
   </ul>;
+}
+
+function recordFormats(policy: PreviewPolicy) {
+  return policy.healthProtection?.recordFormats.map(({ prefix, digits }) => `${prefix} ${digits}`).join(', ') || 'None';
 }
 
 function classificationTerms(policy: PreviewPolicy) {

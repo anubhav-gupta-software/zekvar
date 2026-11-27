@@ -60,7 +60,7 @@ Each decision event contains only these fields (see `PolicyEvent` in [`Contracts
 | `eventId` | Random UUID. Control stores one row per installation and event ID, so retries do not duplicate. |
 | `appId` | `chatgpt`, `gemini`, `claude`, or the local test fixture. |
 | `timestamp` | When the decision happened. |
-| `ruleId` and `detectorCategory` | Which detector. Rules: `fixture-secret`, `github-classic-pat`, `github-app-or-fine-grained-token`, `payment-card-number`, `pem-private-key`, `organization-identifier`, `us-social-security-number`, `ai-file-upload`, `file-inspection-unavailable`, `clipboard-inspection-unavailable`. |
+| `ruleId` and `detectorCategory` | Which detector. Rules: `fixture-secret`, `github-classic-pat`, `github-app-or-fine-grained-token`, `payment-card-number`, `pem-private-key`, `organization-identifier`, `us-social-security-number`, the cloud credential rules (category `credential`), `organization-classification-rule`, the health identifier rules `us-national-provider-identifier`, `dea-registration-number`, `medicare-beneficiary-identifier`, and `medical-record-number` (category `health`), `ai-file-upload`, `file-inspection-unavailable`, `clipboard-inspection-unavailable`. Matched values never leave the browser. |
 | `policyVersion`, `assignmentVersion` | Which published policy and rollout assignment applied. |
 | `decision` | `monitor`, `warn`, `block`, `warn_override`, or `exception_applied`. |
 | `uploadMethod` (optional) | `picker`, `drop`, or `paste` for file attempts. |
@@ -90,7 +90,7 @@ Network metadata the servers see unavoidably: the source IP address and TLS deta
 | SaaS app inventory | Catalog app ID with first and last seen UTC day per browser, and the organization's classification per app. | Yes, `aiObservationDays`. Recovery deletes the per-browser records. |
 | Audit log | Actor category or named credential (ID, name, role), action, and subject. No credential values, hashes, prompts, grant values, or policy content. | Yes, `auditDays` |
 | Incident cases and alerts | Case category, status, linked event references, and alert windows and counts. Resolved cases follow the audit window. | Via the audit and event windows |
-| Policies and groups | Versioned policy settings: modes, domain and path rules, blocked AI hosts, custom app catalog, identifier formats (prefix and digit count), temporary exceptions with reasons. | No window. Versions are retained. |
+| Policies and groups | Versioned policy settings: modes, domain and path rules, blocked AI hosts, custom app catalog, identifier and medical record number formats (prefix and digit count), temporary exceptions with reasons. | No window. Versions are retained. |
 | Installations | Installation ID, enrollment and last-seen time, applied policy version, group, extension version, and composer coverage. | No window. See below. |
 | Extension inventory snapshots | Latest snapshot per browser and change history of up to 20 reports from the last 30 days. | Scheduled cleanup after 30 days or when the policy turns inventory off. Deleted on revocation. |
 | Credentials | SHA-256 hashes of tokens. Raw values are shown once at issue. | Revocation clears the hash. |

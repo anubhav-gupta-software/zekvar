@@ -12,6 +12,7 @@ import { clipboardCategory, clipboardUnavailableRule, type ClipboardMode } from 
 import type { PromptAppModes } from '../../../contracts/policy/prompt-app-modes';
 import type { AdapterControls } from '../../../contracts/policy/adapter-controls';
 import { cloudCredentialRules } from '../../../contracts/policy/cloud-credentials';
+import { healthDetector, healthRules } from '../../../contracts/policy/health-identifiers';
 
 export { fixtureRule, fixtureDetector, githubPatRule, credentialDetector, isMode, isDetectorMode } from '../../../contracts/policy/prompt';
 export type { PolicyMode, DetectorMode, RuleMetadata } from '../../../contracts/policy/prompt';
@@ -188,5 +189,9 @@ export function readMetadata(value: unknown): PolicyEvent | undefined {
   }
   if (value.ruleId === classificationRule && value.detectorCategory === classificationDetector && value.decision !== exceptionDecision) {
     return { ...event, ...source, ruleId: classificationRule, detectorCategory: classificationDetector };
+  }
+  const healthRule = healthRules.find((rule) => rule === value.ruleId);
+  if (healthRule && value.detectorCategory === healthDetector && value.decision !== exceptionDecision) {
+    return { ...event, ...source, ruleId: healthRule, detectorCategory: healthDetector };
   }
 }

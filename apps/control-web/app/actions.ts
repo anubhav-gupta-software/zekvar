@@ -9,8 +9,8 @@ import { aiPromptApps, classifications, decisionLabels, detectorModes, discovery
 import { endSession, sessionToken, startSession } from '../lib/session';
 import { cleanupCounts, retentionFields, type RetentionField, type RetentionPolicy } from '../lib/retention';
 import { navigationRuleLimitError, readNavigationRules } from '../lib/navigation';
-import { isDetectorMode, isMode, readClassificationProtection, readIdentifierProtection, type ClassificationProtection,
-  type IdentifierProtection } from '../../../contracts/policy/prompt';
+import { isDetectorMode, isMode, readClassificationProtection, readHealthProtection, readIdentifierProtection, type ClassificationProtection,
+  type HealthProtection, type IdentifierProtection } from '../../../contracts/policy/prompt';
 import { classificationTermError } from '../../../contracts/policy/classification';
 import { identifierFormatError } from '../../../contracts/policy/organization-identifiers';
 import { isUploadMode, parseUploadTypes, uploadTypesError } from '../../../contracts/policy/uploads';
@@ -575,6 +575,16 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
     }
     if (!classificationProtection) return { error: classificationTermError };
   }
+  let healthProtection: HealthProtection | undefined;
+  const healthInput = form.get('healthProtection');
+  if (healthInput !== null) {
+    try {
+      if (typeof healthInput === 'string') healthProtection = readHealthProtection(JSON.parse(healthInput));
+    } catch {
+      return { error: identifierFormatError };
+    }
+    if (!healthProtection) return { error: identifierFormatError };
+  }
   let promptAppModes: PromptAppModes | undefined;
   const appModesInput = form.get('promptAppModes');
   if (appModesInput !== null) {
@@ -599,7 +609,7 @@ export async function publishPreview(_previous: Feedback, form: FormData): Promi
         discoveryEnabled: discovery === 'on', presetDiscoveryEnabled: presetDiscovery === null ? undefined : presetDiscovery === 'on',
         saasDiscoveryEnabled: saasDiscovery === null ? undefined : saasDiscovery === 'on',
         extensionInventoryEnabled: inventory === 'on', claudePromptEnabled: claude === 'on',
-        domainRules, pathRules, customApps, promptExceptions, blockedAiAppHosts, identifierProtection, classificationProtection, promptAppModes,
+        domainRules, pathRules, customApps, promptExceptions, blockedAiAppHosts, identifierProtection, classificationProtection, healthProtection, promptAppModes,
         requireComposerReady: requireComposerReady.length ? requireComposerReady : undefined },
         expectedVersion, form.get('expectReview') === 'on', groupId ?? undefined);
       if ('reviewId' in published) return queued(published.reviewId);

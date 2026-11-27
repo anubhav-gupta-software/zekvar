@@ -615,14 +615,15 @@ browser.MapGet("/policy", async (HttpContext http, CancellationToken ct) =>
     var detectionRulesAware = aware && http.Request.Headers["X-Zekvar-Detection-Rules"] == "1";
     var adapterControlsAware = aware && http.Request.Headers["X-Zekvar-Adapter-Controls"] == "1";
     var saasDiscoveryAware = aware && http.Request.Headers["X-Zekvar-SaaS-Discovery"] == "1";
+    var healthAware = aware && http.Request.Headers["X-Zekvar-Health-Identifiers"] == "1";
     var versionHeader = http.Request.Headers["X-Zekvar-Extension-Version"];
     var extensionVersion = versionHeader.Count == 1 ? BrowserRelease.ReadVersion(versionHeader[0]) : null;
     if (await store.CurrentPolicy(Identity(http).InstallationId!.Value, aware, claudeAware, extensionVersion, privateKeyAware,
         fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware, presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware,
-        promptAppModesAware, claudeFilesAware, detectionRulesAware, adapterControlsAware, saasDiscoveryAware, ct) is { } policy)
+        promptAppModesAware, claudeFilesAware, detectionRulesAware, adapterControlsAware, saasDiscoveryAware, healthAware, ct) is { } policy)
         return Results.Ok(policy.ForBrowser(claudeAware, privateKeyAware, fileInspectionAware, aiAppAccessAware, fileBlockAware, identifiersAware,
             presetDiscoveryAware, ssnAware, clipboardAware, githubTokenAware, promptAppModesAware, claudeFilesAware, detectionRulesAware,
-            adapterControlsAware, saasDiscoveryAware) with
+            adapterControlsAware, saasDiscoveryAware, healthAware) with
         {
             PromptExceptionRequestsAvailable = aware && http.Request.Headers["X-Zekvar-Prompt-Exception-Requests"] == "1" ? true : null
         });
@@ -673,7 +674,7 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
               request.IdentifierProtection is not null || request.PresetDiscoveryEnabled.HasValue || request.SsnMode is not null ||
               request.BrowserHardening is not null || request.ClipboardMode is not null || request.GithubTokenMode is not null ||
               request.PromptAppModes is not null || request.CloudCredentialMode is not null || request.ClassificationProtection is not null ||
-              request.AdapterControls is not null || request.SaasDiscoveryEnabled.HasValue)) ||
+              request.AdapterControls is not null || request.SaasDiscoveryEnabled.HasValue || request.HealthProtection is not null)) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubPatMode) || !FixtureContract.IsOptionalDetectorMode(request.PaymentCardMode) ||
         !FixtureContract.IsOptionalDetectorMode(request.PrivateKeyMode) || !FixtureContract.IsOptionalDetectorMode(request.SsnMode) ||
         !FixtureContract.IsOptionalDetectorMode(request.GithubTokenMode) || !FixtureContract.IsOptionalDetectorMode(request.CloudCredentialMode))
@@ -709,9 +710,11 @@ async Task<IResult> PublishSettings(PublishPolicy request, HttpContext http, Can
         return Results.BadRequest(new { error = "Use a valid identifier mode and up to 16 distinct prefixes with 4 to 12 suffix digits." });
     if (!ClassificationProtection.TryNormalize(request.ClassificationProtection, out var classification))
         return Results.BadRequest(new { error = "Use a valid classification mode and up to 16 distinct labels or phrases of 3 to 64 supported characters." });
+    if (!HealthProtection.TryNormalize(request.HealthProtection, out var health))
+        return Results.BadRequest(new { error = "Use a valid health identifier mode and up to 16 distinct medical record prefixes with 4 to 12 suffix digits." });
     var normalized = request with { DomainRules = domainRules, PathRules = pathRules, UploadTypes = uploadTypes,
         ExtensionDeployment = extensionDeployment, BlockedAiAppHosts = blockedAiAppHosts, IdentifierProtection = identifiers,
-        ClassificationProtection = classification };
+        ClassificationProtection = classification, HealthProtection = health };
     var result = await store.ChangePolicy(Identity(http), normalized, null, ExpectsReview(http), ct, groupId,
         customApps: customApps, promptExceptions: exceptions);
     return PolicyOutcome(result, request.ExpectedVersion.HasValue

@@ -54,6 +54,7 @@ const adapterAdmin = randomBytes(32).toString('hex');
 const logsAdmin = randomBytes(32).toString('hex');
 const saasAdmin = randomBytes(32).toString('hex');
 const enrollmentKeyAdmin = randomBytes(32).toString('hex');
+const healthAdmin = randomBytes(32).toString('hex');
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -64,7 +65,21 @@ const undoSsoSchema = `
       DROP COLUMN oidc_issuer, DROP COLUMN oidc_subject, ALTER COLUMN expires_at SET NOT NULL,
       ADD CONSTRAINT control_access_check1 CHECK ((revoked_at IS NULL) = (token_hash IS NOT NULL));
 `;
+const healthRuleIds = `'us-national-provider-identifier', 'dea-registration-number', 'medicare-beneficiary-identifier', 'medical-record-number'`;
+const undoHealthSchema = `
+  DELETE FROM schema_migrations WHERE version = 58;
+  DELETE FROM security_events WHERE rule_id IN (${healthRuleIds});
+  ALTER TABLE security_events DROP CONSTRAINT security_events_rule_id_check,
+    ADD CONSTRAINT security_events_rule_id_check CHECK (rule_id IN (
+      'fixture-secret', 'github-classic-pat', 'payment-card-number', 'ai-file-upload', 'pem-private-key',
+      'file-inspection-unavailable', 'organization-identifier', 'us-social-security-number', 'clipboard-inspection-unavailable',
+      'github-app-or-fine-grained-token', 'aws-access-key-id', 'slack-token', 'stripe-live-secret-key', 'google-api-key',
+      'openai-api-key', 'anthropic-api-key', 'organization-classification-rule'));
+  ALTER TABLE policy_versions DROP COLUMN health_protection;
+  ALTER TABLE policy_deliveries DROP COLUMN health_identifiers;
+`;
 const undoSaasInventorySchema = `
+  ${undoHealthSchema}
   DELETE FROM schema_migrations WHERE version = 56;
   DELETE FROM control_audit WHERE action = 'saas_app_classified';
   ALTER TABLE control_audit DROP CONSTRAINT control_audit_saas_record_check, DROP COLUMN saas_classification;
@@ -210,14 +225,15 @@ function browserPolicyOnly({ extensionDeployment: _extensionDeployment, browserH
   fileContentModes: _fileContentModes, identifierProtection: _identifierProtection, presetDiscoveryEnabled: _presetDiscovery,
   ssnMode: _ssnMode, clipboardMode: _clipboardMode, githubTokenMode: _githubTokenMode, promptAppModes: _promptAppModes,
   cloudCredentialMode: _cloudCredentialMode, classificationProtection: _classificationProtection, adapterControls: _adapterControls,
-  saasDiscoveryEnabled: _saasDiscoveryEnabled, ...browserPolicy }) {
+  saasDiscoveryEnabled: _saasDiscoveryEnabled, healthProtection: _healthProtection, ...browserPolicy }) {
   return browserPolicy;
 }
 
 async function call(path, { token, method = 'GET', body, expect = 200, assignmentAware = false, expectReview = false, claudeAware = false,
   extensionVersion, scopedEnrollment = false, composerAware = false, privateKeyAware = false, fileInspectionAware = false,
   aiAppAccessAware = false, fileBlockAware = false, identifiersAware = false, presetAware = false, ssnAware = false, clipboardAware = false,
-  githubTokenAware = false, promptAppModesAware = false, detectionRulesAware = false, adapterControlsAware = false, saasAware = false } = {}) {
+  githubTokenAware = false, promptAppModesAware = false, detectionRulesAware = false, adapterControlsAware = false, saasAware = false,
+  healthAware = false } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -240,6 +256,7 @@ async function call(path, { token, method = 'GET', body, expect = 200, assignmen
   if (detectionRulesAware) headers['X-Zekvar-Detection-Rules'] = '1';
   if (adapterControlsAware) headers['X-Zekvar-Adapter-Controls'] = '1';
   if (saasAware) headers['X-Zekvar-SaaS-Discovery'] = '1';
+  if (healthAware) headers['X-Zekvar-Health-Identifiers'] = '1';
   const response = await fetch(`${baseUrl}${path}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(5_000),
@@ -342,6 +359,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__36__AdminToken: saasAdmin,
       Control__Organizations__37__Slug: `enrollment-keys-${suffix}`,
       Control__Organizations__37__AdminToken: enrollmentKeyAdmin,
+      Control__Organizations__38__Slug: `health-identifiers-${suffix}`,
+      Control__Organizations__38__AdminToken: healthAdmin,
       Control__EnrollmentKeyAttemptsPerMinute: '40',
       Control__RolloutEvaluationSeconds: '3600',
       ...overrides,
@@ -5468,6 +5487,85 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual(restored.classificationProtection, { mode: 'off', terms: [] });
     assert.equal((await deliver()).cloudCredentialMode, 'off');
     await write('events', event('aws-access-key-id', 'credential', 'block', { policyVersion: restored.version }), 400);
+  });
+
+  await t.test('versions health identifier rules with negotiated delivery and metadata-only evidence', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: healthAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const [initial] = await admin('policies');
+    assert.deepEqual(initial.healthProtection, { mode: 'off', recordFormats: [] });
+    if (postgres) {
+      await stop();
+      await retentionFixture(undoHealthSchema);
+      await start();
+      assert.equal(await retentionFixture('SELECT count(*) FROM schema_migrations WHERE version = 58'), '1');
+      assert.deepEqual((await admin('policies'))[0], initial);
+    }
+    for (const healthProtection of [{ mode: 'always', recordFormats: [] }, { mode: 'block' }, { mode: 'block', recordFormats: null },
+      { mode: 'block', recordFormats: [{ prefix: 'MRN', digits: 8 }] }, { mode: 'block', recordFormats: [{ prefix: 'MRN-', digits: 3 }] },
+      { mode: 'block', recordFormats: [{ prefix: 'MRN-', digits: 13 }] }, { mode: 'block', recordFormats: [{ prefix: '1MRN-', digits: 8 }] },
+      { mode: 'block', recordFormats: [{ prefix: 'MRN-', digits: 8 }, { prefix: 'mrn-', digits: 6 }] },
+      { mode: 'block', recordFormats: Array.from({ length: 17 }, (_, index) => ({ prefix: `MR${String.fromCharCode(65 + index)}-`, digits: 8 })) }]) {
+      await post('policies', { healthProtection }, { expect: 400 });
+    }
+    await post('policies', { promptExceptions: [{ appId: 'chatgpt', ruleId: 'us-national-provider-identifier',
+      expiresAt: new Date(Date.now() + 3600_000).toISOString(), reason: 'Synthetic exception' }] }, { expect: 400 });
+
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant: (await post('enrollment-grants')).grant } });
+    const browserCall = (route, options) => call(`/v1/browser/${route}`, { token: browser.token, ...options });
+    const write = (route, body, expect = 204) => browserCall(route, { method: 'POST', body, expect });
+    const caps = { assignmentAware: true, clipboardAware: true, fileInspectionAware: true, fileBlockAware: true, detectionRulesAware: true };
+    const deliver = () => browserCall('policy', { ...caps, healthAware: true });
+    const policy = await post('policies', { clipboardMode: 'block', fileContentModes: { chatgpt: 'block' },
+      healthProtection: { mode: 'block', recordFormats: [{ prefix: ' mrn- ', digits: 8 }, { prefix: 'chart_', digits: 6 }] } });
+    assert.deepEqual(policy.healthProtection, { mode: 'block', recordFormats: [{ prefix: 'CHART_', digits: 6 }, { prefix: 'MRN-', digits: 8 }] });
+    const event = (ruleId, detectorCategory, decision, fields = {}) => ({ ...contract.event, eventId: randomUUID(), appId: 'chatgpt',
+      timestamp: new Date().toISOString(), policyVersion: policy.version, ruleId, detectorCategory, decision, ...fields });
+    const heartbeat = { policyVersion: policy.version, clipboardModeApplied: true, fileInspectionApplied: true, fileContentBlockApplied: true };
+    const legacy = await browserCall('policy', caps);
+    assert.equal(legacy.healthProtection, undefined, 'an older release keeps its other detectors');
+    assert.equal(legacy.clipboardMode, 'block');
+    assert.equal((await browserCall('policy', { healthAware: true })).healthProtection, undefined, 'requires assignment awareness');
+    await write('heartbeat', heartbeat);
+    assert.notEqual((await admin('installations'))[0].appliedPolicyVersion, policy.version, 'an older release stays pending');
+    await write('heartbeat', { ...heartbeat, healthIdentifiersApplied: true }, 400);
+    await write('events', event('us-national-provider-identifier', 'health', 'block'), 400);
+    const delivered = await deliver();
+    assert.deepEqual(delivered.healthProtection, policy.healthProtection);
+    await write('heartbeat', heartbeat);
+    assert.notEqual((await admin('installations'))[0].appliedPolicyVersion, policy.version);
+    await write('heartbeat', { ...heartbeat, healthIdentifiersApplied: true });
+    assert.equal((await admin('installations'))[0].appliedPolicyVersion, policy.version);
+
+    const detected = event('us-national-provider-identifier', 'health', 'block');
+    await Promise.all([write('events', detected), write('events', detected)]);
+    for (const ruleId of ['dea-registration-number', 'medicare-beneficiary-identifier', 'medical-record-number']) {
+      await write('events', event(ruleId, 'health', 'block'));
+    }
+    await write('events', event('medicare-beneficiary-identifier', 'health', 'block', { clipboardPaste: true }));
+    await write('events', event('us-national-provider-identifier', 'health', 'block', { uploadMethod: 'picker' }));
+    for (const incorrect of [event('us-national-provider-identifier', 'health', 'warn'), event('us-national-provider-identifier', 'credential', 'block'),
+      event('medical-record-number', 'internal-identifier', 'block'), event('dea-registration-number', 'health', 'exception_applied'),
+      event('icd-10-code', 'health', 'block'), event('us-national-provider-identifier', 'health', 'block', { content: 'NPI 1234567893' }),
+      event('us-national-provider-identifier', 'health', 'block', { matchedValue: 'synthetic' })]) {
+      await write('events', incorrect, 400);
+    }
+    await browserCall('prompt-exception-requests', { method: 'POST', body: { eventId: detected.eventId, appId: 'chatgpt' }, expect: 404 });
+    const exported = await admin('events/export');
+    const rules = exported.entries.map(({ ruleId, detectorCategory, uploadMethod }) => `${ruleId}/${detectorCategory}/${uploadMethod ?? 'prompt'}`).sort();
+    assert.deepEqual(rules, ['dea-registration-number/health/prompt', 'medical-record-number/health/prompt',
+      'medicare-beneficiary-identifier/health/prompt', 'medicare-beneficiary-identifier/health/prompt',
+      'us-national-provider-identifier/health/picker', 'us-national-provider-identifier/health/prompt']);
+    assert.doesNotMatch(JSON.stringify(exported), /1234567893|synthetic/);
+
+    const group = await post('policy-groups', { name: 'Clinical pilot' });
+    const scoped = await post(`policy-groups/${group.id}/policies`, { healthProtection: { mode: 'monitor', recordFormats: [] } });
+    assert.deepEqual(scoped.healthProtection, { mode: 'monitor', recordFormats: [] });
+    assert.deepEqual((await admin('policies'))[0].healthProtection, policy.healthProtection);
+    const restored = await post(`policies/${initial.version}/restore`);
+    assert.deepEqual(restored.healthProtection, { mode: 'off', recordFormats: [] });
+    assert.deepEqual((await deliver()).healthProtection, { mode: 'off', recordFormats: [] });
+    await write('events', event('us-national-provider-identifier', 'health', 'block', { policyVersion: restored.version }), 400);
   });
 
   await t.test('advances staged rollouts through health gates exactly once with review, rollback, and tenant isolation', async () => {

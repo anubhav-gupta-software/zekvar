@@ -99,6 +99,7 @@ export default async function Control({ searchParams }: { searchParams: Promise<
               <PublishPolicyForm policy={current} review={session.reviewRequired} />
               {current?.identifierProtection && <a className="button small mt-3" href="/preview#draft-identifiers">Configure organization identifiers</a>}
               {current?.classificationProtection && <a className="button small mt-3" href="/preview#draft-classification">Configure classification rules</a>}
+              {current?.healthProtection && <a className="button small mt-3" href="/preview#draft-health">Configure health identifiers</a>}
             </> :
               <p className="muted">Sign in as a named administrator to request policy changes.</p>}
           </section>
