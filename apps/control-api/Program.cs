@@ -862,6 +862,12 @@ app.MapPost("/v1/enroll/key", async (RedeemEnrollmentKey request, HttpContext ht
         http.Response.Headers.RetryAfter = result.RetryAfterSeconds.ToString(CultureInfo.InvariantCulture);
         return Results.Json(new { code = result.Error }, statusCode: StatusCodes.Status429TooManyRequests);
     }
+    if (result.Error == "enrollment_key_daily_limit")
+    {
+        http.Response.Headers.RetryAfter = "3600";
+        return Results.Json(new { code = result.Error }, statusCode: StatusCodes.Status429TooManyRequests);
+    }
+    if (result.Error == "installation_exists") return Results.Json(new { code = result.Error }, statusCode: StatusCodes.Status409Conflict);
     return result.Error == "enrollment_key_invalid" ? Results.Json(new { code = result.Error }, statusCode: StatusCodes.Status401Unauthorized)
         : Results.Json(new { code = result.Error }, statusCode: StatusCodes.Status410Gone);
 });

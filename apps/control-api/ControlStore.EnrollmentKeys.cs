@@ -206,12 +206,15 @@ internal sealed partial class ControlStore
             """, organizationId, keyId, nonceHash))
         {
             Guid? existing = null;
-            var existingRevoked = false;
+            bool existingRevoked = false, neverContacted = false;
             await using (var row = await replay.ExecuteReaderAsync(ct))
-                if (await row.ReadAsync(ct)) (existing, existingRevoked) = (row.GetGuid(0), row.GetBoolean(1));
+                if (await row.ReadAsync(ct)) (existing, existingRevoked, neverContacted) = (row.GetGuid(0), row.GetBoolean(1), row.GetBoolean(2));
             if (existing is { } installationId)
             {
                 if (existingRevoked) return await Reject("installation_revoked");
+                // Only an installation that has never contacted Control can still be waiting for its first response. Once it has used
+                // its credential, a repeated nonce must not replace it: anyone holding the key and a seen nonce could take it over.
+                if (!neverContacted) return await Reject("installation_exists");
                 // The profile never received the earlier credential. Replace it so only this response's token works.
                 await using var reissue = BrowserRead(transaction, "UPDATE installations SET token_hash = $2 WHERE id = $1",
                     installationId, Tokens.Hash(token));

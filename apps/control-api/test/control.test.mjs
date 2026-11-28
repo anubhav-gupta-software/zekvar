@@ -6302,6 +6302,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.ok(!JSON.stringify(await admin('audit?limit=1000')).includes(issued.token.slice(4)));
 
     // A profile that lost the response retries with its nonce: same installation, no extra seat, and only the new credential works.
+    const burst0 = await create({ label: 'Lost response key', maxRedemptions: 3 });
     const pair = await create({ label: 'Two seats', maxRedemptions: 2 });
     const profile = nonce();
     const lost = await redeem(pair.token, profile);
@@ -6314,9 +6315,19 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal((await keyRow(pair.key.id)).redeemed, 1);
     assert.equal((await redeem(pair.token)).status, 200);
     assert.equal((await redeem(pair.token)).body.code, 'enrollment_key_exhausted');
+    // The installation has used its credential, so the same nonce can no longer replace it: no takeover with a seen nonce.
     const late = await redeem(pair.token, profile);
-    assert.deepEqual([late.status, late.body.installationId], [200, lost.body.installationId]);
+    assert.deepEqual([late.status, late.body], [409, { code: 'installation_exists' }]);
+    await policy(retried.body.token);
     assert.equal((await keyRow(pair.key.id)).redeemed, 2);
+    // Another profile that never contacted Control can still retry a lost response, and each retry invalidates the previous token.
+    const quiet = nonce();
+    const firstTry = await redeem(burst0.token, quiet);
+    const secondTry = await redeem(burst0.token, quiet);
+    assert.equal(secondTry.body.installationId, firstTry.body.installationId);
+    await policy(firstTry.body.token, 401);
+    await policy(secondTry.body.token);
+    assert.equal((await redeem(burst0.token, quiet)).status, 409);
     const burst = await create({ label: 'Same profile burst', maxRedemptions: 5 });
     const same = nonce();
     const repeated = await Promise.all(Array.from({ length: 5 }, () => redeem(burst.token, same)));
