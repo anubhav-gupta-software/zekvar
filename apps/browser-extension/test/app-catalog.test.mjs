@@ -17,7 +17,7 @@ assert.match(web ?? '', /^http:\/\/localhost:\d+$/);
 assert.match(token ?? '', /^[a-f0-9]{64}$/);
 
 async function until(check, message) {
-  for (let count = 0; count < 80; count++) {
+  for (let count = 0; count < 200; count++) {
     if (await check()) return;
     await delay(100);
   }

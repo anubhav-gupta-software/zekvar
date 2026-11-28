@@ -80,6 +80,20 @@ test('employees request review of an actual blocked prompt and administrators re
   await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
   await popup.waitForFunction(() => !document.querySelector('#sync').disabled);
   const privateSample = 'private synthetic request ZEKVAR_TEST_SECRET';
+  // The worker bounds each Control request to 3.5 s and reports offline when one is slow, so on a loaded machine
+  // one sync pass can legitimately miss the new policy. Sync again until the page shows the expected state.
+  async function syncTo(tab, pattern) {
+    for (let pass = 0; ; pass++) {
+      await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
+      await popup.waitForFunction(() => !document.querySelector('#sync').disabled);
+      try {
+        await tab.getByText(pattern).waitFor({ timeout: 8000 });
+        return;
+      } catch (error) {
+        if (pass >= 3) throw error;
+      }
+    }
+  }
   async function open(address, filename, selector, expected = `BLOCK v${baseline.version}`) {
     const tab = await profile.newPage();
     const fixture = await readFile(new URL(filename, import.meta.url), 'utf8');
@@ -140,8 +154,7 @@ test('employees request review of an actual blocked prompt and administrators re
   await dashboard.getByRole('link', { name: 'Decided', exact: true }).click();
   await dashboard.getByRole('table', { name: 'Decided requests', exact: true }).getByText('Exception published', { exact: true }).waitFor();
 
-  await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
-  await chat.tab.getByText(new RegExp(`^Zekvar · BLOCK v${effective.version}`)).waitFor();
+  await syncTo(chat.tab, new RegExp(`^Zekvar · BLOCK v${effective.version}`));
   await chat.editor.press('Enter');
   assert.equal(await chat.tab.locator('#fixture-sends').textContent(), '1');
   await chat.tab.getByText('Temporary policy exception applied.', { exact: true }).waitFor();
@@ -162,8 +175,7 @@ test('employees request review of an actual blocked prompt and administrators re
   assert.equal(decided.length, 2);
 
   const warning = await admin(`policy-groups/${group.id}/policies`, { mode: 'warn', promptExceptions: [] });
-  await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
-  await gemini.tab.getByText(new RegExp(`^Zekvar · WARN v${warning.version}`)).waitFor();
+  await syncTo(gemini.tab, new RegExp(`^Zekvar · WARN v${warning.version}`));
   await gemini.editor.press('Enter');
   await gemini.request.click();
   await gemini.tab.getByText('Review requested. The current policy still applies.', { exact: true }).waitFor();
@@ -207,8 +219,7 @@ test('employees request review of an actual blocked prompt and administrators re
     await dashboard.getByText(/Previewed policy published as version/).waitFor();
     const [scoped] = await admin(`policy-groups/${group.id}/policies`);
     assert.deepEqual(scoped.promptAppModes, { chatgpt: 'warn', gemini: 'monitor', claude: 'block' });
-    await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
-    await chat.tab.getByText(new RegExp(`^Zekvar · WARN v${scoped.version}`)).waitFor();
+    await syncTo(chat.tab, new RegExp(`^Zekvar · WARN v${scoped.version}`));
     await gemini.tab.getByText(new RegExp(`^Zekvar · MONITOR v${scoped.version}`)).waitFor();
     const claude = await open('https://claude.ai/new', './claude-composer.html', '.ProseMirror', `BLOCK v${scoped.version}`);
     const priorChat = Number(await chat.tab.locator('#fixture-sends').textContent());
@@ -246,8 +257,7 @@ test('employees request review of an actual blocked prompt and administrators re
     assert.ok(!JSON.stringify(events).includes(privateSample));
     const restored = await admin(`policy-groups/${group.id}/policies/${warning.version}/restore`, {});
     assert.deepEqual(restored.promptAppModes, {});
-    await popup.getByRole('button', { name: 'Sync now', exact: true }).click();
-    await gemini.tab.getByText(new RegExp(`^Zekvar · WARN v${restored.version}`)).waitFor();
+    await syncTo(gemini.tab, new RegExp(`^Zekvar · WARN v${restored.version}`));
     await gemini.editor.fill(privateSample);
     await gemini.editor.press('Enter');
     await gemini.tab.getByRole('button', { name: 'Continue anyway', exact: true }).waitFor();

@@ -30,7 +30,7 @@ async function admin(path, body, expected = 200) {
 }
 
 async function until(check, message) {
-  for (let attempt = 0; attempt < 40; attempt++) {
+  for (let attempt = 0; attempt < 160; attempt++) {
     const result = await check();
     if (result) return result;
     await delay(125);

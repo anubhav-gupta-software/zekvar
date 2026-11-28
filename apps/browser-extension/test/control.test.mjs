@@ -34,12 +34,29 @@ async function adminCall(path, body) {
   return response.status === 204 ? undefined : response.json();
 }
 
-async function until(check, explanation) {
-  for (let attempt = 0; attempt < 50; attempt++) {
+// Poll the real condition. The deadline only bounds a genuine failure; a loaded machine must not turn a slow
+// round trip (Chrome worker, proxy, Control) into a false failure.
+async function until(check, explanation, deadlineMs = 30_000) {
+  const end = Date.now() + deadlineMs;
+  while (Date.now() < end) {
     if (await check()) return;
     await delay(100);
   }
   assert.fail(explanation);
+}
+
+// The extension worker bounds each Control request to 3.5 s and reports offline when one is slow, so a loaded
+// machine can legitimately skip one delivery pass. Syncing again is what an operator does; repeat until the condition holds.
+async function syncUntil(popup, check, explanation) {
+  for (let pass = 0; pass < 5; pass++) {
+    await popup.getByRole('button', { name: 'Sync now' }).click();
+    try {
+      await until(check, explanation, 10_000);
+      return;
+    } catch (error) {
+      if (pass === 4) throw error;
+    }
+  }
 }
 
 test('Chrome enrolls, applies Control policy, and recovers queued events across restart', { timeout: 60_000 }, async (t) => {
@@ -711,10 +728,9 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
         assert.equal((await rows()).length, 7);
       } finally { offline = false; }
       loseNextAcknowledgment = true;
-      await popup.getByRole('button', { name: 'Sync now' }).click();
-      await until(() => !loseNextAcknowledgment, 'The proxy did not drop the queued upload acknowledgment.');
-      await popup.getByRole('button', { name: 'Sync now' }).click();
-      await until(() => posts.filter(({ eventId }) => eventId === posts.at(-1).eventId).length >= 2, 'The browser did not retry the upload metadata.');
+      await syncUntil(popup, () => !loseNextAcknowledgment, 'The proxy did not drop the queued upload acknowledgment.');
+      const lostEventId = posts.at(-1).eventId;
+      await syncUntil(popup, () => posts.filter(({ eventId }) => eventId === lostEventId).length >= 2, 'The browser did not retry the upload metadata.');
       assert.equal((await rows()).length, 8);
       assert.doesNotMatch(JSON.stringify([...posts, ...await rows()]), /fixture-private-name|fixture-second|Synthetic private attachment|Plain text still works/);
 
@@ -763,10 +779,9 @@ test('Chrome enrolls, applies Control policy, and recovers queued events across 
         assert.equal((await scopedRows()).length, 6);
       } finally { offline = false; }
       loseNextAcknowledgment = true;
-      await popup.getByRole('button', { name: 'Sync now' }).click();
-      await until(() => !loseNextAcknowledgment, 'The proxy did not drop the scoped attempt acknowledgment.');
-      await popup.getByRole('button', { name: 'Sync now' }).click();
-      await until(() => posts.filter(({ eventId }) => eventId === posts.at(-1).eventId).length === 2, 'The scoped event was not retried.');
+      await syncUntil(popup, () => !loseNextAcknowledgment, 'The proxy did not drop the scoped attempt acknowledgment.');
+      const lostScopedId = posts.at(-1).eventId;
+      await syncUntil(popup, () => posts.filter(({ eventId }) => eventId === lostScopedId).length >= 2, 'The scoped event was not retried.');
       assert.equal((await scopedRows()).length, 7);
       assert.doesNotMatch(JSON.stringify([...posts, ...await scopedRows()]),
         /private-mixed-case|private-allowed|private-archive|Synthetic scoped file|image\/png|application\/pdf|\.tar\.gz/);

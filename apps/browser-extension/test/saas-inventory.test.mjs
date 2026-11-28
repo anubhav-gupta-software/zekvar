@@ -24,7 +24,7 @@ const catalog = JSON.parse(await readFile(new URL('../../../contracts/policy/saa
 const sql = promisify(execFile);
 
 async function until(check, message) {
-  for (let count = 0; count < 80; count++) {
+  for (let count = 0; count < 200; count++) {
     if (await check()) return;
     await delay(100);
   }

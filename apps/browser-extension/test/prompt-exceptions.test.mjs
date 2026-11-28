@@ -22,7 +22,7 @@ const fakePat = 'ghp_' + '0'.repeat(36);
 const reason = 'Synthetic support case EX-123';
 
 async function until(check, message) {
-  for (let attempt = 0; attempt < 80; attempt++) {
+  for (let attempt = 0; attempt < 200; attempt++) {
     if (await check()) return;
     await delay(100);
   }

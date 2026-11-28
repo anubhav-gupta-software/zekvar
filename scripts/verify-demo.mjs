@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { createWriteStream } from 'node:fs';
 import { cp, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -46,9 +47,29 @@ function launch(program, parameters, cwd, overrides = {}, stdio = 'inherit') {
   return { child, finished };
 }
 
+// Chrome for Testing occasionally exceeds its launch timeout when the machine is loaded. That is an environment
+// failure before any assertion runs, so a test command is retried once, and only when its output shows a browser launch
+// timeout. Assertion failures and every other failure still stop the run on the first attempt.
+const browserLaunchTimeout = /browserType\.launch\w*: Timeout \d+ms exceeded/;
+
 async function run(program, parameters, cwd, overrides) {
-  const { code, signal } = await launch(program, parameters, cwd, overrides).finished;
-  if (code !== 0) throw new Error(`${program} ${parameters.join(' ')} exited with ${signal ?? code}.`);
+  const isTest = parameters.includes('--test') || (program === 'npm' && /^(test|test:\w+)$/.test(parameters.at(-1) ?? ''));
+  for (let attempt = 1; ; attempt++) {
+    let tail = '';
+    const { child, finished } = launch(program, parameters, cwd, overrides, isTest ? ['inherit', 'pipe', 'pipe'] : 'inherit');
+    if (isTest) {
+      for (const [stream, sink] of [[child.stdout, process.stdout], [child.stderr, process.stderr]]) {
+        stream.on('data', (chunk) => { sink.write(chunk); tail = (tail + chunk).slice(-200_000); });
+      }
+    }
+    const { code, signal } = await finished;
+    if (code === 0) return;
+    if (isTest && attempt === 1 && !interrupted && browserLaunchTimeout.test(tail)) {
+      console.error(`Chrome for Testing did not launch in time for ${program} ${parameters.join(' ')}; retrying once.`);
+      continue;
+    }
+    throw new Error(`${program} ${parameters.join(' ')} exited with ${signal ?? code}.`);
+  }
 }
 
 async function availablePort(host) {
@@ -74,8 +95,10 @@ async function ready(url, service, log) {
 function startService(program, parameters, cwd, overrides) {
   const service = launch(program, parameters, cwd, overrides, ['ignore', 'pipe', 'pipe']);
   let log = '';
+  // Set ZEKVAR_VERIFY_SERVICE_LOGS to a directory to keep each service's complete output for diagnosing a failed run.
+  const keep = process.env.ZEKVAR_VERIFY_SERVICE_LOGS ? createWriteStream(join(process.env.ZEKVAR_VERIFY_SERVICE_LOGS, `${basename(parameters[0])}-${service.child.pid}.log`)) : undefined;
   for (const stream of [service.child.stdout, service.child.stderr]) {
-    stream.on('data', (chunk) => { log = (log + chunk).slice(-4000); });
+    stream.on('data', (chunk) => { log = (log + chunk).slice(-4000); keep?.write(chunk); });
   }
   // Readiness reports the service log if a process exits at startup.
   void service.finished.catch((error) => { log += String(error); });

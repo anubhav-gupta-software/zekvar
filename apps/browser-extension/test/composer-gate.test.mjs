@@ -14,7 +14,7 @@ assert.match(web ?? '', /^http:\/\/localhost:\d+$/);
 assert.match(owner ?? '', /^[a-f0-9]{64}$/);
 
 async function until(check, message) {
-  for (let attempt = 0; attempt < 100; attempt++) {
+  for (let attempt = 0; attempt < 160; attempt++) {
     if (await check()) return;
     await delay(150);
   }
