@@ -486,6 +486,12 @@ internal sealed partial class ControlStore
                 node["snapshots"] = System.Text.Json.Nodes.JsonNode.Parse(protection.OpenObject(snapshots.ToJsonString(), organizationId, ReviewSnapshotField));
             return node.ToJsonString();
         },
+        "billing_invoices" or "billing_quotes" => row =>
+        {
+            var node = System.Text.Json.Nodes.JsonNode.Parse(row)!.AsObject();
+            if (node["billing_email"]?.GetValue<string>() is { } email) node["billing_email"] = OpenBillingEmail(organizationId, email);
+            return node.ToJsonString();
+        },
         _ => row => row,
     };
 

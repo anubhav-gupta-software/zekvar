@@ -96,6 +96,7 @@ internal sealed partial class ControlStore
         }
         await ApplyMigration(connection, 58, "058_health_identifiers.sql", ct);
         await ApplyMigration(connection, 59, "059_soc2_evidence.sql", ct);
+        await ApplyMigration(connection, 60, "060_billing_email_sealing.sql", ct);
 
         foreach (var organization in organizations)
         {

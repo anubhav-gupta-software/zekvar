@@ -60,6 +60,16 @@ internal sealed partial class ControlStore
             BaseSubscriptionId is not null, CreatedAt, ExpiresAt, DecidedAt);
     }
 
+    // The billing contact email on quotes and invoices is sealed with the organization's data key when one is configured.
+    // A sealed value is an envelope without an at sign, so it cannot be mistaken for a plaintext address.
+    private const string BillingEmailField = "billing_documents.billing_email";
+
+    private string SealBillingEmail(Guid organizationId, string email) =>
+        protection.Enabled ? protection.Seal(email, organizationId, BillingEmailField) : email;
+
+    private string OpenBillingEmail(Guid organizationId, string stored) =>
+        stored.StartsWith("zk1:", StringComparison.Ordinal) && !stored.Contains('@') ? protection.Open(stored, organizationId, BillingEmailField) : stored;
+
     private sealed record SubscriptionRow(Guid Id, int Revision, DateOnly StartedOn, int ClosedPeriods, Guid QuoteId, Guid? PendingQuoteId,
         DateOnly? PendingEffectiveOn);
 
@@ -74,11 +84,11 @@ internal sealed partial class ControlStore
         base_subscription_revision, created_at, expires_at, decided_at, expires_at <= now()
         """;
 
-    private static QuoteRow ReadQuote(NpgsqlDataReader rows) => new(rows.GetGuid(0), rows.GetString(1), rows.GetString(2), rows.GetString(3),
+    private QuoteRow ReadQuote(NpgsqlDataReader rows, Guid organizationId) => new(rows.GetGuid(0), rows.GetString(1), rows.GetString(2), rows.GetString(3),
         rows.GetString(4), rows.GetInt32(5), rows.GetString(6), rows.GetInt32(7), rows.GetString(8),
         JsonSerializer.Deserialize<BillingTier[]>(rows.GetString(9), JsonSerializerOptions.Web)!, rows.GetString(10), rows.GetInt32(11),
         rows.GetString(12), JsonSerializer.Deserialize<BillingLine[]>(rows.GetString(13), JsonSerializerOptions.Web)!, rows.GetInt64(14),
-        rows.GetInt64(15), rows.GetInt64(16), rows.GetString(17), rows.GetString(18), rows.IsDBNull(19) ? null : rows.GetGuid(19),
+        rows.GetInt64(15), rows.GetInt64(16), rows.GetString(17), OpenBillingEmail(organizationId, rows.GetString(18)), rows.IsDBNull(19) ? null : rows.GetGuid(19),
         rows.IsDBNull(20) ? null : rows.GetInt32(20), rows.GetDateTime(21), rows.GetDateTime(22), rows.IsDBNull(23) ? null : rows.GetDateTime(23),
         rows.GetBoolean(24));
 
@@ -206,7 +216,7 @@ internal sealed partial class ControlStore
         await using var command = BrowserRead(transaction, $"SELECT {QuoteColumns} FROM billing_quotes WHERE organization_id = $1 AND id = $2" +
             (forUpdate ? " FOR UPDATE" : ""), organizationId, id);
         await using var rows = await command.ExecuteReaderAsync(ct);
-        return await rows.ReadAsync(ct) ? ReadQuote(rows) : null;
+        return await rows.ReadAsync(ct) ? ReadQuote(rows, organizationId) : null;
     }
 
     private async Task<SubscriptionRow?> LoadSubscription(NpgsqlTransaction? transaction, Guid organizationId, CancellationToken ct, bool forUpdate = false)
@@ -263,7 +273,7 @@ internal sealed partial class ControlStore
             JsonSerializer.Serialize(draft.Lines, JsonSerializerOptions.Web),
             draft.Usage is null ? DBNull.Value : JsonSerializer.Serialize(draft.Usage, JsonSerializerOptions.Web),
             subtotal, draft.TaxBasisPoints, draft.TaxLabel, draft.TaxAmount, total, Billing.IssuerName, Billing.IssuerAddress, draft.CustomerName,
-            draft.BillingEmail, draft.PlanName, draft.Term, (object?)draft.Note ?? DBNull.Value, Billing.Provider, invoice ? "open" : "issued",
+            SealBillingEmail(organizationId, draft.BillingEmail), draft.PlanName, draft.Term, (object?)draft.Note ?? DBNull.Value, Billing.Provider, invoice ? "open" : "issued",
             providerStatus))
             issuedAt = (DateTime)(await insert.ExecuteScalarAsync(ct))!;
         await Audit(transaction, organizationId, draft.ActorId, new(invoice ? "invoice_issued" : "credit_note_issued", draft.Automatic,
@@ -354,7 +364,7 @@ internal sealed partial class ControlStore
         await using (var existing = BrowserRead(transaction, $"SELECT {QuoteColumns} FROM billing_quotes WHERE organization_id = $1 AND request_id = $2",
             org, request.RequestId))
         await using (var rows = await existing.ExecuteReaderAsync(ct))
-            if (await rows.ReadAsync(ct)) return new(ReadQuote(rows).View());
+            if (await rows.ReadAsync(ct)) return new(ReadQuote(rows, org).View());
         var subscription = await LoadSubscription(transaction, org, ct);
         if (subscription is not null)
         {
@@ -378,7 +388,7 @@ internal sealed partial class ControlStore
             """, org, id, request.RequestId, plan.Id, plan.Name, term, request.CommittedSeats, Billing.Currency, Billing.MinorUnitDigits,
             Billing.TierMode, JsonSerializer.Serialize(plan.Tiers, JsonSerializerOptions.Web), Billing.PriceBookVersion, Billing.TaxBasisPoints,
             Billing.TaxLabel, JsonSerializer.Serialize(lines, JsonSerializerOptions.Web), subtotal, tax, subtotal + tax, request.CustomerName!.Trim(),
-            request.BillingEmail!.Trim(), (object?)subscription?.Id ?? DBNull.Value, (object?)subscription?.Revision ?? DBNull.Value,
+            SealBillingEmail(org, request.BillingEmail!.Trim()), (object?)subscription?.Id ?? DBNull.Value, (object?)subscription?.Revision ?? DBNull.Value,
             (object?)identity.Access?.Id ?? DBNull.Value, Billing.QuoteValidDays))
             if (await insert.ExecuteNonQueryAsync(ct) == 1)
                 await Audit(transaction, org, identity.Access?.Id, new("quote_created", QuoteId: id, Total: subtotal + tax, Currency: Billing.Currency,
@@ -542,7 +552,7 @@ internal sealed partial class ControlStore
             SELECT {QuoteColumns} FROM billing_quotes WHERE organization_id = $1 ORDER BY created_at DESC, id DESC LIMIT 20
             """, org))
         await using (var rows = await command.ExecuteReaderAsync(ct))
-            while (await rows.ReadAsync(ct)) quotes.Add(ReadQuote(rows).View());
+            while (await rows.ReadAsync(ct)) quotes.Add(ReadQuote(rows, org).View());
         return new(identity.OrganizationSlug!, Billing.Provider, Billing.Currency, Billing.MinorUnitDigits, Billing.TierMode, Billing.TaxBasisPoints,
             Billing.TaxLabel, true, BillingSettings.MeteringRule, Billing.PriceBookVersion,
             Billing.Plans.Select(plan => new BillingPlanView(plan.Id, plan.Name, plan.Tiers)).ToList(), view, usage, estimate,
@@ -605,7 +615,7 @@ internal sealed partial class ControlStore
                 rows.IsDBNull(14) ? null : JsonSerializer.Deserialize<BillingUsagePeriod>(rows.GetString(14), JsonSerializerOptions.Web),
                 rows.GetInt64(15), rows.GetInt32(16), rows.GetString(17), rows.GetInt64(18), total, credited,
                 kind == "invoice" && status == "open" ? total - credited : 0,
-                new(rows.GetString(21), rows.GetString(22)), new(rows.GetString(23), rows.GetString(24)), rows.GetString(25), rows.GetString(26),
+                new(rows.GetString(21), rows.GetString(22)), new(rows.GetString(23), OpenBillingEmail(org, rows.GetString(24))), rows.GetString(25), rows.GetString(26),
                 rows.IsDBNull(27) ? null : rows.GetString(27), rows.GetString(28), status, rows.IsDBNull(30) ? null : rows.GetDateTime(30),
                 rows.IsDBNull(31) ? null : rows.GetString(31), rows.GetString(32),
                 kind == "invoice" && rows.GetString(28) == "manual" && Billing.PaymentInstructions.Length > 0 ? Billing.PaymentInstructions : null, []);
@@ -651,7 +661,7 @@ internal sealed partial class ControlStore
             if (!await rows.ReadAsync(ct)) return new(null, "billing_invoice_unavailable");
             (subscriptionId, subtotal, total, taxBasisPoints, number, currency, digits, taxLabel, customer, email, plan, term, status) =
                 (rows.GetGuid(0), rows.GetInt64(1), rows.GetInt64(2), rows.GetInt32(3), rows.GetString(4), rows.GetString(5), rows.GetInt32(6),
-                    rows.GetString(7), rows.GetString(8), rows.GetString(9), rows.GetString(10), rows.GetString(11), rows.GetString(12));
+                    rows.GetString(7), rows.GetString(8), OpenBillingEmail(org, rows.GetString(9)), rows.GetString(10), rows.GetString(11), rows.GetString(12));
             (creditedSubtotal, creditedTotal) = (rows.GetInt64(13), rows.GetInt64(14));
         }
         var remainingSubtotal = subtotal - creditedSubtotal;
@@ -775,7 +785,7 @@ internal sealed partial class ControlStore
                     .Select(line => new ProviderItem(line.Description, line.Amount)).ToList();
                 if (rows.GetInt64(5) != 0) items.Add(new(rows.GetString(6), rows.GetInt64(5)));
                 submission = new(rows.GetGuid(0), rows.GetGuid(1), rows.GetString(2), rows.GetString(3), items, rows.GetInt32(12), rows.GetString(7),
-                    rows.GetString(8), rows.IsDBNull(13) ? null : rows.GetString(13), rows.IsDBNull(9) ? null : rows.GetString(9), rows.GetInt32(10));
+                    OpenBillingEmail(rows.GetGuid(0), rows.GetString(8)), rows.IsDBNull(13) ? null : rows.GetString(13), rows.IsDBNull(9) ? null : rows.GetString(9), rows.GetInt32(10));
                 attempts = rows.GetInt32(11);
             }
             var result = await Collector.Submit(submission, ct);

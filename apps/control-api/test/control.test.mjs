@@ -67,6 +67,8 @@ const billingAdmin = randomBytes(32).toString('hex');
 const billingOtherAdmin = randomBytes(32).toString('hex');
 const billingAnnualAdmin = randomBytes(32).toString('hex');
 const billingStripeAdmin = randomBytes(32).toString('hex');
+const billingDeleteAdmin = randomBytes(32).toString('hex');
+const billingEmailAdmin = randomBytes(32).toString('hex');
 // Placeholder price book for tests only. These are not proposed prices.
 const billingConfig = {
   Enabled: 'true', IssuerId: `test-issuer-${suffix}`, IssuerName: 'Placeholder Issuer (test only)', IssuerAddress: '1 Example Street',
@@ -254,6 +256,14 @@ async function retentionFixture(query) {
   return stdout.trim();
 }
 
+// Several tests compare server-side UTC-day buckets with days the test computes from its own clock. Starting such a
+// test within a minute of UTC midnight lets the two disagree, so wait until the new day has begun first.
+async function awayFromUtcMidnight(marginMs = 60_000) {
+  const dayMs = 86_400_000;
+  const untilMidnight = dayMs - (Date.now() % dayMs);
+  if (untilMidnight < marginMs) await delay(untilMidnight + 1000);
+}
+
 function browserPolicyOnly({ extensionDeployment: _extensionDeployment, browserHardening: _browserHardening, blockedAiAppHosts: _blockedAiAppHosts,
   fileContentModes: _fileContentModes, identifierProtection: _identifierProtection, presetDiscoveryEnabled: _presetDiscovery,
   ssnMode: _ssnMode, clipboardMode: _clipboardMode, githubTokenMode: _githubTokenMode, promptAppModes: _promptAppModes,
@@ -394,6 +404,10 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__48__AdminToken: billingAnnualAdmin,
       Control__Organizations__49__Slug: `billing-stripe-${suffix}`,
       Control__Organizations__49__AdminToken: billingStripeAdmin,
+      Control__Organizations__50__Slug: `billing-delete-${suffix}`,
+      Control__Organizations__50__AdminToken: billingDeleteAdmin,
+      Control__Organizations__51__Slug: `billing-email-${suffix}`,
+      Control__Organizations__51__AdminToken: billingEmailAdmin,
       ...configEnv('Control__Billing', billingConfig),
       Control__Organizations__35__Slug: `logs-${suffix}`,
       Control__Organizations__35__AdminToken: logsAdmin,
@@ -2377,6 +2391,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await create({ ...request, groupId: foreign.id }, { expect: 404 });
     await create(request, { token: auditor, expect: 403 });
     await batches({ token: existing.token, expect: 401 });
+    const issuingFrom = Date.now();
     const simultaneous = await Promise.all([1, 2].map(() => fetch(`${baseUrl}/v1/admin/enrollment-batches`, {
       method: 'POST', headers: { Authorization: `Bearer ${named}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(request), signal: AbortSignal.timeout(5000),
@@ -2387,7 +2402,10 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(issued.id, request.requestId);
     assert.equal(new Set(issued.grants).size, request.count);
     for (const grant of issued.grants) assert.match(grant, /^[a-f\d]{64}$/);
-    assert.ok(Date.parse(issued.expiresAt) - Date.now() > 590_000);
+    // The ten-minute lifetime starts when Control issues the batch, which happened between the two clock samples.
+    const issuedBefore = Date.now();
+    assert.ok(Date.parse(issued.expiresAt) >= issuingFrom + 600_000 - 1000 && Date.parse(issued.expiresAt) <= issuedBefore + 600_000 + 1000,
+      `Batch lifetime ${Date.parse(issued.expiresAt) - issuingFrom} ms is outside the ten-minute band.`);
     if (postgres) {
       const stored = await retentionFixture(`SELECT string_agg(token_hash, ',' ORDER BY token_hash) FROM enrollment_grants WHERE batch_id = '${issued.id}'`);
       assert.equal(stored, issued.grants.map((grant) => createHash('sha256').update(grant).digest('hex')).sort().join(','));
@@ -2449,6 +2467,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       return call('/v1/enroll', { method: 'POST', body: { grant } });
     }
     const empty = { monitor: 0, warn: 0, block: 0, warn_override: 0, exception_applied: 0 };
+    await awayFromUtcMidnight(120_000);
     const initial = await report();
     assert.equal(initial.days, 7);
     assert.equal(initial.organization, `report-${suffix}`);
@@ -6055,6 +6074,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     };
     const fetchPolicy = (browser, saasAware = true) => call('/v1/browser/policy', { token: browser.token, assignmentAware: true, saasAware });
     const observe = (browser, body, expect = 204) => call('/v1/browser/saas-observations', { method: 'POST', token: browser.token, body, expect });
+    await awayFromUtcMidnight(120_000);
     const day = (offset = 0) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
 
     // The API catalog mirrors the bundled contract catalog exactly and in order.
@@ -6886,6 +6906,104 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     }
   });
 
+  await t.test('seals the billing contact email at rest, re-seals it on key rotation, and keeps every other invoice field immutable', async (emailTest) => {
+    if (!postgres) return emailTest.skip('Requires the disposable PostgreSQL container.');
+    const database = `zekvar_billing_seal_${randomBytes(5).toString('hex')}`;
+    const connection = db.replace(/Database=[^;]+/, `Database=${database}`);
+    assert.notEqual(connection, db);
+    await retentionFixture(`CREATE DATABASE ${database}`);
+    const inDatabase = async (query) => (await sql('docker', ['exec', postgres, 'psql', '-XAtq', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres',
+      '-d', database, '-c', query])).stdout.trim();
+    const k1 = randomBytes(32).toString('hex');
+    const k2 = randomBytes(32).toString('hex');
+    const isolated = (keys) => ({ ConnectionStrings__Control: connection, ...(keys ? { Control__DataKeys: keys } : {}) });
+    const admin = (path, options = {}) => call(`/v1/admin/billing${path}`, { token: billingEmailAdmin, ...options });
+    const post = (path, body, options = {}) => admin(path, { method: 'POST', body, ...options });
+    const address = (label) => `${label}-contact@example.test`;
+    const quote = (label) => post('/quotes', { requestId: randomUUID(), planId: 'bundle', term: 'monthly', committedSeats: 2,
+      customerName: `Sealed Customer ${label} (synthetic)`, billingEmail: address(label) });
+    const emails = (table) => inDatabase(`SELECT string_agg(billing_email, ',' ORDER BY billing_email) FROM ${table}`);
+    const sealedOn = (id) => inDatabase(`SELECT (SELECT count(*) FROM billing_invoices WHERE billing_email LIKE 'zk1:${id}:%')
+      + (SELECT count(*) FROM billing_quotes WHERE billing_email LIKE 'zk1:${id}:%')`);
+    const plaintext = () => inDatabase(`SELECT (SELECT count(*) FROM billing_invoices WHERE billing_email LIKE '%@%')
+      + (SELECT count(*) FROM billing_quotes WHERE billing_email LIKE '%@%')`);
+    const exportedEmails = async () => {
+      const response = await fetch(`${baseUrl}/v1/admin/organization/export`, { headers: { Authorization: `Bearer ${billingEmailAdmin}` }, signal: AbortSignal.timeout(10_000) });
+      assert.equal(response.status, 200);
+      const exported = await response.json();
+      return { invoices: exported.datasets.billing_invoices.map(({ billing_email: email }) => email).sort(),
+        quotes: exported.datasets.billing_quotes.map(({ billing_email: email }) => email).sort() };
+    };
+    try {
+      await stop();
+      // Rows written before any data key exists stay plaintext until a key is configured.
+      await start(3600, isolated());
+      const opening = await quote('opening');
+      const accepted = await post(`/quotes/${opening.id}/accept`);
+      await post(`/invoices/${accepted.invoice.id}/credit-notes`, { requestId: randomUUID(), reason: 'Synthetic correction', amount: 50 });
+      assert.equal(await plaintext(), '3');
+      await stop();
+
+      // Startup seals existing plaintext rows in place, on invoices and credit notes as well as quotes.
+      await start(3600, isolated(`k1=${k1}`));
+      assert.equal(await plaintext(), '0');
+      assert.equal(await sealedOn('k1'), '3');
+      assert.ok(!(await emails('billing_invoices')).includes('example.test'));
+      const detail = await admin(`/invoices/${accepted.invoice.id}`);
+      assert.equal(detail.customer.detail, address('opening'));
+      assert.equal(detail.creditNotes.length, 1);
+      assert.equal((await admin('')).quotes.find(({ id }) => id === opening.id).billingEmail, address('opening'));
+
+      // New rows are sealed when written, and a repeated request returns the same decrypted quote.
+      const second = await quote('second');
+      assert.equal(second.billingEmail, address('second'));
+      assert.equal(await plaintext(), '0');
+      assert.equal(await sealedOn('k1'), '4');
+      const exported = await exportedEmails();
+      assert.deepEqual(exported.invoices, [address('opening'), address('opening')]);
+      assert.deepEqual(exported.quotes, [address('opening'), address('second')]);
+
+      // Only the contact email may be re-sealed, and only inside a transaction that asks for it.
+      const immutable = (error) => /issued billing documents are immutable/.test(error.stderr);
+      await assert.rejects(inDatabase(`UPDATE billing_invoices SET billing_email = 'changed@example.test'`), immutable);
+      await assert.rejects(inDatabase(`UPDATE billing_invoices SET total = total + 1`), immutable);
+      await assert.rejects(inDatabase(`UPDATE billing_invoices SET customer_name = 'Changed'`), immutable);
+      await assert.rejects(inDatabase(`SELECT set_config('zekvar.billing_reseal', 'on', true); UPDATE billing_invoices SET customer_name = 'Changed'`), immutable);
+      await assert.rejects(inDatabase(`SELECT set_config('zekvar.billing_reseal', 'on', true); UPDATE billing_invoices SET total = total + 1, billing_email = billing_email`), immutable);
+      await assert.rejects(inDatabase(`SELECT set_config('zekvar.billing_reseal', 'on', true); UPDATE billing_invoices SET number = 'DEMO-999999'`), immutable);
+      await assert.rejects(inDatabase(`DELETE FROM billing_invoices`), (error) => /cannot be deleted/.test(error.stderr));
+      assert.equal(await sealedOn('k1'), '4');
+      assert.equal((await admin(`/invoices/${accepted.invoice.id}`)).customer.name, 'Sealed Customer opening (synthetic)');
+      await stop();
+
+      // Rotation: the new first key re-seals every contact email, then the retired key can be removed.
+      await start(3600, isolated(`k2=${k2},k1=${k1}`));
+      assert.deepEqual([await sealedOn('k1'), await sealedOn('k2'), await plaintext()], ['0', '4', '0']);
+      assert.equal((await admin(`/invoices/${accepted.invoice.id}`)).customer.detail, address('opening'));
+      await stop();
+      await start(3600, isolated(`k2=${k2}`));
+      assert.equal((await admin(`/invoices/${accepted.invoice.id}`)).customer.detail, address('opening'));
+      assert.deepEqual((await exportedEmails()).quotes, [address('opening'), address('second')]);
+      await stop();
+
+      // A sealed email cannot be read after its key is dropped, and one copied to another organization does not open there.
+      const dropped = spawn('dotnet', [app], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DOTNET_ENVIRONMENT: 'Development',
+        ASPNETCORE_ENVIRONMENT: 'Development', Control__Port: port, ...isolated(`k1=${k1}`),
+        Control__Organizations__0__Slug: `billing-email-${suffix}`, Control__Organizations__0__AdminToken: billingEmailAdmin } });
+      let output = '';
+      dropped.stdout.on('data', (chunk) => { output += chunk; });
+      dropped.stderr.on('data', (chunk) => { output += chunk; });
+      const [code] = await once(dropped, 'exit');
+      assert.notEqual(code, 0);
+      assert.match(output, /data key missing from Control__DataKeys/);
+      assert.ok(!output.includes('example.test'));
+    } finally {
+      await stop();
+      await retentionFixture(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+      await start();
+    }
+  });
+
   await t.test('audits sensitive reads and exports with counts only, rolls up views and feed reads, and respects retention', async () => {
     const admin = (path, options) => call(`/v1/admin/${path}`, { token: evidenceAdmin, ...options });
     const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
@@ -7276,6 +7394,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await post(`/invoices/${opening.id}/payment`, { reference: 'BANK-REF-2' }, { expect: 409 });
 
     if (!postgres) return;
+    await awayFromUtcMidnight(120_000);
     // Seat metering: the period peak of daily counts of unrevoked browsers seen within seven days, frozen per UTC day.
     const browsers = [];
     for (let index = 0; index < 4; index++) {
@@ -7544,4 +7663,80 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(numbers, Array.from({ length: 7 }, (_, index) => `TST-${String(index + 1).padStart(6, '0')}`).join(','));
     assert.ok(!JSON.stringify(await stripeAdmin('')).includes(stripeKey));
   });
+  await t.test('deletes an organization with issued invoices, credit notes, frozen seat days, and enrollment keys through the background job', {
+    skip: !postgres && 'Set ZEKVAR_TEST_POSTGRES_CONTAINER to advance the grace period and read the schema.',
+  }, async () => {
+    const slug = `billing-delete-${suffix}`;
+    const org = await organizationId(slug);
+    const admin = (path, options = {}) => call(`/v1/admin/billing${path}`, { token: billingDeleteAdmin, ...options });
+    const post = (path, body, options = {}) => admin(path, { method: 'POST', body, ...options });
+    const owner = deletionPost(billingDeleteAdmin);
+    const fixture = (query) => retentionFixture(query);
+    const nonce = () => randomBytes(32).toString('hex');
+    const redeem = async (key) => (await call('/v1/enroll/key', { method: 'POST', body: { key, nonce: nonce() } }));
+
+    // Issued documents, a credit note that references its invoice, frozen daily snapshots, and a rotated key with redemptions.
+    const priced = await post('/quotes', { requestId: randomUUID(), planId: 'bundle', term: 'monthly', committedSeats: 2,
+      customerName: 'Deleted Customer (synthetic)', billingEmail: 'delete-me@example.test' });
+    const accepted = await post(`/quotes/${priced.id}/accept`);
+    const key = await owner('enrollment-keys', { requestId: randomUUID(), label: 'Billing deletion key', days: 1, maxRedemptions: 5 });
+    const seats = [await redeem(key.token), await redeem(key.token)].map(({ installationId }) => installationId);
+    const rotation = await owner(`enrollment-keys/${key.key.id}/rotate`, { requestId: randomUUID(), days: 7, overlapHours: 24 });
+    assert.ok(rotation.key.id);
+    await fixture(`
+      UPDATE billing_subscriptions SET started_on = (now() AT TIME ZONE 'UTC')::date - 40 WHERE organization_id = '${org}';
+      UPDATE installations SET enrolled_at = now() - interval '45 days' WHERE id IN ('${seats[0]}', '${seats[1]}');
+      INSERT INTO billing_seat_days (organization_id, usage_date, installation_id)
+      SELECT organization_id, (now() AT TIME ZONE 'UTC')::date - d, id FROM installations, generate_series(1, 40) d
+      WHERE id IN ('${seats[0]}', '${seats[1]}') ON CONFLICT DO NOTHING`);
+    await Promise.all([1, 2, 3].map(() => admin('')));
+    const credit = await post(`/invoices/${accepted.invoice.id}/credit-notes`, { requestId: randomUUID(), reason: 'Synthetic correction', amount: 100 });
+    assert.equal(credit.kind, 'credit_note');
+
+    const before = await tenantCounts(org);
+    assert.ok(before.billing_invoices >= 3, 'expected the opening invoice, a usage invoice, and a credit note');
+    for (const table of ['billing_usage_snapshots', 'billing_seat_days', 'billing_quotes', 'billing_subscriptions', 'enrollment_keys',
+      'enrollment_key_redemptions']) assert.ok(before[table] > 0, `${table} should hold rows before deletion`);
+    assert.equal(Number(await fixture(`SELECT count(*) FROM billing_invoices WHERE organization_id = '${org}' AND related_invoice_id IS NOT NULL`)), 1);
+    assert.equal(Number(await fixture(`SELECT count(*) FROM enrollment_keys WHERE organization_id = '${org}' AND rotated_from IS NOT NULL`)), 1);
+    const counters = () => fixture(`SELECT string_agg(kind || ':' || last_sequence, ',' ORDER BY kind) FROM billing_document_counters`);
+    const countersBefore = await counters();
+    assert.match(countersBefore, /invoice:\d+/);
+
+    // Without the purge setting, issued documents and snapshots cannot be removed by anything else.
+    for (const table of ['billing_invoices', 'billing_usage_snapshots']) {
+      await assert.rejects(fixture(`DELETE FROM ${table} WHERE organization_id = '${org}'`), (error) => /immutable|cannot be deleted/.test(error.stderr));
+    }
+
+    const requested = await owner('organization/deletion', { confirmSlug: slug }, { expect: 202 });
+    await fixture(`UPDATE organization_deletions SET purge_after = requested_at + interval '1 millisecond' WHERE id = '${requested.deletion.id}'`);
+    const ledger = (column) => fixture(`SELECT ${column} FROM organization_deletions WHERE id = '${requested.deletion.id}'`);
+    for (let attempt = 0; attempt < 150 && await ledger('status') !== 'completed'; attempt++) await delay(200);
+    assert.equal(await ledger('status'), 'completed');
+    assert.equal(await ledger('last_error'), '');
+
+    assert.deepEqual(Object.entries(await tenantCounts(org)).filter(([, count]) => count !== 0), []);
+    assert.equal(await fixture(`SELECT count(*) FROM organizations WHERE id = '${org}'`), '0');
+    const response = await rawFetch(`/v1/organization-deletions/${requested.deletion.id}/receipt`, requested.receiptToken);
+    assert.equal(response.status, 200);
+    const final = await response.json();
+    assert.ok(verifyReceipt(final));
+    assert.equal(final.receipt.status, 'completed');
+    assert.deepEqual(final.receipt.verification, { method: 'per_table_zero_count', tablesChecked: (await tenantTables()).length, remainingRows: 0 });
+    const receiptRows = Object.fromEntries(final.receipt.tables.map(({ table, rows }) => [table, rows]));
+    for (const table of ['billing_invoices', 'billing_usage_snapshots', 'billing_seat_days', 'billing_quotes', 'billing_subscriptions',
+      'enrollment_keys', 'enrollment_key_redemptions']) assert.equal(receiptRows[table], before[table], table);
+    assert.ok(!JSON.stringify(final).includes('delete-me@example.test'));
+
+    // Document numbers are never reused: the global counters survive, and the deletion left the guard in place for everyone else.
+    const countersAfter = await counters();
+    for (const entry of countersBefore.split(',')) {
+      const [kind, sequence] = entry.split(':');
+      assert.ok(Number(countersAfter.split(',').find((item) => item.startsWith(`${kind}:`))?.split(':')[1]) >= Number(sequence), `${kind} counter`);
+    }
+    const survivor = await fixture(`SELECT organization_id FROM billing_invoices LIMIT 1`);
+    if (survivor) await assert.rejects(fixture(`DELETE FROM billing_invoices WHERE organization_id = '${survivor}'`), (error) => /cannot be deleted/.test(error.stderr));
+    await call('/v1/admin/billing', { token: billingDeleteAdmin, expect: 401 });
+  });
+
 });

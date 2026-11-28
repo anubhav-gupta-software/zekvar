@@ -20,6 +20,10 @@ internal sealed partial class ControlStore
             UNION ALL SELECT organization_id, health_protection->>'sealed',
                 jsonb_array_length(health_protection->'recordFormats') > 0 FROM policy_versions
             UNION ALL SELECT organization_id, snapshots->>'sealed', NOT (snapshots ? 'sealed') FROM policy_reviews
+            UNION ALL SELECT organization_id, CASE WHEN billing_email LIKE 'zk1:%' AND billing_email NOT LIKE '%@%' THEN billing_email END,
+                NOT (billing_email LIKE 'zk1:%' AND billing_email NOT LIKE '%@%') FROM billing_invoices
+            UNION ALL SELECT organization_id, CASE WHEN billing_email LIKE 'zk1:%' AND billing_email NOT LIKE '%@%' THEN billing_email END,
+                NOT (billing_email LIKE 'zk1:%' AND billing_email NOT LIKE '%@%') FROM billing_quotes
         )
         SELECT count(*) FILTER (WHERE sealed IS NOT NULL), count(*) FILTER (WHERE sealed LIKE $2),
             count(*) FILTER (WHERE sealed IS NULL AND plaintext)
@@ -43,7 +47,10 @@ internal sealed partial class ControlStore
                 SELECT classification_protection->>'sealed' AS value FROM policy_versions
                 UNION SELECT identifier_protection->>'sealed' FROM policy_versions
                 UNION SELECT health_protection->>'sealed' FROM policy_versions
-                UNION SELECT snapshots->>'sealed' FROM policy_reviews) sealed WHERE value IS NOT NULL
+                UNION SELECT snapshots->>'sealed' FROM policy_reviews
+                UNION SELECT billing_email FROM billing_invoices WHERE billing_email LIKE 'zk1:%' AND billing_email NOT LIKE '%@%'
+                UNION SELECT billing_email FROM billing_quotes WHERE billing_email LIKE 'zk1:%' AND billing_email NOT LIKE '%@%') sealed
+            WHERE value IS NOT NULL
             """, connection, transaction))
         await using (var keys = await check.ExecuteReaderAsync(ct))
         {
@@ -104,6 +111,36 @@ internal sealed partial class ControlStore
                 protection.SealObject(protection.OpenObject(snapshots, org, ReviewSnapshotField), org, ReviewSnapshotField, "template"));
             changed += await update.ExecuteNonQueryAsync(ct);
         }
+
+        // The billing contact email is sealed on immutable invoices and on quotes. The invoice trigger allows this one column to change
+        // only while zekvar.billing_reseal is on for this transaction, and the comparison of every other column still applies.
+        await using (var permit = new NpgsqlCommand("SELECT set_config('zekvar.billing_reseal', 'on', true)", connection, transaction))
+            await permit.ExecuteNonQueryAsync(ct);
+        foreach (var table in new[] { "billing_invoices", "billing_quotes" })
+        {
+            var emails = new List<(Guid Org, Guid Id, string Email)>();
+            await using (var select = new NpgsqlCommand($"""
+                SELECT organization_id, id, billing_email FROM {table}
+                WHERE NOT (billing_email LIKE 'zk1:%' AND billing_email NOT LIKE '%@%')
+                    OR (billing_email LIKE 'zk1:%' AND billing_email NOT LIKE '%@%' AND billing_email NOT LIKE $1) FOR UPDATE
+                """, connection, transaction))
+            {
+                select.Parameters.AddWithValue(active);
+                await using var rows = await select.ExecuteReaderAsync(ct);
+                while (await rows.ReadAsync(ct)) emails.Add((rows.GetGuid(0), rows.GetGuid(1), rows.GetString(2)));
+            }
+            foreach (var (org, id, email) in emails)
+            {
+                var plaintext = email.StartsWith("zk1:", StringComparison.Ordinal) && !email.Contains('@')
+                    ? protection.Open(email, org, BillingEmailField) : email;
+                await using var update = new NpgsqlCommand($"UPDATE {table} SET billing_email = $3 WHERE organization_id = $1 AND id = $2",
+                    connection, transaction);
+                AddParameters(update, org, id, protection.Seal(plaintext, org, BillingEmailField));
+                changed += await update.ExecuteNonQueryAsync(ct);
+            }
+        }
+        await using (var revoke = new NpgsqlCommand("SELECT set_config('zekvar.billing_reseal', 'off', true)", connection, transaction))
+            await revoke.ExecuteNonQueryAsync(ct);
         return changed;
     }
 }
