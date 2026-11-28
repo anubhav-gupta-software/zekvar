@@ -633,12 +633,14 @@ admin.MapGet("/retention", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.GetRetention(Identity(http).OrganizationId, ct)));
 admin.MapPost("/retention", async (RetentionPolicy policy, HttpContext http, CancellationToken ct) =>
 {
+    if (Identity(http).Role != AccessRoles.Owner) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (!policy.IsValid()) return Results.BadRequest(new { error = "Choose retention windows from 1 to 3650 days or no expiry." });
     await store.SetRetention(Identity(http), policy, ct);
     return Results.NoContent();
 });
 admin.MapPost("/retention/cleanup", async (HttpContext http, CancellationToken ct) =>
-    Results.Ok(await store.CleanupRetention(Identity(http).OrganizationId, scheduled: false, ct, Identity(http).Access?.Id)));
+    Identity(http).Role != AccessRoles.Owner ? Results.StatusCode(StatusCodes.Status403Forbidden)
+        : Results.Ok(await store.CleanupRetention(Identity(http).OrganizationId, scheduled: false, ct, Identity(http).Access?.Id)));
 admin.MapPost("/installations/{id:guid}/delete", async (Guid id, HttpContext http, CancellationToken ct) =>
 {
     var result = await store.DeleteInstallation(Identity(http), id, ct);

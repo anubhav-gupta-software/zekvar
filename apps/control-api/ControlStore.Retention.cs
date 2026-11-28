@@ -4,6 +4,10 @@ namespace Control;
 
 internal sealed partial class ControlStore
 {
+    // Evidence a SOC 2 reviewer relies on (access-log entries, attestations and drills, and the audit entries that record retention
+    // changes) is kept at least this long whatever window the tenant chooses. Only organization deletion removes it earlier.
+    public const int EvidenceFloorDays = 400;
+
     public async Task<RetentionPolicy> GetRetention(Guid organizationId, CancellationToken ct)
     {
         await using var command = Command("""
@@ -57,9 +61,12 @@ internal sealed partial class ControlStore
                         AND o.observed_at < r.observation_cutoff)
                OR EXISTS (SELECT 1 FROM saas_app_observations s WHERE s.organization_id = r.organization_id
                         AND s.first_seen_day < (r.observation_cutoff AT TIME ZONE 'UTC')::date)
-               OR EXISTS (SELECT 1 FROM control_audit a WHERE a.organization_id = r.organization_id AND a.occurred_at < r.audit_cutoff)
-               OR EXISTS (SELECT 1 FROM control_access_log l WHERE l.organization_id = r.organization_id AND l.occurred_at < r.audit_cutoff)
-               OR EXISTS (SELECT 1 FROM control_attestations t WHERE t.organization_id = r.organization_id AND t.occurred_at < r.audit_cutoff)
+               OR EXISTS (SELECT 1 FROM control_audit a WHERE a.organization_id = r.organization_id AND a.occurred_at < r.audit_cutoff
+                        AND (a.action <> 'retention_changed' OR a.occurred_at < now() - interval '{EvidenceFloorDays} days'))
+               OR EXISTS (SELECT 1 FROM control_access_log l WHERE l.organization_id = r.organization_id
+                        AND l.occurred_at < LEAST(r.audit_cutoff, now() - interval '{EvidenceFloorDays} days'))
+               OR EXISTS (SELECT 1 FROM control_attestations t WHERE t.organization_id = r.organization_id
+                        AND t.occurred_at < LEAST(r.audit_cutoff, now() - interval '{EvidenceFloorDays} days'))
                OR EXISTS (SELECT 1 FROM incident_cases c WHERE c.organization_id = r.organization_id
                         AND c.status = 'resolved' AND c.updated_at < r.audit_cutoff))
             UNION
@@ -116,16 +123,17 @@ internal sealed partial class ControlStore
             ), removed_audit AS (
                 DELETE FROM control_audit WHERE id IN (
                     SELECT a.id FROM control_audit a, cutoff c WHERE a.organization_id = $1 AND a.occurred_at < c.audit_cutoff
+                    AND (a.action <> 'retention_changed' OR a.occurred_at < now() - interval '{{EvidenceFloorDays}} days')
                     ORDER BY a.occurred_at LIMIT $2 FOR UPDATE OF a SKIP LOCKED
                 ) RETURNING 1
             ), removed_access_log AS (
                 DELETE FROM control_access_log WHERE organization_id = $1 AND id IN (
-                    SELECT l.id FROM control_access_log l, cutoff c WHERE l.organization_id = $1 AND l.occurred_at < c.audit_cutoff
+                    SELECT l.id FROM control_access_log l, cutoff c WHERE l.organization_id = $1 AND l.occurred_at < LEAST(c.audit_cutoff, now() - interval '{{EvidenceFloorDays}} days')
                     ORDER BY l.occurred_at LIMIT $2 FOR UPDATE OF l SKIP LOCKED
                 ) RETURNING 1
             ), removed_attestations AS (
                 DELETE FROM control_attestations WHERE organization_id = $1 AND id IN (
-                    SELECT t.id FROM control_attestations t, cutoff c WHERE t.organization_id = $1 AND t.occurred_at < c.audit_cutoff
+                    SELECT t.id FROM control_attestations t, cutoff c WHERE t.organization_id = $1 AND t.occurred_at < LEAST(c.audit_cutoff, now() - interval '{{EvidenceFloorDays}} days')
                     ORDER BY t.occurred_at LIMIT $2 FOR UPDATE OF t SKIP LOCKED
                 ) RETURNING 1
             ), removed_cases AS (

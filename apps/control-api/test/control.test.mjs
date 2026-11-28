@@ -70,6 +70,7 @@ const billingStripeAdmin = randomBytes(32).toString('hex');
 const billingDeleteAdmin = randomBytes(32).toString('hex');
 const billingEmailAdmin = randomBytes(32).toString('hex');
 const billingOperator = randomBytes(32).toString('hex');
+const floorAdmin = randomBytes(32).toString('hex');
 // Credit notes and payments are issuer actions on the operator route; the billed owner has no access to them.
 const operatorBilling = (slug, path, body, { token = billingOperator, expect = 200 } = {}) =>
   call(`/v1/operator/billing/organizations/${slug}${path}`, { token, method: 'POST', body, expect });
@@ -412,6 +413,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__50__AdminToken: billingDeleteAdmin,
       Control__Organizations__51__Slug: `billing-email-${suffix}`,
       Control__Organizations__51__AdminToken: billingEmailAdmin,
+      Control__Organizations__52__Slug: `evidence-floor-${suffix}`,
+      Control__Organizations__52__AdminToken: floorAdmin,
       ...configEnv('Control__Billing', billingConfig),
       Control__Organizations__35__Slug: `logs-${suffix}`,
       Control__Organizations__35__AdminToken: logsAdmin,
@@ -1545,16 +1548,18 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await change('ai-apps/gemini/classification', { status: classification }, 204);
     await change(`installations/${enrolled.installationId}/revoke`, undefined, 204);
     const retention = await admin('retention');
-    await change('retention', { ...retention, auditDays: 60 }, 204);
+    // Retention is an owner decision: a named administrator can read it but not change it or run cleanup.
+    await change('retention', { ...retention, auditDays: 60 }, 403);
+    await admin('retention', { token: first, method: 'POST', body: { ...retention, auditDays: 60 }, expect: 204 });
     const actions = ['app_classified', 'browser_revoked', 'grant_issued', 'policy_group_assigned',
-      'policy_group_created', 'policy_published', 'policy_published', 'policy_restored', 'retention_changed'];
+      'policy_group_created', 'policy_published', 'policy_published', 'policy_restored'];
     if (postgres) {
       await retentionFixture(`
         INSERT INTO control_audit (organization_id, occurred_at, action)
         SELECT id, now() - interval '61 days', 'grant_issued' FROM organizations WHERE slug = 'first-${suffix}'
       `);
-      assert.ok((await change('retention/cleanup')).auditEntries >= 1);
-      actions.push('retention_cleanup');
+      await change('retention/cleanup', undefined, 403);
+      assert.ok((await admin('retention/cleanup', { token: first, method: 'POST' })).auditEntries >= 1);
     }
     const authorized = await audit({ token: reviewer.token });
     const actorRows = authorized.entries.filter(({ actorAccess }) => actorAccess?.id === operator.access.id);
@@ -7008,6 +7013,49 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     }
   });
 
+  await t.test('keeps SOC 2 evidence for 400 days whatever window is chosen, and only the owner changes retention or runs cleanup', {
+    skip: !postgres && 'Requires the disposable PostgreSQL container to age rows.',
+  }, async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: floorAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const window = { securityEventDays: 30, aiObservationDays: 30, auditDays: 1 };
+    const org = `(SELECT id FROM organizations WHERE slug = 'evidence-floor-${suffix}')`;
+    const administrator = await post('access', { name: 'Floor administrator', role: 'administrator', hours: 1 });
+    const auditor = await post('access', { name: 'Floor auditor', role: 'auditor', hours: 1 });
+    for (const delegated of [administrator, auditor]) {
+      await post('retention', window, { token: delegated.token, expect: 403 });
+      await post('retention/cleanup', undefined, { token: delegated.token, expect: 403 });
+    }
+    assert.deepEqual(await admin('retention', { token: administrator.token }), { securityEventDays: null, aiObservationDays: null, auditDays: null });
+    await post('retention', window, { expect: 204 });
+    assert.deepEqual(await admin('retention'), window);
+    await post('enrollment-grants');
+    const marker = `evidence-floor-${suffix}`;
+    await retentionFixture(`
+      UPDATE control_audit SET occurred_at = now() - interval '30 days' WHERE organization_id = ${org} AND action IN ('retention_changed', 'grant_issued');
+      INSERT INTO control_audit (organization_id, action, retention, occurred_at) VALUES
+        (${org}, 'retention_changed', '{"securityEventDays":1,"aiObservationDays":1,"auditDays":1}', now() - interval '500 days');
+      INSERT INTO control_access_log (organization_id, occurred_at, last_at, action, resource, rollup_key)
+        SELECT ${org}, now() - age, now() - age, 'data_viewed', 'audit_log', '${marker}-' || age::text FROM unnest(ARRAY[interval '30 days', interval '500 days']) age;
+      INSERT INTO control_attestations (organization_id, id, occurred_at, kind, details)
+        SELECT ${org}, gen_random_uuid(), now() - age, 'access_review', '{}'::jsonb FROM unnest(ARRAY[interval '30 days', interval '500 days']) age;`);
+    const count = (table, where, age) => retentionFixture(`SELECT count(*) FROM ${table} WHERE organization_id = ${org} AND ${where}
+      AND occurred_at ${age} now() - interval '100 days'`);
+    assert.deepEqual(await Promise.all([count('control_access_log', `rollup_key LIKE '${marker}%'`, '<'), count('control_attestations', 'true', '<'),
+      count('control_audit', `action = 'retention_changed'`, '<')]), ['1', '1', '1']);
+
+    // A one-day audit window removes ordinary audit entries but never the evidence younger than 400 days.
+    const cleaned = await post('retention/cleanup');
+    assert.ok(cleaned.auditEntries >= 1);
+    assert.equal(await count('control_audit', `action = 'grant_issued'`, '>'), '0');
+    assert.deepEqual(await Promise.all([count('control_access_log', `rollup_key LIKE '${marker}%'`, '>'), count('control_attestations', 'true', '>'),
+      count('control_audit', `action = 'retention_changed'`, '>')]), ['1', '1', '1']);
+    // Evidence older than 400 days is released.
+    assert.deepEqual(await Promise.all([count('control_access_log', `rollup_key LIKE '${marker}%'`, '<'), count('control_attestations', 'true', '<'),
+      count('control_audit', `action = 'retention_changed'`, '<')]), ['0', '0', '0']);
+    assert.ok(cleaned.accessLogEntries >= 1);
+  });
+
   await t.test('audits sensitive reads and exports with counts only, rolls up views and feed reads, and respects retention', async () => {
     const admin = (path, options) => call(`/v1/admin/${path}`, { token: evidenceAdmin, ...options });
     const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
@@ -7093,7 +7141,8 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     for (const secret of [...events, term, browser.token, feedToken, auditor.token, 'fixture-secret']) assert.ok(!evidence.includes(secret), secret);
 
     if (postgres) {
-      await retentionFixture(`UPDATE control_access_log SET occurred_at = now() - interval '3 days'
+      // Access-log evidence is kept 400 days whatever the window, so age these past the floor.
+      await retentionFixture(`UPDATE control_access_log SET occurred_at = now() - interval '450 days'
         WHERE organization_id = (SELECT id FROM organizations WHERE slug = 'evidence-${suffix}') AND action = 'data_viewed'`);
       await post('retention', { securityEventDays: null, aiObservationDays: null, auditDays: 2 }, { expect: 204 });
       assert.deepEqual(await access('&action=data_viewed'), []);

@@ -35,7 +35,7 @@ Use `Authorization: Bearer …` with a Control token for `/v1/admin` routes and 
 
 ## Named Control access
 
-The configured organization token has the `owner` role. Owners can issue and revoke expiring tokens with an `administrator` or `auditor` role. Administrators can change policy, browser enrollment, app classification, and retention within their organization. Auditors can read and export the same retained records and use policy preview. Only owners can list, issue, or revoke delegated credentials.
+The configured organization token has the `owner` role. Owners can issue and revoke expiring tokens with an `administrator` or `auditor` role. Administrators can change policy, browser enrollment, and app classification within their organization. Only the owner changes retention windows or runs manual retention cleanup. Auditors can read and export the same retained records and use policy preview. Only owners can list, issue, or revoke delegated credentials.
 
 | Request | Result |
 | --- | --- |
@@ -290,7 +290,7 @@ Control records reads in a separate access log that `GET /v1/admin/audit` merges
 - `data_viewed`: report, extension inventory, and access review reads, summarized per actor, resource, and UTC hour with `requests` and `records`.
 - `event_feed_read`: SIEM feed reads per key and UTC hour, including rejected cursors. Entries carry `keyId` and `keyName`; the actor is `event_feed_key`.
 
-`readAccess` holds `resource`, `scope` (filters and identifiers, never record content), `records`, `requests`, `completed`, and `lastAt`. Access entries and attestations follow `auditDays` and are deleted by retention cleanup, which reports `accessLogEntries`.
+`readAccess` holds `resource`, `scope` (filters and identifiers, never record content), `records`, `requests`, `completed`, and `lastAt`. Access entries, attestations, and the audit entries that record retention changes follow `auditDays` but are never deleted before 400 days, whatever window the owner chooses, so a shorter window cannot erase review evidence. Retention cleanup reports `accessLogEntries`. Organization deletion still removes them.
 
 ## Compliance evidence
 
