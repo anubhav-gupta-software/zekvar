@@ -434,7 +434,9 @@ admin.MapGet("/events", async (string? appId, string? decision, DateTimeOffset? 
     if (!filters.ValidTriage() || RepeatedTriageFilters(http.Request.Query))
         return Results.BadRequest(new { error = "Choose valid event triage filters." });
     http.Response.Headers["X-Zekvar-Event-Triage"] = "1";
-    return Results.Ok((await store.EventHistory(Identity(http).OrganizationId, filters, null, ct)).Entries);
+    var latest = (await store.EventHistory(Identity(http).OrganizationId, filters, null, ct)).Entries;
+    await RecordRead(http, "security_events", new { view = "events" }, latest.Count, ct);
+    return Results.Ok(latest);
 });
 admin.MapGet("/events/history", async ([AsParameters] EventFilters filters, DateTimeOffset? beforeAt,
     Guid? beforeEventId, Guid? beforeInstallationId, HttpContext http, CancellationToken ct) =>
@@ -447,7 +449,9 @@ admin.MapGet("/events/history", async ([AsParameters] EventFilters filters, Date
         ? new EventCursor(at, id, installationId) : null;
     http.Response.Headers["X-Zekvar-Event-Rollout"] = "1";
     http.Response.Headers["X-Zekvar-Event-Triage"] = "1";
-    return Results.Ok(await store.EventHistory(Identity(http).OrganizationId, filters, cursor, ct));
+    var page = await store.EventHistory(Identity(http).OrganizationId, filters, cursor, ct);
+    await RecordRead(http, "security_events", new { view = "history" }, page.Entries.Count, ct);
+    return Results.Ok(page);
 });
 admin.MapGet("/events/export", async ([AsParameters] EventFilters filters, HttpContext http, CancellationToken ct) =>
 {
@@ -465,8 +469,11 @@ admin.MapGet("/events/export", async ([AsParameters] EventFilters filters, HttpC
 admin.MapGet("/events/triage-assignees", async (HttpContext http, CancellationToken ct) =>
     Results.Ok(await store.EventTriageAssignees(Identity(http).OrganizationId, ct)));
 admin.MapGet("/events/{installationId:guid}/{eventId:guid}", async (Guid installationId, Guid eventId, HttpContext http, CancellationToken ct) =>
-    await store.EventDetail(Identity(http).OrganizationId, installationId, eventId, ct) is { } detail
-        ? Results.Ok(detail) : Results.NotFound());
+{
+    if (await store.EventDetail(Identity(http).OrganizationId, installationId, eventId, ct) is not { } detail) return Results.NotFound();
+    await RecordRead(http, "security_events", new { view = "event" }, 1, ct);
+    return Results.Ok(detail);
+});
 admin.MapPost("/events/{installationId:guid}/{eventId:guid}/triage",
     async (Guid installationId, Guid eventId, SetEventTriage request, HttpContext http, CancellationToken ct) =>
 {
@@ -490,8 +497,11 @@ cases.MapGet("", async (string? status, bool? openOnly, DateTimeOffset? beforeAt
     return Results.Ok(await store.IncidentCases(Identity(http).OrganizationId, status, openOnly == true, cursor, ct));
 });
 cases.MapGet("/{id:guid}", async (Guid id, HttpContext http, CancellationToken ct) =>
-    await store.IncidentCaseDetail(Identity(http).OrganizationId, id, ct) is { } detail
-        ? Results.Ok(detail) : Results.NotFound());
+{
+    if (await store.IncidentCaseDetail(Identity(http).OrganizationId, id, ct) is not { } detail) return Results.NotFound();
+    await RecordRead(http, "incident_case", new { view = "case" }, 1, ct);
+    return Results.Ok(detail);
+});
 cases.MapGet("/{id:guid}/export", async (Guid id, HttpContext http, CancellationToken ct) =>
 {
     var identity = Identity(http);

@@ -71,6 +71,7 @@ const billingDeleteAdmin = randomBytes(32).toString('hex');
 const billingEmailAdmin = randomBytes(32).toString('hex');
 const billingOperator = randomBytes(32).toString('hex');
 const floorAdmin = randomBytes(32).toString('hex');
+const traceAdmin = randomBytes(32).toString('hex');
 // Credit notes and payments are issuer actions on the operator route; the billed owner has no access to them.
 const operatorBilling = (slug, path, body, { token = billingOperator, expect = 200 } = {}) =>
   call(`/v1/operator/billing/organizations/${slug}${path}`, { token, method: 'POST', body, expect });
@@ -415,6 +416,8 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__51__AdminToken: billingEmailAdmin,
       Control__Organizations__52__Slug: `evidence-floor-${suffix}`,
       Control__Organizations__52__AdminToken: floorAdmin,
+      Control__Organizations__53__Slug: `access-trace-${suffix}`,
+      Control__Organizations__53__AdminToken: traceAdmin,
       ...configEnv('Control__Billing', billingConfig),
       Control__Organizations__35__Slug: `logs-${suffix}`,
       Control__Organizations__35__AdminToken: logsAdmin,
@@ -6457,6 +6460,77 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     return fetch(`${baseUrl}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(10_000) });
   }
 
+  await t.test('caps redemptions per key per day and keeps that cap when a key allows more', {
+    skip: !postgres && 'Requires the disposable PostgreSQL container to age redemptions.',
+  }, async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: floorAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const redeem = async (key) => {
+      const response = await fetch(`${baseUrl}/v1/enroll/key`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, nonce: randomBytes(32).toString('hex') }), signal: AbortSignal.timeout(10_000) });
+      return { status: response.status, body: await response.json(), retryAfter: response.headers.get('retry-after') };
+    };
+    await stop();
+    await start(3600, { Control__EnrollmentKeyDailyRedemptions: '3', Control__EnrollmentKeyAttemptsPerMinute: '500' });
+    try {
+      const key = await post('enrollment-keys', { requestId: randomUUID(), label: 'Daily cap key', days: 1, maxRedemptions: 50 });
+      for (let index = 0; index < 3; index++) assert.equal((await redeem(key.token)).status, 200);
+      const capped = await redeem(key.token);
+      assert.deepEqual([capped.status, capped.body, capped.retryAfter], [429, { code: 'enrollment_key_daily_limit' }, '3600']);
+      assert.equal((await admin('enrollment-keys')).find(({ id }) => id === key.key.id).redeemed, 3);
+      // Redemptions older than a day no longer count, so the key works again the next day.
+      await retentionFixture(`UPDATE enrollment_key_redemptions SET redeemed_at = now() - interval '25 hours' WHERE key_id = '${key.key.id}'`);
+      assert.equal((await redeem(key.token)).status, 200);
+      // The cap is per key: another key in the same organization is unaffected.
+      const other = await post('enrollment-keys', { requestId: randomUUID(), label: 'Other key', days: 1, maxRedemptions: 50 });
+      assert.equal((await redeem(other.token)).status, 200);
+    } finally {
+      await stop();
+      await start();
+    }
+    // With no override the cap is the smaller of the key's own limit and 1000, so a key limited to 2 stops at 2.
+    const small = await post('enrollment-keys', { requestId: randomUUID(), label: 'Small key', days: 1, maxRedemptions: 2 });
+    assert.deepEqual([(await redeem(small.token)).status, (await redeem(small.token)).status], [200, 200]);
+    assert.deepEqual((await redeem(small.token)).body, { code: 'enrollment_key_exhausted' });
+    assert.equal(await retentionFixture(`SELECT max_redemptions FROM enrollment_keys WHERE id = '${small.key.id}'`), '2');
+  });
+
+  await t.test('records event and case reads in the access log', async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: traceAdmin, ...options });
+    const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
+    const { grant } = await post('enrollment-grants');
+    const browser = await call('/v1/enroll', { method: 'POST', body: { grant } });
+    const { version } = await post('policies', { mode: 'block' });
+    const eventId = randomUUID();
+    await call('/v1/browser/events', { token: browser.token, method: 'POST', expect: 204,
+      body: { ...contract.event, eventId, timestamp: new Date().toISOString(), policyVersion: version, decision: 'block', appId: 'chatgpt' } });
+    const views = async () => (await admin('audit?category=access&action=data_viewed&limit=100')).entries
+      .filter(({ readAccess }) => ['security_events', 'incident_case'].includes(readAccess.resource));
+    assert.deepEqual(await views(), []);
+
+    await admin('events');
+    await admin('events/history');
+    assert.ok(await admin(`events/${browser.installationId}/${eventId}`));
+    await admin(`events/${browser.installationId}/${randomUUID()}`, { expect: 404 });
+    const caseId = randomUUID();
+    await post('cases', { requestId: caseId, category: 'other', installationId: browser.installationId, eventId });
+    const afterWrite = (await views()).filter(({ readAccess }) => readAccess.resource === 'incident_case');
+    await admin(`cases/${caseId}`);
+    const entries = await views();
+    const events = entries.find(({ readAccess }) => readAccess.resource === 'security_events').readAccess;
+    // Views roll up per actor, resource, and hour: three successful reads, and the missing event leaves no trace.
+    assert.equal(events.requests, 3);
+    assert.ok(events.records >= 3);
+    assert.equal(afterWrite.length, 0);
+    assert.equal(entries.find(({ readAccess }) => readAccess.resource === 'incident_case').readAccess.requests, 1);
+    assert.ok(!JSON.stringify(entries).includes(browser.token));
+    // An auditor's reads are recorded under that auditor, separately from the owner's.
+    const auditor = await post('access', { name: 'Trace auditor', role: 'auditor', hours: 1 });
+    await admin('events', { token: auditor.token });
+    const actors = new Set((await views()).filter(({ readAccess }) => readAccess.resource === 'security_events').map(({ actor, actorAccess }) => actorAccess?.id ?? actor));
+    assert.equal(actors.size, 2);
+  });
+
   await t.test('deletes only a revoked installation and its derived records and leaves a metadata-only tombstone', async () => {
     const admin = deletionAdmin(eraseAdmin);
     const post = deletionPost(eraseAdmin);
@@ -6737,8 +6811,14 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await call('/v1/integrations/events', { token: feed.token });
     await call('/v1/enroll', { method: 'POST', body: { grant } });
     await call('/v1/enroll/key', { method: 'POST', body: { key: enrollmentKey.token, nonce: keyNonce() } });
-    const exports = (await admin('audit?category=access&action=data_exported')).entries;
-    assert.ok(exports.some(({ readAccess }) => readAccess?.resource === 'organization_export' && readAccess.completed), 'The tenant export is recorded in the access log.');
+    // The export row is marked complete after the response body ends, so poll for it instead of reading once.
+    let recorded = false;
+    for (let attempt = 0; attempt < 50 && !recorded; attempt++) {
+      const exports = (await admin('audit?category=access&action=data_exported')).entries;
+      recorded = exports.some(({ readAccess }) => readAccess?.resource === 'organization_export' && readAccess.completed);
+      if (!recorded) await delay(100);
+    }
+    assert.ok(recorded, 'The tenant export is recorded in the access log.');
     assert.equal((await admin('organization/deletion')).deletion.status, 'cancelled');
     assert.equal((await rawFetch(`/v1/organization-deletions/${requested.deletion.id}/receipt`, requested.receiptToken)).status, 401);
     const actions = (await admin('audit?limit=1000')).entries.map(({ action }) => action);
