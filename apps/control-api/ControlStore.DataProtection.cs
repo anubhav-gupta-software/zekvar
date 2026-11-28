@@ -20,10 +20,10 @@ internal sealed partial class ControlStore
             UNION ALL SELECT organization_id, health_protection->>'sealed',
                 jsonb_array_length(health_protection->'recordFormats') > 0 FROM policy_versions
             UNION ALL SELECT organization_id, snapshots->>'sealed', NOT (snapshots ? 'sealed') FROM policy_reviews
-            UNION ALL SELECT organization_id, CASE WHEN billing_email LIKE 'zk1:%' AND billing_email NOT LIKE '%@%' THEN billing_email END,
-                NOT (billing_email LIKE 'zk1:%' AND billing_email NOT LIKE '%@%') FROM billing_invoices
-            UNION ALL SELECT organization_id, CASE WHEN billing_email LIKE 'zk1:%' AND billing_email NOT LIKE '%@%' THEN billing_email END,
-                NOT (billing_email LIKE 'zk1:%' AND billing_email NOT LIKE '%@%') FROM billing_quotes
+            UNION ALL SELECT organization_id, CASE WHEN billing_email ~ '^zk[12]:' AND billing_email NOT LIKE '%@%' THEN billing_email END,
+                NOT (billing_email ~ '^zk[12]:' AND billing_email NOT LIKE '%@%') FROM billing_invoices
+            UNION ALL SELECT organization_id, CASE WHEN billing_email ~ '^zk[12]:' AND billing_email NOT LIKE '%@%' THEN billing_email END,
+                NOT (billing_email ~ '^zk[12]:' AND billing_email NOT LIKE '%@%') FROM billing_quotes
         )
         SELECT count(*) FILTER (WHERE sealed IS NOT NULL), count(*) FILTER (WHERE sealed LIKE $2),
             count(*) FILTER (WHERE sealed IS NULL AND plaintext)
@@ -33,7 +33,7 @@ internal sealed partial class ControlStore
     public async Task<DataProtectionStatus> DataProtectionStatus(Guid? organizationId, CancellationToken ct)
     {
         await using var command = Command(SealedCounts, (object?)organizationId ?? DBNull.Value,
-            protection.ActiveKeyId is { } id ? $"zk1:{id}:%" : "zk1::%");
+            protection.ActiveKeyId is { } id ? $"zk2:{id}:%" : "zk2::%");
         await using var rows = await command.ExecuteReaderAsync(ct);
         await rows.ReadAsync(ct);
         return new(protection.Enabled, protection.ActiveKeyId, rows.GetInt64(0), rows.GetInt64(1), rows.GetInt64(2));
@@ -48,8 +48,8 @@ internal sealed partial class ControlStore
                 UNION SELECT identifier_protection->>'sealed' FROM policy_versions
                 UNION SELECT health_protection->>'sealed' FROM policy_versions
                 UNION SELECT snapshots->>'sealed' FROM policy_reviews
-                UNION SELECT billing_email FROM billing_invoices WHERE billing_email LIKE 'zk1:%' AND billing_email NOT LIKE '%@%'
-                UNION SELECT billing_email FROM billing_quotes WHERE billing_email LIKE 'zk1:%' AND billing_email NOT LIKE '%@%') sealed
+                UNION SELECT billing_email FROM billing_invoices WHERE billing_email ~ '^zk[12]:' AND billing_email NOT LIKE '%@%'
+                UNION SELECT billing_email FROM billing_quotes WHERE billing_email ~ '^zk[12]:' AND billing_email NOT LIKE '%@%') sealed
             WHERE value IS NOT NULL
             """, connection, transaction))
         await using (var keys = await check.ExecuteReaderAsync(ct))
@@ -62,7 +62,7 @@ internal sealed partial class ControlStore
         }
         if (!protection.Enabled) return 0;
 
-        var active = $"zk1:{protection.ActiveKeyId}:%";
+        var active = $"zk2:{protection.ActiveKeyId}:%";
         var changed = 0;
         var policies = new List<(Guid Org, int Version, string Classification, string Identifier, string Health)>();
         await using (var select = new NpgsqlCommand("""
@@ -82,14 +82,15 @@ internal sealed partial class ControlStore
         }
         foreach (var (org, version, classification, identifier, health) in policies)
         {
+            var row = version.ToString();
             await using var update = new NpgsqlCommand("""
                 UPDATE policy_versions SET classification_protection = $3::jsonb, identifier_protection = $4::jsonb, health_protection = $5::jsonb
                 WHERE organization_id = $1 AND version = $2
                 """, connection, transaction);
             AddParameters(update, org, version,
-                protection.SealMember(protection.OpenMember(classification, "terms", org, ClassificationField), "terms", org, ClassificationField),
-                protection.SealMember(protection.OpenMember(identifier, "formats", org, IdentifierField), "formats", org, IdentifierField),
-                protection.SealMember(protection.OpenMember(health, "recordFormats", org, HealthField), "recordFormats", org, HealthField));
+                protection.SealMember(protection.OpenMember(classification, "terms", org, ClassificationField, row, legacy: true), "terms", org, ClassificationField, row),
+                protection.SealMember(protection.OpenMember(identifier, "formats", org, IdentifierField, row, legacy: true), "formats", org, IdentifierField, row),
+                protection.SealMember(protection.OpenMember(health, "recordFormats", org, HealthField, row, legacy: true), "recordFormats", org, HealthField, row));
             changed += await update.ExecuteNonQueryAsync(ct);
         }
 
@@ -108,7 +109,8 @@ internal sealed partial class ControlStore
             await using var update = new NpgsqlCommand(
                 "UPDATE policy_reviews SET snapshots = $3::jsonb WHERE organization_id = $1 AND id = $2", connection, transaction);
             AddParameters(update, org, id,
-                protection.SealObject(protection.OpenObject(snapshots, org, ReviewSnapshotField), org, ReviewSnapshotField, "template"));
+                protection.SealObject(protection.OpenObject(snapshots, org, ReviewSnapshotField, id.ToString("D"), legacy: true), org, ReviewSnapshotField,
+                    id.ToString("D"), "template"));
             changed += await update.ExecuteNonQueryAsync(ct);
         }
 
@@ -121,8 +123,8 @@ internal sealed partial class ControlStore
             var emails = new List<(Guid Org, Guid Id, string Email)>();
             await using (var select = new NpgsqlCommand($"""
                 SELECT organization_id, id, billing_email FROM {table}
-                WHERE NOT (billing_email LIKE 'zk1:%' AND billing_email NOT LIKE '%@%')
-                    OR (billing_email LIKE 'zk1:%' AND billing_email NOT LIKE '%@%' AND billing_email NOT LIKE $1) FOR UPDATE
+                WHERE NOT (billing_email ~ '^zk[12]:' AND billing_email NOT LIKE '%@%')
+                    OR (billing_email ~ '^zk[12]:' AND billing_email NOT LIKE '%@%' AND billing_email NOT LIKE $1) FOR UPDATE
                 """, connection, transaction))
             {
                 select.Parameters.AddWithValue(active);
@@ -131,11 +133,10 @@ internal sealed partial class ControlStore
             }
             foreach (var (org, id, email) in emails)
             {
-                var plaintext = email.StartsWith("zk1:", StringComparison.Ordinal) && !email.Contains('@')
-                    ? protection.Open(email, org, BillingEmailField) : email;
+                var plaintext = IsSealedEmail(email) ? protection.Open(email, org, BillingEmailField, id.ToString("D"), legacy: true) : email;
                 await using var update = new NpgsqlCommand($"UPDATE {table} SET billing_email = $3 WHERE organization_id = $1 AND id = $2",
                     connection, transaction);
-                AddParameters(update, org, id, protection.Seal(plaintext, org, BillingEmailField));
+                AddParameters(update, org, id, protection.Seal(plaintext, org, BillingEmailField, id.ToString("D")));
                 changed += await update.ExecuteNonQueryAsync(ct);
             }
         }

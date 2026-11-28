@@ -92,7 +92,7 @@ internal sealed partial class ControlStore
         AddParameters(insert, id, org, identity.Access!.Id, operation, (object?)groupId ?? DBNull.Value,
             (object?)sourceGroupId ?? DBNull.Value, (object?)sourceVersion ?? DBNull.Value, before.Version,
             protection.SealObject(JsonSerializer.Serialize(new PolicySnapshots(before, candidate, templateOrigin, composerGate?.Apps),
-                JsonSerializerOptions.Web), org, ReviewSnapshotField, "template"));
+                JsonSerializerOptions.Web), org, ReviewSnapshotField, id.ToString("D"), "template"));
         await insert.ExecuteNonQueryAsync(ct);
         await AuditPolicyReview(transaction, identity, "policy_review_requested",
             new(id, operation, "pending", groupId, before.Version, sourceVersion), ct);
@@ -324,6 +324,14 @@ internal sealed partial class ControlStore
         var content = policy.EffectiveFileContentModes();
         var inspectChatgpt = content.Chatgpt != "off";
         var inspectGemini = content.Gemini != "off";
+        // The sealed policy columns are bound to their version, so read the version this statement will assign (the organization row lock
+        // taken here is held to commit, so the next statement assigns the same number).
+        int nextVersion;
+        await using (var peek = new NpgsqlCommand("SELECT policy_sequence + 1 FROM organizations WHERE id = $1 FOR UPDATE", transaction.Connection, transaction))
+        {
+            peek.Parameters.AddWithValue(identity.OrganizationId);
+            nextVersion = (int)(await peek.ExecuteScalarAsync(ct))!;
+        }
         await using var command = new NpgsqlCommand("""
             WITH next_version AS (
                 UPDATE organizations SET policy_sequence = policy_sequence + 1,
@@ -367,7 +375,7 @@ internal sealed partial class ControlStore
             JsonSerializer.Serialize(policy.ExtensionDeployment ?? ExtensionDeployment.Empty, JsonSerializerOptions.Web), policy.BlockedAiAppHosts ?? [],
             content.Chatgpt == "block", content.Gemini == "block",
             protection.SealMember(JsonSerializer.Serialize(policy.IdentifierProtection ?? IdentifierProtection.Disabled, JsonSerializerOptions.Web),
-                "formats", identity.OrganizationId, IdentifierField),
+                "formats", identity.OrganizationId, IdentifierField, nextVersion.ToString()),
             policy.PresetDiscoveryEnabled ?? false, policy.SsnMode ?? "off",
             JsonSerializer.Serialize(policy.BrowserHardening ?? BrowserHardening.Empty, JsonSerializerOptions.Web), policy.ClipboardMode ?? "off",
             policy.GithubTokenMode ?? "off", JsonSerializer.Serialize(policy.PromptAppModes ?? new(), JsonSerializerOptions.Web),
@@ -375,11 +383,11 @@ internal sealed partial class ControlStore
             policy.UploadModes.Claude ?? "off", policy.UploadTypes?.Claude ?? [], content.Claude ?? "off",
             policy.CloudCredentialMode ?? "off",
             protection.SealMember(JsonSerializer.Serialize(policy.ClassificationProtection ?? ClassificationProtection.Disabled, JsonSerializerOptions.Web),
-                "terms", identity.OrganizationId, ClassificationField),
+                "terms", identity.OrganizationId, ClassificationField, nextVersion.ToString()),
             rollout is null ? DBNull.Value : JsonSerializer.Serialize(rollout, JsonSerializerOptions.Web),
             JsonSerializer.Serialize(policy.AdapterControls ?? new(), JsonSerializerOptions.Web), policy.SaasDiscoveryEnabled ?? false,
             protection.SealMember(JsonSerializer.Serialize(policy.HealthProtection ?? HealthProtection.Disabled, JsonSerializerOptions.Web),
-                "recordFormats", identity.OrganizationId, HealthField));
+                "recordFormats", identity.OrganizationId, HealthField, nextVersion.ToString()));
         await using var rows = await command.ExecuteReaderAsync(ct);
         await rows.ReadAsync(ct);
         return policy with { Version = rows.GetInt32(0), PublishedAt = rows.GetDateTime(1), RestoredFrom = restoredFrom,
@@ -431,6 +439,6 @@ internal sealed partial class ControlStore
         rows.IsDBNull(7) ? null : rows.GetInt32(7), rows.GetDateTime(8), rows.GetDateTime(9),
         rows.IsDBNull(10) ? null : rows.GetDateTime(10), rows.IsDBNull(11) ? null : rows.GetInt32(11),
         ReadAccessIdentity(rows, 12)!, ReadAccessIdentity(rows, 15),
-        JsonSerializer.Deserialize<PolicySnapshots>(protection.OpenObject(rows.GetString(18), rows.GetGuid(19), ReviewSnapshotField),
+        JsonSerializer.Deserialize<PolicySnapshots>(protection.OpenObject(rows.GetString(18), rows.GetGuid(19), ReviewSnapshotField, rows.GetGuid(0).ToString("D")),
             JsonSerializerOptions.Web)!);
 }

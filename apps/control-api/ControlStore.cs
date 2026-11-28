@@ -884,7 +884,7 @@ internal sealed partial class ControlStore
         FileContentModes: new(FileContentMode(rows.GetBoolean(20), rows.GetBoolean(23)), FileContentMode(rows.GetBoolean(21), rows.GetBoolean(24)),
             ConfiguredUploadMode(rows.GetString(rows.GetOrdinal("claude_file_content_mode")))),
         IdentifierProtection: JsonSerializer.Deserialize<IdentifierProtection>(protection.OpenMember(rows.GetString(25), "formats",
-            rows.GetGuid(rows.GetOrdinal("organization_id")), IdentifierField), JsonSerializerOptions.Web),
+            rows.GetGuid(rows.GetOrdinal("organization_id")), IdentifierField, rows.GetInt32(0).ToString()), JsonSerializerOptions.Web),
         ExtensionDeployment: includeDeployment ? JsonSerializer.Deserialize<ExtensionDeployment>(rows.GetString(26), JsonSerializerOptions.Web) : null,
         PresetDiscoveryEnabled: rows.GetBoolean(rows.GetOrdinal("preset_discovery_enabled")), SsnMode: rows.GetString(rows.GetOrdinal("ssn_mode")),
         BrowserHardening: includeDeployment ? JsonSerializer.Deserialize<BrowserHardening>(rows.GetString(rows.GetOrdinal("browser_hardening")), JsonSerializerOptions.Web) : null,
@@ -893,11 +893,11 @@ internal sealed partial class ControlStore
         CloudCredentialMode: rows.GetString(rows.GetOrdinal("cloud_credential_mode")),
         ClassificationProtection: JsonSerializer.Deserialize<ClassificationProtection>(protection.OpenMember(
             rows.GetString(rows.GetOrdinal("classification_protection")), "terms", rows.GetGuid(rows.GetOrdinal("organization_id")),
-            ClassificationField), JsonSerializerOptions.Web),
+            ClassificationField, rows.GetInt32(0).ToString()), JsonSerializerOptions.Web),
         AdapterControls: JsonSerializer.Deserialize<AdapterControls>(rows.GetString(rows.GetOrdinal("adapter_controls")), JsonSerializerOptions.Web),
         SaasDiscoveryEnabled: rows.GetBoolean(rows.GetOrdinal("saas_discovery_enabled")),
         HealthProtection: JsonSerializer.Deserialize<HealthProtection>(protection.OpenMember(
-            rows.GetString(rows.GetOrdinal("health_protection")), "recordFormats", rows.GetGuid(rows.GetOrdinal("organization_id")), HealthField),
+            rows.GetString(rows.GetOrdinal("health_protection")), "recordFormats", rows.GetGuid(rows.GetOrdinal("organization_id")), HealthField, rows.GetInt32(0).ToString()),
             JsonSerializerOptions.Web));
 
     private static string FileContentMode(bool enabled, bool block) => block ? "block" : enabled ? "monitor" : "off";

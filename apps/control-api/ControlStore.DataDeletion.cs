@@ -483,13 +483,14 @@ internal sealed partial class ControlStore
         {
             var node = System.Text.Json.Nodes.JsonNode.Parse(row)!.AsObject();
             if (node["snapshots"] is { } snapshots)
-                node["snapshots"] = System.Text.Json.Nodes.JsonNode.Parse(protection.OpenObject(snapshots.ToJsonString(), organizationId, ReviewSnapshotField));
+                node["snapshots"] = System.Text.Json.Nodes.JsonNode.Parse(protection.OpenObject(snapshots.ToJsonString(), organizationId, ReviewSnapshotField, Guid.Parse(node["id"]!.GetValue<string>()).ToString("D")));
             return node.ToJsonString();
         },
         "billing_invoices" or "billing_quotes" => row =>
         {
             var node = System.Text.Json.Nodes.JsonNode.Parse(row)!.AsObject();
-            if (node["billing_email"]?.GetValue<string>() is { } email) node["billing_email"] = OpenBillingEmail(organizationId, email);
+            if (node["billing_email"]?.GetValue<string>() is { } email)
+                node["billing_email"] = OpenBillingEmail(organizationId, Guid.Parse(node["id"]!.GetValue<string>()), email);
             return node.ToJsonString();
         },
         _ => row => row,
@@ -498,9 +499,10 @@ internal sealed partial class ControlStore
     private string OpenSealedRow(string row, Guid organizationId, params (string Column, string Member, string Field)[] columns)
     {
         var node = System.Text.Json.Nodes.JsonNode.Parse(row)!.AsObject();
+        var version = node["version"]!.GetValue<int>().ToString();
         foreach (var (column, member, field) in columns)
             if (node[column] is { } value)
-                node[column] = System.Text.Json.Nodes.JsonNode.Parse(protection.OpenMember(value.ToJsonString(), member, organizationId, field));
+                node[column] = System.Text.Json.Nodes.JsonNode.Parse(protection.OpenMember(value.ToJsonString(), member, organizationId, field, version));
         return node.ToJsonString();
     }
 }

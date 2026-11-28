@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { createCipheriv, createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -7025,8 +7025,8 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const quote = (label) => post('/quotes', { requestId: randomUUID(), planId: 'bundle', term: 'monthly', committedSeats: 2,
       customerName: `Sealed Customer ${label} (synthetic)`, billingEmail: address(label) });
     const emails = (table) => inDatabase(`SELECT string_agg(billing_email, ',' ORDER BY billing_email) FROM ${table}`);
-    const sealedOn = (id) => inDatabase(`SELECT (SELECT count(*) FROM billing_invoices WHERE billing_email LIKE 'zk1:${id}:%')
-      + (SELECT count(*) FROM billing_quotes WHERE billing_email LIKE 'zk1:${id}:%')`);
+    const sealedOn = (id) => inDatabase(`SELECT (SELECT count(*) FROM billing_invoices WHERE billing_email LIKE 'zk2:${id}:%')
+      + (SELECT count(*) FROM billing_quotes WHERE billing_email LIKE 'zk2:${id}:%')`);
     const plaintext = () => inDatabase(`SELECT (SELECT count(*) FROM billing_invoices WHERE billing_email LIKE '%@%')
       + (SELECT count(*) FROM billing_quotes WHERE billing_email LIKE '%@%')`);
     const exportedEmails = async () => {
@@ -7064,6 +7064,16 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       const exported = await exportedEmails();
       assert.deepEqual(exported.invoices, [address('opening'), address('opening')]);
       assert.deepEqual(exported.quotes, [address('opening'), address('second')]);
+
+      // A sealed email is bound to its document: copying one document's email onto another document does not open.
+      const [firstQuote] = (await admin('')).quotes;
+      const swapped = (await admin('')).quotes.find(({ id }) => id !== firstQuote.id);
+      const quoteEmail = (id) => inDatabase(`SELECT billing_email FROM billing_quotes WHERE id = '${id}'`);
+      const kept = await quoteEmail(swapped.id);
+      await inDatabase(`UPDATE billing_quotes SET billing_email = '${await quoteEmail(firstQuote.id)}' WHERE id = '${swapped.id}'`);
+      await admin('', { expect: 500 });
+      await inDatabase(`UPDATE billing_quotes SET billing_email = '${kept}' WHERE id = '${swapped.id}'`);
+      assert.equal((await admin('')).quotes.length, 2);
 
       // Only the contact email may be re-sealed, and only inside a transaction that asks for it.
       const immutable = (error) => /issued billing documents are immutable/.test(error.stderr);
@@ -7369,7 +7379,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const onKey = (id) => `SELECT count(*) FROM (SELECT classification_protection->>'sealed' AS value FROM policy_versions
       UNION ALL SELECT identifier_protection->>'sealed' FROM policy_versions
       UNION ALL SELECT health_protection->>'sealed' FROM policy_versions UNION ALL SELECT snapshots->>'sealed' FROM policy_reviews) sealed
-      WHERE value LIKE 'zk1:${id}:%'`;
+      WHERE value LIKE 'zk2:${id}:%'`;
     const failsToStart = async (overrides, message) => {
       const child = spawn('dotnet', [app], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DOTNET_ENVIRONMENT: 'Development',
         ASPNETCORE_ENVIRONMENT: 'Development', Control__Port: port, Control__Organizations__0__Slug: `evidence-${suffix}`,
@@ -7402,7 +7412,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       assert.deepEqual(history[0].classificationProtection, { mode: 'block', terms: [term] });
       assert.deepEqual(history[0].identifierProtection, { mode: 'warn', formats: [{ prefix, digits: 6 }] });
       assert.deepEqual(history[0].healthProtection, { mode: 'monitor', recordFormats: [{ prefix: 'SYNMRN-', digits: 7 }] });
-      assert.match(await inDatabase(`SELECT health_protection->>'sealed' FROM policy_versions WHERE health_protection ? 'sealed' LIMIT 1`), /^zk1:k1:/);
+      assert.match(await inDatabase(`SELECT health_protection->>'sealed' FROM policy_versions WHERE health_protection ? 'sealed' LIMIT 1`), /^zk2:k1:/);
       const review = (await admin('policy-reviews')).entries.find(({ id }) => id === reviewId);
       assert.deepEqual(review.snapshots.candidate.classificationProtection.terms, [term, 'SYNTHETIC-SEALED-SECOND']);
       assert.equal(await retentionFixture(`SELECT count(*) FROM schema_migrations WHERE version = 59`), '1');
@@ -7412,6 +7422,39 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       assert.equal(await inDatabase(`SELECT classification_protection->>'mode' FROM policy_versions WHERE version = ${sealedVersion.version}
         AND organization_id = (SELECT id FROM organizations WHERE slug = 'evidence-${suffix}')`), 'monitor');
       assert.deepEqual((await admin('policies'))[0].classificationProtection.terms, ['SYNTHETIC-SEALED-NEW']);
+
+      // A sealed blob is bound to its row: moving one to another version of the same organization does not open.
+      const evidenceOrg = `(SELECT id FROM organizations WHERE slug = 'evidence-${suffix}')`;
+      const versions = (await admin('policies')).map(({ version }) => version);
+      const targetVersion = versions.find((version) => version !== sealedVersion.version);
+      const original = await inDatabase(`SELECT classification_protection::text FROM policy_versions WHERE organization_id = ${evidenceOrg} AND version = ${targetVersion}`);
+      assert.equal(await inDatabase(`UPDATE policy_versions target SET classification_protection = source.classification_protection
+        FROM policy_versions source WHERE source.organization_id = ${evidenceOrg} AND source.version = ${sealedVersion.version}
+          AND target.organization_id = ${evidenceOrg} AND target.version = ${targetVersion}`), '');
+      await admin('policies', { expect: 500 });
+      await inDatabase(`UPDATE policy_versions SET classification_protection = '${original}'::jsonb WHERE organization_id = ${evidenceOrg} AND version = ${targetVersion}`);
+      assert.deepEqual((await admin('policies'))[0].classificationProtection.terms, ['SYNTHETIC-SEALED-NEW']);
+      await stop();
+
+      // Values sealed before row binding (the zk1 envelope) are rewritten by the startup re-seal and are not readable until then.
+      const legacySeal = (value, keyHex, keyId, organization, field) => {
+        const nonce = randomBytes(12);
+        const cipher = createCipheriv('aes-256-gcm', Buffer.from(keyHex, 'hex'), nonce);
+        cipher.setAAD(Buffer.from(`zekvar-control/zk1/${keyId}/${organization}/${field}`));
+        const body = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+        return `zk1:${keyId}:${Buffer.concat([nonce, body, cipher.getAuthTag()]).toString('base64url')}`;
+      };
+      const organization = await inDatabase(`SELECT id FROM organizations WHERE slug = 'evidence-${suffix}'`);
+      const legacy = legacySeal(JSON.stringify(['SYNTHETIC-SEALED-NEW']), k1, 'k1', organization, 'policy_versions.classification_protection.terms');
+      await inDatabase(`UPDATE policy_versions SET classification_protection = jsonb_build_object('mode', 'monitor', 'terms', '[]'::jsonb, 'sealed', '${legacy}')
+        WHERE organization_id = '${organization}' AND version = ${sealedVersion.version}`);
+      assert.match(await inDatabase(`SELECT classification_protection->>'sealed' FROM policy_versions WHERE organization_id = '${organization}' AND version = ${sealedVersion.version}`), /^zk1:k1:/);
+      await start(3600, isolated(`k1=${k1}`));
+      assert.match(await inDatabase(`SELECT classification_protection->>'sealed' FROM policy_versions WHERE organization_id = '${organization}' AND version = ${sealedVersion.version}`), /^zk2:k1:/);
+      assert.deepEqual((await admin('policies'))[0].classificationProtection.terms, ['SYNTHETIC-SEALED-NEW']);
+      assert.equal(await inDatabase(`SELECT count(*) FROM (SELECT classification_protection->>'sealed' AS value FROM policy_versions
+        UNION ALL SELECT identifier_protection->>'sealed' FROM policy_versions UNION ALL SELECT health_protection->>'sealed' FROM policy_versions
+        UNION ALL SELECT snapshots->>'sealed' FROM policy_reviews) sealed WHERE value LIKE 'zk1:%'`), '0');
       await stop();
 
       // Rotation: the new first key re-seals every value, then the retired key can be removed.
