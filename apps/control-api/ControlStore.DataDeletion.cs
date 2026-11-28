@@ -413,7 +413,7 @@ internal sealed partial class ControlStore
     }
 
     // Streams every exportable tenant record from one snapshot. Rows are written as they are read, so memory stays bounded.
-    public async Task WriteOrganizationExport(RequestIdentity identity, Stream body, CancellationToken ct)
+    public async Task<long> WriteOrganizationExport(RequestIdentity identity, Stream body, CancellationToken ct)
     {
         await using (var audit = Command("""
             INSERT INTO control_audit (organization_id, action, data_deletion)
@@ -442,10 +442,12 @@ internal sealed partial class ControlStore
             await using var command = BrowserRead(snapshot, $"""
                 SELECT (to_jsonb(t) - $2::text[])::text FROM {table.Name} t WHERE {table.Scope}
                 """, identity.OrganizationId, table.Secrets ?? []);
+            // Sealed columns are exported readable for the owner, for portability; the data keys never leave Control.
+            var open = ExportOpener(table.Name, identity.OrganizationId);
             await using (var rows = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct))
                 while (await rows.ReadAsync(ct))
                 {
-                    json.WriteRawValue(rows.GetString(0));
+                    json.WriteRawValue(open(rows.GetString(0)));
                     if (++written % 200 == 0) await json.FlushAsync(ct);
                 }
             json.WriteEndArray();
@@ -459,5 +461,29 @@ internal sealed partial class ControlStore
         json.WriteEndObject();
         await json.FlushAsync(ct);
         await snapshot.CommitAsync(ct);
+        return counts.Sum(entry => entry.Item2);
+    }
+
+    private Func<string, string> ExportOpener(string table, Guid organizationId) => table switch
+    {
+        "policy_versions" => row => OpenSealedRow(row, organizationId, ("classification_protection", "terms", ClassificationField),
+            ("identifier_protection", "formats", IdentifierField), ("health_protection", "recordFormats", HealthField)),
+        "policy_reviews" => row =>
+        {
+            var node = System.Text.Json.Nodes.JsonNode.Parse(row)!.AsObject();
+            if (node["snapshots"] is { } snapshots)
+                node["snapshots"] = System.Text.Json.Nodes.JsonNode.Parse(protection.OpenObject(snapshots.ToJsonString(), organizationId, ReviewSnapshotField));
+            return node.ToJsonString();
+        },
+        _ => row => row,
+    };
+
+    private string OpenSealedRow(string row, Guid organizationId, params (string Column, string Member, string Field)[] columns)
+    {
+        var node = System.Text.Json.Nodes.JsonNode.Parse(row)!.AsObject();
+        foreach (var (column, member, field) in columns)
+            if (node[column] is { } value)
+                node[column] = System.Text.Json.Nodes.JsonNode.Parse(protection.OpenMember(value.ToJsonString(), member, organizationId, field));
+        return node.ToJsonString();
     }
 }

@@ -50,6 +50,8 @@ internal static class TenantTables
         new("incident_cases", ByOrganization, Export: true),
         new("composer_observations", ByOrganization, Export: true),
         new("saas_app_observations", ByOrganization, Export: true),
+        new("control_access_log", ByOrganization, Export: true),
+        new("control_attestations", ByOrganization, Export: true),
         new("enrollment_key_redemptions", ByOrganization, Export: true, Secrets: ["nonce_hash"]),
         new("ai_app_observations", ByOrganization, Export: true),
         new("extension_inventory_snapshots", ByOrganization, Export: true),

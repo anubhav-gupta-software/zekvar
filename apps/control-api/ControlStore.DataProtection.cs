@@ -8,6 +8,7 @@ internal sealed partial class ControlStore
 {
     private const string ClassificationField = "policy_versions.classification_protection.terms";
     private const string IdentifierField = "policy_versions.identifier_protection.formats";
+    private const string HealthField = "policy_versions.health_protection.recordFormats";
     private const string ReviewSnapshotField = "policy_reviews.snapshots";
 
     private const string SealedCounts = """
@@ -16,6 +17,8 @@ internal sealed partial class ControlStore
                 jsonb_array_length(classification_protection->'terms') > 0 AS plaintext FROM policy_versions
             UNION ALL SELECT organization_id, identifier_protection->>'sealed',
                 jsonb_array_length(identifier_protection->'formats') > 0 FROM policy_versions
+            UNION ALL SELECT organization_id, health_protection->>'sealed',
+                jsonb_array_length(health_protection->'recordFormats') > 0 FROM policy_versions
             UNION ALL SELECT organization_id, snapshots->>'sealed', NOT (snapshots ? 'sealed') FROM policy_reviews
         )
         SELECT count(*) FILTER (WHERE sealed IS NOT NULL), count(*) FILTER (WHERE sealed LIKE $2),
@@ -39,6 +42,7 @@ internal sealed partial class ControlStore
             SELECT DISTINCT split_part(value, ':', 2) FROM (
                 SELECT classification_protection->>'sealed' AS value FROM policy_versions
                 UNION SELECT identifier_protection->>'sealed' FROM policy_versions
+                UNION SELECT health_protection->>'sealed' FROM policy_versions
                 UNION SELECT snapshots->>'sealed' FROM policy_reviews) sealed WHERE value IS NOT NULL
             """, connection, transaction))
         await using (var keys = await check.ExecuteReaderAsync(ct))
@@ -53,29 +57,32 @@ internal sealed partial class ControlStore
 
         var active = $"zk1:{protection.ActiveKeyId}:%";
         var changed = 0;
-        var policies = new List<(Guid Org, int Version, string Classification, string Identifier)>();
+        var policies = new List<(Guid Org, int Version, string Classification, string Identifier, string Health)>();
         await using (var select = new NpgsqlCommand("""
-            SELECT organization_id, version, classification_protection::text, identifier_protection::text FROM policy_versions
+            SELECT organization_id, version, classification_protection::text, identifier_protection::text, health_protection::text FROM policy_versions
             WHERE (classification_protection ? 'sealed' AND classification_protection->>'sealed' NOT LIKE $1)
                 OR (NOT classification_protection ? 'sealed' AND jsonb_array_length(classification_protection->'terms') > 0)
                 OR (identifier_protection ? 'sealed' AND identifier_protection->>'sealed' NOT LIKE $1)
                 OR (NOT identifier_protection ? 'sealed' AND jsonb_array_length(identifier_protection->'formats') > 0)
+                OR (health_protection ? 'sealed' AND health_protection->>'sealed' NOT LIKE $1)
+                OR (NOT health_protection ? 'sealed' AND jsonb_array_length(health_protection->'recordFormats') > 0)
             FOR UPDATE
             """, connection, transaction))
         {
             select.Parameters.AddWithValue(active);
             await using var rows = await select.ExecuteReaderAsync(ct);
-            while (await rows.ReadAsync(ct)) policies.Add((rows.GetGuid(0), rows.GetInt32(1), rows.GetString(2), rows.GetString(3)));
+            while (await rows.ReadAsync(ct)) policies.Add((rows.GetGuid(0), rows.GetInt32(1), rows.GetString(2), rows.GetString(3), rows.GetString(4)));
         }
-        foreach (var (org, version, classification, identifier) in policies)
+        foreach (var (org, version, classification, identifier, health) in policies)
         {
             await using var update = new NpgsqlCommand("""
-                UPDATE policy_versions SET classification_protection = $3::jsonb, identifier_protection = $4::jsonb
+                UPDATE policy_versions SET classification_protection = $3::jsonb, identifier_protection = $4::jsonb, health_protection = $5::jsonb
                 WHERE organization_id = $1 AND version = $2
                 """, connection, transaction);
             AddParameters(update, org, version,
                 protection.SealMember(protection.OpenMember(classification, "terms", org, ClassificationField), "terms", org, ClassificationField),
-                protection.SealMember(protection.OpenMember(identifier, "formats", org, IdentifierField), "formats", org, IdentifierField));
+                protection.SealMember(protection.OpenMember(identifier, "formats", org, IdentifierField), "formats", org, IdentifierField),
+                protection.SealMember(protection.OpenMember(health, "recordFormats", org, HealthField), "recordFormats", org, HealthField));
             changed += await update.ExecuteNonQueryAsync(ct);
         }
 
