@@ -87,6 +87,9 @@ internal sealed partial class ControlStore
         var source = scheduled ? "scheduled" : "manual";
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
+        // Evidence rows are append-only except for this job, which has already applied the 400-day floor in every statement below.
+        await using (var purge = new NpgsqlCommand("SELECT set_config('zekvar.evidence_purge', 'on', true)", connection, transaction))
+            await purge.ExecuteNonQueryAsync(ct);
         // Serialize cleanup with changes to the window and other cleanup runs for the same organization.
         await using var gate = new NpgsqlCommand("SELECT organization_id FROM organization_retention WHERE organization_id = $1 FOR UPDATE", connection, transaction);
         gate.Parameters.AddWithValue(organizationId);

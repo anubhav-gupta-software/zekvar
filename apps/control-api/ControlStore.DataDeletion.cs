@@ -300,7 +300,8 @@ internal sealed partial class ControlStore
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
         // Issued billing documents and frozen usage snapshots refuse deletion unless this transaction is the offboarding job.
-        await using (var purge = BrowserRead(transaction, "SELECT set_config('zekvar.billing_purge', 'on', true)")) await purge.ExecuteNonQueryAsync(ct);
+        await using (var purge = BrowserRead(transaction, "SELECT set_config('zekvar.billing_purge', 'on', true), set_config('zekvar.evidence_purge', 'on', true)"))
+            await purge.ExecuteNonQueryAsync(ct);
         Guid organizationId;
         string status;
         Dictionary<string, long> deleted;

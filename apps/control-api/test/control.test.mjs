@@ -6544,6 +6544,45 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal(actors.size, 2);
   });
 
+  await t.test('rejects changes and deletions of SOC 2 evidence except rollup counters, export completion, and the retention and deletion jobs', {
+    skip: !postgres && 'Requires the disposable PostgreSQL container.',
+  }, async () => {
+    const admin = (path, options) => call(`/v1/admin/${path}`, { token: traceAdmin, ...options });
+    const org = `(SELECT id FROM organizations WHERE slug = 'access-trace-${suffix}')`;
+    await admin('events');
+    const attempt = (query, pattern) => assert.rejects(retentionFixture(query), (error) => pattern.test(error.stderr));
+    await retentionFixture(`INSERT INTO control_attestations (organization_id, id, kind, details)
+      VALUES (${org}, '00000000-0000-4000-8000-0000000000a1', 'access_review', '{"note":"synthetic"}')`);
+    const changed = /SOC 2 evidence cannot be changed/;
+    const removed = /SOC 2 evidence cannot be deleted/;
+
+    // Attestations never change and are never deleted by anything but the jobs.
+    await attempt(`UPDATE control_attestations SET details = '{}' WHERE id = '00000000-0000-4000-8000-0000000000a1'`, changed);
+    await attempt(`UPDATE control_attestations SET occurred_at = now() - interval '3 years' WHERE organization_id = ${org}`, changed);
+    await attempt(`DELETE FROM control_attestations WHERE organization_id = ${org}`, removed);
+
+    // Access-log rows keep their identity, actor, resource, scope, and time. Only the counters and export completion advance.
+    for (const assignment of ["actor_access_id = gen_random_uuid()", "resource = 'audit_log'", "scope = '{}'::jsonb", "action = 'data_exported', rollup_key = NULL",
+      "occurred_at = now() - interval '3 years'", "requests = requests - 1", "records = -0", "last_at = last_at - interval '1 day'"]) {
+      await attempt(`UPDATE control_access_log SET ${assignment} WHERE organization_id = ${org} AND resource = 'security_events'`, /cannot be changed|violates check|violates/);
+    }
+    assert.match(await retentionFixture(`UPDATE control_access_log SET requests = requests + 1, records = records + 1, last_at = last_at + interval '1 second'
+      WHERE organization_id = ${org} AND resource = 'security_events' RETURNING 1`), /^1(\n1)*$/);
+    await attempt(`DELETE FROM control_access_log WHERE organization_id = ${org}`, removed);
+    await attempt(`SELECT set_config('zekvar.evidence_purge', 'off', true); DELETE FROM control_access_log WHERE organization_id = ${org}`, removed);
+    // A finished export cannot be reopened.
+    await retentionFixture(`INSERT INTO control_access_log (organization_id, id, action, resource, completed) VALUES
+      (${org}, '00000000-0000-4000-8000-0000000000b1', 'data_exported', 'audit_log', true)`);
+    await attempt(`UPDATE control_access_log SET completed = false WHERE id = '00000000-0000-4000-8000-0000000000b1'`, changed);
+
+    // The jobs set the purge flag for their own transaction, so the same delete succeeds there.
+    assert.equal(await retentionFixture(`SELECT set_config('zekvar.evidence_purge', 'on', true); DELETE FROM control_attestations
+      WHERE id = '00000000-0000-4000-8000-0000000000a1' RETURNING 1`).then((out) => out.split('\n').at(-1)), '1');
+    // Reads and the events view still work, and the counters kept advancing through the API.
+    await admin('events');
+    assert.ok((await admin('audit?category=access&action=data_viewed')).entries.some(({ readAccess }) => readAccess.resource === 'security_events' && readAccess.requests >= 2));
+  });
+
   await t.test('deletes only a revoked installation and its derived records and leaves a metadata-only tombstone', async () => {
     const admin = deletionAdmin(eraseAdmin);
     const post = deletionPost(eraseAdmin);
@@ -7245,8 +7284,10 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
 
     if (postgres) {
       // Access-log evidence is kept 400 days whatever the window, so age these past the floor.
-      await retentionFixture(`UPDATE control_access_log SET occurred_at = now() - interval '450 days'
-        WHERE organization_id = (SELECT id FROM organizations WHERE slug = 'evidence-${suffix}') AND action = 'data_viewed'`);
+      await retentionFixture(`ALTER TABLE control_access_log DISABLE TRIGGER control_access_log_append_only;
+        UPDATE control_access_log SET occurred_at = now() - interval '450 days'
+        WHERE organization_id = (SELECT id FROM organizations WHERE slug = 'evidence-${suffix}') AND action = 'data_viewed';
+        ALTER TABLE control_access_log ENABLE TRIGGER control_access_log_append_only`);
       await post('retention', { securityEventDays: null, aiObservationDays: null, auditDays: 2 }, { expect: 204 });
       assert.deepEqual(await access('&action=data_viewed'), []);
       const cleaned = await post('retention/cleanup');
