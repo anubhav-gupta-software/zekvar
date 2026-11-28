@@ -162,6 +162,11 @@ test('the TLS pilot keeps administration private and enrolls Chrome on its confi
   assert.equal((await call(browserOrigin + '/v1/browser/policy', { headers: { Authorization: `Bearer ${owner}` } })).status, 401);
   assert.equal((await call(browserOrigin + '/v1/browser/prompt-exception-requests', { method: 'POST',
     headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401);
+  // Every browser write route the extension uses is proxied: an unauthenticated POST reaches Control and is refused there (401), not by the edge (404).
+  for (const path of ['heartbeat', 'events', 'ai-app-observations', 'saas-observations', 'extension-inventory', 'prompt-exception-requests']) {
+    assert.equal((await call(browserOrigin + `/v1/browser/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401, path);
+    assert.equal((await call(browserOrigin + `/v1/browser/${path}`)).status, 404, `${path} is write-only at the edge`);
+  }
   assert.equal((await call(browserOrigin + '/v1/enroll', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ grant: '0'.repeat(64) }) })).status, 401);
   assert.equal((await call(browserOrigin + '/v1/enroll/key')).status, 404);

@@ -67,7 +67,7 @@
 	}
 	@browserWrite {
 		method POST
-		path /v1/enroll /v1/enroll/key /v1/browser/heartbeat /v1/browser/events /v1/browser/ai-app-observations /v1/browser/extension-inventory /v1/browser/prompt-exception-requests
+		path /v1/enroll /v1/enroll/key /v1/browser/heartbeat /v1/browser/events /v1/browser/ai-app-observations /v1/browser/saas-observations /v1/browser/extension-inventory /v1/browser/prompt-exception-requests
 	}
 	handle @browserRead {
 		reverse_proxy 127.0.0.1:{$ZEKVAR_API_PORT:5187}
