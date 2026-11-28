@@ -119,10 +119,13 @@ test('creates, monitors, rotates, and revokes a device-manager enrollment key wi
     assert.notEqual(await row.locator('time').first().textContent(), 'Never');
     await row.getByRole('link', { name: 'Review 3 active browsers enrolled by Finance laptops' }).waitFor();
 
-    const watched = await admin('enrollment-keys', { requestId: crypto.randomUUID(), label: 'Unlimited lab key', groupId: null, days: 1, maxRedemptions: null });
+    // A key must name a limit: the API refuses an unlimited key. A key close to its limit is flagged for review.
+    await admin('enrollment-keys', { requestId: crypto.randomUUID(), label: 'Unlimited lab key', groupId: null, days: 1, maxRedemptions: null }, 400);
+    const watched = await admin('enrollment-keys', { requestId: crypto.randomUUID(), label: 'Nearly full lab key', groupId: null, days: 1, maxRedemptions: 5 });
+    for (let index = 0; index < 4; index++) assert.equal((await redeem(watched.token)).status, 200);
     await page.reload();
     const attention = page.getByRole('status').filter({ has: page.getByRole('heading', { name: 'Review key redemptions' }) });
-    await attention.getByText('No redemption limit', { exact: false }).waitFor();
+    await attention.getByText('1 enrollments left', { exact: false }).waitFor();
     await admin(`enrollment-keys/${watched.key.id}/revoke`, {}, 204);
   });
 

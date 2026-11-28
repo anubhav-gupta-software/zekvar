@@ -6211,7 +6211,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const post = (path, body, options) => admin(path, { method: 'POST', body, ...options });
     const nonce = () => randomBytes(32).toString('hex');
     const sha256 = (value) => createHash('sha256').update(value).digest('hex');
-    const create = (fields, options) => post('enrollment-keys', { requestId: randomUUID(), label: 'Device group key', days: 30, ...fields }, options);
+    const create = (fields, options) => post('enrollment-keys', { requestId: randomUUID(), label: 'Device group key', days: 30, maxRedemptions: 50, ...fields }, options);
     async function redeem(key, value = nonce()) {
       const response = await fetch(`${baseUrl}/v1/enroll/key`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key, nonce: value }), signal: AbortSignal.timeout(10_000) });
@@ -6234,7 +6234,9 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const groupPolicy = await post(`policy-groups/${group.id}/policies`, { mode: 'block' });
     for (const body of [{ label: 'x' }, { label: 'Valid', days: 31 }, { label: 'Valid', days: 0 }, { label: 'Valid', maxRedemptions: 0 },
       { label: 'Valid', maxRedemptions: 100_001 }, { label: 'Bad\nlabel' }, { requestId: '00000000-0000-0000-0000-000000000000' },
-      { label: 'Valid', groupId: '00000000-0000-0000-0000-000000000000' }, { label: 'Valid', scope: 'admin' }]) {
+      { label: 'Valid', groupId: '00000000-0000-0000-0000-000000000000' }, { label: 'Valid', scope: 'admin' },
+      // A key must name a ceiling: an unbounded shared key would let anyone who can read it mint installations.
+      { label: 'Valid', maxRedemptions: null }, { label: 'Valid', maxRedemptions: undefined }, { label: 'Valid', maxRedemptions: 1.5 }]) {
       await create(body, { expect: 400 });
     }
     assert.deepEqual(await create({ groupId: randomUUID() }, { expect: 404 }), { code: 'enrollment_key_group_unavailable' });
@@ -6411,7 +6413,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await foreign(`enrollment-keys/${delegated.key.id}/revoke`, { method: 'POST', expect: 404 });
     await foreign(`enrollment-keys/${delegated.key.id}/rotate`, { method: 'POST', body: { requestId: randomUUID(), days: 1 }, expect: 404 });
     await foreign(`installations/fleet?enrollmentKey=${issued.key.id}`, { expect: 404 });
-    await foreign('enrollment-keys', { method: 'POST', body: { requestId: randomUUID(), label: 'Foreign', days: 1, groupId: group.id }, expect: 404 });
+    await foreign('enrollment-keys', { method: 'POST', body: { requestId: randomUUID(), label: 'Foreign', days: 1, maxRedemptions: 5, groupId: group.id }, expect: 404 });
     const foreignIds = new Set((await foreign('installations')).map(({ installationId }) => installationId));
     assert.ok(enrolled.every(({ body }) => !foreignIds.has(body.installationId)));
     assert.equal((await keyRow(delegated.key.id)).status, 'active');
@@ -6737,7 +6739,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
   await t.test('erases a revoked installation created by an enrollment key together with its seat days, SaaS records, and redemption', async () => {
     const admin = deletionAdmin(eraseAdmin);
     const post = deletionPost(eraseAdmin);
-    const issued = await post('enrollment-keys', { requestId: randomUUID(), label: 'Erasure key', days: 1 });
+    const issued = await post('enrollment-keys', { requestId: randomUUID(), label: 'Erasure key', days: 1, maxRedemptions: 5 });
     const keyed = await call('/v1/enroll/key', { method: 'POST', body: { key: issued.token, nonce: randomBytes(32).toString('hex') } });
     await call('/v1/browser/policy', { token: keyed.token });
     if (postgres) await retentionFixture(`INSERT INTO saas_app_observations (organization_id, installation_id, app_id, first_seen_day, last_seen_day)
@@ -6761,7 +6763,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const auditor = await post('access', { name: 'Offboard auditor', role: 'auditor', hours: 1 });
     const feed = await post('access/event-feed', { requestId: randomUUID(), name: 'Offboard SIEM', days: 1 });
     const { grant } = await post('enrollment-grants');
-    const enrollmentKey = await post('enrollment-keys', { requestId: randomUUID(), label: 'Offboard key', days: 1 });
+    const enrollmentKey = await post('enrollment-keys', { requestId: randomUUID(), label: 'Offboard key', days: 1, maxRedemptions: 5 });
     const keyNonce = () => randomBytes(32).toString('hex');
     await call('/v1/integrations/events', { token: feed.token });
 
@@ -7550,18 +7552,20 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await awayFromUtcMidnight(120_000);
     // Seat metering: the period peak of daily counts of unrevoked browsers seen within seven days, frozen per UTC day.
     const browsers = [];
-    for (let index = 0; index < 4; index++) {
+    for (let index = 0; index < 5; index++) {
       const { grant } = await call('/v1/admin/enrollment-grants', { token: billingAdmin, method: 'POST' });
       browsers.push((await call('/v1/enroll', { method: 'POST', body: { grant } })).installationId);
     }
-    const [b1, b2, b3, b4] = browsers;
+    const [b1, b2, b3, b4, b5] = browsers;
     const subscription = accepted.subscription.id;
     await fixture(`
       UPDATE billing_subscriptions SET started_on = (now() AT TIME ZONE 'UTC')::date - 40 WHERE id = '${subscription}';
-      UPDATE installations SET enrolled_at = now() - interval '45 days' WHERE id IN ('${b1}', '${b2}', '${b3}', '${b4}');
+      -- b1 to b4 acknowledged a policy. b5 never did: enrolling and checking in alone does not make a billable seat.
+      UPDATE installations SET enrolled_at = now() - interval '45 days', applied_policy_version = 1 WHERE id IN ('${b1}', '${b2}', '${b3}', '${b4}');
+      UPDATE installations SET enrolled_at = now() - interval '45 days' WHERE id = '${b5}';
       INSERT INTO billing_seat_days (organization_id, usage_date, installation_id)
       SELECT i.organization_id, (now() AT TIME ZONE 'UTC')::date - d, i.id FROM installations i, generate_series(1, 40) d
-      WHERE i.id IN ('${b1}', '${b2}')
+      WHERE i.id IN ('${b1}', '${b2}', '${b5}')
       UNION ALL SELECT organization_id, (now() AT TIME ZONE 'UTC')::date - 30, id FROM installations WHERE id = '${b3}'
       UNION ALL SELECT organization_id, (now() AT TIME ZONE 'UTC')::date - d, id FROM installations, generate_series(20, 22) d WHERE id = '${b4}';
       UPDATE installations SET revoked_at = ((now() AT TIME ZONE 'UTC')::date - 20)::timestamp AT TIME ZONE 'UTC' + interval '12 hours'
@@ -7590,7 +7594,8 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const on = (offset) => usage.find(({ date }) => date === dayOffset(offset));
     assert.deepEqual([on(30).activeSeats, on(24).activeSeats, on(23).activeSeats, on(22).activeSeats, on(21).activeSeats, on(20).activeSeats],
       [3, 3, 2, 3, 3, 2]);
-    assert.equal(on(20).enrolledSeats, 3);
+    // b5 is enrolled and has seat days but never acknowledged a policy: it counts as enrolled, never as an active seat.
+    assert.equal(on(20).enrolledSeats, 4);
     assert.ok(usage.every(({ provisional }) => !provisional));
     await admin(`/usage?from=${today}&until=${dayOffset(1)}`, { expect: 400 });
 
@@ -7673,6 +7678,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     }
     await fixture(`
       UPDATE billing_subscriptions SET started_on = (now() AT TIME ZONE 'UTC')::date - 40 WHERE id = '${annualStart.subscription.id}';
+      UPDATE installations SET applied_policy_version = 1 WHERE id IN ('${annualBrowsers.join("', '")}');
       INSERT INTO billing_seat_days (organization_id, usage_date, installation_id)
       SELECT organization_id, (now() AT TIME ZONE 'UTC')::date - 35, id FROM installations WHERE id IN ('${annualBrowsers.join("', '")}');
     `);

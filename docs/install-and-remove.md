@@ -88,14 +88,16 @@ Enrollment ties each Chrome profile to your Control organization. Each profile g
 ### Enroll a device group with a key
 
 1. In Control, create the pilot's rollout group and publish its policy. Start in Monitor. See the [onboarding guide](onboarding.md).
-2. Open **Enrollment keys**. Create a key for the group with a label, a lifetime of up to 30 days, and a **Maximum browsers** value close to the number of profiles in the device group. Copy the key. Control shows it once.
+2. Open **Enrollment keys**. Create a key for the group with a label, a lifetime of up to 30 days, and a required **Maximum browsers** value close to the number of profiles in the device group (the form starts at 50). Copy the key. Control shows it once.
 3. Enter your extension ID, update URL, and Control origin, choose your device manager, and copy the generated policy. Push it to the device group alongside the force-install policy.
 4. Watch the key's redemption count, last redemption, and rejected attempts in **Enrollment keys**. Check **Browser health** for the group and its applied policy.
 5. Leave the key in place for devices that join later. Rotate before it expires: **Rotate a key** issues a replacement and keeps the old key valid for the overlap you choose. Push the new key, confirm enrollments, then revoke the old key. Already enrolled browsers are unaffected by rotation, expiry, or revocation of the key.
 
 The key can only enroll browsers. It cannot sign in to Control or call its APIs. Anyone who obtains it can enroll a browser into your organization until it expires, reaches its limit, or is revoked. Keep the limit tight, the lifetime short, and the scope to the intended group. If a key leaks, revoke it. Then open the key's **active** browsers link, which filters **Browser fleet** to the browsers that key enrolled, and revoke them in batches of up to 25. Push a fresh key to the legitimate devices. Their earlier installations were revoked, so they enroll again with the new key.
 
-A profile retries a redemption that failed to reach it with the same stored nonce, so it never takes two seats. Control limits redemption attempts per key per minute and the extension retries later.
+A profile retries a redemption that failed to reach it with the same stored nonce, so it never takes two seats. Control limits redemption attempts per key (60 a minute by default) and completed redemptions per key per day (the smaller of the key's limit and 1,000 unless the operator sets `Control__EnrollmentKeyDailyRedemptions`), and the extension retries later. A browser that enrolled but has never sent a heartbeat or acknowledged a policy is not billed as an active seat.
+
+**The key is visible in Chrome policy.** Chrome shows managed policy values, including the enrollment key, to anyone who opens `chrome://policy` on an enrolled profile, and this build does not mark the field sensitive because masking of extension policy values is not something Control has verified. The key is therefore a bounded credential, not a secret: its caps (a required limit, a per-minute and a per-day limit, a lifetime of at most 30 days) limit what a leaked key can do, and revoking it plus the browsers it enrolled is the response.
 
 ### Enroll individual profiles with grants
 

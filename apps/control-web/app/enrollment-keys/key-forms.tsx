@@ -32,7 +32,7 @@ export function CreateKeyForm({ groups, requestId }: { groups: PolicyGroup[]; re
         <input id="key-days" name="days" type="number" required min={1} max={maxKeyDays} defaultValue={14} />
       </div>
       <div className="grid gap-1"><label htmlFor="key-limit">Maximum browsers</label>
-        <input id="key-limit" name="maxRedemptions" type="number" min={1} max={maxKeyRedemptions} placeholder="No limit" />
+        <input id="key-limit" name="maxRedemptions" type="number" required min={1} max={maxKeyRedemptions} defaultValue={50} />
       </div>
       <button className="button primary" disabled={!ready || busy}>{busy ? 'Creating…' : 'Create enrollment key'}</button>
     </form>

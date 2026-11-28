@@ -42,6 +42,8 @@ internal sealed partial class ControlStore
         (SELECT count(DISTINCT s.installation_id)::integer FROM billing_seat_days s
          JOIN installations i ON i.organization_id = s.organization_id AND i.id = s.installation_id
          WHERE s.organization_id = $1 AND s.usage_date BETWEEN day - 6 AND day
+            -- A browser that never acknowledged a policy or sent a heartbeat is not an active seat, however it enrolled.
+            AND i.applied_policy_version IS NOT NULL
             AND (i.revoked_at IS NULL OR i.revoked_at >= (day + 1)::timestamp AT TIME ZONE 'UTC'))
         """;
     private const string EnrolledSeatsOn = """

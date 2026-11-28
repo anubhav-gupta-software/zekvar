@@ -5,7 +5,10 @@ namespace Control;
 internal sealed partial class ControlStore
 {
     public const int ActiveEnrollmentKeyLimit = 20;
-    public int EnrollmentKeyAttemptsPerMinute { get; init; } = 600;
+    public int EnrollmentKeyAttemptsPerMinute { get; init; } = 60;
+    // Redemptions one key may complete in any 24 hours. Unset means the smaller of the key's own limit and 1000.
+    public int? EnrollmentKeyDailyRedemptions { get; init; }
+    private const int DefaultEnrollmentKeyDailyRedemptions = 1000;
 
     private const string EnrollmentKeyColumns = """
         k.id, k.label, k.policy_group_id, g.name, k.created_at, k.expires_at, k.max_redemptions, k.redeemed,
@@ -200,7 +203,7 @@ internal sealed partial class ControlStore
         var nonceHash = Tokens.Hash(nonce);
         var token = Tokens.Generate();
         await using (var replay = BrowserRead(transaction, """
-            SELECT r.installation_id, i.revoked_at IS NOT NULL FROM enrollment_key_redemptions r
+            SELECT r.installation_id, i.revoked_at IS NOT NULL, i.last_seen_at <= i.enrolled_at FROM enrollment_key_redemptions r
             JOIN installations i ON i.organization_id = r.organization_id AND i.id = r.installation_id
             WHERE r.organization_id = $1 AND r.key_id = $2 AND r.nonce_hash = $3 FOR UPDATE OF i
             """, organizationId, keyId, nonceHash))
@@ -225,6 +228,11 @@ internal sealed partial class ControlStore
         }
 
         if (maxRedemptions is { } max && redeemed >= max) return await Reject("enrollment_key_exhausted");
+        var dailyCap = EnrollmentKeyDailyRedemptions ?? Math.Min(maxRedemptions ?? DefaultEnrollmentKeyDailyRedemptions, DefaultEnrollmentKeyDailyRedemptions);
+        await using (var recent = BrowserRead(transaction, """
+            SELECT count(*) FROM enrollment_key_redemptions WHERE organization_id = $1 AND key_id = $2 AND redeemed_at > now() - interval '24 hours'
+            """, organizationId, keyId))
+            if ((long)(await recent.ExecuteScalarAsync(ct))! >= dailyCap) return await Reject("enrollment_key_daily_limit", 3600);
         var installation = Guid.NewGuid();
         await using (var enroll = BrowserRead(transaction, """
             WITH enrolled AS (

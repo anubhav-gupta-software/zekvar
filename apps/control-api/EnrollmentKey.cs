@@ -11,6 +11,7 @@ internal static class EnrollmentKeyToken
         Tokens.IsValid(value[Prefix.Length..]);
 }
 
+// MaxRedemptions is required: a shared key without a ceiling would let anyone who reads it from chrome://policy mint installations.
 internal sealed record CreateEnrollmentKey(Guid RequestId, string? Label, Guid? GroupId, int Days, int? MaxRedemptions)
 {
     public const int MaxDays = 30;
@@ -20,7 +21,7 @@ internal sealed record CreateEnrollmentKey(Guid RequestId, string? Label, Guid? 
     {
         label = Label?.Trim();
         return RequestId != Guid.Empty && GroupId != Guid.Empty && label is { Length: >= 2 and <= 64 } && !label.Any(char.IsControl) &&
-            Days is >= 1 and <= MaxDays && MaxRedemptions is null or (>= 1 and <= RedemptionLimit);
+            Days is >= 1 and <= MaxDays && MaxRedemptions is >= 1 and <= RedemptionLimit;
     }
 }
 

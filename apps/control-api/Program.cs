@@ -23,7 +23,9 @@ if (sweepSeconds is < 1 or > 86400)
 var rolloutSeconds = builder.Configuration.GetValue("Control:RolloutEvaluationSeconds", 30);
 if (rolloutSeconds is < 1 or > 3600)
     throw new InvalidOperationException("Configure a rollout evaluation interval between 1 and 3600 seconds.");
-var keyAttempts = builder.Configuration.GetValue("Control:EnrollmentKeyAttemptsPerMinute", 600);
+var keyDaily = builder.Configuration.GetValue<int?>("Control:EnrollmentKeyDailyRedemptions");
+if (keyDaily is < 1 or > 100_000) throw new InvalidOperationException("Configure Control:EnrollmentKeyDailyRedemptions from 1 to 100000.");
+var keyAttempts = builder.Configuration.GetValue("Control:EnrollmentKeyAttemptsPerMinute", 60);
 if (keyAttempts is < 1 or > 100_000)
     throw new InvalidOperationException("Configure enrollment key attempts per minute between 1 and 100000.");
 var organizations = builder.Configuration.GetSection("Control:Organizations").Get<DemoOrganization[]>();
@@ -52,7 +54,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 builder.Services.AddSingleton(_ => new NpgsqlDataSourceBuilder(connectionString).EnableParameterLogging(false).Build());
 builder.Services.AddSingleton(alertWebhooks);
 builder.Services.AddSingleton(services => new ControlStore(services.GetRequiredService<NpgsqlDataSource>(), sso, alertWebhooks, dataProtection)
-    { RolloutInterval = TimeSpan.FromSeconds(rolloutSeconds), EnrollmentKeyAttemptsPerMinute = keyAttempts, Billing = billing, Collector = collector });
+    { RolloutInterval = TimeSpan.FromSeconds(rolloutSeconds), EnrollmentKeyAttemptsPerMinute = keyAttempts, EnrollmentKeyDailyRedemptions = keyDaily, Billing = billing, Collector = collector });
 if (billing.Enabled)
     builder.Services.AddHostedService<BillingWorker>(services => new(services.GetRequiredService<ControlStore>(), billing,
         services.GetRequiredService<ILogger<BillingWorker>>()));

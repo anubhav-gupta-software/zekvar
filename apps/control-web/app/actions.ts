@@ -234,11 +234,11 @@ export async function issueEnrollmentKey(_previous: Feedback, form: FormData): P
   const groupId = form.get('groupId');
   const limit = form.get('maxRedemptions');
   const days = readKeyDays(form);
-  const maxRedemptions = limit === '' || limit === null ? null : Number(limit);
+  const maxRedemptions = typeof limit === 'string' && limit.trim() !== '' ? Number(limit) : null;
   const name = typeof label === 'string' ? label.trim() : '';
   if (!isId(requestId) || (groupId !== '' && !isId(groupId)) || !days || name.length < 2 || name.length > 64 || /[\u0000-\u001f\u007f]/.test(name) ||
-      (maxRedemptions !== null && (!Number.isInteger(maxRedemptions) || maxRedemptions < 1 || maxRedemptions > 100_000))) {
-    return { error: 'Enter a label, a lifetime from 1 to 30 days, and an optional limit from 1 to 100,000 browsers.',
+      (maxRedemptions === null || !Number.isInteger(maxRedemptions) || maxRedemptions < 1 || maxRedemptions > 100_000)) {
+    return { error: 'Enter a label, a lifetime from 1 to 30 days, and a limit from 1 to 100,000 browsers.',
       enrollmentKeyRequestId: isId(requestId) ? requestId : randomUUID() };
   }
   return keyChange(requestId, (token) => controlApi.issueEnrollmentKey(token, { requestId, label: name, groupId: groupId || null, days, maxRedemptions }));
