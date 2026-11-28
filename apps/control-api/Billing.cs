@@ -31,6 +31,7 @@ internal sealed class ConfiguredBilling
     public string? PaymentInstructions { get; set; }
     public ConfiguredStripe? Stripe { get; set; }
     public int EvaluationSeconds { get; set; } = 300;
+    public string? OperatorToken { get; set; }
 }
 
 internal sealed class ConfiguredBillingPlan
@@ -84,6 +85,11 @@ internal sealed partial class BillingSettings
     public StripeSettings? Stripe { get; private init; }
     public string PriceBookVersion { get; private init; } = "";
     public TimeSpan EvaluationInterval { get; private init; } = TimeSpan.FromMinutes(5);
+    // SHA-256 of the operator credential. The issuer (the operator) alone issues credit notes and records payments; the billed owner never can.
+    public byte[]? OperatorTokenHash { get; private init; }
+
+    public bool OperatorAuthorized(string? presented) => OperatorTokenHash is { } expected && presented is { Length: > 0 and <= 256 } &&
+        CryptographicOperations.FixedTimeEquals(expected, SHA256.HashData(Encoding.UTF8.GetBytes(presented)));
 
     public BillingPlan? Plan(string? id) => Plans.FirstOrDefault(plan => plan.Id == id);
 
@@ -105,6 +111,7 @@ internal sealed partial class BillingSettings
         if (raw.PaymentTermsDays is < 1 or > 120 || raw.QuoteValidDays is < 1 or > 90) throw Invalid("PaymentTermsDays is 1 to 120 and QuoteValidDays is 1 to 90.");
         if (raw.TierMode is not ("volume" or "graduated")) throw Invalid("TierMode must be volume or graduated.");
         if (raw.EvaluationSeconds is < 1 or > 86400) throw Invalid("EvaluationSeconds must be 1 to 86400.");
+        if (raw.OperatorToken is not null && !Tokens.IsValid(raw.OperatorToken)) throw Invalid("OperatorToken must be 64 lowercase hexadecimal characters.");
         if (raw.Plans is not { Length: >= 1 and <= 10 }) throw Invalid("Configure 1 to 10 plans.");
         var plans = new List<BillingPlan>();
         foreach (var plan in raw.Plans)
@@ -151,6 +158,7 @@ internal sealed partial class BillingSettings
             QuoteValidDays = raw.QuoteValidDays, TierMode = raw.TierMode, Plans = plans, Provider = provider,
             PaymentInstructions = raw.PaymentInstructions?.Trim() ?? "", Stripe = stripe,
             EvaluationInterval = TimeSpan.FromSeconds(raw.EvaluationSeconds),
+            OperatorTokenHash = raw.OperatorToken is null ? null : SHA256.HashData(Encoding.UTF8.GetBytes(raw.OperatorToken)),
             PriceBookVersion = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(book)))[..16],
         };
     }

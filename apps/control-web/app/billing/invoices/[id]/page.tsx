@@ -1,10 +1,9 @@
-import { randomUUID } from 'node:crypto';
 import { notFound, redirect } from 'next/navigation';
 import { ApiError, controlApi } from '../../../../lib/api';
 import { canSeeBilling, lastDay, money, paymentLabels, percent, providerLabels, termLabels } from '../../../../lib/billing';
 import { isId, utc } from '../../../../lib/control';
 import { sessionToken } from '../../../../lib/session';
-import { issueBillingCreditNote, recordBillingPayment, retryBillingSubmission } from '../../../actions';
+import { retryBillingSubmission } from '../../../actions';
 import { MutationForm } from '../../../forms';
 import { Lines, Totals } from '../../lines';
 import { PrintButton } from './print-button';
@@ -85,27 +84,12 @@ export default async function InvoicePage({ params, searchParams }: {
       </div>
     </section>}
 
-    {owner && !credit && <section className="panel no-print" aria-labelledby="invoice-manage-heading">
-      <h2 id="invoice-manage-heading">Corrections and payment</h2>
-      <p className="muted">Issued invoices cannot be edited. Issue a credit note to correct one.</p>
-      {invoice.paymentStatus === 'open' && invoice.provider === 'manual' && <MutationForm action={recordBillingPayment} label="Record payment">
+    {owner && !credit && invoice.providerStatus === 'failed' && <section className="panel no-print" aria-labelledby="invoice-manage-heading">
+      <h2 id="invoice-manage-heading">Collection</h2>
+      <p className="muted">Credit notes and payments are recorded by the issuer, not from this dashboard. Contact your account representative to correct an invoice.</p>
+      <MutationForm action={retryBillingSubmission} label="Retry provider submission">
         <input type="hidden" name="id" value={invoice.id} />
-        <div className="grid gap-1"><label htmlFor="payment-reference">Bank transfer reference</label>
-          <input id="payment-reference" name="reference" required maxLength={80} /></div>
-      </MutationForm>}
-      {invoice.providerStatus === 'failed' && <MutationForm action={retryBillingSubmission} label="Retry provider submission">
-        <input type="hidden" name="id" value={invoice.id} />
-      </MutationForm>}
-      {invoice.total > invoice.creditedTotal && <MutationForm action={issueBillingCreditNote} label="Issue credit note" appearance="danger"
-        confirmation="Issue this credit note? Credit notes are numbered and cannot be deleted.">
-        <input type="hidden" name="id" value={invoice.id} />
-        <input type="hidden" name="requestId" value={randomUUID()} />
-        <input type="hidden" name="digits" value={invoice.minorUnitDigits} />
-        <div className="grid gap-1"><label htmlFor="credit-amount">Credit before tax ({invoice.currency})</label>
-          <input id="credit-amount" name="amount" inputMode="decimal" required pattern="\d+(\.\d+)?" /></div>
-        <div className="grid gap-1"><label htmlFor="credit-reason">Reason</label>
-          <input id="credit-reason" name="reason" required minLength={3} maxLength={200} /></div>
-      </MutationForm>}
+      </MutationForm>
     </section>}
   </main>;
 }

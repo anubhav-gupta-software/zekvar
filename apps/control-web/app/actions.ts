@@ -1365,37 +1365,6 @@ export async function withdrawBillingQuote(_previous: Feedback, form: FormData):
   });
 }
 
-export async function recordBillingPayment(_previous: Feedback, form: FormData): Promise<Feedback> {
-  const id = form.get('id');
-  const reference = form.get('reference');
-  if (!isId(id) || typeof reference !== 'string' || !reference.trim() || reference.trim().length > 80) {
-    return { error: billingErrors.invalid_payment_reference };
-  }
-  return billingChange(async (token) => {
-    const invoice = await controlApi.recordBillingPayment(token, id, reference.trim());
-    return { message: `Payment recorded for ${invoice.number}.` };
-  }, id);
-}
-
-// Converts a decimal amount in major units to integer minor units without floating-point arithmetic.
-function minorUnits(value: string, digits: number) {
-  const match = new RegExp(`^(\\d{1,13})(?:\\.(\\d{1,${Math.max(digits, 1)}}))?$`).exec(value.trim());
-  if (!match || (digits === 0 && match[2] !== undefined)) return undefined;
-  return Number(`${match[1]}${(match[2] ?? '').padEnd(digits, '0')}`);
-}
-
-export async function issueBillingCreditNote(_previous: Feedback, form: FormData): Promise<Feedback> {
-  const [id, requestId, amount, digits, reason] = ['id', 'requestId', 'amount', 'digits', 'reason'].map((name) => form.get(name));
-  const minor = typeof amount === 'string' && typeof digits === 'string' && /^[0-3]$/.test(digits) ? minorUnits(amount, Number(digits)) : undefined;
-  if (!isId(id) || !isId(requestId) || !minor || typeof reason !== 'string' || reason.trim().length < 3 || reason.trim().length > 200) {
-    return { error: billingErrors.invalid_credit_note };
-  }
-  return billingChange(async (token) => {
-    const note = await controlApi.issueBillingCreditNote(token, id, requestId, minor, reason.trim());
-    return { message: `Credit note ${note.number} issued.` };
-  }, id);
-}
-
 export async function retryBillingSubmission(_previous: Feedback, form: FormData): Promise<Feedback> {
   const id = form.get('id');
   if (!isId(id)) return { error: 'Choose an invoice.' };

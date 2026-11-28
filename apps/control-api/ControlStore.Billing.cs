@@ -277,7 +277,7 @@ internal sealed partial class ControlStore
             providerStatus))
             issuedAt = (DateTime)(await insert.ExecuteScalarAsync(ct))!;
         await Audit(transaction, organizationId, draft.ActorId, new(invoice ? "invoice_issued" : "credit_note_issued", draft.Automatic,
-            draft.Automatic ? "system" : "owner", InvoiceId: id, SubscriptionId: draft.SubscriptionId, Number: number, Total: total,
+            draft.Automatic ? "system" : draft.ActorId is null ? "operator" : "owner", InvoiceId: id, SubscriptionId: draft.SubscriptionId, Number: number, Total: total,
             Currency: draft.Currency), ct);
         return new(id, draft.Kind, number, draft.Reason, issuedAt, draft.PeriodStart, draft.PeriodEnd, draft.Currency, draft.Digits, total, 0,
             invoice ? "open" : "issued", providerStatus, draft.RelatedInvoiceId);
@@ -687,6 +687,14 @@ internal sealed partial class ControlStore
         return new(note);
     }
 
+    // The operator acts for an organization without holding one of its credentials. No access record is attached, so audit
+    // entries show the operator source and no actor.
+    public async Task<RequestIdentity?> OperatorIdentity(string slug, CancellationToken ct)
+    {
+        await using var command = Command("SELECT id FROM organizations WHERE slug = $1 AND NOT organization_offboarding(id)", slug);
+        return await command.ExecuteScalarAsync(ct) is Guid id ? new(id, null, slug, null) : null;
+    }
+
     public async Task<BillingResult<BillingInvoiceSummary>> RecordBillingPayment(RequestIdentity identity, Guid invoiceId, string reference,
         CancellationToken ct)
     {
@@ -709,7 +717,7 @@ internal sealed partial class ControlStore
             UPDATE billing_invoices SET payment_status = 'paid', paid_at = now(), payment_reference = $3 WHERE organization_id = $1 AND id = $2
             """, org, invoiceId, reference))
             await update.ExecuteNonQueryAsync(ct);
-        await Audit(transaction, org, identity.Access?.Id, new("payment_recorded", Source: "owner", InvoiceId: invoiceId, Number: number, Total: total,
+        await Audit(transaction, org, identity.Access?.Id, new("payment_recorded", Source: "operator", InvoiceId: invoiceId, Number: number, Total: total,
             Currency: currency), ct);
         await transaction.CommitAsync(ct);
         return new((await InvoiceSummaries(org, null, ct)).First(invoice => invoice.Id == invoiceId));

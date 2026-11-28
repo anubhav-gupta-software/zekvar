@@ -68,8 +68,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 820
       await call('/admin/policies', { body: { mode: 'monitor' } });
       const before = (await call('/admin/policies')).length;
       await page.goto(`${dashboard}/data-deletion`);
-      const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
-      const today = new Date().toISOString().slice(0, 10);
+      const capturedAt = Date.now();
+      const tomorrow = new Date(capturedAt + 86_400_000).toISOString().slice(0, 10);
+      const today = new Date(capturedAt).toISOString().slice(0, 10);
       // Versions published today are after today's 00:00 UTC cutoff, so use the API for an exact cutoff and the form for a preview.
       await page.getByLabel('Preview cutoff').fill(today);
       await page.getByRole('button', { name: 'Preview purge' }).click();

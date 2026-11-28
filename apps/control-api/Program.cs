@@ -785,20 +785,34 @@ billingRoutes.MapGet("/invoices/{id:guid}/export", async (Guid id, HttpContext h
     http.Response.Headers.XContentTypeOptions = "nosniff";
     return Results.Ok(new { organization = identity.OrganizationSlug, exportedAt = DateTime.UtcNow, invoice });
 });
-billingRoutes.MapPost("/invoices/{id:guid}/credit-notes", async (Guid id, IssueCreditNote request, HttpContext http, CancellationToken ct) =>
-{
-    if (request.RequestId == Guid.Empty || request.Amount is < 1 or > 1_000_000_000_000_000 || !BillingSettings.Text(request.Reason, 3, 200))
-        return Results.BadRequest(new { error = "Enter a request ID, a credit amount in minor units, and a reason of 3 to 200 characters.", code = "invalid_credit_note" });
-    return BillingOutcome(await store.IssueBillingCreditNote(Identity(http), id, request, ct));
-});
-billingRoutes.MapPost("/invoices/{id:guid}/payment", async (Guid id, RecordBillingPayment request, HttpContext http, CancellationToken ct) =>
-{
-    if (!BillingSettings.Text(request.Reference, 1, 80))
-        return Results.BadRequest(new { error = "Enter the bank transfer reference, up to 80 characters.", code = "invalid_payment_reference" });
-    return BillingOutcome(await store.RecordBillingPayment(Identity(http), id, request.Reference!.Trim(), ct));
-});
 billingRoutes.MapPost("/invoices/{id:guid}/provider-retry", async (Guid id, HttpContext http, CancellationToken ct) =>
     BillingOutcome(await store.RetryProviderSubmission(Identity(http), id, ct)));
+
+// Credit notes and manual payments are issuer actions: the organization owner is the billed customer and must not issue or settle
+// their own documents. They need the operator credential (Control:Billing:OperatorToken), which no tenant or SSO credential can
+// satisfy. The Control API listens on loopback only and the hosted pilot proxies no /v1/operator path, so only the operator's own
+// host can reach these routes.
+var operatorBilling = app.MapGroup("/v1/operator/billing/organizations/{slug}").AddEndpointFilter((context, next) =>
+{
+    if (!billing.Enabled || billing.OperatorTokenHash is null) return ValueTask.FromResult<object?>(Results.NotFound());
+    var header = context.HttpContext.Request.Headers.Authorization;
+    var presented = header.Count == 1 && header[0] is { } value && value.StartsWith("Bearer ", StringComparison.Ordinal) ? value[7..] : null;
+    return billing.OperatorAuthorized(presented) ? next(context) : ValueTask.FromResult<object?>(Results.Unauthorized());
+});
+operatorBilling.MapPost("/invoices/{id:guid}/credit-notes", async (string slug, Guid id, IssueCreditNote request, CancellationToken ct) =>
+{
+    if (await store.OperatorIdentity(slug, ct) is not { } identity) return Results.NotFound();
+    if (request.RequestId == Guid.Empty || request.Amount is < 1 or > 1_000_000_000_000_000 || !BillingSettings.Text(request.Reason, 3, 200))
+        return Results.BadRequest(new { error = "Enter a request ID, a credit amount in minor units, and a reason of 3 to 200 characters.", code = "invalid_credit_note" });
+    return BillingOutcome(await store.IssueBillingCreditNote(identity, id, request, ct));
+});
+operatorBilling.MapPost("/invoices/{id:guid}/payment", async (string slug, Guid id, RecordBillingPayment request, CancellationToken ct) =>
+{
+    if (await store.OperatorIdentity(slug, ct) is not { } identity) return Results.NotFound();
+    if (!BillingSettings.Text(request.Reference, 1, 80))
+        return Results.BadRequest(new { error = "Enter the bank transfer reference, up to 80 characters.", code = "invalid_payment_reference" });
+    return BillingOutcome(await store.RecordBillingPayment(identity, id, request.Reference!.Trim(), ct));
+});
 
 // Stripe calls this route without a Control credential; the signed payload is the only authority. The body is never logged.
 app.MapPost("/v1/billing/stripe/webhook", async (HttpContext http, CancellationToken ct) =>

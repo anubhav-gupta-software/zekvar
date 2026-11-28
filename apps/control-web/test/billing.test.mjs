@@ -8,9 +8,13 @@ import { chromium } from 'playwright';
 const web = process.env.ZEKVAR_TEST_WEB_ORIGIN;
 const api = process.env.ZEKVAR_TEST_API_ORIGIN;
 const owner = process.env.ZEKVAR_TEST_ADMIN_TOKEN;
+const operator = process.env.ZEKVAR_TEST_OPERATOR_TOKEN;
+const slug = process.env.ZEKVAR_TEST_ORGANIZATION_SLUG;
 assert.match(web ?? '', /^http:\/\/localhost:\d+$/);
 assert.match(api ?? '', /^http:\/\/127\.0\.0\.1:\d+$/);
 assert.match(owner ?? '', /^[a-f0-9]{64}$/);
+assert.match(operator ?? '', /^[a-f0-9]{64}$/);
+assert.ok(slug);
 
 async function admin(path, body, expected = 200) {
   const response = await fetch(`${api}/v1/admin/${path}`, {
@@ -91,9 +95,18 @@ test('an owner quotes, accepts, and opens the resulting invoice; auditors read o
   const exported = JSON.parse(await readFile(await download.path(), 'utf8'));
   assert.equal(exported.invoice.number, number);
   assert.equal(exported.invoice.total, invoice.total);
-  await page.getByLabel('Bank transfer reference').fill('SYNTHETIC-REF-1');
-  await page.getByRole('button', { name: 'Record payment', exact: true }).click();
-  // Recording the payment removes the form, so the paid state is the confirmation.
+  // The billed owner cannot settle or correct their own invoice: the dashboard offers neither, and the API refuses the owner's token.
+  assert.equal(await page.getByRole('button', { name: 'Record payment' }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Issue credit note' }).count(), 0);
+  assert.equal(await page.getByLabel('Bank transfer reference').count(), 0);
+  const operatorCall = (token, path, body) => fetch(`${api}/v1/operator/billing/organizations/${slug}/invoices/${invoice.id}/${path}`, {
+    method: 'POST', signal: AbortSignal.timeout(5000), body: JSON.stringify(body),
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } });
+  assert.equal((await operatorCall(owner, 'payment', { reference: 'OWNER-ATTEMPT' })).status, 401);
+  assert.equal((await fetch(`${api}/v1/admin/billing/invoices/${invoice.id}/payment`, { method: 'POST', headers: { Authorization: `Bearer ${owner}`,
+    'Content-Type': 'application/json' }, body: '{"reference":"OWNER-ATTEMPT"}', signal: AbortSignal.timeout(5000) })).status, 404);
+  assert.equal((await operatorCall(operator, 'payment', { reference: 'SYNTHETIC-REF-1' })).status, 200);
+  await page.reload();
   await page.getByText('Reference SYNTHETIC-REF-1').waitFor();
   await page.goto(`${web}/billing/invoices/${invoice.id}`);
   await page.getByText('Reference SYNTHETIC-REF-1').waitFor();

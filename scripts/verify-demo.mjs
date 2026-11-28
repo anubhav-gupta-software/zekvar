@@ -168,6 +168,7 @@ try {
   const dataDeletionAdmin = randomBytes(32).toString('hex');
   const deletedOrganizationAdmin = randomBytes(32).toString('hex');
   const billingAdmin = randomBytes(32).toString('hex');
+  const billingOperator = randomBytes(32).toString('hex');
   const apiServer = startService('dotnet', ['bin/Debug/net10.0/Control.Api.dll'], api, {
     DOTNET_ENVIRONMENT: 'Development', ASPNETCORE_ENVIRONMENT: 'Development', Control__Port: String(apiPort), ConnectionStrings__Control: db,
     Control__Organizations__0__Slug: 'demo', Control__Organizations__0__AdminToken: token,
@@ -201,7 +202,7 @@ try {
     Control__Organizations__29__Slug: 'billing', Control__Organizations__29__AdminToken: billingAdmin,
     // Placeholder price book for the demo; not proposed prices.
     Control__Billing__Enabled: 'true', Control__Billing__IssuerId: 'demo-issuer', Control__Billing__IssuerName: 'Placeholder Issuer (demo only)',
-    Control__Billing__InvoicePrefix: 'DEMO', Control__Billing__CreditNotePrefix: 'DEMOCN', Control__Billing__Currency: 'XTS',
+    Control__Billing__OperatorToken: billingOperator, Control__Billing__InvoicePrefix: 'DEMO', Control__Billing__CreditNotePrefix: 'DEMOCN', Control__Billing__Currency: 'XTS',
     Control__Billing__TaxRateBasisPoints: '0', Control__Billing__TaxLabel: 'Tax (placeholder)', Control__Billing__TierMode: 'volume',
     Control__Billing__PaymentInstructions: 'Placeholder bank transfer instructions.',
     Control__Billing__Plans__0__Id: 'bundle', Control__Billing__Plans__0__Name: 'Browser + AI bundle (placeholder)',
@@ -257,7 +258,7 @@ try {
     ZEKVAR_TEST_HARDENING_SCREENSHOT: artifacts ? join(artifacts, '40-chrome-hardening.png') : '',
   });
   await run(process.execPath, ['--test', 'test/billing.test.mjs'], web, {
-    ZEKVAR_TEST_WEB_ORIGIN: webOrigin, ZEKVAR_TEST_API_ORIGIN: apiOrigin, ZEKVAR_TEST_ADMIN_TOKEN: billingAdmin,
+    ZEKVAR_TEST_WEB_ORIGIN: webOrigin, ZEKVAR_TEST_API_ORIGIN: apiOrigin, ZEKVAR_TEST_ADMIN_TOKEN: billingAdmin, ZEKVAR_TEST_OPERATOR_TOKEN: billingOperator, ZEKVAR_TEST_ORGANIZATION_SLUG: 'billing',
     ZEKVAR_DEMO_HEADED: flags.has('--headed') ? '1' : '0',
   });
   await run(process.execPath, ['--test', 'test/clipboard-paste.test.mjs'], extension, {

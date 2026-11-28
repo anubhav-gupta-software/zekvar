@@ -69,11 +69,15 @@ const billingAnnualAdmin = randomBytes(32).toString('hex');
 const billingStripeAdmin = randomBytes(32).toString('hex');
 const billingDeleteAdmin = randomBytes(32).toString('hex');
 const billingEmailAdmin = randomBytes(32).toString('hex');
+const billingOperator = randomBytes(32).toString('hex');
+// Credit notes and payments are issuer actions on the operator route; the billed owner has no access to them.
+const operatorBilling = (slug, path, body, { token = billingOperator, expect = 200 } = {}) =>
+  call(`/v1/operator/billing/organizations/${slug}${path}`, { token, method: 'POST', body, expect });
 // Placeholder price book for tests only. These are not proposed prices.
 const billingConfig = {
   Enabled: 'true', IssuerId: `test-issuer-${suffix}`, IssuerName: 'Placeholder Issuer (test only)', IssuerAddress: '1 Example Street',
   InvoicePrefix: 'TST', CreditNotePrefix: 'TCN', Currency: 'XTS', MinorUnitDigits: '2', TaxRateBasisPoints: '825', TaxLabel: 'Placeholder tax',
-  TierMode: 'volume', PaymentInstructions: 'Placeholder bank transfer instructions', EvaluationSeconds: '3600',
+  TierMode: 'volume', PaymentInstructions: 'Placeholder bank transfer instructions', EvaluationSeconds: '3600', OperatorToken: billingOperator,
   Plans: [{ Id: 'bundle', Name: 'Placeholder bundle', Tiers: [
     { UpTo: '10', MonthlyUnitAmount: '1001', AnnualUnitAmount: '10001' },
     { UpTo: '100', MonthlyUnitAmount: '801', AnnualUnitAmount: '8001' },
@@ -6940,7 +6944,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       await start(3600, isolated());
       const opening = await quote('opening');
       const accepted = await post(`/quotes/${opening.id}/accept`);
-      await post(`/invoices/${accepted.invoice.id}/credit-notes`, { requestId: randomUUID(), reason: 'Synthetic correction', amount: 50 });
+      await operatorBilling(`billing-email-${suffix}`, `/invoices/${accepted.invoice.id}/credit-notes`, { requestId: randomUUID(), reason: 'Synthetic correction', amount: 50 });
       assert.equal(await plaintext(), '3');
       await stop();
 
@@ -7387,11 +7391,20 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.equal((await exported.json()).invoice.number, 'TST-000001');
 
     // Manual payment: owner only, once, and never for another tenant.
-    await post(`/invoices/${opening.id}/payment`, { reference: '' }, { expect: 400 });
-    await post(`/invoices/${opening.id}/payment`, { reference: 'BANK-REF-1' }, { token: auditor, expect: 403 });
-    await post(`/invoices/${opening.id}/payment`, { reference: 'BANK-REF-1' }, { token: billingOtherAdmin, expect: 404 });
-    assert.equal((await post(`/invoices/${opening.id}/payment`, { reference: 'BANK-REF-1' })).paymentStatus, 'paid');
-    await post(`/invoices/${opening.id}/payment`, { reference: 'BANK-REF-2' }, { expect: 409 });
+    const slug = `billing-${suffix}`;
+    const pay = (invoice, reference, options) => operatorBilling(slug, `/invoices/${invoice}/payment`, { reference }, options);
+    await pay(opening.id, '', { expect: 400 });
+    // The billed owner, a delegated auditor, another tenant's owner, and a wrong operator token can never record payment.
+    for (const credential of [billingAdmin, auditor, billingOtherAdmin, administrator, billingOperator.replace(/.$/, (c) => (c === '0' ? '1' : '0'))])
+      await pay(opening.id, 'BANK-REF-1', { token: credential, expect: 401 });
+    await call(`/v1/operator/billing/organizations/${slug}/invoices/${opening.id}/payment`, { method: 'POST', body: { reference: 'x' }, expect: 401 });
+    await post(`/invoices/${opening.id}/payment`, { reference: 'BANK-REF-1' }, { expect: 404 });
+    await post(`/invoices/${opening.id}/credit-notes`, { requestId: randomUUID(), amount: 1, reason: 'Owner attempt' }, { expect: 404 });
+    await operatorBilling(`billing-other-${suffix}`, `/invoices/${opening.id}/payment`, { reference: 'BANK-REF-1' }, { expect: 404 });
+    await operatorBilling(`no-such-${suffix}`, `/invoices/${opening.id}/payment`, { reference: 'BANK-REF-1' }, { expect: 404 });
+    assert.equal((await admin(`/invoices/${opening.id}`)).paymentStatus, 'open');
+    assert.equal((await pay(opening.id, 'BANK-REF-1')).paymentStatus, 'paid');
+    await pay(opening.id, 'BANK-REF-2', { expect: 409 });
 
     if (!postgres) return;
     await awayFromUtcMidnight(120_000);
@@ -7480,14 +7493,15 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual(current.estimate.lines.filter(({ kind }) => kind === 'commitment').map(({ quantity }) => quantity), [3]);
 
     // Credit notes: bounded by the invoice, numbered gap-free under concurrency, idempotent, and tax credited cumulatively.
-    const credit = (invoice, body, options) => post(`/invoices/${invoice}/credit-notes`,
+    const credit = (invoice, body, options) => operatorBilling(slug, `/invoices/${invoice}/credit-notes`,
       { requestId: randomUUID(), reason: 'Synthetic correction', ...body }, options);
     await credit(closed.id, { amount: 0 }, { expect: 400 });
     await credit(closed.id, { amount: 3004 }, { expect: 409 });
-    await credit(closed.id, { amount: 10 }, { token: billingOtherAdmin, expect: 404 });
-    await credit(closed.id, { amount: 10 }, { token: auditor, expect: 403 });
-    const credits = await Promise.all(Array.from({ length: 12 }, () => fetch(`${baseUrl}/v1/admin/billing/invoices/${closed.id}/credit-notes`, {
-      method: 'POST', headers: { Authorization: `Bearer ${billingAdmin}`, 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(5000),
+    await credit(closed.id, { amount: 10 }, { token: billingOtherAdmin, expect: 401 });
+    await credit(closed.id, { amount: 10 }, { token: auditor, expect: 401 });
+    await credit(closed.id, { amount: 10 }, { token: billingAdmin, expect: 401 });
+    const credits = await Promise.all(Array.from({ length: 12 }, () => fetch(`${baseUrl}/v1/operator/billing/organizations/${slug}/invoices/${closed.id}/credit-notes`, {
+      method: 'POST', headers: { Authorization: `Bearer ${billingOperator}`, 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(5000),
       body: JSON.stringify({ requestId: randomUUID(), amount: 300, reason: 'Synthetic concurrent correction' }) })));
     assert.deepEqual(credits.map(({ status }) => status).sort(), [...Array(10).fill(200), 409, 409]);
     const notes = await Promise.all(credits.filter(({ status }) => status === 200).map((response) => response.json()));
@@ -7500,7 +7514,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     const settled = await admin(`/invoices/${closed.id}`);
     assert.deepEqual([settled.paymentStatus, settled.creditedTotal, settled.balanceDue, settled.creditNotes.length], ['credited', 3251, 0, 11]);
     assert.equal(notes.reduce((sum, note) => sum + note.total, finalNote.total), 3251);
-    await post(`/invoices/${closed.id}/payment`, { reference: 'BANK-REF-3' }, { expect: 409 });
+    await pay(closed.id, 'BANK-REF-3', { expect: 409 });
     const note = await admin(`/invoices/${finalNote.id}`);
     assert.deepEqual([note.kind, note.relatedNumber, note.paymentStatus], ['credit_note', 'TST-000002', 'issued']);
 
@@ -7611,7 +7625,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     assert.deepEqual([created.collection_method, created['metadata[zekvar_invoice_id]'], created.auto_advance],
       ['send_invoice', stripeInvoice.id, 'false']);
     assert.equal(stripeRequests.filter(({ path }) => path.endsWith('/finalize')).length, 1);
-    await stripeAdmin(`/invoices/${stripeInvoice.id}/payment`, { method: 'POST', body: { reference: 'manual' }, expect: 409 });
+    await operatorBilling(`billing-stripe-${suffix}`, `/invoices/${stripeInvoice.id}/payment`, { reference: 'manual' }, { expect: 409 });
 
     const deliver = async (body, { secret = webhookSecret, timestamp = Math.floor(Date.now() / 1000), header, expect = 200 } = {}) => {
       const payload = JSON.stringify(body);
@@ -7690,7 +7704,7 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       SELECT organization_id, (now() AT TIME ZONE 'UTC')::date - d, id FROM installations, generate_series(1, 40) d
       WHERE id IN ('${seats[0]}', '${seats[1]}') ON CONFLICT DO NOTHING`);
     await Promise.all([1, 2, 3].map(() => admin('')));
-    const credit = await post(`/invoices/${accepted.invoice.id}/credit-notes`, { requestId: randomUUID(), reason: 'Synthetic correction', amount: 100 });
+    const credit = await operatorBilling(slug, `/invoices/${accepted.invoice.id}/credit-notes`, { requestId: randomUUID(), reason: 'Synthetic correction', amount: 100 });
     assert.equal(credit.kind, 'credit_note');
 
     const before = await tenantCounts(org);

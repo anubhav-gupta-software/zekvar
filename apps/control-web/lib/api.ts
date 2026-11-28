@@ -257,10 +257,6 @@ export const controlApi = {
   acceptBillingQuote: (token: string, id: string) =>
     request<{ effective: 'immediate' | 'next_period'; effectiveOn: string; invoice: BillingInvoiceSummary | null }>(`/billing/quotes/${id}/accept`, token, 'POST'),
   withdrawBillingQuote: (token: string, id: string) => request<BillingQuote>(`/billing/quotes/${id}/withdraw`, token, 'POST'),
-  recordBillingPayment: (token: string, id: string, reference: string) =>
-    request<BillingInvoiceSummary>(`/billing/invoices/${id}/payment`, token, 'POST', { reference }),
-  issueBillingCreditNote: (token: string, id: string, requestId: string, amount: number, reason: string) =>
-    request<BillingInvoiceSummary>(`/billing/invoices/${id}/credit-notes`, token, 'POST', { requestId, amount, reason }),
   retryBillingSubmission: (token: string, id: string) => request<BillingInvoiceSummary>(`/billing/invoices/${id}/provider-retry`, token, 'POST'),
 };
 
