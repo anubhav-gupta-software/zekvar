@@ -18,14 +18,20 @@ internal sealed partial class ControlStore
     // Extends the audit action list in place, so it composes with any migration that also extends or redefines the list.
     private const string EnsureBillingAuditAction = """
         DO $$
-        DECLARE definition text;
+        DECLARE
+            definition text;
+            actions text[];
         BEGIN
             SELECT pg_get_constraintdef(oid) INTO definition FROM pg_constraint
             WHERE conrelid = 'control_audit'::regclass AND conname = 'control_audit_action_check';
-            IF definition IS NOT NULL AND position('''billing_changed''' IN definition) = 0 THEN
-                ALTER TABLE control_audit DROP CONSTRAINT control_audit_action_check;
-                EXECUTE 'ALTER TABLE control_audit ADD CONSTRAINT control_audit_action_check ' ||
-                    regexp_replace(definition, '\]\)\)\)$', ', ''billing_changed''::text])))');
+            IF definition IS NOT NULL AND position('billing_changed' IN definition) = 0 THEN
+                SELECT array_agg(DISTINCT value ORDER BY value) INTO actions FROM (
+                    SELECT m[1] AS value FROM regexp_matches(definition, '''([a-z_]+)''::text', 'g') AS m
+                    UNION SELECT unnest(string_to_array(m[1], ',')) FROM regexp_matches(definition, '''\{([a-z_,]+)\}''', 'g') AS m
+                    UNION SELECT 'billing_changed'
+                ) listed;
+                EXECUTE format('ALTER TABLE control_audit DROP CONSTRAINT control_audit_action_check, '
+                    'ADD CONSTRAINT control_audit_action_check CHECK (action = ANY (%L::text[]))', actions);
             END IF;
         END $$;
         """;
@@ -119,8 +125,8 @@ internal sealed partial class ControlStore
         if (!Billing.Enabled) return [];
         await using var command = Command("""
             SELECT o.id FROM organizations o
-            WHERE EXISTS (SELECT 1 FROM billing_seat_days s WHERE s.organization_id = o.id)
-               OR EXISTS (SELECT 1 FROM billing_subscriptions b WHERE b.organization_id = o.id AND b.status = 'active')
+            WHERE NOT organization_offboarding(o.id) AND (EXISTS (SELECT 1 FROM billing_seat_days s WHERE s.organization_id = o.id)
+               OR EXISTS (SELECT 1 FROM billing_subscriptions b WHERE b.organization_id = o.id AND b.status = 'active'))
             ORDER BY o.id
             """);
         var organizations = new List<Guid>();
@@ -712,7 +718,7 @@ internal sealed partial class ControlStore
         {
             await using var locked = BrowserRead(transaction, """
                 SELECT organization_id, id, payment_status, number, currency, total FROM billing_invoices
-                WHERE provider = 'stripe' AND provider_invoice_id = $1 FOR UPDATE
+                WHERE provider = 'stripe' AND provider_invoice_id = $1 AND NOT organization_offboarding(organization_id) FOR UPDATE
                 """, providerInvoice);
             await using var rows = await locked.ExecuteReaderAsync(ct);
             if (await rows.ReadAsync(ct) && (stripeEvent.ControlInvoiceId is null || stripeEvent.ControlInvoiceId == rows.GetGuid(1)))
@@ -755,7 +761,7 @@ internal sealed partial class ControlStore
                 UPDATE billing_invoices b SET provider_lease_until = now() + interval '2 minutes', provider_attempts = b.provider_attempts + 1
                 WHERE (b.organization_id, b.id) = (
                     SELECT organization_id, id FROM billing_invoices
-                    WHERE provider_status = 'pending' AND ($1::uuid IS NULL OR organization_id = $1)
+                    WHERE provider_status = 'pending' AND NOT organization_offboarding(organization_id) AND ($1::uuid IS NULL OR organization_id = $1)
                         AND (provider_lease_until IS NULL OR provider_lease_until <= now())
                     ORDER BY issued_at, id LIMIT 1 FOR UPDATE SKIP LOCKED)
                 RETURNING b.organization_id, b.id, b.number, b.currency, b.lines::text, b.tax_amount, b.tax_label, b.customer_name, b.billing_email,

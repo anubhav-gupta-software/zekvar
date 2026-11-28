@@ -267,3 +267,7 @@ node scripts/verify-demo.mjs --hosted --headed --artifacts /tmp/zekvar-hosted
 ```
 
 For a customer rollout, verify certificate issuance and renewal on the intended host, browser distribution through customer management, database backup and restore, monitoring, incident response, and identity requirements. Restarting the single dashboard process expires its active sessions. Keep the database and Caddy data volumes when updating services. [Zekvar hosted pilot gates](../../product_plan.md#delivery-roadmap)
+
+### Billing is off in the pilot
+
+The pilot compose file does not enable billing, and the Caddyfile does not publish `POST /v1/billing/stripe/webhook` on either host, so Stripe cannot reach Control. When billing is turned on with Stripe, add that one path to the browser host's allowlist (Stripe's signed payload is its only authority, and Control refuses events for an organization in its deletion grace period), set the Stripe webhook secret, and keep seat metering and invoice creation as described in the Control API README. Do not widen the allowlist for any other billing route: invoices, quotes, and payments stay on the administrator network.

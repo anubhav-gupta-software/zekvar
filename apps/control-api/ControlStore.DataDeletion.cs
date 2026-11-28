@@ -18,6 +18,9 @@ internal sealed partial class ControlStore
         ("inventoryChanges", "extension_inventory_change_batches"),
         ("composerObservations", "composer_observations"),
         ("deliveryReceipts", "policy_deliveries"),
+        ("saasObservations", "saas_app_observations"),
+        ("enrollmentKeyRedemptions", "enrollment_key_redemptions"),
+        ("billingSeatDays", "billing_seat_days"),
     ];
 
     // Permanently removes a revoked installation and every record derived from it. Audit history keeps only the
@@ -296,6 +299,8 @@ internal sealed partial class ControlStore
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
+        // Issued billing documents and frozen usage snapshots refuse deletion unless this transaction is the offboarding job.
+        await using (var purge = BrowserRead(transaction, "SELECT set_config('zekvar.billing_purge', 'on', true)")) await purge.ExecuteNonQueryAsync(ct);
         Guid organizationId;
         string status;
         Dictionary<string, long> deleted;
@@ -334,16 +339,22 @@ internal sealed partial class ControlStore
                     "UPDATE policy_groups SET policy_version = NULL WHERE organization_id = $1 AND policy_version IS NOT NULL", organizationId);
                 await detach.ExecuteNonQueryAsync(ct);
             }
-            await using var delete = BrowserRead(transaction, $"""
-                WITH removed AS (
-                    DELETE FROM {table.Name} WHERE ctid IN (SELECT ctid FROM {table.Name} WHERE {table.Scope} LIMIT $2) RETURNING 1
-                )
-                SELECT count(*)::integer FROM removed
-                """, organizationId, budget);
-            var count = (int)(await delete.ExecuteScalarAsync(ct))!;
+            var count = 0;
+            do
+            {
+                await using var delete = BrowserRead(transaction, $"""
+                    WITH removed AS (
+                        DELETE FROM {table.Name} WHERE ctid IN (SELECT ctid FROM {table.Name} WHERE {table.DeleteScope ?? table.Scope} LIMIT $2) RETURNING 1
+                    )
+                    SELECT count(*)::integer FROM removed
+                    """, organizationId, budget);
+                var removed = (int)(await delete.ExecuteScalarAsync(ct))!;
+                count += removed;
+                budget -= removed;
+                if (removed == 0) break;
+            } while (table.DeleteScope is not null && budget > 0);
             if (count == 0) continue;
             deleted[table.Name] = deleted.GetValueOrDefault(table.Name) + count;
-            budget -= count;
         }
 
         string? receipt = null;

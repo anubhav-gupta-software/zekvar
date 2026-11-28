@@ -31,7 +31,8 @@ internal sealed record OrganizationDeletionOptions(byte[]? ReceiptKey, int Grace
 // One step of organization deletion. Steps run in this order, children before the rows they reference.
 // Every base table in the public schema must be listed here or in RetainedTables; startup of a deletion and the
 // API suite's schema-coverage test both fail when a migration adds a table that neither list handles.
-internal sealed record TenantTable(string Name, string Scope, bool Export = false, string[]? Secrets = null);
+// DeleteScope narrows deletion to rows nothing else references, for tables that reference themselves; the job repeats until none remain.
+internal sealed record TenantTable(string Name, string Scope, bool Export = false, string[]? Secrets = null, string? DeleteScope = null);
 
 internal static class TenantTables
 {
@@ -51,6 +52,14 @@ internal static class TenantTables
         new("composer_observations", ByOrganization, Export: true),
         new("saas_app_observations", ByOrganization, Export: true),
         new("control_access_log", ByOrganization, Export: true),
+        new("billing_seat_days", ByOrganization, Export: true),
+        new("billing_provider_events", ByOrganization),
+        new("billing_invoices", ByOrganization, Export: true,
+            DeleteScope: "organization_id = $1 AND id NOT IN (SELECT related_invoice_id FROM billing_invoices WHERE organization_id = $1 AND related_invoice_id IS NOT NULL)"),
+        new("billing_subscriptions", ByOrganization, Export: true),
+        new("billing_quotes", ByOrganization, Export: true),
+        new("billing_usage_snapshots", ByOrganization, Export: true),
+        new("billing_provider_customers", ByOrganization),
         new("control_attestations", ByOrganization, Export: true),
         new("enrollment_key_redemptions", ByOrganization, Export: true, Secrets: ["nonce_hash"]),
         new("ai_app_observations", ByOrganization, Export: true),
@@ -66,7 +75,8 @@ internal static class TenantTables
         new("policy_template_revisions", ByOrganization, Export: true),
         new("policy_templates", ByOrganization, Export: true),
         new("enrollment_grants", ByOrganization),
-        new("enrollment_keys", ByOrganization, Export: true, Secrets: ["token_hash"]),
+        new("enrollment_keys", ByOrganization, Export: true, Secrets: ["token_hash"],
+            DeleteScope: "organization_id = $1 AND id NOT IN (SELECT rotated_from FROM enrollment_keys WHERE organization_id = $1 AND rotated_from IS NOT NULL)"),
         new("enrollment_batches", ByOrganization, Export: true),
         new("installations", ByOrganization, Export: true, Secrets: ["token_hash"]),
         new("event_feed_keys", ByOrganization, Export: true, Secrets: ["token_hash"]),
@@ -84,7 +94,7 @@ internal static class TenantTables
     ];
 
     // Global tables and the operator's deletion ledger, which outlives the tenant by design.
-    public static readonly string[] RetainedTables = ["schema_migrations", "organization_deletions"];
+    public static readonly string[] RetainedTables = ["schema_migrations", "organization_deletions", "billing_document_counters"];
     // END tenant deletion plan
 
     public static readonly HashSet<string> Handled =

@@ -28,7 +28,7 @@ export const credentialCreators: Record<AccessReviewCredential['createdBy'], str
 export const accessResources = {
   security_events: 'Security events', incident_case: 'Incident case', audit_log: 'Audit log', event_feed: 'SIEM event feed',
   composer_readiness: 'Composer readiness', ai_enforcement: 'AI enforcement report', extension_inventory: 'Browser extensions',
-  access_review: 'Access review', evidence_pack: 'Evidence pack', saas_inventory: 'SaaS inventory', organization_export: 'Organization export',
+  access_review: 'Access review', evidence_pack: 'Evidence pack', saas_inventory: 'SaaS inventory', organization_export: 'Organization export', billing: 'Billing',
 } as const;
 export const drillKinds = { backup_drill: 'Backup drill', restore_drill: 'Restore drill' } as const;
 

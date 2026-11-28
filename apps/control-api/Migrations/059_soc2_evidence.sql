@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS control_access_log (
     last_at timestamptz NOT NULL DEFAULT statement_timestamp(),
     action text NOT NULL CHECK (action IN ('data_exported', 'data_viewed', 'event_feed_read')),
     resource text NOT NULL CHECK (resource IN ('security_events', 'incident_case', 'audit_log', 'event_feed', 'composer_readiness',
-        'ai_enforcement', 'extension_inventory', 'access_review', 'evidence_pack', 'saas_inventory', 'organization_export')),
+        'ai_enforcement', 'extension_inventory', 'access_review', 'evidence_pack', 'saas_inventory', 'organization_export', 'billing')),
     actor_access_id uuid,
     event_feed_key_id uuid,
     scope jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(scope) = 'object'),
