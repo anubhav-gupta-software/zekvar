@@ -88,6 +88,12 @@ internal sealed partial class ControlStore
         await ApplyMigration(connection, 54, "054_enrollment_keys.sql", ct);
         await ApplyMigration(connection, 55, "055_data_deletion.sql", ct);
         await ApplyMigration(connection, 56, "056_saas_inventory.sql", ct);
+        await ApplyMigration(connection, 57, "057_billing.sql", ct);
+        await using (var ensure = connection.CreateCommand())
+        {
+            ensure.CommandText = EnsureBillingAuditAction;
+            await ensure.ExecuteNonQueryAsync(ct);
+        }
         await ApplyMigration(connection, 58, "058_health_identifiers.sql", ct);
         await ApplyMigration(connection, 59, "059_soc2_evidence.sql", ct);
 
@@ -787,25 +793,25 @@ internal sealed partial class ControlStore
                     a.classification, a.retention, a.cleanup, a.group_change, a.actor_access_id, a.subject_access_id, a.review_change,
                     a.enrollment_batch_change, a.event_triage_change, a.incident_case_change, a.security_alert_change, a.event_feed_key_change,
                     a.fleet_change, a.template_change, a.composer_gate, a.rollout_change, a.saas_classification, a.enrollment_key_change, a.data_deletion,
-                    NULL::jsonb AS read_access, NULL::jsonb AS attestation
+                    NULL::jsonb AS read_access, NULL::jsonb AS attestation, a.billing_change
                 FROM control_audit a WHERE a.organization_id = $1 AND $8 <> 'access'
                 UNION ALL
                 SELECT l.organization_id, l.id, l.occurred_at, l.action, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, l.actor_access_id, NULL,
                     NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
                     jsonb_build_object('resource', l.resource, 'scope', l.scope, 'records', l.records, 'requests', l.requests,
-                        'completed', l.completed, 'lastAt', l.last_at, 'keyId', l.event_feed_key_id, 'keyName', k.display_name), NULL
+                        'completed', l.completed, 'lastAt', l.last_at, 'keyId', l.event_feed_key_id, 'keyName', k.display_name), NULL, NULL
                 FROM control_access_log l LEFT JOIN event_feed_keys k ON k.organization_id = l.organization_id AND k.id = l.event_feed_key_id
                 WHERE l.organization_id = $1 AND $8 <> 'changes'
                 UNION ALL
                 SELECT t.organization_id, t.id, t.occurred_at, CASE t.kind WHEN 'access_review' THEN 'access_review_completed'
                         ELSE t.kind || '_recorded' END, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, t.actor_access_id, NULL,
-                    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, t.details || jsonb_build_object('id', t.id, 'kind', t.kind)
+                    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, t.details || jsonb_build_object('id', t.id, 'kind', t.kind), NULL
                 FROM control_attestations t WHERE t.organization_id = $1 AND $8 <> 'access'
             )
             SELECT a.id, occurred_at, action, policy_version, restored_from, installation_id, app_id, classification, retention, cleanup, group_change,
                 actor.id, actor.display_name, actor.role, subject.id, subject.display_name, subject.role, a.review_change, a.enrollment_batch_change,
                 a.event_triage_change, a.incident_case_change, a.security_alert_change, a.event_feed_key_change, a.fleet_change, a.template_change,
-                a.composer_gate, a.rollout_change, a.saas_classification, a.enrollment_key_change, a.data_deletion, a.read_access, a.attestation
+                a.composer_gate, a.rollout_change, a.saas_classification, a.enrollment_key_change, a.data_deletion, a.read_access, a.attestation, a.billing_change
             FROM entries a LEFT JOIN retention_cutoffs r ON a.organization_id = r.organization_id
             LEFT JOIN control_access actor ON actor.organization_id = a.organization_id AND actor.id = a.actor_access_id
             LEFT JOIN control_access subject ON subject.organization_id = a.organization_id AND subject.id = a.subject_access_id
@@ -842,7 +848,8 @@ internal sealed partial class ControlStore
                 rows.IsDBNull(28) ? null : JsonSerializer.Deserialize<EnrollmentKeyChange>(rows.GetString(28), JsonSerializerOptions.Web),
                 rows.IsDBNull(29) ? null : JsonSerializer.Deserialize<JsonElement>(rows.GetString(29)),
                 rows.IsDBNull(30) ? null : JsonSerializer.Deserialize<ReadAccessAudit>(rows.GetString(30), JsonSerializerOptions.Web),
-                rows.IsDBNull(31) ? null : System.Text.Json.Nodes.JsonNode.Parse(rows.GetString(31))!.AsObject()));
+                rows.IsDBNull(31) ? null : System.Text.Json.Nodes.JsonNode.Parse(rows.GetString(31))!.AsObject(),
+                rows.IsDBNull(32) ? null : JsonSerializer.Deserialize<BillingAudit>(rows.GetString(32), JsonSerializerOptions.Web)));
         if (entries.Count <= filters.Limit) return new(entries, null);
         entries.RemoveAt(filters.Limit);
         var last = entries[^1];

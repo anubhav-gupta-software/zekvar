@@ -37,6 +37,8 @@ var deletion = OrganizationDeletionOptions.Read(builder.Configuration);
 var dataProtection = DataProtection.Read(builder.Configuration, hostedPilot, organizations.Select(org => org.AdminToken)
     .Concat(builder.Configuration.GetSection("Control:AlertWebhooks").GetChildren().Select(entry => entry["SigningSecret"] ?? ""))
     .Concat([builder.Configuration["Control:Oidc:ExchangeToken"] ?? ""]));
+var billing = BillingSettings.Read(builder.Configuration, builder.Environment.IsDevelopment());
+IPaymentCollector collector = billing.Stripe is { } stripeSettings ? new StripeCollector(stripeSettings) : new ManualCollector();
 
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -50,7 +52,10 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 builder.Services.AddSingleton(_ => new NpgsqlDataSourceBuilder(connectionString).EnableParameterLogging(false).Build());
 builder.Services.AddSingleton(alertWebhooks);
 builder.Services.AddSingleton(services => new ControlStore(services.GetRequiredService<NpgsqlDataSource>(), sso, alertWebhooks, dataProtection)
-    { RolloutInterval = TimeSpan.FromSeconds(rolloutSeconds), EnrollmentKeyAttemptsPerMinute = keyAttempts });
+    { RolloutInterval = TimeSpan.FromSeconds(rolloutSeconds), EnrollmentKeyAttemptsPerMinute = keyAttempts, Billing = billing, Collector = collector });
+if (billing.Enabled)
+    builder.Services.AddHostedService<BillingWorker>(services => new(services.GetRequiredService<ControlStore>(), billing,
+        services.GetRequiredService<ILogger<BillingWorker>>()));
 builder.Services.AddHostedService<RolloutAdvancer>(services => new(services.GetRequiredService<ControlStore>(),
     services.GetRequiredService<ILogger<RolloutAdvancer>>(), TimeSpan.FromSeconds(rolloutSeconds)));
 builder.Services.AddHostedService<RetentionSweep>(services => new(services.GetRequiredService<ControlStore>(),
@@ -77,6 +82,10 @@ app.Use(async (context, next) =>
         context.Request.Path.Value?.TrimEnd('/').Equals("/v1/browser/extension-inventory", StringComparison.OrdinalIgnoreCase) == true &&
         context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } inventoryLimit)
         inventoryLimit.MaxRequestBodySize = ReportExtensionInventory.MaxBodySize;
+    if (HttpMethods.IsPost(context.Request.Method) &&
+        context.Request.Path.Value?.TrimEnd('/').Equals("/v1/billing/stripe/webhook", StringComparison.OrdinalIgnoreCase) == true &&
+        context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } webhookLimit)
+        webhookLimit.MaxRequestBodySize = StripeWebhook.MaxBodySize;
     if (HttpMethods.IsPost(context.Request.Method) && context.Request.Path.StartsWithSegments("/v1/admin") &&
         context.Request.Path.Value?.TrimEnd('/').EndsWith("/policies", StringComparison.OrdinalIgnoreCase) == true &&
         context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } policyLimit)
@@ -725,6 +734,92 @@ admin.MapPost("/saas-apps/{appId}/classification", async (string appId, Classify
     await store.ClassifySaasApp(Identity(http), appId, request.Status!, ct);
     return Results.NoContent();
 });
+var billingRoutes = admin.MapGroup("/billing").AddEndpointFilter((context, next) =>
+    !billing.Enabled ? ValueTask.FromResult<object?>(Results.NotFound())
+    : Identity(context.HttpContext).Role is AccessRoles.Owner or AccessRoles.Auditor ? next(context)
+    : ValueTask.FromResult<object?>(Results.StatusCode(StatusCodes.Status403Forbidden)));
+billingRoutes.MapGet("", async (HttpContext http, CancellationToken ct) =>
+{
+    var overview = await store.BillingOverview(Identity(http), ct);
+    await RecordRead(http, "billing", new { view = "overview" }, 1, ct);
+    return Results.Ok(overview);
+});
+billingRoutes.MapGet("/usage", async (DateOnly? from, DateOnly? until, HttpContext http, CancellationToken ct) =>
+{
+    if (from is not { } start || until is not { } end || end <= start || end.DayNumber - start.DayNumber > 400 ||
+        http.Request.Query.Any(entry => entry.Key is not ("from" or "until") || entry.Value.Count != 1))
+        return Results.BadRequest(new { error = "Choose a from date and a later until date at most 400 days apart." });
+    var usage = await store.BillingUsage(Identity(http).OrganizationId, start, end, ct);
+    await RecordRead(http, "billing", new { view = "usage" }, 1, ct);
+    return Results.Ok(usage);
+});
+billingRoutes.MapPost("/quotes", async (CreateBillingQuote request, HttpContext http, CancellationToken ct) =>
+{
+    if (request.RequestId == Guid.Empty || billing.Plan(request.PlanId) is not { } plan || request.Term is not ("monthly" or "annual") ||
+        request.CommittedSeats is < 1 or > BillingSettings.MaxSeats || !BillingSettings.Text(request.CustomerName, 2, 120) ||
+        !BillingValidation.Email(request.BillingEmail?.Trim()))
+        return Results.BadRequest(new { error = $"Choose a plan, a monthly or annual term, 1 to {BillingSettings.MaxSeats} committed seats, a customer name, and a billing email.", code = "invalid_billing_quote" });
+    return BillingOutcome(await store.CreateBillingQuote(Identity(http), request, plan, ct));
+});
+billingRoutes.MapPost("/quotes/{id:guid}/accept", async (Guid id, HttpContext http, CancellationToken ct) =>
+{
+    var identity = Identity(http);
+    var result = await store.AcceptBillingQuote(identity, id, ct);
+    if (result.Value is not null) await store.SubmitPendingInvoices(identity.OrganizationId, ct);
+    return BillingOutcome(result);
+});
+billingRoutes.MapPost("/quotes/{id:guid}/withdraw", async (Guid id, HttpContext http, CancellationToken ct) =>
+    BillingOutcome(await store.WithdrawBillingQuote(Identity(http), id, ct)));
+billingRoutes.MapGet("/invoices/{id:guid}", async (Guid id, HttpContext http, CancellationToken ct) =>
+{
+    if (await store.BillingInvoiceDetails(Identity(http).OrganizationId, id, ct) is not { } invoice) return Results.NotFound();
+    await RecordRead(http, "billing", new { view = "invoice" }, 1, ct);
+    return Results.Ok(invoice);
+});
+billingRoutes.MapGet("/invoices/{id:guid}/export", async (Guid id, HttpContext http, CancellationToken ct) =>
+{
+    var identity = Identity(http);
+    if (await store.BillingInvoiceDetails(identity.OrganizationId, id, ct) is not { } invoice) return Results.NotFound();
+    await store.RecordExport(identity, "billing", new { view = "invoice_export" }, 1, ct);
+    http.Response.Headers.ContentDisposition = $"attachment; filename=\"zekvar-{invoice.Number}.json\"";
+    http.Response.Headers.XContentTypeOptions = "nosniff";
+    return Results.Ok(new { organization = identity.OrganizationSlug, exportedAt = DateTime.UtcNow, invoice });
+});
+billingRoutes.MapPost("/invoices/{id:guid}/credit-notes", async (Guid id, IssueCreditNote request, HttpContext http, CancellationToken ct) =>
+{
+    if (request.RequestId == Guid.Empty || request.Amount is < 1 or > 1_000_000_000_000_000 || !BillingSettings.Text(request.Reason, 3, 200))
+        return Results.BadRequest(new { error = "Enter a request ID, a credit amount in minor units, and a reason of 3 to 200 characters.", code = "invalid_credit_note" });
+    return BillingOutcome(await store.IssueBillingCreditNote(Identity(http), id, request, ct));
+});
+billingRoutes.MapPost("/invoices/{id:guid}/payment", async (Guid id, RecordBillingPayment request, HttpContext http, CancellationToken ct) =>
+{
+    if (!BillingSettings.Text(request.Reference, 1, 80))
+        return Results.BadRequest(new { error = "Enter the bank transfer reference, up to 80 characters.", code = "invalid_payment_reference" });
+    return BillingOutcome(await store.RecordBillingPayment(Identity(http), id, request.Reference!.Trim(), ct));
+});
+billingRoutes.MapPost("/invoices/{id:guid}/provider-retry", async (Guid id, HttpContext http, CancellationToken ct) =>
+    BillingOutcome(await store.RetryProviderSubmission(Identity(http), id, ct)));
+
+// Stripe calls this route without a Control credential; the signed payload is the only authority. The body is never logged.
+app.MapPost("/v1/billing/stripe/webhook", async (HttpContext http, CancellationToken ct) =>
+{
+    if (billing.Stripe is not { } stripe) return Results.NotFound();
+    using var buffer = new MemoryStream();
+    try
+    {
+        await http.Request.Body.CopyToAsync(buffer, ct);
+    }
+    catch (BadHttpRequestException)
+    {
+        return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+    }
+    var payload = buffer.ToArray();
+    var verdict = StripeSignature.Verify(http.Request.Headers["Stripe-Signature"].Count == 1 ? http.Request.Headers["Stripe-Signature"][0] : null,
+        payload, stripe.WebhookSecret, DateTimeOffset.UtcNow, stripe.ToleranceSeconds);
+    if (verdict != "valid") return Results.BadRequest(new { code = verdict });
+    if (StripeWebhook.Parse(payload) is not { } stripeEvent) return Results.BadRequest(new { code = "event_invalid" });
+    return Results.Ok(new { outcome = await store.ApplyStripeEvent(stripeEvent, ct) });
+});
 
 app.MapPost("/v1/enroll", async (RedeemGrant request, HttpContext http, CancellationToken ct) =>
     Tokens.IsValid(request.Grant) && await store.Enroll(request.Grant, http.Request.Headers["X-Zekvar-Scoped-Enrollment"] == "1", ct) is { } enrollment
@@ -957,6 +1052,14 @@ static IResult EnrollmentKeyResult(EnrollmentKeyOutcome result) => result switch
 {
     { Issued: { } issued } => Results.Ok(issued),
     { Error: "enrollment_key_unavailable" or "enrollment_key_group_unavailable" } => Results.NotFound(new { code = result.Error }),
+    { Error: { } code } => Results.Conflict(new { code }),
+    _ => Results.NotFound()
+};
+
+static IResult BillingOutcome<T>(BillingResult<T> result) where T : class => result switch
+{
+    { Value: { } value } => Results.Ok(value),
+    { Error: { } code } when code.EndsWith("_unavailable", StringComparison.Ordinal) => Results.NotFound(new { code }),
     { Error: { } code } => Results.Conflict(new { code }),
     _ => Results.NotFound()
 };

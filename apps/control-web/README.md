@@ -370,6 +370,12 @@ Open **Data deletion**. Owners and administrators can delete a revoked browser a
 
 The browser test `test/data-deletion.test.mjs` runs at 1440 and 390 pixels against a disposable organization.
 
+## Manage billing
+
+When the operator enables billing in the Control API, owners and auditors see **Billing** in the sidebar. Administrators do not. The page shows the subscription, peak active seats for the current usage period, an estimate of the next invoice, quotes, invoices and credit notes, and daily active seats for the last 35 UTC days. Prices, the tax rate, and the metering rule come from operator configuration and are labeled as placeholders.
+
+An owner creates a quote by choosing a plan, a monthly or annual term, a seat commitment, a customer name, and a billing email. Accepting an open quote, after confirmation, starts the subscription and issues the first invoice. With a subscription, a new quote changes the commitment. An increase applies at once with a daily proration, and a decrease starts with the next commitment period. **View** opens a printable invoice, and **JSON** downloads it. On an invoice, the owner can record a bank transfer reference, retry a rejected provider submission, or issue a credit note. Issued invoices cannot be edited. Auditors can view and download but see no controls. [Billing API and metering rule](../control-api/README.md#billing)
+
 ## Verify in Chrome
 
 With both services running against a disposable organization, run the production build or type check separately as needed. The browser test publishes and restores policy versions, enrolls and revokes a test installation, and posts one synthetic event.

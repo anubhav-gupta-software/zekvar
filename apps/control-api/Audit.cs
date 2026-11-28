@@ -19,7 +19,7 @@ internal sealed record AuditFilters(string? Action, DateTimeOffset? Since, DateT
             or "event_feed_key_issued" or "event_feed_key_revoked" or "browser_fleet_changed" or "policy_template_changed" or "rollout_plan_changed"
             or "saas_app_classified" or "enrollment_key_issued" or "enrollment_key_revoked"
             or "installation_deleted" or "policy_history_purged" or "organization_deletion_requested" or "organization_deletion_cancelled"
-            or "organization_exported")) &&
+            or "organization_exported" or "billing_changed")) &&
         (Since is null || Until is null || Since < Until) &&
         (BeforeAt is null) == (BeforeId is null) && BeforeId != Guid.Empty && Limit is >= 1 and <= 1000;
 }
@@ -43,7 +43,8 @@ internal sealed record AuditEntry(Guid Id, DateTime OccurredAt, string Action, i
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] EnrollmentKeyChange? EnrollmentKeyChange = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] System.Text.Json.JsonElement? DataDeletion = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ReadAccessAudit? ReadAccess = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonObject? Attestation = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonObject? Attestation = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] BillingAudit? BillingChange = null)
 {
     public string Actor => Action switch
     {
@@ -52,6 +53,8 @@ internal sealed record AuditEntry(Guid Id, DateTime OccurredAt, string Action, i
         "control_sso_signed_in" => "sso_identity",
         "retention_cleanup" when Cleanup?.Source == "scheduled" => "system",
         _ when RolloutChange?.Automatic == true => "automated_rollout",
+        _ when BillingChange?.Source == "stripe" => "payment_provider",
+        _ when BillingChange?.Automatic == true => "billing_system",
         _ when ActorAccess is not null => "named_administrator",
         _ => "organization_admin"
     };

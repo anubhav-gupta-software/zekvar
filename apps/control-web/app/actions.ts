@@ -1294,3 +1294,113 @@ export async function recordDrill(_previous: Feedback, form: FormData): Promise<
     return { message: 'Drill recorded in the audit log.' };
   });
 }
+
+const billingErrors: Record<string, string> = {
+  billing_quote_closed: 'This quote was already accepted or withdrawn. Refresh the billing page.',
+  billing_quote_expired: 'This quote has expired. Create a new quote.',
+  billing_quote_stale: 'The subscription changed after this quote was created. Create a new quote.',
+  billing_term_change_unsupported: 'Changing between monthly and annual terms is not supported for an active subscription.',
+  billing_currency_changed: 'The configured billing currency changed. Contact the Control operator.',
+  billing_credit_exceeds_invoice: 'The credit is larger than the uncredited amount of this invoice.',
+  billing_request_reused: 'Reload the invoice and try the credit again.',
+  billing_provider_managed: 'The payment provider records payment for this invoice.',
+  billing_invoice_settled: 'This invoice is already paid or fully credited.',
+  billing_submission_not_failed: 'This invoice is not waiting for a provider retry.',
+  invalid_billing_quote: 'Choose a plan, a term, a seat commitment, a customer name, and a billing email.',
+  invalid_credit_note: 'Enter a credit amount and a reason of 3 to 200 characters.',
+  invalid_payment_reference: 'Enter the bank transfer reference, up to 80 characters.',
+};
+
+async function billingChange(change: (token: string) => Promise<Feedback>, invoiceId?: string): Promise<Feedback> {
+  return perform(async (token) => {
+    try {
+      const result = await change(token);
+      revalidatePath('/billing');
+      if (invoiceId) revalidatePath(`/billing/invoices/${invoiceId}`);
+      revalidatePath('/audit');
+      return result;
+    } catch (error) {
+      if (error instanceof ApiError && error.code && billingErrors[error.code]) return { error: billingErrors[error.code] };
+      throw error;
+    }
+  });
+}
+
+export async function createBillingQuote(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const [requestId, planId, term, seats, customerName, billingEmail] =
+    ['requestId', 'planId', 'term', 'committedSeats', 'customerName', 'billingEmail'].map((name) => form.get(name));
+  const committedSeats = Number(seats);
+  if (!isId(requestId) || typeof planId !== 'string' || (term !== 'monthly' && term !== 'annual') || typeof seats !== 'string' ||
+      !/^\d{1,7}$/.test(seats) || committedSeats < 1 || committedSeats > 1_000_000 || typeof customerName !== 'string' ||
+      customerName.trim().length < 2 || customerName.trim().length > 120 || typeof billingEmail !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(billingEmail.trim())) {
+    return { error: billingErrors.invalid_billing_quote };
+  }
+  return billingChange(async (token) => {
+    const quote = await controlApi.createBillingQuote(token, requestId, planId, term, committedSeats, customerName.trim(), billingEmail.trim());
+    return { message: `Quote created for ${quote.committedSeats} seats. Review it below before accepting.` };
+  });
+}
+
+export async function acceptBillingQuote(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const id = form.get('id');
+  if (!isId(id)) return { error: 'Choose a quote.' };
+  // The accepted quote's row and its form leave the page, so the outcome is shown on the page Control redirects to.
+  let destination = '/billing?accepted=1';
+  const feedback = await billingChange(async (token) => {
+    const result = await controlApi.acceptBillingQuote(token, id);
+    destination = result.invoice ? `/billing/invoices/${result.invoice.id}?accepted=1`
+      : `/billing?accepted=1${result.effective === 'next_period' ? `&effectiveOn=${result.effectiveOn}` : ''}`;
+    return { message: 'Quote accepted.' };
+  });
+  if (feedback.error) return feedback;
+  redirect(destination);
+}
+
+export async function withdrawBillingQuote(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const id = form.get('id');
+  if (!isId(id)) return { error: 'Choose a quote.' };
+  return billingChange(async (token) => {
+    await controlApi.withdrawBillingQuote(token, id);
+    return { message: 'Quote withdrawn.' };
+  });
+}
+
+export async function recordBillingPayment(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const id = form.get('id');
+  const reference = form.get('reference');
+  if (!isId(id) || typeof reference !== 'string' || !reference.trim() || reference.trim().length > 80) {
+    return { error: billingErrors.invalid_payment_reference };
+  }
+  return billingChange(async (token) => {
+    const invoice = await controlApi.recordBillingPayment(token, id, reference.trim());
+    return { message: `Payment recorded for ${invoice.number}.` };
+  }, id);
+}
+
+// Converts a decimal amount in major units to integer minor units without floating-point arithmetic.
+function minorUnits(value: string, digits: number) {
+  const match = new RegExp(`^(\\d{1,13})(?:\\.(\\d{1,${Math.max(digits, 1)}}))?$`).exec(value.trim());
+  if (!match || (digits === 0 && match[2] !== undefined)) return undefined;
+  return Number(`${match[1]}${(match[2] ?? '').padEnd(digits, '0')}`);
+}
+
+export async function issueBillingCreditNote(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const [id, requestId, amount, digits, reason] = ['id', 'requestId', 'amount', 'digits', 'reason'].map((name) => form.get(name));
+  const minor = typeof amount === 'string' && typeof digits === 'string' && /^[0-3]$/.test(digits) ? minorUnits(amount, Number(digits)) : undefined;
+  if (!isId(id) || !isId(requestId) || !minor || typeof reason !== 'string' || reason.trim().length < 3 || reason.trim().length > 200) {
+    return { error: billingErrors.invalid_credit_note };
+  }
+  return billingChange(async (token) => {
+    const note = await controlApi.issueBillingCreditNote(token, id, requestId, minor, reason.trim());
+    return { message: `Credit note ${note.number} issued.` };
+  }, id);
+}
+
+export async function retryBillingSubmission(_previous: Feedback, form: FormData): Promise<Feedback> {
+  const id = form.get('id');
+  if (!isId(id)) return { error: 'Choose an invoice.' };
+  return billingChange(async (token) => {
+    const invoice = await controlApi.retryBillingSubmission(token, id);
+    return { message: `${invoice.number}: ${invoice.providerStatus === 'submitted' ? 'sent to the payment provider' : 'retry scheduled'}.` };
+  }, id);
+}

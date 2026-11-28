@@ -160,3 +160,29 @@ td code { color: #d4e5f7; }
   .controls-grid { grid-template-columns: 1fr; gap: 0; }
 }
 .saas-block-seed { display: block; white-space: normal; line-height: 1.5; margin-bottom: .75rem; }
+
+.billing-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: .75rem 1.25rem; margin: .8rem 0; }
+.billing-facts dt, .billing-totals dt { color: var(--muted); font-size: .8125rem; font-weight: 600; }
+.billing-facts dd { margin: .15rem 0 0; overflow-wrap: anywhere; }
+.billing-rule { margin-top: .6rem; }
+.billing-lines th[scope="row"] { white-space: normal; min-width: 14rem; font-weight: 500; }
+.billing-totals { display: grid; justify-content: end; gap: .3rem; margin: 0; padding: .9rem 1.15rem; border-top: 1px solid var(--line); }
+.billing-totals > div { display: flex; justify-content: space-between; gap: 2rem; font-variant-numeric: tabular-nums; }
+.billing-totals dd { margin: 0; text-align: right; }
+.invoice-page { max-width: 64rem; }
+.invoice-actions { margin-bottom: 1rem; }
+.invoice-header { display: flex; justify-content: space-between; align-items: start; gap: 1rem; }
+.invoice-address { display: block; color: var(--muted); white-space: pre-line; }
+.invoice-note { margin-top: .75rem; overflow-wrap: anywhere; }
+.invoice-document .table-scroll { margin-inline: -1.15rem; }
+
+@media print {
+  :root { color-scheme: light; --canvas: #fff; --panel: #fff; --field: #fff; --line: #c9d1db; --text: #111; --muted: #4a5563; }
+  body { background: #fff; color: #111; }
+  .invoice-actions, .no-print, .sidebar { display: none; }
+  .invoice-page { padding: 0; max-width: none; }
+  .panel { border: none; }
+  th { background: #f2f4f7; color: #333; }
+  td, td code { color: #111; }
+  .badge { background: #eef1f5; color: #111; }
+}

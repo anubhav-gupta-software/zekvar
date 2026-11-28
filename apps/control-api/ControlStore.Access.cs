@@ -6,6 +6,14 @@ internal sealed partial class ControlStore
 {
     public async Task<RequestIdentity?> Authenticate(string token, bool browser, CancellationToken ct)
     {
+        var identity = await ResolveIdentity(token, browser, ct);
+        // Billing seat metering records the first authenticated contact of each browser per UTC day.
+        if (browser && identity?.InstallationId is { } installationId) await RecordBillingSeat(identity.OrganizationId, installationId, ct);
+        return identity;
+    }
+
+    private async Task<RequestIdentity?> ResolveIdentity(string token, bool browser, CancellationToken ct)
+    {
         var sql = browser
             ? """
                 SELECT organization_id, id, NULL::text, NULL::uuid, NULL::text, NULL::text, NULL::text, NULL::text, false FROM installations

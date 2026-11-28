@@ -1,6 +1,7 @@
 import { signOut } from './actions';
 import { canChangePolicy, canWrite, roleLabels, type ControlSession } from '../lib/access';
 import type { PolicyGroup } from '../lib/control';
+import { canSeeBilling } from '../lib/billing';
 
 export function RecordedRolloutOptions({ groups, selected }: { groups: PolicyGroup[]; selected: string }) {
   return <>
@@ -26,7 +27,7 @@ export function DeploymentBadge() {
 }
 
 export function Sidebar({ active, session }: {
-  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews' | 'extensions' | 'enrollment' | 'reports' | 'events' | 'cases' | 'alerts' | 'hardening' | 'fleet' | 'templates' | 'prompt-requests' | 'rollouts' | 'adapters' | 'enrollment-keys' | 'saas' | 'data-deletion' | 'access-review' | 'evidence';
+  active?: 'audit' | 'retention' | 'groups' | 'preview' | 'access' | 'reviews' | 'extensions' | 'enrollment' | 'reports' | 'events' | 'cases' | 'alerts' | 'hardening' | 'fleet' | 'templates' | 'prompt-requests' | 'rollouts' | 'adapters' | 'enrollment-keys' | 'saas' | 'data-deletion' | 'billing' | 'access-review' | 'evidence';
   session?: ControlSession;
 }) {
   const root = active ? '/' : '';
@@ -59,6 +60,7 @@ export function Sidebar({ active, session }: {
       <a href="/audit" aria-current={active === 'audit' ? 'page' : undefined}>Audit log</a>
       <a href="/retention" aria-current={active === 'retention' ? 'page' : undefined}>Data retention</a>
       <a href="/data-deletion" aria-current={active === 'data-deletion' ? 'page' : undefined}>Data deletion</a>
+      {canSeeBilling(session) && <a href="/billing" aria-current={active === 'billing' ? 'page' : undefined}>Billing</a>}
       {session?.role === 'owner' && <a href="/access" aria-current={active === 'access' ? 'page' : undefined}>Control access</a>}
       {(session?.role === 'owner' || session?.role === 'auditor') && <>
         <a href="/access-review" aria-current={active === 'access-review' ? 'page' : undefined}>Access review</a>

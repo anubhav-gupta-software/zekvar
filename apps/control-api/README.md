@@ -390,6 +390,58 @@ The deletion job runs every `Control:OrganizationDeletion:SweepSeconds` (default
 
 The API suite's schema-coverage test fails when a migration adds a table that the deletion plan does not handle or orders a child after its parent.
 
+## Billing
+
+Billing is off unless the operator sets `Control__Billing__Enabled=true`. It is provider neutral. The price book, issuer, tax rate, and payment provider come from server configuration and are never built into Control. All amounts are integers in the currency's minor units. The values below are placeholders. `XTS` is the ISO 4217 code reserved for testing.
+
+```json
+"Control": { "Billing": {
+  "Enabled": true, "IssuerId": "example-issuer", "IssuerName": "Example Issuer (placeholder)", "IssuerAddress": "1 Example Street",
+  "InvoicePrefix": "INV", "CreditNotePrefix": "CN", "Currency": "XTS", "MinorUnitDigits": 2,
+  "TaxRateBasisPoints": 0, "TaxLabel": "Tax (placeholder)", "PaymentTermsDays": 30, "QuoteValidDays": 30, "TierMode": "volume",
+  "PaymentProvider": "manual", "PaymentInstructions": "Placeholder bank transfer instructions.", "EvaluationSeconds": 300,
+  "Plans": [{ "Id": "bundle", "Name": "Browser + AI bundle (placeholder)", "Tiers": [
+    { "UpTo": 100, "MonthlyUnitAmount": 1000, "AnnualUnitAmount": 10000 },
+    { "MonthlyUnitAmount": 800, "AnnualUnitAmount": 8000 } ] }]
+} }
+```
+
+`MonthlyUnitAmount` is the price per seat per month on a monthly term, and `AnnualUnitAmount` is the price per seat per year on an annual term. Tiers ascend by `UpTo`, and only the last tier is unbounded. With `TierMode` `volume`, every seat is priced at the tier reached by the seat count. With `graduated`, each band of seats is priced at its own tier. `TaxRateBasisPoints` is one flat placeholder rate (825 is 8.25%). Control has no jurisdiction tax logic. Invalid billing configuration stops startup. The price book is hashed into `priceBookVersion`, which each quote records.
+
+**Seat metering (proposed rule).** A browser installation is an active seat on a UTC day when it is enrolled, its credential is not revoked at the end of that day, and it authenticated with Control on that day or one of the six days before. Billable seats for a usage period are the highest daily count in the period. The seven-day window keeps weekends and short absences from lowering the count. Revoking a browser removes its seat the same day, so a reinstall does not count twice. Each authenticated browser request records the installation's UTC day once in `billing_seat_days`. After a day ends, Control freezes its active and enrolled counts in `billing_usage_snapshots`. Frozen counts cannot be changed and remain after security event retention deletes events. Check-in days are kept for 400 days. Control measures browser installations, not people, so a user with two managed browsers counts twice.
+
+**Quotes and subscriptions.** Usage periods are monthly and anchored on the subscription start date. A commitment period is one month for a monthly term and twelve usage periods for an annual term.
+
+| Request | Result |
+| --- | --- |
+| `GET /v1/admin/billing` | Price book, subscription, current usage period with peak seats, upcoming invoice estimate, the last 35 days of usage, 20 recent quotes, and 100 recent invoices and credit notes. The read also freezes finished days and closes elapsed periods. |
+| `GET /v1/admin/billing/usage?from=…&until=…` | Daily counts for up to 400 days. Today is marked `provisional`. |
+| `POST /v1/admin/billing/quotes` | `requestId`, `planId`, `term` (`monthly` or `annual`), `committedSeats` (1 to 1,000,000), `customerName`, and `billingEmail`. Returns the priced quote with its lines. A repeated `requestId` returns the original quote. With an active subscription, the quote is an amendment and must keep the term. |
+| `POST /v1/admin/billing/quotes/{id}/accept` | Without a subscription, starts one today and issues the first commitment invoice. For an amendment that raises the commitment charge, applies it at once and issues a prorated invoice that credits the unused part of the old commitment and charges the new one for the remaining days of the commitment period. Other amendments take effect at the next commitment period. Returns HTTP 409 `billing_quote_closed`, `billing_quote_expired`, or `billing_quote_stale` when the quote was already decided, has expired, or was priced against an older subscription revision. |
+| `POST /v1/admin/billing/quotes/{id}/withdraw` | Withdraws an open quote. |
+| `GET /v1/admin/billing/invoices/{id}` and `/export` | The full document with lines, usage, issuer, customer, tax, credits, balance due, and payment status. `/export` adds an attachment header. |
+| `POST /v1/admin/billing/invoices/{id}/credit-notes` | `requestId`, `amount` (minor units before tax), and `reason`. Issues a numbered credit note. Credits cannot exceed the invoice. Tax is credited cumulatively, so the credits add up to exactly the invoice tax. A fully credited unpaid invoice becomes `credited`. |
+| `POST /v1/admin/billing/invoices/{id}/payment` | `reference`. Records a bank transfer for an open invoice with the manual provider. |
+| `POST /v1/admin/billing/invoices/{id}/provider-retry` | Resubmits an invoice the payment provider rejected. |
+
+When a usage period ends, Control issues one invoice with overage for that period and the next commitment when one starts. Overage is the peak above the commitment, priced at the commitment's tiers. On an annual term, overage is charged each month at one twelfth of the annual seat price. A line amount is `quantity × unitAmount × numerator ÷ denominator`, rounded half away from zero. Tax is rounded the same way on the subtotal.
+
+Invoice and credit note numbers are `PREFIX-000001` and are gap-free per `IssuerId` and document type. Control takes the next number in the transaction that writes the document, so concurrent issues serialize and a failed issue returns its number. A database trigger rejects changes to issued documents except payment and provider status, and rejects deletion. Corrections use credit notes. A billing evaluation locks the organization's subscription row and records each period under a unique key, so concurrent reads and API instances close a period once. `BillingWorker` also evaluates every `EvaluationSeconds`.
+
+Only the owner can change billing. Auditors can use `GET` routes. Administrators receive HTTP 403, and other organizations receive HTTP 404. Each change is audited as `billing_changed` with `billingChange.kind`: `quote_created`, `quote_withdrawn`, `quote_accepted`, `invoice_issued`, `credit_note_issued`, `payment_recorded`, `payment_failed`, `provider_submission_failed`, or `provider_submission_retried`. Audit records carry document IDs, numbers, totals, and seat counts, and never the billing email. Automatic invoices use the `billing_system` actor and provider webhooks use `payment_provider`.
+
+### Payment providers
+
+`PaymentProvider` `manual` is the default. The invoice shows `PaymentInstructions` and the owner records each bank transfer. `stripe` sends each issued invoice to Stripe through the REST API (`Stripe-Version: 2024-06-20`). Control creates one customer per organization, creates a `send_invoice` invoice, adds one invoice item per line and one for tax, and finalizes it. Each request has an idempotency key derived from the Control invoice. Control stores the Stripe IDs and its progress, so a retry continues where it stopped. Submission runs after the issuing transaction commits. It retries with backoff up to 8 attempts and then marks the invoice `failed`.
+
+```sh
+export Control__Billing__PaymentProvider=stripe
+export Control__Billing__Stripe__SecretKey='sk_test_…'      # never commit a key
+export Control__Billing__Stripe__WebhookSecret='whsec_…'
+```
+
+`POST /v1/billing/stripe/webhook` takes no Control credential. Control verifies the `Stripe-Signature` header, an HMAC-SHA256 of `timestamp.payload` with the signing secret, in constant time. It rejects timestamps more than `WebhookToleranceSeconds` (default 300) from now. Each event ID is stored with its effect in one transaction, so a replayed event returns `duplicate` and changes nothing. `invoice.paid` marks the matching open invoice paid. `invoice.payment_failed` is audited. Events for unknown invoices, or whose `zekvar_invoice_id` metadata does not match, are recorded and ignored. Bodies are limited to 256 KB and are never logged. The pilot Caddyfile does not expose this route yet. The adapter has been tested only against a local fake server.
+
 ## Logging
 
 Control writes one JSON object per line to stdout, with a UTC `Timestamp`, `LogLevel`, `Category`, `Message`, and `State`. The systemd journal and `docker logs` capture it as is. Retention follows the host's journal or Docker log driver settings.

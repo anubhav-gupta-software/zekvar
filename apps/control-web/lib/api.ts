@@ -25,6 +25,7 @@ import type { PolicyTemplate, PolicyTemplateDetails, PolicyTemplatePreview } fro
 import type { PolicyImpactReport } from './policy-impact';
 import type { RolloutPlan, RolloutStageRequest } from './rollouts';
 import type { InstallationDeletion, OrganizationDeletionStatus, OrganizationDeletionView, PolicyPurge, RequestedOrganizationDeletion } from './deletion';
+import type { BillingInvoice, BillingInvoiceSummary, BillingOverview, BillingQuote, BillingTerm } from './billing';
 import type { PromptExceptionRequest, PromptRequestDecision } from './prompt-requests';
 import type { AiPromptApp } from '../../../contracts/policy/apps';
 import { eventPath, type EventDetails, type EventTriage, type TriageAssignee, type TriageUpdate } from './triage';
@@ -248,6 +249,19 @@ export const controlApi = {
   deletionReceipt: (token: string) => apiResponse('/organization/deletion/receipt', token),
   // The export streams every retained record, so it gets a longer deadline than other reads.
   organizationExport: (token: string, signal: AbortSignal) => apiResponse('/organization/export', token, { signal }),
+  billing: (token: string) => request<BillingOverview>('/billing', token),
+  billingInvoice: (token: string, id: string) => request<BillingInvoice>(`/billing/invoices/${id}`, token),
+  exportBillingInvoice: (token: string, id: string) => apiResponse(`/billing/invoices/${id}/export`, token),
+  createBillingQuote: (token: string, requestId: string, planId: string, term: BillingTerm, committedSeats: number, customerName: string,
+    billingEmail: string) => request<BillingQuote>('/billing/quotes', token, 'POST', { requestId, planId, term, committedSeats, customerName, billingEmail }),
+  acceptBillingQuote: (token: string, id: string) =>
+    request<{ effective: 'immediate' | 'next_period'; effectiveOn: string; invoice: BillingInvoiceSummary | null }>(`/billing/quotes/${id}/accept`, token, 'POST'),
+  withdrawBillingQuote: (token: string, id: string) => request<BillingQuote>(`/billing/quotes/${id}/withdraw`, token, 'POST'),
+  recordBillingPayment: (token: string, id: string, reference: string) =>
+    request<BillingInvoiceSummary>(`/billing/invoices/${id}/payment`, token, 'POST', { reference }),
+  issueBillingCreditNote: (token: string, id: string, requestId: string, amount: number, reason: string) =>
+    request<BillingInvoiceSummary>(`/billing/invoices/${id}/credit-notes`, token, 'POST', { requestId, amount, reason }),
+  retryBillingSubmission: (token: string, id: string) => request<BillingInvoiceSummary>(`/billing/invoices/${id}/provider-retry`, token, 'POST'),
 };
 
 export const ssoApi = {

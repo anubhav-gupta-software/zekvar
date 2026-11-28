@@ -63,6 +63,27 @@ const offboardAdmin = randomBytes(32).toString('hex');
 const raceAdmin = randomBytes(32).toString('hex');
 const exportAdmin = randomBytes(32).toString('hex');
 const deletionKey = randomBytes(32).toString('hex');
+const billingAdmin = randomBytes(32).toString('hex');
+const billingOtherAdmin = randomBytes(32).toString('hex');
+const billingAnnualAdmin = randomBytes(32).toString('hex');
+const billingStripeAdmin = randomBytes(32).toString('hex');
+// Placeholder price book for tests only. These are not proposed prices.
+const billingConfig = {
+  Enabled: 'true', IssuerId: `test-issuer-${suffix}`, IssuerName: 'Placeholder Issuer (test only)', IssuerAddress: '1 Example Street',
+  InvoicePrefix: 'TST', CreditNotePrefix: 'TCN', Currency: 'XTS', MinorUnitDigits: '2', TaxRateBasisPoints: '825', TaxLabel: 'Placeholder tax',
+  TierMode: 'volume', PaymentInstructions: 'Placeholder bank transfer instructions', EvaluationSeconds: '3600',
+  Plans: [{ Id: 'bundle', Name: 'Placeholder bundle', Tiers: [
+    { UpTo: '10', MonthlyUnitAmount: '1001', AnnualUnitAmount: '10001' },
+    { UpTo: '100', MonthlyUnitAmount: '801', AnnualUnitAmount: '8001' },
+    { MonthlyUnitAmount: '601', AnnualUnitAmount: '6001' },
+  ] }],
+};
+function configEnv(prefix, value, target = {}) {
+  if (value !== null && typeof value === 'object') {
+    for (const [key, child] of Object.entries(value)) configEnv(`${prefix}__${key}`, child, target);
+  } else target[prefix] = String(value);
+  return target;
+}
 const postgres = process.env.ZEKVAR_TEST_POSTGRES_CONTAINER;
 const sql = promisify(execFile);
 
@@ -365,6 +386,15 @@ async function start(sweepSeconds = 3600, overrides = {}) {
       Control__Organizations__33__AdminToken: rolloutAdmin,
       Control__Organizations__34__Slug: `adapter-controls-${suffix}`,
       Control__Organizations__34__AdminToken: adapterAdmin,
+      Control__Organizations__46__Slug: `billing-${suffix}`,
+      Control__Organizations__46__AdminToken: billingAdmin,
+      Control__Organizations__47__Slug: `billing-other-${suffix}`,
+      Control__Organizations__47__AdminToken: billingOtherAdmin,
+      Control__Organizations__48__Slug: `billing-annual-${suffix}`,
+      Control__Organizations__48__AdminToken: billingAnnualAdmin,
+      Control__Organizations__49__Slug: `billing-stripe-${suffix}`,
+      Control__Organizations__49__AdminToken: billingStripeAdmin,
+      ...configEnv('Control__Billing', billingConfig),
       Control__Organizations__35__Slug: `logs-${suffix}`,
       Control__Organizations__35__AdminToken: logsAdmin,
       Control__Organizations__36__Slug: `saas-inventory-${suffix}`,
@@ -6584,10 +6614,26 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     if (postgres) {
       const counts = await tenantCounts(org);
       for (const [name, rows] of Object.entries(exported.datasets)) assert.equal(rows.length, counts[name], name);
-      // Every tenant table is exported except credential-only tables.
-      assert.deepEqual(Object.keys(counts).filter((table) => !(table in exported.datasets)).sort(), ['admin_memberships', 'enrollment_grants']);
+      // Every tenant table is exported except credential-only tables and payment-provider linkage (customer IDs and webhook events).
+      assert.deepEqual(Object.keys(counts).filter((table) => !(table in exported.datasets)).sort(), ['admin_memberships', 'billing_provider_customers', 'billing_provider_events', 'enrollment_grants']);
     }
     assert.equal((await admin('audit?action=organization_exported')).entries.length, 1);
+  });
+
+  await t.test('erases a revoked installation created by an enrollment key together with its seat days, SaaS records, and redemption', async () => {
+    const admin = deletionAdmin(eraseAdmin);
+    const post = deletionPost(eraseAdmin);
+    const issued = await post('enrollment-keys', { requestId: randomUUID(), label: 'Erasure key', days: 1 });
+    const keyed = await call('/v1/enroll/key', { method: 'POST', body: { key: issued.token, nonce: randomBytes(32).toString('hex') } });
+    await call('/v1/browser/policy', { token: keyed.token });
+    if (postgres) await retentionFixture(`INSERT INTO saas_app_observations (organization_id, installation_id, app_id, first_seen_day, last_seen_day)
+      SELECT organization_id, id, 'slack', current_date, current_date FROM installations WHERE id = '${keyed.installationId}'`);
+    await post(`installations/${keyed.installationId}/revoke`, undefined, { expect: 204 });
+    const deleted = await post(`installations/${keyed.installationId}/delete`);
+    assert.equal(deleted.deletedRows.enrollmentKeyRedemptions, 1);
+    assert.ok(deleted.deletedRows.billingSeatDays >= 1);
+    if (postgres) assert.equal(deleted.deletedRows.saasObservations, 1);
+    assert.ok(!(await admin('installations')).some(({ installationId }) => installationId === keyed.installationId));
   });
 
   await t.test('locks every credential during the deletion grace period and restores them when the owner cancels', async () => {
@@ -7134,5 +7180,368 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
       await retentionFixture(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
       await start();
     }
+  });
+
+  await t.test('meters seats, quotes, invoices, credits, and collects payment with gap-free numbering and tenant isolation', async (billingTest) => {
+    const admin = (path, options = {}) => call(`/v1/admin/billing${path}`, { token: billingAdmin, ...options });
+    const post = (path, body, options = {}) => admin(path, { method: 'POST', body, ...options });
+    const quote = (body, options) => post('/quotes', { requestId: randomUUID(), planId: 'bundle', term: 'monthly', committedSeats: 2,
+      customerName: 'Example Customer (synthetic)', billingEmail: 'billing@example.test', ...body }, options);
+    const halfUp = (value) => Math.sign(value) * Math.round(Math.abs(value));
+    const fixture = (query) => retentionFixture(query);
+
+    // Roles: the owner and auditors read billing, only the owner changes it, administrators do not see it.
+    const overview = await admin('');
+    assert.deepEqual([overview.provider, overview.currency, overview.minorUnitDigits, overview.tierMode, overview.taxBasisPoints,
+      overview.taxPlaceholder, overview.meteringRule], ['manual', 'XTS', 2, 'volume', 825, true, 'peak_daily_active_7d']);
+    assert.equal(overview.subscription, null);
+    assert.equal(overview.plans[0].tiers.length, 3);
+    const issueAccess = (role) => call('/v1/admin/access', { token: billingAdmin, method: 'POST', body: { name: `Billing ${role}`, role, hours: 1 } });
+    const auditor = (await issueAccess('auditor')).token;
+    const administrator = (await issueAccess('administrator')).token;
+    await admin('', { token: administrator, expect: 403 });
+    await admin('', { token: auditor });
+    await quote({}, { token: auditor, expect: 403 });
+    await quote({}, { token: administrator, expect: 403 });
+    await call('/v1/billing/stripe/webhook', { method: 'POST', body: {}, expect: 404 });
+
+    // Validation.
+    for (const invalid of [{ committedSeats: 0 }, { committedSeats: 1_000_001 }, { planId: 'missing' }, { term: 'weekly' },
+      { billingEmail: 'not-an-email' }, { customerName: ' ' }, { requestId: '00000000-0000-0000-0000-000000000000' }]) {
+      await quote(invalid, { expect: 400 });
+    }
+
+    // Volume tier boundaries, integer minor units, and tax rounding half away from zero.
+    for (const [seats, term, unit] of [[10, 'monthly', 1001], [11, 'monthly', 801], [100, 'monthly', 801], [101, 'monthly', 601],
+      [10, 'annual', 10001], [11, 'annual', 8001]]) {
+      const priced = await quote({ committedSeats: seats, term });
+      assert.equal(priced.lines.length, 1);
+      assert.deepEqual([priced.lines[0].quantity, priced.lines[0].unitAmount], [seats, unit]);
+      assert.equal(priced.subtotal, seats * unit);
+      assert.equal(priced.taxAmount, halfUp(seats * unit * 825 / 10000));
+      assert.equal(priced.total, priced.subtotal + priced.taxAmount);
+      assert.ok(Number.isInteger(priced.total));
+    }
+    // A repeated request returns the same quote.
+    const requestId = randomUUID();
+    const repeated = await quote({ requestId, committedSeats: 3 });
+    assert.deepEqual(await quote({ requestId, committedSeats: 9 }), repeated);
+    assert.equal((await post(`/quotes/${repeated.id}/withdraw`)).status, 'withdrawn');
+    await post(`/quotes/${repeated.id}/accept`, undefined, { expect: 409 });
+
+    // Cross-tenant access to quotes is denied.
+    const opener = await quote({ committedSeats: 2 });
+    const spare = await quote({ committedSeats: 6 });
+    await call(`/v1/admin/billing/quotes/${opener.id}/accept`, { token: billingOtherAdmin, method: 'POST', expect: 404 });
+    await call(`/v1/admin/billing/quotes/${opener.id}/withdraw`, { token: billingOtherAdmin, method: 'POST', expect: 404 });
+
+    // An expired quote cannot be accepted.
+    if (postgres) {
+      const stale = await quote({ committedSeats: 4 });
+      await fixture(`UPDATE billing_quotes SET expires_at = now() - interval '1 second' WHERE id = '${stale.id}'`);
+      assert.deepEqual(await post(`/quotes/${stale.id}/accept`, undefined, { expect: 409 }), { code: 'billing_quote_expired' });
+      assert.equal((await admin('')).quotes.find(({ id }) => id === stale.id).status, 'expired');
+    }
+
+    // Quote to subscription to invoice. Concurrent acceptance issues one invoice.
+    const accepts = await Promise.all([1, 2, 3].map(() => fetch(`${baseUrl}/v1/admin/billing/quotes/${opener.id}/accept`, {
+      method: 'POST', headers: { Authorization: `Bearer ${billingAdmin}` }, signal: AbortSignal.timeout(5000) })));
+    assert.deepEqual(accepts.map(({ status }) => status).sort(), [200, 409, 409]);
+    const accepted = await accepts.find(({ status }) => status === 200).json();
+    assert.equal(accepted.effective, 'immediate');
+    assert.equal(accepted.subscription.committedSeats, 2);
+    assert.equal(accepted.invoice.number, 'TST-000001');
+    assert.equal(accepted.invoice.total, 2002 + 165);
+    const opening = await admin(`/invoices/${accepted.invoice.id}`);
+    assert.deepEqual([opening.kind, opening.reason, opening.subtotal, opening.taxAmount, opening.paymentStatus, opening.providerStatus,
+      opening.balanceDue], ['invoice', 'subscription_start', 2002, 165, 'open', 'not_applicable', 2167]);
+    assert.equal(opening.paymentInstructions, 'Placeholder bank transfer instructions');
+    assert.equal(opening.customer.name, 'Example Customer (synthetic)');
+    await admin(`/invoices/${opening.id}`, { token: billingOtherAdmin, expect: 404 });
+    await admin(`/invoices/${opening.id}`, { token: auditor });
+    // A new-subscription quote priced before acceptance is stale once a subscription exists.
+    assert.deepEqual(await post(`/quotes/${spare.id}/accept`, undefined, { expect: 409 }), { code: 'billing_quote_stale' });
+
+    // JSON export carries an attachment header.
+    const exported = await fetch(`${baseUrl}/v1/admin/billing/invoices/${opening.id}/export`, { headers: { Authorization: `Bearer ${auditor}` } });
+    assert.equal(exported.status, 200);
+    assert.match(exported.headers.get('content-disposition'), /zekvar-TST-000001\.json/);
+    assert.equal((await exported.json()).invoice.number, 'TST-000001');
+
+    // Manual payment: owner only, once, and never for another tenant.
+    await post(`/invoices/${opening.id}/payment`, { reference: '' }, { expect: 400 });
+    await post(`/invoices/${opening.id}/payment`, { reference: 'BANK-REF-1' }, { token: auditor, expect: 403 });
+    await post(`/invoices/${opening.id}/payment`, { reference: 'BANK-REF-1' }, { token: billingOtherAdmin, expect: 404 });
+    assert.equal((await post(`/invoices/${opening.id}/payment`, { reference: 'BANK-REF-1' })).paymentStatus, 'paid');
+    await post(`/invoices/${opening.id}/payment`, { reference: 'BANK-REF-2' }, { expect: 409 });
+
+    if (!postgres) return;
+    // Seat metering: the period peak of daily counts of unrevoked browsers seen within seven days, frozen per UTC day.
+    const browsers = [];
+    for (let index = 0; index < 4; index++) {
+      const { grant } = await call('/v1/admin/enrollment-grants', { token: billingAdmin, method: 'POST' });
+      browsers.push((await call('/v1/enroll', { method: 'POST', body: { grant } })).installationId);
+    }
+    const [b1, b2, b3, b4] = browsers;
+    const subscription = accepted.subscription.id;
+    await fixture(`
+      UPDATE billing_subscriptions SET started_on = (now() AT TIME ZONE 'UTC')::date - 40 WHERE id = '${subscription}';
+      UPDATE installations SET enrolled_at = now() - interval '45 days' WHERE id IN ('${b1}', '${b2}', '${b3}', '${b4}');
+      INSERT INTO billing_seat_days (organization_id, usage_date, installation_id)
+      SELECT i.organization_id, (now() AT TIME ZONE 'UTC')::date - d, i.id FROM installations i, generate_series(1, 40) d
+      WHERE i.id IN ('${b1}', '${b2}')
+      UNION ALL SELECT organization_id, (now() AT TIME ZONE 'UTC')::date - 30, id FROM installations WHERE id = '${b3}'
+      UNION ALL SELECT organization_id, (now() AT TIME ZONE 'UTC')::date - d, id FROM installations, generate_series(20, 22) d WHERE id = '${b4}';
+      UPDATE installations SET revoked_at = ((now() AT TIME ZONE 'UTC')::date - 20)::timestamp AT TIME ZONE 'UTC' + interval '12 hours'
+      WHERE id = '${b4}';
+    `);
+    const [startedOn, periodEnd, nextEnd, today] = (await fixture(`
+      SELECT started_on || ',' || (started_on + interval '1 month')::date || ',' || (started_on + interval '2 month')::date || ',' ||
+        (now() AT TIME ZONE 'UTC')::date FROM billing_subscriptions WHERE id = '${subscription}'`)).split(',');
+    const dayOffset = (offset) => new Date(Date.parse(`${today}T00:00:00Z`) - offset * 86_400_000).toISOString().slice(0, 10);
+
+    // Concurrent reads close the elapsed period exactly once.
+    await Promise.all(Array.from({ length: 8 }, () => admin('')));
+    const afterClose = await admin('');
+    assert.equal(afterClose.subscription.closedPeriods, 1);
+    const closes = afterClose.invoices.filter(({ reason }) => reason === 'period');
+    assert.equal(closes.length, 1);
+    const closed = await admin(`/invoices/${closes[0].id}`);
+    assert.equal(closed.number, 'TST-000002');
+    assert.deepEqual(closed.usage, { periodStart: startedOn, periodEnd, peakSeats: 3, peakDate: dayOffset(30), committedSeats: 2,
+      overageSeats: 1, daysMeasured: closed.usage.daysMeasured, rule: 'peak_daily_active_7d' });
+    assert.deepEqual(closed.lines.map(({ kind, quantity, unitAmount, amount }) => [kind, quantity, unitAmount, amount]),
+      [['overage', 1, 1001, 1001], ['commitment', 2, 1001, 2002]]);
+    assert.deepEqual([closed.periodStart, closed.periodEnd, closed.subtotal, closed.taxAmount, closed.total],
+      [periodEnd, nextEnd, 3003, 248, 3251]);
+    const usage = await admin(`/usage?from=${dayOffset(31)}&until=${today}`);
+    const on = (offset) => usage.find(({ date }) => date === dayOffset(offset));
+    assert.deepEqual([on(30).activeSeats, on(24).activeSeats, on(23).activeSeats, on(22).activeSeats, on(21).activeSeats, on(20).activeSeats],
+      [3, 3, 2, 3, 3, 2]);
+    assert.equal(on(20).enrolledSeats, 3);
+    assert.ok(usage.every(({ provisional }) => !provisional));
+    await admin(`/usage?from=${today}&until=${dayOffset(1)}`, { expect: 400 });
+
+    // Frozen snapshots and issued documents are immutable; usage survives deletion of the underlying check-ins.
+    await assert.rejects(fixture(`UPDATE billing_usage_snapshots SET active_seats = 0 WHERE usage_date = '${dayOffset(30)}'`), /immutable/);
+    await assert.rejects(fixture(`UPDATE billing_invoices SET total = 1 WHERE id = '${closed.id}'`), /immutable/);
+    await assert.rejects(fixture(`UPDATE billing_invoices SET lines = '[]' WHERE id = '${closed.id}'`), /immutable/);
+    await assert.rejects(fixture(`DELETE FROM billing_invoices WHERE id = '${closed.id}'`), /cannot be deleted/);
+    await assert.rejects(fixture(`UPDATE billing_invoices SET payment_status = 'open', paid_at = NULL WHERE id = '${opening.id}'`), /settled/);
+    await fixture(`DELETE FROM billing_seat_days WHERE installation_id = '${b3}'`);
+    assert.equal((await admin(`/usage?from=${dayOffset(31)}&until=${today}`)).find(({ date }) => date === dayOffset(30)).activeSeats, 3);
+
+    // A mid-period increase is prorated by day: credit the unused commitment and charge the new one.
+    const remaining = Number(await fixture(`SELECT '${nextEnd}'::date - '${today}'::date`));
+    const length = Number(await fixture(`SELECT '${nextEnd}'::date - '${periodEnd}'::date`));
+    const revision = afterClose.subscription.revision;
+    const raise = await quote({ committedSeats: 5 });
+    const competing = await quote({ committedSeats: 7 });
+    assert.equal(raise.amendment, true);
+    assert.deepEqual(await quote({ term: 'annual', committedSeats: 5 }, { expect: 409 }), { code: 'billing_term_change_unsupported' });
+    const amended = await post(`/quotes/${raise.id}/accept`);
+    assert.equal(amended.effective, 'immediate');
+    assert.equal(amended.subscription.revision, revision + 1);
+    const prorated = await admin(`/invoices/${amended.invoice.id}`);
+    assert.equal(prorated.number, 'TST-000003');
+    assert.deepEqual(prorated.lines.map(({ kind, quantity, numerator, denominator, amount }) => [kind, quantity, numerator, denominator, amount]), [
+      ['proration_credit', 2, remaining, length, -halfUp(2 * 1001 * remaining / length)],
+      ['proration_charge', 5, remaining, length, halfUp(5 * 1001 * remaining / length)],
+    ]);
+    // A quote priced against the previous subscription revision is stale.
+    assert.deepEqual(await post(`/quotes/${competing.id}/accept`, undefined, { expect: 409 }), { code: 'billing_quote_stale' });
+    // A decrease waits for the next period and issues nothing now.
+    const lower = await quote({ committedSeats: 3 });
+    const deferred = await post(`/quotes/${lower.id}/accept`);
+    assert.deepEqual([deferred.effective, deferred.effectiveOn, deferred.invoice], ['next_period', nextEnd, null]);
+    const current = await admin('');
+    assert.deepEqual([current.subscription.committedSeats, current.subscription.pendingChange.committedSeats,
+      current.subscription.pendingChange.effectiveOn], [5, 3, nextEnd]);
+    assert.equal(current.estimate.issueOn, nextEnd);
+    assert.deepEqual(current.estimate.lines.filter(({ kind }) => kind === 'commitment').map(({ quantity }) => quantity), [3]);
+
+    // Credit notes: bounded by the invoice, numbered gap-free under concurrency, idempotent, and tax credited cumulatively.
+    const credit = (invoice, body, options) => post(`/invoices/${invoice}/credit-notes`,
+      { requestId: randomUUID(), reason: 'Synthetic correction', ...body }, options);
+    await credit(closed.id, { amount: 0 }, { expect: 400 });
+    await credit(closed.id, { amount: 3004 }, { expect: 409 });
+    await credit(closed.id, { amount: 10 }, { token: billingOtherAdmin, expect: 404 });
+    await credit(closed.id, { amount: 10 }, { token: auditor, expect: 403 });
+    const credits = await Promise.all(Array.from({ length: 12 }, () => fetch(`${baseUrl}/v1/admin/billing/invoices/${closed.id}/credit-notes`, {
+      method: 'POST', headers: { Authorization: `Bearer ${billingAdmin}`, 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(5000),
+      body: JSON.stringify({ requestId: randomUUID(), amount: 300, reason: 'Synthetic concurrent correction' }) })));
+    assert.deepEqual(credits.map(({ status }) => status).sort(), [...Array(10).fill(200), 409, 409]);
+    const notes = await Promise.all(credits.filter(({ status }) => status === 200).map((response) => response.json()));
+    assert.deepEqual(notes.map(({ number }) => number).sort(), Array.from({ length: 10 }, (_, index) => `TCN-${String(index + 1).padStart(6, '0')}`));
+    const finalRequest = randomUUID();
+    const finalNote = await credit(closed.id, { requestId: finalRequest, amount: 3 });
+    assert.equal(finalNote.number, 'TCN-000011');
+    assert.deepEqual(await credit(closed.id, { requestId: finalRequest, amount: 3 }), finalNote);
+    await credit(opening.id, { requestId: finalRequest, amount: 3 }, { expect: 409 });
+    const settled = await admin(`/invoices/${closed.id}`);
+    assert.deepEqual([settled.paymentStatus, settled.creditedTotal, settled.balanceDue, settled.creditNotes.length], ['credited', 3251, 0, 11]);
+    assert.equal(notes.reduce((sum, note) => sum + note.total, finalNote.total), 3251);
+    await post(`/invoices/${closed.id}/payment`, { reference: 'BANK-REF-3' }, { expect: 409 });
+    const note = await admin(`/invoices/${finalNote.id}`);
+    assert.deepEqual([note.kind, note.relatedNumber, note.paymentStatus], ['credit_note', 'TST-000002', 'issued']);
+
+    // Annual commitments meter overage monthly at one twelfth of the annual seat price, without a new commitment line.
+    const annualAdmin = (path, options = {}) => call(`/v1/admin/billing${path}`, { token: billingAnnualAdmin, ...options });
+    const annual = await annualAdmin('/quotes', { method: 'POST', body: { requestId: randomUUID(), planId: 'bundle', term: 'annual',
+      committedSeats: 1, customerName: 'Annual Customer (synthetic)', billingEmail: 'annual@example.test' } });
+    const annualStart = await annualAdmin(`/quotes/${annual.id}/accept`, { method: 'POST' });
+    assert.equal(annualStart.invoice.number, 'TST-000004');
+    assert.deepEqual([annualStart.subscription.commitmentPeriodStart, annualStart.subscription.commitmentPeriodEnd],
+      [today, await fixture(`SELECT ('${today}'::date + interval '12 month')::date`)]);
+    const annualBrowsers = [];
+    for (let index = 0; index < 2; index++) {
+      const { grant } = await call('/v1/admin/enrollment-grants', { token: billingAnnualAdmin, method: 'POST' });
+      annualBrowsers.push((await call('/v1/enroll', { method: 'POST', body: { grant } })).installationId);
+    }
+    await fixture(`
+      UPDATE billing_subscriptions SET started_on = (now() AT TIME ZONE 'UTC')::date - 40 WHERE id = '${annualStart.subscription.id}';
+      INSERT INTO billing_seat_days (organization_id, usage_date, installation_id)
+      SELECT organization_id, (now() AT TIME ZONE 'UTC')::date - 35, id FROM installations WHERE id IN ('${annualBrowsers.join("', '")}');
+    `);
+    const annualClose = (await annualAdmin('')).invoices.find(({ reason }) => reason === 'period');
+    const annualInvoice = await annualAdmin(`/invoices/${annualClose.id}`);
+    assert.deepEqual(annualInvoice.lines.map(({ kind, quantity, unitAmount, numerator, denominator, amount }) =>
+      [kind, quantity, unitAmount, numerator, denominator, amount]), [['overage', 1, 10001, 1, 12, 833]]);
+    assert.equal(annualInvoice.number, 'TST-000005');
+
+    // Every billing change is audited without customer contact details.
+    const audit = await call('/v1/admin/audit?action=billing_changed&limit=200', { token: billingAdmin });
+    const kinds = audit.entries.map(({ billingChange }) => billingChange.kind);
+    for (const kind of ['quote_created', 'quote_withdrawn', 'quote_accepted', 'invoice_issued', 'credit_note_issued', 'payment_recorded'])
+      assert.ok(kinds.includes(kind), kind);
+    assert.equal(kinds.filter((kind) => kind === 'credit_note_issued').length, 11);
+    assert.equal(audit.entries.find(({ billingChange }) => billingChange.number === 'TST-000002').actor, 'billing_system');
+    assert.ok(!JSON.stringify(audit).includes('example.test'));
+    assert.equal((await call('/v1/admin/audit?action=billing_changed', { token: billingOtherAdmin })).entries.length, 0);
+
+    // An invalid price book stops startup.
+    await assert.rejects(sql('dotnet', [app], { timeout: 8000, env: {
+      ...process.env, ASPNETCORE_ENVIRONMENT: 'Development', DOTNET_ENVIRONMENT: 'Development', ConnectionStrings__Control: db,
+      Control__Port: port, Control__Organizations__0__Slug: `billing-${suffix}`, Control__Organizations__0__AdminToken: billingAdmin,
+      ...configEnv('Control__Billing', billingConfig), Control__Billing__Plans__0__Tiers__1__UpTo: '5',
+    } }), (error) => /UpTo/.test(`${error.stderr}${error.stdout}`));
+
+    // Stripe adapter against a local fake: idempotent requests, retry after a provider error, and signed, replay-safe webhooks.
+    const stripeRequests = [];
+    const stripeReplies = new Map();
+    let failItems = 1;
+    let counter = 0;
+    const fake = createServer(async (request, response) => {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const form = Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString()));
+      const key = request.headers['idempotency-key'];
+      stripeRequests.push({ path: request.url, key, auth: request.headers.authorization, version: request.headers['stripe-version'], form });
+      if (request.url === '/v1/invoiceitems' && failItems > 0) {
+        failItems--;
+        response.writeHead(500, { 'Content-Type': 'application/json' }).end('{"error":{"message":"synthetic"}}');
+        return;
+      }
+      if (!stripeReplies.has(key)) {
+        const kind = request.url === '/v1/customers' ? 'cus' : request.url === '/v1/invoices' ? 'in' : request.url === '/v1/invoiceitems' ? 'ii' : null;
+        stripeReplies.set(key, kind ? `${kind}_test${++counter}` : request.url.split('/')[3]);
+      }
+      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ id: stripeReplies.get(key) }));
+    });
+    fake.listen(0, '127.0.0.1');
+    await once(fake, 'listening');
+    billingTest.after(() => new Promise((resolve) => { fake.close(resolve); fake.closeAllConnections(); }));
+    const stripeKey = `sk_test_${randomBytes(12).toString('hex')}`;
+    const webhookSecret = `whsec_${randomBytes(24).toString('hex')}`;
+    await stop();
+    await start(3600, {
+      Control__Billing__PaymentProvider: 'stripe', Control__Billing__Stripe__ApiBase: `http://127.0.0.1:${fake.address().port}`,
+      Control__Billing__Stripe__SecretKey: stripeKey, Control__Billing__Stripe__WebhookSecret: webhookSecret,
+      Control__Billing__TierMode: 'graduated', Control__Billing__TaxRateBasisPoints: '2500',
+    });
+    const stripeAdmin = (path, options = {}) => call(`/v1/admin/billing${path}`, { token: billingStripeAdmin, ...options });
+    const stripeQuote = (seats) => stripeAdmin('/quotes', { method: 'POST', body: { requestId: randomUUID(), planId: 'bundle', term: 'monthly',
+      committedSeats: seats, customerName: 'Stripe Customer (synthetic)', billingEmail: 'stripe@example.test' } });
+    // Graduated tiers price each band separately; a tax of exactly half a minor unit rounds away from zero.
+    for (const [seats, subtotal] of [[2, 2002], [10, 10010], [11, 10811], [100, 10010 + 90 * 801], [101, 10010 + 90 * 801 + 601]]) {
+      const priced = await stripeQuote(seats);
+      assert.equal(priced.subtotal, subtotal);
+      assert.equal(priced.taxAmount, halfUp(subtotal / 4));
+    }
+    assert.equal((await stripeQuote(2)).taxAmount, 501);
+    const stripeStart = await stripeQuote(12);
+    assert.deepEqual(stripeStart.lines.map(({ quantity, unitAmount }) => [quantity, unitAmount]), [[10, 1001], [2, 801]]);
+    const stripeAccepted = await stripeAdmin(`/quotes/${stripeStart.id}/accept`, { method: 'POST' });
+    assert.equal(stripeAccepted.invoice.number, 'TST-000006');
+    let stripeInvoice = await stripeAdmin(`/invoices/${stripeAccepted.invoice.id}`);
+    assert.deepEqual([stripeInvoice.providerStatus, stripeInvoice.provider, stripeInvoice.paymentInstructions], ['pending', 'stripe', null]);
+    await delay(1100);
+    await stripeAdmin('');
+    stripeInvoice = await stripeAdmin(`/invoices/${stripeAccepted.invoice.id}`);
+    assert.equal(stripeInvoice.providerStatus, 'submitted');
+    assert.ok(stripeRequests.every(({ auth, version, key }) => auth === `Bearer ${stripeKey}` && version === '2024-06-20' && key));
+    const byPath = (path) => stripeRequests.filter((request) => request.path === path);
+    assert.equal(byPath('/v1/customers').length, 1);
+    assert.equal(byPath('/v1/invoices').length, 1);
+    const items = byPath('/v1/invoiceitems');
+    assert.equal(items.length, 4);
+    assert.equal(items[0].key, items[1].key);
+    assert.deepEqual(items.slice(1).map(({ form }) => Number(form.amount)), [10010, 1602, 2903]);
+    assert.ok(items.every(({ form }) => form.currency === 'xts' && form.invoice === 'in_test2'));
+    const created = byPath('/v1/invoices')[0].form;
+    assert.deepEqual([created.collection_method, created['metadata[zekvar_invoice_id]'], created.auto_advance],
+      ['send_invoice', stripeInvoice.id, 'false']);
+    assert.equal(stripeRequests.filter(({ path }) => path.endsWith('/finalize')).length, 1);
+    await stripeAdmin(`/invoices/${stripeInvoice.id}/payment`, { method: 'POST', body: { reference: 'manual' }, expect: 409 });
+
+    const deliver = async (body, { secret = webhookSecret, timestamp = Math.floor(Date.now() / 1000), header, expect = 200 } = {}) => {
+      const payload = JSON.stringify(body);
+      const signature = createHmac('sha256', secret).update(`${timestamp}.${payload}`).digest('hex');
+      const response = await fetch(`${baseUrl}/v1/billing/stripe/webhook`, {
+        method: 'POST', body: payload, signal: AbortSignal.timeout(5000),
+        headers: { 'Content-Type': 'application/json', ...(header === null ? {} : { 'Stripe-Signature': header ?? `t=${timestamp},v1=${signature}` }) },
+      });
+      assert.equal(response.status, expect);
+      return response.json();
+    };
+    const eventId = () => `evt_${randomBytes(8).toString('hex')}`;
+    const paid = { id: eventId(), type: 'invoice.paid',
+      data: { object: { object: 'invoice', id: 'in_test2', metadata: { zekvar_invoice_id: stripeInvoice.id } } } };
+    assert.deepEqual(await deliver(paid, { header: null, expect: 400 }), { code: 'signature_missing' });
+    assert.deepEqual(await deliver(paid, { secret: `whsec_${randomBytes(24).toString('hex')}`, expect: 400 }), { code: 'signature_invalid' });
+    assert.deepEqual(await deliver(paid, { timestamp: Math.floor(Date.now() / 1000) - 1000, expect: 400 }), { code: 'signature_stale' });
+    assert.deepEqual(await deliver(paid, { timestamp: Math.floor(Date.now() / 1000) + 1000, expect: 400 }), { code: 'signature_stale' });
+    assert.deepEqual(await deliver(paid, { header: 't=1,v1=00', expect: 400 }), { code: 'signature_invalid' });
+    assert.equal((await stripeAdmin(`/invoices/${stripeInvoice.id}`)).paymentStatus, 'open');
+    const forged = { ...paid, id: eventId(), data: { object: { object: 'invoice', id: 'in_test2', metadata: { zekvar_invoice_id: opening.id } } } };
+    assert.deepEqual(await deliver(forged), { outcome: 'ignored' });
+    assert.deepEqual(await deliver({ ...paid, id: eventId(), data: { object: { object: 'invoice', id: 'in_unknown' } } }), { outcome: 'ignored' });
+    assert.deepEqual(await deliver({ ...paid, id: eventId(), type: 'invoice.payment_failed' }), { outcome: 'applied' });
+    const replies = await Promise.all([deliver(paid), deliver(paid), deliver(paid)]);
+    assert.deepEqual(replies.map(({ outcome }) => outcome).sort(), ['applied', 'duplicate', 'duplicate']);
+    assert.deepEqual(await deliver(paid), { outcome: 'duplicate' });
+    stripeInvoice = await stripeAdmin(`/invoices/${stripeInvoice.id}`);
+    assert.deepEqual([stripeInvoice.paymentStatus, stripeInvoice.paymentReference], ['paid', 'in_test2']);
+    const stripeAudit = (await call('/v1/admin/audit?action=billing_changed', { token: billingStripeAdmin })).entries;
+    assert.equal(stripeAudit.filter(({ billingChange }) => billingChange.kind === 'payment_recorded').length, 1);
+    assert.equal(stripeAudit.find(({ billingChange }) => billingChange.kind === 'payment_recorded').actor, 'payment_provider');
+    assert.equal(stripeAudit.filter(({ billingChange }) => billingChange.kind === 'payment_failed').length, 1);
+    assert.equal((await admin(`/invoices/${opening.id}`)).paymentReference, 'BANK-REF-1');
+    // A provider that keeps rejecting the request is marked failed and can be retried by the owner.
+    failItems = 100;
+    const failing = await stripeQuote(13);
+    const raised = await stripeAdmin(`/quotes/${failing.id}/accept`, { method: 'POST' });
+    assert.equal(raised.invoice.number, 'TST-000007');
+    await fixture(`UPDATE billing_invoices SET provider_attempts = 8, provider_lease_until = NULL WHERE id = '${raised.invoice.id}'`);
+    await stripeAdmin('');
+    assert.equal((await stripeAdmin(`/invoices/${raised.invoice.id}`)).providerStatus, 'failed');
+    failItems = 0;
+    await call(`/v1/admin/billing/invoices/${raised.invoice.id}/provider-retry`, { token: billingAdmin, method: 'POST', expect: 409 });
+    assert.equal((await stripeAdmin(`/invoices/${raised.invoice.id}/provider-retry`, { method: 'POST' })).providerStatus, 'submitted');
+    assert.equal(byPath('/v1/customers').length, 1);
+    const numbers = await fixture(`SELECT string_agg(number, ',' ORDER BY sequence) FROM billing_invoices
+      WHERE issuer_id = 'test-issuer-${suffix}' AND kind = 'invoice'`);
+    assert.equal(numbers, Array.from({ length: 7 }, (_, index) => `TST-${String(index + 1).padStart(6, '0')}`).join(','));
+    assert.ok(!JSON.stringify(await stripeAdmin('')).includes(stripeKey));
   });
 });
