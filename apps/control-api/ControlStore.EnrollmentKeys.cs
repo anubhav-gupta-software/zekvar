@@ -151,7 +151,7 @@ internal sealed partial class ControlStore
             SELECT k.organization_id, k.id, k.label, k.policy_group_id, g.name, k.revoked_at IS NOT NULL, k.expires_at <= now(),
                 k.max_redemptions, k.redeemed
             FROM enrollment_keys k LEFT JOIN policy_groups g ON g.organization_id = k.organization_id AND g.id = k.policy_group_id
-            WHERE k.token_hash = $1 FOR UPDATE OF k
+            WHERE k.token_hash = $1 AND NOT organization_offboarding(k.organization_id) FOR UPDATE OF k
             """, Tokens.Hash(key)))
         await using (var row = await locked.ExecuteReaderAsync(ct))
         {

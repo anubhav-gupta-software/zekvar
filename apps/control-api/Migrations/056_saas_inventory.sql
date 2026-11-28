@@ -22,17 +22,25 @@ CREATE TABLE saas_app_classifications (
 
 ALTER TABLE control_audit ADD COLUMN saas_classification jsonb CHECK (jsonb_typeof(saas_classification) = 'object');
 
--- Extend the existing action list in place so actions added by other migrations are preserved.
+-- Extend the current action list rather than restating it, so migrations that add actions in any order keep theirs.
 DO $$
-DECLARE definition text;
+DECLARE
+    actions text[];
 BEGIN
-    SELECT pg_get_constraintdef(oid) INTO definition FROM pg_constraint
-    WHERE conrelid = 'control_audit'::regclass AND conname = 'control_audit_action_check';
-    IF position('saas_app_classified' IN definition) = 0 THEN
-        EXECUTE 'ALTER TABLE control_audit DROP CONSTRAINT control_audit_action_check, ADD CONSTRAINT control_audit_action_check '
-            || replace(definition, 'ARRAY[', 'ARRAY[''saas_app_classified''::text, ');
-    END IF;
-END $$;
+    -- PostgreSQL prints an IN list as ARRAY['a'::text, ...] and an array literal as '{a,b}'::text[]; read both forms.
+    SELECT array_agg(DISTINCT value ORDER BY value) INTO actions FROM (
+        SELECT m[1] AS value FROM pg_constraint c,
+            regexp_matches(pg_get_constraintdef(c.oid), '''([a-z_]+)''::text', 'g') AS m
+        WHERE c.conrelid = 'control_audit'::regclass AND c.conname = 'control_audit_action_check'
+        UNION SELECT unnest(string_to_array(m[1], ',')) FROM pg_constraint c,
+            regexp_matches(pg_get_constraintdef(c.oid), '''\{([a-z_,]+)\}''', 'g') AS m
+        WHERE c.conrelid = 'control_audit'::regclass AND c.conname = 'control_audit_action_check'
+        UNION SELECT unnest(ARRAY['saas_app_classified'])
+    ) listed;
+    EXECUTE format('ALTER TABLE control_audit DROP CONSTRAINT IF EXISTS control_audit_action_check, '
+        'ADD CONSTRAINT control_audit_action_check CHECK (action = ANY (%L::text[]))', actions);
+END;
+$$;
 
 ALTER TABLE control_audit ADD CONSTRAINT control_audit_saas_record_check
     CHECK ((action = 'saas_app_classified') = (saas_classification IS NOT NULL));
