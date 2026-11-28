@@ -7983,4 +7983,21 @@ test('Control persists tenant-scoped policies, enrollment and metadata in Postgr
     await call('/v1/admin/billing', { token: billingDeleteAdmin, expect: 401 });
   });
 
+
+  // The suites after this one in the combined run reuse this database. The schema rewinds above replay old migrations whose versions
+  // stay recorded, so the last replay can leave this constraint in its first form (ChatGPT and Gemini only). Claude file events then fail
+  // with HTTP 500 in the Chrome suites. Restore the current definition (migration 50) as the final step and assert it.
+  await t.test('leaves the shared database with the current upload-method constraint, which allows Claude file events', {
+    skip: !postgres && 'Requires the disposable PostgreSQL container.',
+  }, async () => {
+    await retentionFixture(`ALTER TABLE security_events DROP CONSTRAINT security_events_upload_method_check,
+      ADD CONSTRAINT security_events_upload_method_check CHECK (
+        (upload_method IS NULL AND rule_id NOT IN ('ai-file-upload', 'file-inspection-unavailable')) OR
+        (upload_method IS NOT NULL AND upload_method IN ('picker', 'drop', 'paste') AND app_id IN ('chatgpt', 'gemini', 'claude') AND
+          (decision = 'block' OR (decision = 'monitor' AND rule_id <> 'file-inspection-unavailable'))))`);
+    const definition = await retentionFixture(`SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'security_events_upload_method_check'`);
+    assert.match(definition, /'claude'/);
+    const rules = await retentionFixture(`SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'security_events_rule_id_check'`);
+    for (const rule of ['us-national-provider-identifier', 'organization-classification-rule', 'clipboard-inspection-unavailable']) assert.match(rules, new RegExp(rule));
+  });
 });

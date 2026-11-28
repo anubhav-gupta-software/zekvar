@@ -32,13 +32,16 @@ async function admin(path, body) {
   return response.json();
 }
 
-async function until(check, message) {
-  for (let attempt = 0; attempt < 50; attempt++) {
+// Poll the real condition. The deadline bounds only a genuine failure; file inspection, the Chrome worker and
+// Control round trips are slow on a loaded machine, so a fixed few seconds is not evidence of a defect.
+async function until(check, message, deadlineMs = 30_000) {
+  const end = Date.now() + deadlineMs;
+  while (Date.now() < end) {
     const result = await check();
     if (result) return result;
     await delay(100);
   }
-  assert.fail(message);
+  assert.fail(typeof message === 'function' ? await message() : message);
 }
 
 test('protects attachments through native Chrome intake and Control reporting', { timeout: 90_000 }, async (t) => {
@@ -47,6 +50,7 @@ test('protects attachments through native Chrome intake and Control reporting', 
   let loseNextAcknowledgment = false;
   let fileDataSentToControl = false;
   const posts = [];
+  const upstreamStatuses = [];
   const proxy = createServer(async (request, response) => {
     try {
       if (request.url !== '/v1/enroll' && !request.url?.startsWith('/v1/browser/')) return response.writeHead(404).end();
@@ -62,6 +66,7 @@ test('protects attachments through native Chrome intake and Control reporting', 
       const upstream = await fetch(api + request.url, { method: request.method, headers,
         body: body.length ? body : undefined, signal: AbortSignal.timeout(5_000) });
       const text = await upstream.text();
+      if (isEvent) upstreamStatuses.push(upstream.status);
       if (isEvent && upstream.ok && loseNextAcknowledgment) {
         loseNextAcknowledgment = false;
         return response.writeHead(503).end();
@@ -665,7 +670,10 @@ test('protects attachments through native Chrome intake and Control reporting', 
     await input(claude).setInputFiles([]);
     loseNextAcknowledgment = true;
     await pick(claude, [word]);
-    await until(() => delivered.length === 2 && !loseNextAcknowledgment, 'Claude Monitor did not release and report the synthetic Word file.');
+    await until(() => delivered.length === 2 && !loseNextAcknowledgment,
+      async () => `Claude Monitor did not release and report the synthetic Word file. Delivered ${delivered.length}, acknowledgment still armed ${loseNextAcknowledgment}, ` +
+        `event posts ${posts.length} (last upstream statuses ${JSON.stringify(upstreamStatuses.slice(-4))}), alerts ${(await claude.getByRole('alert').allTextContents()).join(' | ')}, status ${(await claude.getByText(/^Zekvar · /).allTextContents()).join(' / ')}, ` +
+        `popup ${await popup.locator('#status').textContent()}.`);
     assert.deepEqual(delivered[1], docs.docx);
     const retried = posts.at(-1).eventId;
     await sync();
